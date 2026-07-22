@@ -18,10 +18,18 @@ function fakeBundleSandbox(files: Map<string, string>): ProjectBuildSandboxLike 
       if (content == null) throw new Error(`missing ${path}`);
       const bytes = new TextEncoder().encode(content);
       const midpoint = Math.ceil(bytes.byteLength / 2);
+      const events = [
+        { type: "metadata", mimeType: "application/octet-stream", size: bytes.byteLength, isBinary: true, encoding: "base64" },
+        { type: "chunk", data: Buffer.from(bytes.slice(0, midpoint)).toString("base64") },
+        { type: "chunk", data: Buffer.from(bytes.slice(midpoint)).toString("base64") },
+        { type: "complete" },
+      ].map((event) => `data: ${JSON.stringify(event)}\n\n`).join("");
+      const encoded = new TextEncoder().encode(events);
+      const wireMidpoint = Math.ceil(encoded.byteLength / 2);
       return new ReadableStream<Uint8Array>({
         start(controller) {
-          controller.enqueue(bytes.slice(0, midpoint));
-          controller.enqueue(bytes.slice(midpoint));
+          controller.enqueue(encoded.slice(0, wireMidpoint));
+          controller.enqueue(encoded.slice(wireMidpoint));
           controller.close();
         },
       });
@@ -79,16 +87,34 @@ describe("collectWorkerBundleFromSandbox", () => {
 
     // Collection must NOT read asset bytes up front — only the manifest and the
     // uploadable modules are read. Client assets stay lazy until deploy asks.
-    const readsAfterCollect = readFilePaths(sandbox);
-    expect(readsAfterCollect).toContain("/workspace/demo/build/server/index.js");
-    expect(readsAfterCollect).not.toContain("/workspace/demo/build/client/index.html");
-    expect(readsAfterCollect).not.toContain("/workspace/demo/build/client/assets/app.css");
+    const streamReadsAfterCollect = readFileStreamPaths(sandbox);
+    expect(streamReadsAfterCollect).toContain("/workspace/demo/build/server/index.js");
+    expect(streamReadsAfterCollect).not.toContain("/workspace/demo/build/client/index.html");
+    expect(streamReadsAfterCollect).not.toContain("/workspace/demo/build/client/assets/app.css");
+    expect(readFilePaths(sandbox)).toEqual([]);
 
     // The lazy handle reads the real bytes on demand.
     const cssAsset = bundle.assets.find((asset) => asset.path === "assets/app.css")!;
     expect(new TextDecoder().decode(await cssAsset.read())).toBe("body{}");
     expect(readFileStreamPaths(sandbox)).toContain("/workspace/demo/build/client/assets/app.css");
     expect(readFilePaths(sandbox)).not.toContain("/workspace/demo/build/client/assets/app.css");
+  });
+
+  it("falls back to base64 readFile when streaming is unavailable", async () => {
+    const files = new Map<string, string>([
+      ["/workspace/demo/build/server/wrangler.json", JSON.stringify({ main: "index.js", no_bundle: true })],
+      ["/workspace/demo/build/server/index.js", "export default {};"],
+    ]);
+    const sandbox = fakeBundleSandbox(files);
+    delete sandbox.readFileStream;
+
+    const bundle = await collectWorkerBundleFromSandbox(sandbox, "/workspace/demo");
+
+    expect(bundle.modules).toHaveLength(1);
+    expect(readFilePaths(sandbox)).toEqual([
+      "/workspace/demo/build/server/wrangler.json",
+      "/workspace/demo/build/server/index.js",
+    ]);
   });
 
   it("converts wrangler durable object config into upload bindings", async () => {
@@ -350,6 +376,7 @@ it("rejects legacy main_module manifests with a remediation error", async () => 
 });
 
 it("honors declared module rules including Text and Data types", async () => {
+  const imageBytes = "x".repeat(2 * 1024 * 1024);
   const files = new Map<string, string>([
     ["/workspace/demo/build/server/wrangler.json", JSON.stringify({
       main: "index.js",
@@ -357,20 +384,28 @@ it("honors declared module rules including Text and Data types", async () => {
       rules: [
         { type: "ESModule", globs: ["**/*.js"] },
         { type: "Text", globs: ["**/*.txt"] },
+        { type: "Data", globs: ["**/*.png"] },
       ],
       compatibility_date: "2026-06-01",
       assets: { directory: "../client" },
     })],
     ["/workspace/demo/build/server/index.js", "export default {};"],
     ["/workspace/demo/build/server/prompts/system.txt", "be helpful"],
+    ["/workspace/demo/build/server/assets/hero.png", imageBytes],
     ["/workspace/demo/build/server/assets/font.woff2", "fontbytes"],
     ["/workspace/demo/build/client/index.html", "<html></html>"],
   ]);
-  const bundle = await collectWorkerBundleFromSandbox(fakeBundleSandbox(files), "/workspace/demo");
+  const sandbox = fakeBundleSandbox(files);
+  const bundle = await collectWorkerBundleFromSandbox(sandbox, "/workspace/demo");
   expect(bundle.modules.map((m) => ({ name: m.name, contentType: m.contentType }))).toEqual([
+    { name: "assets/hero.png", contentType: "application/octet-stream" },
     { name: "index.js", contentType: "application/javascript+module" },
     { name: "prompts/system.txt", contentType: "text/plain" },
   ]);
+  expect((bundle.modules.find((module) => module.name === "assets/hero.png")!.content as Uint8Array).byteLength)
+    .toBe(2 * 1024 * 1024);
+  expect(readFileStreamPaths(sandbox)).toContain("/workspace/demo/build/server/assets/hero.png");
+  expect(readFilePaths(sandbox)).not.toContain("/workspace/demo/build/server/assets/hero.png");
 });
 
 it("surfaces the wrangler config name for deploy script-name continuity", async () => {

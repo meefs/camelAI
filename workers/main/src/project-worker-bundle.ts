@@ -1,9 +1,10 @@
+import { collectFile } from "@cloudflare/sandbox";
 import type { DirectDeployAsset, DirectWorkerMetadata, DirectWorkerModule } from "./direct-dispatch-deploy.js";
 import type { WorkerBinding } from "./cf-api-proxy.js";
 import { mapWithConcurrency } from "../../../src/lib/map-with-concurrency";
 import { base64ToBytes } from "./base64-codec.js";
 
-const BUNDLE_READ_CONCURRENCY = 16;
+const BUNDLE_READ_CONCURRENCY = 4;
 
 export interface ProjectBuildSandboxLike {
   // Matches @cloudflare/sandbox ExecOptions: the execution bound is `timeout`
@@ -50,7 +51,7 @@ export async function collectWorkerBundleFromSandbox(
   workdir: string,
   manifestPath = "build/server/wrangler.json",
 ): Promise<ProjectWorkerBundle> {
-  if (!sandbox.readFile || !sandbox.listFiles) {
+  if ((!sandbox.readFile && !sandbox.readFileStream) || !sandbox.listFiles) {
     throw new Error("Sandbox does not support build output reads");
   }
   const absoluteManifestPath = joinSandboxPath(workdir, manifestPath);
@@ -370,20 +371,17 @@ async function collectAssetsFromManifest(
     path: relativePath,
     contentType: contentTypeForAsset(relativePath),
     size,
-    read: () => readSandboxAssetBytes(sandbox, absolutePath),
+    read: () => readSandboxFileBytes(sandbox, absolutePath),
   }));
   return assets.sort((a, b) => a.path.localeCompare(b.path));
 }
 
-async function readSandboxAssetBytes(sandbox: ProjectBuildSandboxLike, path: string): Promise<Uint8Array> {
+async function readSandboxFileBytes(sandbox: ProjectBuildSandboxLike, path: string): Promise<Uint8Array> {
   if (sandbox.readFileStream) {
     const stream = await sandbox.readFileStream(path);
-    return new Uint8Array(await new Response(stream).arrayBuffer());
+    const { content } = await collectFile(stream);
+    return typeof content === "string" ? new TextEncoder().encode(content) : content;
   }
-  return readSandboxFileBytes(sandbox, path);
-}
-
-async function readSandboxFileBytes(sandbox: ProjectBuildSandboxLike, path: string): Promise<Uint8Array> {
   if (!sandbox.readFile) throw new Error("Sandbox does not support file reads");
   const read = await sandbox.readFile(path, { encoding: "base64" });
   return base64ToBytes(read.content);
