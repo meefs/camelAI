@@ -555,15 +555,7 @@ routes.get(
   }),
   async (c) => {
     const adminIndex = getAdminIndexStub(c.env);
-    const overview = await adminIndex.getOverview();
-    return c.json({
-      total_users: overview.total_users,
-      total_orgs: overview.total_orgs,
-      total_memberships: overview.total_memberships,
-      total_workspaces: overview.total_workspaces,
-      total_integrations: overview.total_integrations,
-      orphaned_users: overview.orphaned_users,
-    });
+    return c.json(await adminIndex.getStats());
   },
 );
 
@@ -2037,11 +2029,6 @@ routes.get(
         const spamOrgIds = new Set(await fetchSpamOrgIds(c.env));
         orgs = orgs.filter((org) => !spamOrgIds.has(org.id));
       }
-
-      // Top-org ranking depends on member_count being current. The org directory
-      // row can be present before membership deltas finish indexing, so force the
-      // membership snapshot to catch up before we sort or return counts.
-      await adminIndex.getUsersByOrgIds(orgs.map((org) => org.id));
 
       // Two-pass: rank without windows first, then fetch windows for top-N only.
       const rankingUsage = await fetchOrgUsageAnalytics(

@@ -12,20 +12,6 @@ function testEmail() {
   return `admin-index-bootstrap-${Date.now()}-${Math.random().toString(36).slice(2)}@example.com`;
 }
 
-async function waitForCondition(
-  predicate: () => Promise<boolean>,
-  timeoutMs = 10_000,
-): Promise<void> {
-  const startedAt = Date.now();
-  while (Date.now() - startedAt < timeoutMs) {
-    if (await predicate()) {
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  throw new Error('Timed out waiting for condition');
-}
-
 describe('D1 admin index bootstrap', () => {
   it('bootstraps preexisting DO records into an empty D1 app index', async () => {
     const email = testEmail();
@@ -85,7 +71,7 @@ describe('D1 admin index bootstrap', () => {
     );
   });
 
-  it('runs the thread index v2 backfill marker for ready databases', async () => {
+  it('does not launch schema backfills from ready-database request paths', async () => {
     const email = testEmail();
     const { userId } = await createUser(
       testEnv,
@@ -124,19 +110,8 @@ describe('D1 admin index bootstrap', () => {
 
     await ensureAdminIndexReady(testEnv as never);
 
-    await waitForCondition(async () => {
-      const [backfillRequired, context] = await Promise.all([
-        appIndex.isThreadsIndexBackfillRequired(),
-        appIndex.getThreadContextById(thread.id),
-      ]);
-      return !backfillRequired && context?.id === thread.id;
-    });
-
-    await expect(appIndex.getThreadContextById(thread.id)).resolves.toMatchObject({
-      id: thread.id,
-      org_id: org.id,
-      workspace_id: defaultWorkspaceId,
-    });
+    await expect(appIndex.isThreadsIndexBackfillRequired()).resolves.toBe(true);
+    await expect(appIndex.getThreadContextById(thread.id)).resolves.toBeNull();
   });
 
   it('does not return partial admin index results while another bootstrap owns the lock', async () => {

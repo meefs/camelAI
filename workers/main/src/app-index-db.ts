@@ -1081,8 +1081,20 @@ export class AppIndexDatabase {
   }
 
   private async loadAllThreadsForDashboardMetrics(): Promise<AdminThreadListRow[]> {
+    // Keep the dashboard snapshot to its declared list shape. SELECT t.* also
+    // materializes chat previews and error/model history for every thread.
     return this.all<AdminThreadListRow>(`
-      SELECT t.*, o.name as org_name, w.name as workspace_name
+      SELECT
+        t.id,
+        t.title,
+        t.model,
+        t.workspace_id,
+        t.created_at,
+        t.updated_at,
+        t.created_by,
+        t.org_id,
+        o.name AS org_name,
+        w.name AS workspace_name
       FROM threads t
       LEFT JOIN orgs o ON t.org_id = o.id
       LEFT JOIN workspaces w ON t.workspace_id = w.id
@@ -1166,24 +1178,34 @@ export class AppIndexDatabase {
     );
   }
 
-  async getOverview() {
-    const [totalUsers, totalOrgs, totalMemberships, totalWorkspaces, totalIntegrations, orphanedUsers, users] = await Promise.all([
+  /** Counts-only path for the frequently polled admin stats endpoint. */
+  async getStats() {
+    const [totalUsers, totalOrgs, totalMemberships, totalWorkspaces, totalIntegrations, orphanedUsers] = await Promise.all([
       first<{ count: number }>(this.db.prepare('SELECT COUNT(*) AS count FROM users')),
       first<{ count: number }>(this.db.prepare('SELECT COUNT(*) AS count FROM orgs')),
       first<{ count: number }>(this.db.prepare('SELECT SUM(member_count) AS count FROM orgs')),
       first<{ count: number }>(this.db.prepare('SELECT COUNT(*) AS count FROM workspaces')),
       first<{ count: number }>(this.db.prepare('SELECT SUM(integration_count) AS count FROM workspaces')),
       first<{ count: number }>(this.db.prepare('SELECT COUNT(*) AS count FROM users WHERE is_orphaned = 1')),
-      this.all<any>('SELECT * FROM users'),
     ]);
     return {
-      users: users.map((u) => ({ ...u, avatar: { color: u.avatar_color || '#666', content: u.avatar_content || 'U' }, is_superuser: u.is_superuser === 1, is_orphaned: u.is_orphaned === 1, signup_ip: u.signup_ip ?? null })),
       total_users: toNumber(totalUsers?.count),
       total_orgs: toNumber(totalOrgs?.count),
       total_memberships: toNumber(totalMemberships?.count),
       total_workspaces: toNumber(totalWorkspaces?.count),
       total_integrations: toNumber(totalIntegrations?.count),
       orphaned_users: toNumber(orphanedUsers?.count),
+    };
+  }
+
+  async getOverview() {
+    const [stats, users] = await Promise.all([
+      this.getStats(),
+      this.all<any>('SELECT * FROM users'),
+    ]);
+    return {
+      users: users.map((u) => ({ ...u, avatar: { color: u.avatar_color || '#666', content: u.avatar_content || 'U' }, is_superuser: u.is_superuser === 1, is_orphaned: u.is_orphaned === 1, signup_ip: u.signup_ip ?? null })),
+      ...stats,
       superusers: users.filter((u) => u.is_superuser === 1).map((u) => ({ ...u, avatar: { color: u.avatar_color || '#666', content: u.avatar_content || 'U' }, is_superuser: true, is_orphaned: u.is_orphaned === 1 })),
     };
   }
@@ -1228,7 +1250,21 @@ export class AppIndexDatabase {
   }
 
   async getThreadsPaginated(offset: number, limit: number, search?: string, filters?: ThreadFilters) {
-    const base = 'SELECT t.*, o.name as org_name, w.name as workspace_name FROM threads t LEFT JOIN orgs o ON t.org_id = o.id LEFT JOIN workspaces w ON t.workspace_id = w.id';
+    // The list contract intentionally excludes chat explorer preview/error data.
+    const base = `SELECT
+      t.id,
+      t.title,
+      t.model,
+      t.workspace_id,
+      t.created_at,
+      t.updated_at,
+      t.created_by,
+      t.org_id,
+      o.name AS org_name,
+      w.name AS workspace_name
+      FROM threads t
+      LEFT JOIN orgs o ON t.org_id = o.id
+      LEFT JOIN workspaces w ON t.workspace_id = w.id`;
     const countBase = 'SELECT COUNT(*) as count FROM threads t LEFT JOIN orgs o ON t.org_id = o.id LEFT JOIN workspaces w ON t.workspace_id = w.id';
     const conditions: string[] = [];
     const params: unknown[] = [];

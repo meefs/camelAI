@@ -1,4 +1,3 @@
-import { waitUntil } from "cloudflare:workers";
 import type { OrgDO, UserDO } from './auth.js';
 import {
   type AppIndexDatabase,
@@ -250,30 +249,6 @@ async function acquireAdminIndexBootstrapLock(
   return true;
 }
 
-async function runLockedAdminIndexBackfill(
-  env: AdminIndexBootstrapEnv,
-  appIndex: AppIndexDatabase,
-): Promise<void> {
-  const acquired = await acquireAdminIndexBootstrapLock(env);
-  if (!acquired) {
-    return;
-  }
-
-  const task = (async () => {
-    try {
-      await bootstrapAdminIndexFromDurableObjects(env, appIndex);
-    } finally {
-      await env.APP_KV.delete(APP_INDEX_BOOTSTRAP_LOCK_KEY);
-    }
-  })();
-
-  waitUntil(
-    task.catch((error) => {
-      console.error('[admin-index-bootstrap] background backfill failed', error);
-    }),
-  );
-}
-
 export async function ensureAdminIndexReady(
   env: AdminIndexBootstrapEnv,
   options: AdminIndexBootstrapOptions = {},
@@ -285,9 +260,10 @@ export async function ensureAdminIndexReady(
 
   await appIndex.ensureSchema();
   if (await appIndex.isBootstrapComplete()) {
-    if (await appIndex.isThreadsIndexBackfillRequired()) {
-      await runLockedAdminIndexBackfill(env, appIndex);
-    }
+    // Schema-version backfills must run through an explicit, checkpointed job.
+    // Starting the full-platform rebuild here ties it to every admin request;
+    // an OOM leaves the marker set and restarts the rebuild after the KV lock
+    // expires, repeatedly killing the request isolate.
     return;
   }
 

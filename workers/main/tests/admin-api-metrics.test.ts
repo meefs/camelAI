@@ -4,7 +4,11 @@ import { handleAdminApi } from '../src/routes/admin/index';
 import type { Env as WorkerEnv } from '../src/types';
 import { createOrg, createUser, type TestEnv } from './test-helpers';
 import { DAY_MS } from '../src/admin-dashboard-metrics';
-import { getAppIndexDatabase, getAppIndexReadDatabase } from '../src/app-index-db';
+import {
+  AppIndexDatabase,
+  getAppIndexDatabase,
+  getAppIndexReadDatabase,
+} from '../src/app-index-db';
 import { encryptCredentials } from '../../../src/lib/integration-crypto';
 
 const testEnv = env as unknown as TestEnv;
@@ -497,6 +501,90 @@ function createIsolatedAdminApiEnv(
 }
 
 describe('admin API metrics routes', () => {
+  it('serves stats without materializing the full user overview', async () => {
+    const getOverview = vi
+      .spyOn(AppIndexDatabase.prototype, 'getOverview')
+      .mockRejectedValue(new Error('stats must not load every user'));
+
+    try {
+      const response = await callAdminApi(
+        new Request('http://example/api/admin/stats', {
+          headers: { Authorization: 'Bearer test-admin-api-key' },
+        }),
+        vi.fn(async () => Response.json({})),
+      );
+
+      expect(response?.status).toBe(200);
+      await expect(response!.json()).resolves.toEqual(
+        expect.objectContaining({
+          total_users: expect.any(Number),
+          total_orgs: expect.any(Number),
+          total_workspaces: expect.any(Number),
+        }),
+      );
+      expect(getOverview).not.toHaveBeenCalled();
+    } finally {
+      getOverview.mockRestore();
+    }
+  });
+
+  it('ranks top orgs without loading and discarding every org member', async () => {
+    const getUsersByOrgIds = vi
+      .spyOn(AppIndexDatabase.prototype, 'getUsersByOrgIds')
+      .mockRejectedValue(new Error('top-org ranking must not load every member'));
+
+    try {
+      const response = await callAdminApi(
+        new Request(
+          'http://example/api/admin/dashboard/top-orgs?exclude_spam=false',
+          { headers: { Authorization: 'Bearer test-admin-api-key' } },
+        ),
+        vi.fn(async () => Response.json({})),
+      );
+
+      expect(response?.status).toBe(200);
+      expect(getUsersByOrgIds).not.toHaveBeenCalled();
+    } finally {
+      getUsersByOrgIds.mockRestore();
+    }
+  });
+
+  it('keeps paginated thread rows to the public list projection', async () => {
+    const adminIndex = getAppIndexDatabase(testEnv)!;
+    const threadId = crypto.randomUUID();
+    await adminIndex.handleEvent({
+      type: 'thread_upsert',
+      payload: {
+        id: threadId,
+        title: 'Projected admin thread',
+        model: 'sonnet',
+        org_id: crypto.randomUUID(),
+        workspace_id: crypto.randomUUID(),
+        created_at: Date.now(),
+        updated_at: Date.now(),
+        created_by: crypto.randomUUID(),
+        first_user_message: 'This preview must not be loaded by the list route.',
+        model_history: JSON.stringify([{ model: 'sonnet' }]),
+      },
+    });
+
+    const response = await callAdminApi(
+      new Request(
+        `http://example/api/admin/threads?search=${encodeURIComponent(threadId)}`,
+        { headers: { Authorization: 'Bearer test-admin-api-key' } },
+      ),
+      vi.fn(async () => Response.json({})),
+    );
+
+    expect(response?.status).toBe(200);
+    const payload = await response!.json() as { items: Array<Record<string, unknown>> };
+    expect(payload.items).toHaveLength(1);
+    expect(payload.items[0]).toEqual(expect.objectContaining({ id: threadId }));
+    expect(payload.items[0]).not.toHaveProperty('first_user_message');
+    expect(payload.items[0]).not.toHaveProperty('model_history');
+    expect(payload.items[0]).not.toHaveProperty('last_chat_error_message');
+  });
+
   it('serves counter columns used by dashboard API endpoints', async () => {
     const adminIndexName = `admin_index_legacy_counters_${crypto.randomUUID()}`;
     const sandboxFetch = vi.fn(async () => Response.json({ org_ids: [], count: 0 }));
