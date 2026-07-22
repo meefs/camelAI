@@ -438,7 +438,7 @@ function normalizeHelpInput(input) {
 // guidance is fetched on demand the moment the model actually writes code.
 const JS_EXEC_GUIDE = Object.freeze([
   "Results: the final expression is returned automatically and console.log/warn/error output is captured; use an explicit return inside branches or loops. You may write TypeScript — type annotations are stripped before execution.",
-  "Tool results: every await tools.<name>(args) call resolves to { ok: true, data } on success or { ok: false, error: { tool, message } } on failure — branch on result.ok and read result.data; failed calls do not throw, so you can inspect the error, tools.describe the tool, and retry in the same run. deploy_project resolves ok: false when validation, build, or deploy FAILS (error.message carries the summary, error.stage says which phase, and the full result is still in data); for other tools ok means the call executed and outcomes live in data. EXCEPTION: runtime bindings (env.*, connections[alias]) and tools.search/describe/help return their values directly with NO { ok, data } wrapper — tools.search resolves to { query, total, items, usage } where items is the matches array.",
+  "Tool results: every await tools.<name>(args) call resolves to { ok: true, data } on success or { ok: false, error: { tool, message, origin } } on failure — branch on result.ok and read result.data; origin is tool for a tool-side failure and transport when the tools RPC itself failed. Failed calls do not throw, so you can inspect the error, tools.describe the tool, and retry in the same run. deploy_project resolves ok: false when validation, build, or deploy FAILS (error.message carries the summary, error.stage says which phase, and the full result is still in data); for other tools ok means the call executed and outcomes live in data. EXCEPTION: runtime bindings (env.*, connections[alias]) and tools.search/describe/help return their values directly with NO { ok, data } wrapper — tools.search resolves to { query, total, items, usage } where items is the matches array.",
   "Discovery: await tools.search(\"<intent + key nouns>\") ranks matching tools; await tools.describe(name) returns one definition with a compact inputTypeScript argument shape; await tools.help(\"<category>\") expands a category. Results with kind \"tool\" run as await tools.<name>(args); kind \"runtime\" results are sandbox globals (env.*, connections, text/store/load) used directly, never through tools.",
   "Every top-level harness tool is also on tools, e.g. await tools.create_project(...).",
   "Connections: const entry = await env.CONNECTIONS.find(\"clickhouse\"); return await connections[entry.alias].query({ query: \"SELECT 1 AS ok\" }). Use env.CONNECTIONS.methods() for the full catalog, env.CONNECTIONS.verify(\"clickhouse\") for normalized health, or env.CONNECTIONS.test(\"clickhouse\") for the legacy smoke test; custom \"other\" connections expose fetch.",
@@ -706,7 +706,7 @@ function createToolDescribe(allTools) {
       definition.inputTypeScript = schemaToTypeScript(tool.parameters);
       return {
         tool: definition,
-        usage: "Call it as await tools." + tool.name + "(args); the call resolves to { ok: true, data } or { ok: false, error: { message } } — branch on ok.",
+        usage: "Call it as await tools." + tool.name + "(args); the call resolves to { ok: true, data } or { ok: false, error: { message, origin } } — branch on ok.",
       };
     }
     if (runtimeByName.has(key)) {
@@ -760,6 +760,7 @@ function createEnvelopeToolCall(name, invokeEnvelope) {
           error: {
             tool: name,
             message,
+            origin: "tool",
             ...(typeof envelope.data.stage === "string" ? { stage: envelope.data.stage } : {}),
           },
           data: envelope.data,
@@ -770,7 +771,12 @@ function createEnvelopeToolCall(name, invokeEnvelope) {
       const message = error && typeof error.message === "string" && error.message
         ? error.message
         : String(error);
-      return { ok: false, error: { tool: name, message } };
+      console.error("[code-mode] tools RPC failed", {
+        toolName: name,
+        origin: "transport",
+        error: message,
+      });
+      return { ok: false, error: { tool: name, message, origin: "transport" } };
     }
   };
 }

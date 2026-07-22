@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { codeModeWorkerModule, prepareCodeModeUserCode, stripTypeScriptFromUserCode } from '../src/code-mode-runner';
 
 function createConnectionsFacade(binding: any): Record<string, unknown> {
@@ -497,13 +497,34 @@ describe('code mode runner tools.search / tools.describe', () => {
       error: { tool: 'create_scheduled_prompt', message: 'cron_expression is required' },
     });
 
+    const deployFailure = createEnvelopeToolCall('deploy_project', async () => ({
+      ok: true,
+      data: { success: false, stage: 'build', errorSummary: 'Build failed' },
+    }));
+    await expect(deployFailure({})).resolves.toEqual({
+      ok: false,
+      error: { tool: 'deploy_project', message: 'Build failed', origin: 'tool', stage: 'build' },
+      data: { success: false, stage: 'build', errorSummary: 'Build failed' },
+    });
+
     const transportFailure = createEnvelopeToolCall('list_apps', async () => {
       throw new Error('RPC connection lost');
     });
-    await expect(transportFailure({})).resolves.toEqual({
-      ok: false,
-      error: { tool: 'list_apps', message: 'RPC connection lost' },
-    });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await expect(transportFailure({ secret: 'do-not-log' })).resolves.toEqual({
+        ok: false,
+        error: { tool: 'list_apps', message: 'RPC connection lost', origin: 'transport' },
+      });
+      expect(consoleError).toHaveBeenCalledWith('[code-mode] tools RPC failed', {
+        toolName: 'list_apps',
+        origin: 'transport',
+        error: 'RPC connection lost',
+      });
+      expect(JSON.stringify(consoleError.mock.calls)).not.toContain('do-not-log');
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
   it('describe on a runtime helper explains it is a global, not a tools.<name> call', () => {

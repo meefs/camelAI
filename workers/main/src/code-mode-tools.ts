@@ -1329,6 +1329,7 @@ function isProjectBuildServiceUnavailableError(error: unknown): boolean {
       : error,
   );
   return /RPCTransportError/i.test(message) ||
+    /Network connection lost/i.test(message) ||
     /WebSocket upgrade failed/i.test(message) ||
     /503\s+Service\s+Unavailable/i.test(message) ||
     /Container failed to start/i.test(message);
@@ -2646,13 +2647,37 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   async callToolEnvelope(
     name: string,
     rawArgs: unknown = {},
-  ): Promise<{ ok: true; data: unknown } | { ok: false; error: { tool: string; message: string } }> {
+  ): Promise<
+    | { ok: true; data: unknown }
+    | { ok: false; error: { tool: string; message: string; origin: "tool" } }
+  > {
     try {
       const result = await this.callTool(name, rawArgs);
       return { ok: true, data: simplifyAgentWebToolResult(name, result) };
     } catch (error) {
       const message = error instanceof Error && error.message ? error.message : String(error);
-      return { ok: false, error: { tool: name, message } };
+      const props = this.ctx?.props;
+      if (name === "build_project" || name === "deploy_project") {
+        console.error("[code-mode] project tool call failed", {
+          toolName: name,
+          origin: "tool",
+          workspaceId: props?.workspaceId,
+          threadId: props?.threadId,
+          error: message,
+        });
+        recordErrorEvent(this.env, {
+          event: "code_mode_project_tool_call_failed",
+          component: "CodeModeToolsBinding",
+          operation: name,
+          status: "error",
+          workspaceId: props?.workspaceId,
+          threadId: props?.threadId,
+          orgId: props?.orgId,
+          userId: props?.userId,
+          error,
+        });
+      }
+      return { ok: false, error: { tool: name, message, origin: "tool" } };
     }
   }
 

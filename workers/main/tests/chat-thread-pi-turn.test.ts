@@ -6666,6 +6666,21 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(sandbox.mkdir).toHaveBeenCalledTimes(2);
   });
 
+  it('retries a transient project filesystem network failure before starting a build', async () => {
+    vi.useFakeTimers();
+    const { fake, projectStub, sandbox } = createProjectToolFake();
+    projectStub.projectReadFile.mockRejectedValueOnce(new Error('Network connection lost.'));
+
+    const resultPromise = CodeModeToolsBinding.prototype.callTool.call(fake, 'build_project', {
+      project: 'Demo App',
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    await expect(resultPromise).resolves.toMatchObject({ success: true, project: 'Demo App' });
+    expect(projectStub.projectReadFile).toHaveBeenCalledTimes(4);
+    expect(sandbox.mkdir).toHaveBeenCalledTimes(1);
+  });
+
   it('surfaces the last diagnostic line as errorSummary on build failures', async () => {
     const { fake, sandbox } = createProjectToolFake();
     const buildOutput = [
@@ -9087,19 +9102,43 @@ describe('ChatThreadDO Pi turn handling', () => {
 
   it('callToolEnvelope returns tool failures as values so no exception crosses the RPC boundary', async () => {
     const fake = Object.create(CodeModeToolsBinding.prototype) as any;
+    fake.ctx = { props: { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1', userId: 'user1' } };
+    fake.env = {
+      OBSERVABILITY_EVENTS: { writeDataPoint: vi.fn() },
+      ERROR_ANALYTICS: { writeDataPoint: vi.fn() },
+    };
     fake.callTool = vi.fn(async (name: string) => {
-      if (name === 'boom') throw new Error('cron_expression is required');
+      if (name === 'deploy_project') throw new Error('Network connection lost.');
       return { created: true };
     });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-    await expect(fake.callToolEnvelope('list_apps', {})).resolves.toEqual({
-      ok: true,
-      data: { created: true },
-    });
-    await expect(fake.callToolEnvelope('boom', {})).resolves.toEqual({
-      ok: false,
-      error: { tool: 'boom', message: 'cron_expression is required' },
-    });
+    try {
+      await expect(fake.callToolEnvelope('list_apps', {})).resolves.toEqual({
+        ok: true,
+        data: { created: true },
+      });
+      await expect(fake.callToolEnvelope('deploy_project', { secret: 'do-not-log' })).resolves.toEqual({
+        ok: false,
+        error: { tool: 'deploy_project', message: 'Network connection lost.', origin: 'tool' },
+      });
+      expect(consoleError).toHaveBeenCalledWith(
+        '[code-mode] project tool call failed',
+        expect.objectContaining({
+          toolName: 'deploy_project',
+          origin: 'tool',
+          workspaceId: 'workspace1',
+          threadId: 'thread1',
+          error: 'Network connection lost.',
+        }),
+      );
+      expect(fake.env.OBSERVABILITY_EVENTS.writeDataPoint).toHaveBeenCalledTimes(1);
+      expect(fake.env.ERROR_ANALYTICS.writeDataPoint).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(consoleError.mock.calls)).not.toContain('do-not-log');
+      expect(JSON.stringify(fake.env.OBSERVABILITY_EVENTS.writeDataPoint.mock.calls)).not.toContain('do-not-log');
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
   it('returns compact, provider-agnostic WebSearch and WebFetch values to js_exec', async () => {
