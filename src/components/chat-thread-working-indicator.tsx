@@ -25,7 +25,12 @@ export function ChatThreadWorkingIndicator({
   }, [startedAt]);
 
   return (
-    <div className="flex items-center gap-3 py-2 text-muted-foreground">
+    // translate="no": the elapsed-time text churns every second, and browser
+    // translation re-parenting those text nodes breaks React DOM removal.
+    <div
+      translate="no"
+      className="flex items-center gap-3 py-2 text-muted-foreground"
+    >
       <CamelLoader size={24} ariaLabel="Agent is working" />
       {startedAt !== null && displayNow !== null && (
         <span className="text-sm tabular-nums">

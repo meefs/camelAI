@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useMemo, useRef } from "react";
 import type { CSSProperties, Dispatch, RefObject, SetStateAction } from "react";
 import type { AtMentionEntity, LlmModel, LlmProvider, Message } from "@/types";
 import { ChatErrorNotice } from "@/components/chat-error-notice";
@@ -14,6 +14,7 @@ import {
 import { TurnSummaryBar } from "@/components/turn-summary-bar";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { ChatApiErrorPresentation } from "@/lib/chat-api-errors";
+import { useHydratedTimeZone } from "@/lib/hydration-safe-datetime";
 import {
   buildFinalOutputMessageView,
   buildTraceMessageView,
@@ -113,14 +114,8 @@ export const ChatMessagesView = memo(function ChatMessagesView({
   messagesEndRef,
   mentionSlugMap,
 }: ChatMessagesViewProps) {
-  const [messageTimeZone, setMessageTimeZone] = useState<string | undefined>(
-    "UTC",
-  );
+  const messageTimeZone = useHydratedTimeZone();
   const messageGroupCacheRef = useRef<Map<string, MessageGroup>>(new Map());
-
-  useEffect(() => {
-    setMessageTimeZone(undefined);
-  }, []);
 
   const messageGroups = useMemo(() => {
     const groups: MessageGroup[] = [];
@@ -462,6 +457,12 @@ export const ChatMessagesView = memo(function ChatMessagesView({
             key={messageGroup.key}
             style={MESSAGE_LAYOUT_CONTAINMENT_STYLE}
             className={messageGroup.isAssistantTurn ? "group/turn" : undefined}
+            // Streaming turns churn text nodes on every chunk; keep browser
+            // translation (which re-parents React-owned text nodes) away from
+            // them until the turn settles.
+            translate={
+              isActiveTurn || isDeferredCurrentTurnChunk ? "no" : undefined
+            }
           >
             {messageGroup.messages.map((msg) => renderMessage(msg))}
           </div>

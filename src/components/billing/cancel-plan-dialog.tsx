@@ -11,6 +11,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { formatDate } from "@/lib/hydration-safe-datetime";
 
 interface CancelPlanDialogProps {
   open: boolean;
@@ -18,10 +19,6 @@ interface CancelPlanDialogProps {
   planLabel: string;
   periodEndLabel: string | null;
 }
-
-const dateFormatter = new Intl.DateTimeFormat("en-US", {
-  dateStyle: "medium",
-});
 
 export function CancelPlanDialog({
   open,
@@ -52,9 +49,7 @@ export function CancelPlanDialog({
       revalidator.revalidate();
       toast.success(
         fetcher.data?.cancellationDateMs
-          ? `Plan cancels ${dateFormatter.format(
-              new Date(fetcher.data.cancellationDateMs),
-            )}.`
+          ? `Plan cancels ${formatDate(fetcher.data.cancellationDateMs)}.`
           : "Plan cancellation is scheduled.",
       );
     }

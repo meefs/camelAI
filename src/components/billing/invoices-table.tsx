@@ -7,6 +7,10 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  formatDate,
+  useHydratedTimeZone,
+} from "@/lib/hydration-safe-datetime";
 
 export interface InvoiceRow {
   id: string;
@@ -21,10 +25,6 @@ interface InvoicesTableProps {
   invoices: InvoiceRow[];
 }
 
-const dateFormatter = new Intl.DateTimeFormat("en-US", {
-  dateStyle: "medium",
-});
-
 function formatStatus(status: string): string {
   if (!status) return "";
   return status.charAt(0).toUpperCase() + status.slice(1);
@@ -38,6 +38,8 @@ function formatAmount(amountCents: number, currency: string): string {
 }
 
 export function InvoicesTable({ invoices }: InvoicesTableProps) {
+  const timeZone = useHydratedTimeZone();
+
   if (invoices.length === 0) {
     return (
       <p className="text-sm text-muted-foreground">No invoices yet.</p>
@@ -58,7 +60,7 @@ export function InvoicesTable({ invoices }: InvoicesTableProps) {
         {invoices.map((invoice) => (
           <TableRow key={invoice.id}>
             <TableCell>
-              {dateFormatter.format(new Date(invoice.createdAtMs))}
+              {formatDate(invoice.createdAtMs, timeZone)}
             </TableCell>
             <TableCell>
               {formatAmount(invoice.totalCents, invoice.currency)}

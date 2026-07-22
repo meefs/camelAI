@@ -34,6 +34,7 @@ import {
   type AutomationRunSummary,
   type RunsLoadingState,
 } from "@/lib/automations-shared";
+import { HYDRATION_SAFE_LOCALE } from "@/lib/hydration-safe-datetime";
 import { cn } from "@/lib/utils";
 
 const TYPE_COPY = {
@@ -43,11 +44,14 @@ const TYPE_COPY = {
     "A workflow is deterministic JavaScript that runs on a schedule. It executes exactly the same way every time. Good for retries, exports, and integrations.",
 } as const;
 
-const RELATIVE_TIME_FORMATTER = new Intl.RelativeTimeFormat(undefined, {
-  numeric: "auto",
-});
+const RELATIVE_TIME_FORMATTER = new Intl.RelativeTimeFormat(
+  HYDRATION_SAFE_LOCALE,
+  {
+    numeric: "auto",
+  },
+);
 
-const ABSOLUTE_TIME_FORMATTER = new Intl.DateTimeFormat(undefined, {
+const ABSOLUTE_TIME_FORMATTER = new Intl.DateTimeFormat(HYDRATION_SAFE_LOCALE, {
   month: "short",
   day: "numeric",
   hour: "numeric",

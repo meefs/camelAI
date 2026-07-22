@@ -89,6 +89,7 @@ import { CamelCodeWelcomeDialog } from "@/components/camel-code-welcome-dialog";
 import { ModelFallbackBanner } from "@/components/model-fallback-banner";
 import { ChatErrorNotice } from "@/components/chat-error-notice";
 import { ChatMessagesView } from "@/components/chat-messages-view";
+import { ChatTranscriptErrorBoundary } from "@/components/chat-transcript-error-boundary";
 import { ShareStatusButton } from "@/components/chat-share-status-button";
 import {
   isImageFile,
@@ -4306,33 +4307,35 @@ export default function Chat({
           ref={messageColumnRef}
           className="max-w-3xl mx-auto w-full px-4 md:px-6 pt-2 pb-6 flex flex-col"
         >
-          <ChatMessagesView
-            visibleMessages={visibleMessages}
-            copyMessage={copyMessage}
-            copiedMessageId={copiedMessageId}
-            forkMessage={readOnly ? undefined : forkMessage}
-            forkingMessageId={forkingMessageId}
-            runningStartedAt={runningStartedAt}
-            activeTurnActionMessageId={activeAssistantMessageId}
-            isAssistantTurnActive={assistantTurnActive}
-            completedTurns={completedTurns}
-            freshlyCompletedTurnId={freshlyCompletedTurnId}
-            onFreshlyCompletedTurnAnimationScheduled={
-              handleFreshlyCompletedTurnAnimationScheduled
-            }
-            skillSheetsByToolId={skillSheetsByToolId}
-            error={error}
-            setError={setError}
-            llmProvider={llmProvider}
-            threadModel={selectedThreadModel}
-            isCompacting={isCompacting}
-            compactingPriorMessageId={compactingPriorMessageId}
-            isLoadingMessages={isLoadingMessages}
-            deferRendering={!hasHydratedChatTranscript}
-            showGlobalAssistantIndicator={showGlobalAssistantIndicator}
-            messagesEndRef={messagesEndRef}
-            mentionSlugMap={mentionSlugMap}
-          />
+          <ChatTranscriptErrorBoundary>
+            <ChatMessagesView
+              visibleMessages={visibleMessages}
+              copyMessage={copyMessage}
+              copiedMessageId={copiedMessageId}
+              forkMessage={readOnly ? undefined : forkMessage}
+              forkingMessageId={forkingMessageId}
+              runningStartedAt={runningStartedAt}
+              activeTurnActionMessageId={activeAssistantMessageId}
+              isAssistantTurnActive={assistantTurnActive}
+              completedTurns={completedTurns}
+              freshlyCompletedTurnId={freshlyCompletedTurnId}
+              onFreshlyCompletedTurnAnimationScheduled={
+                handleFreshlyCompletedTurnAnimationScheduled
+              }
+              skillSheetsByToolId={skillSheetsByToolId}
+              error={error}
+              setError={setError}
+              llmProvider={llmProvider}
+              threadModel={selectedThreadModel}
+              isCompacting={isCompacting}
+              compactingPriorMessageId={compactingPriorMessageId}
+              isLoadingMessages={isLoadingMessages}
+              deferRendering={!hasHydratedChatTranscript}
+              showGlobalAssistantIndicator={showGlobalAssistantIndicator}
+              messagesEndRef={messagesEndRef}
+              mentionSlugMap={mentionSlugMap}
+            />
+          </ChatTranscriptErrorBoundary>
         </div>
       </div>
 

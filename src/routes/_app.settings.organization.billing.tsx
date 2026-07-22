@@ -48,10 +48,11 @@ import {
   type InvoiceRow,
 } from "@/components/billing/invoices-table";
 import { CancelPlanDialog } from "@/components/billing/cancel-plan-dialog";
-
-const dateFormatter = new Intl.DateTimeFormat("en-US", {
-  dateStyle: "medium",
-});
+import {
+  formatDate,
+  formatInteger,
+  useHydratedTimeZone,
+} from "@/lib/hydration-safe-datetime";
 
 const EXISTING_STRIPE_SUBSCRIPTION_STATUSES = new Set([
   "active",
@@ -565,6 +566,7 @@ export default function BillingPage() {
   );
   const [cancelOpen, setCancelOpen] = useState(false);
   const cancelledToastShownRef = useRef(false);
+  const timeZone = useHydratedTimeZone();
 
   const isEnterprise = overview.billing_status === "enterprise";
   const plan: BillingPlan = normalizeBillingPlan(
@@ -574,10 +576,9 @@ export default function BillingPage() {
   const planLimits = BILLING_PLAN_LIMITS[plan];
   const planHeading =
     plan === "team"
-      ? `${planLimits.label} plan - ${normalizeSeatCount(
-          "team",
-          overview.billing_seat_count,
-        ).toLocaleString()} seats`
+      ? `${planLimits.label} plan - ${formatInteger(
+          normalizeSeatCount("team", overview.billing_seat_count),
+        )} seats`
       : `${planLimits.label} plan`;
 
   const subscriptionStatus = overview.billing_subscription_status;
@@ -588,10 +589,10 @@ export default function BillingPage() {
       subscriptionStatus === "past_due");
 
   const renewalLabel = subscription?.current_period_end_ms
-    ? dateFormatter.format(new Date(subscription.current_period_end_ms))
+    ? formatDate(subscription.current_period_end_ms, timeZone)
     : null;
   const cancellationLabel = subscription?.cancellation_date_ms
-    ? dateFormatter.format(new Date(subscription.cancellation_date_ms))
+    ? formatDate(subscription.cancellation_date_ms, timeZone)
     : null;
   const isCanceling = subscription?.is_canceling ?? false;
 

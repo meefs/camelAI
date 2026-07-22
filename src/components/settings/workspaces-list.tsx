@@ -31,6 +31,10 @@ import {
   useSwitchWorkspace,
 } from "@/hooks/use-auth-actions"
 import { getContrastTextColor } from "@/lib/avatar"
+import {
+  formatDate,
+  useHydratedTimeZone,
+} from "@/lib/hydration-safe-datetime"
 
 type ComputeTier = "standard" | "pro" | "enterprise"
 
@@ -56,10 +60,6 @@ interface WorkspacesListProps {
   orgWorkspaceCount?: number
 }
 
-function formatDate(value: number) {
-  return new Date(value).toLocaleDateString()
-}
-
 const computeLabels: Record<ComputeTier, string> = {
   standard: "Standard",
   pro: "Pro",
@@ -74,6 +74,7 @@ export function WorkspacesList({
 }: WorkspacesListProps) {
   const { switchWorkspace } = useSwitchWorkspace()
   const fetcher = useFetcher<{ success?: boolean; error?: string }>()
+  const timeZone = useHydratedTimeZone()
   const [createOpen, setCreateOpen] = useState(false)
   const [archiveTarget, setArchiveTarget] = useState<WorkspaceSummary | null>(null)
   const pendingArchiveRef = useRef<string | null>(null)
@@ -241,7 +242,7 @@ export function WorkspacesList({
                   {workspace.published_apps} apps
                 </TableCell>
                 <TableCell className="text-muted-foreground text-sm">
-                  {formatDate(workspace.created_at)}
+                  {formatDate(workspace.created_at, timeZone)}
                 </TableCell>
                 <TableCell>
                   <DropdownMenu>
@@ -333,7 +334,7 @@ export function WorkspacesList({
               </div>
             </CardHeader>
             <CardContent className="text-sm text-muted-foreground">
-              Created {formatDate(workspace.created_at)}
+              Created {formatDate(workspace.created_at, timeZone)}
             </CardContent>
           </Card>
         ))}

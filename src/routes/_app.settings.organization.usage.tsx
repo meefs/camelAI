@@ -28,6 +28,12 @@ import {
   formatTopUpCreditPacks,
 } from "@/lib/billing-credit-packs";
 import { BYOK_PROVIDERS } from "@/lib/byok-providers";
+import {
+  formatDate,
+  formatDateTime,
+  formatInteger,
+  useHydratedTimeZone,
+} from "@/lib/hydration-safe-datetime";
 import { buildPublicLlmProviderConfig } from "@/lib/llm-provider-config";
 import { getSelfhostAiProviderPublicConfig } from "@/lib/selfhost-ai-provider";
 import { isSelfhostRuntime } from "@/lib/selfhost-runtime";
@@ -59,15 +65,6 @@ interface UsageLogEntry {
   duration_ms: number;
   created_at_ms: number;
 }
-
-const dateFormatter = new Intl.DateTimeFormat("en-US", {
-  dateStyle: "medium",
-  timeStyle: "short",
-});
-
-const renewalDateFormatter = new Intl.DateTimeFormat("en-US", {
-  dateStyle: "medium",
-});
 
 export function meta() {
   return [
@@ -197,6 +194,7 @@ export default function OrganizationUsagePage() {
   } = useLoaderData<typeof loader>();
 
   const topUpFetcher = useFetcher();
+  const timeZone = useHydratedTimeZone();
   const [topUpOpen, setTopUpOpen] = useState(false);
   const [searchParams, setSearchParams] = useSearchParams();
   const topUpSubmitting = topUpFetcher.state !== "idle";
@@ -238,7 +236,7 @@ export default function OrganizationUsagePage() {
     totalLimitCents > 0 ? Math.min(100, (usageCents / totalLimitCents) * 100) : 0;
 
   const renewalLabel = overview.billing_trial_ends_at
-    ? renewalDateFormatter.format(new Date(overview.billing_trial_ends_at))
+    ? formatDate(overview.billing_trial_ends_at, timeZone)
     : null;
 
   const topUpUnavailable =
@@ -397,16 +395,16 @@ export default function OrganizationUsagePage() {
                         .replace(/-\d{8}$/, "")}
                     </TableCell>
                     <TableCell className="text-xs text-muted-foreground">
-                      {entry.input_tokens.toLocaleString()}
+                      {formatInteger(entry.input_tokens)}
                     </TableCell>
                     <TableCell className="text-xs text-muted-foreground">
-                      {entry.output_tokens.toLocaleString()}
+                      {formatInteger(entry.output_tokens)}
                     </TableCell>
                     <TableCell className="font-mono text-xs">
                       {formatCreditsFromUsd(entry.cost_usd)}
                     </TableCell>
                     <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
-                      {dateFormatter.format(new Date(entry.created_at_ms))}
+                      {formatDateTime(entry.created_at_ms, timeZone)}
                     </TableCell>
                   </TableRow>
                 ))}

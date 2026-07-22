@@ -39,6 +39,10 @@ import {
 } from "@/components/ui/card"
 import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 import {
+  formatDate,
+  useHydratedTimeZone,
+} from "@/lib/hydration-safe-datetime"
+import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
@@ -91,10 +95,6 @@ interface TeamTableProps {
   teamInviteBillingContext?: TeamInviteBillingContext | null
 }
 
-function formatDate(value: number) {
-  return new Date(value).toLocaleDateString()
-}
-
 export function TeamTable({
   orgId,
   currentUserId,
@@ -109,6 +109,7 @@ export function TeamTable({
 }: TeamTableProps) {
   const { logout } = useLogout()
   const fetcher = useFetcher<{ success?: boolean; error?: string }>()
+  const timeZone = useHydratedTimeZone()
   const [inviteOpen, setInviteOpen] = useState(false)
   const [upgradeOpen, setUpgradeOpen] = useState(false)
   const [editingWorkspaceAccess, setEditingWorkspaceAccess] = useState(false)
@@ -369,7 +370,7 @@ export function TeamTable({
                           Active
                         </Badge>
                         <p className="text-xs text-muted-foreground">
-                          Joined {formatDate(member.joined_at)}
+                          Joined {formatDate(member.joined_at, timeZone)}
                         </p>
                       </div>
                     </TableCell>
@@ -457,7 +458,7 @@ export function TeamTable({
                         Invited
                       </Badge>
                       <p className="text-xs text-muted-foreground">
-                        Sent {formatDate(invitation.created_at)}
+                        Sent {formatDate(invitation.created_at, timeZone)}
                       </p>
                     </div>
                   </TableCell>
@@ -573,7 +574,7 @@ export function TeamTable({
                     <Badge variant="secondary">Active</Badge>
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    Joined {formatDate(member.joined_at)}
+                    Joined {formatDate(member.joined_at, timeZone)}
                   </p>
                 </CardHeader>
                 <CardContent className="space-y-4">
@@ -647,7 +648,7 @@ export function TeamTable({
               </CardHeader>
               <CardContent className="space-y-4 text-sm">
                 <span className="text-muted-foreground">
-                  Sent {formatDate(invitation.created_at)}
+                  Sent {formatDate(invitation.created_at, timeZone)}
                 </span>
                 <div>
                   <p className="text-xs font-medium text-muted-foreground mb-2">

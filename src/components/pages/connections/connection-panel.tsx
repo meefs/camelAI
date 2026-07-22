@@ -21,6 +21,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { IntegrationIcon, hasIntegrationIcon, resolveLogoType } from "@/lib/integration-icons";
 import { generateDefaultAvatar, getContrastTextColor } from "@/lib/avatar";
+import { HYDRATION_SAFE_LOCALE } from "@/lib/hydration-safe-datetime";
 import { buildTelegramDeepLink, TELEGRAM_SETUP_TTL_SECONDS } from "@/lib/telegram-channel";
 import {
   TYPE_COPY,
@@ -57,7 +58,7 @@ interface ConnectionPanelProps extends ConnectionActionHandlers {
   onNewChat: (item: PanelItem, mentionSlug: string) => void;
 }
 
-const ABSOLUTE_TIME_FORMATTER = new Intl.DateTimeFormat(undefined, {
+const ABSOLUTE_TIME_FORMATTER = new Intl.DateTimeFormat(HYDRATION_SAFE_LOCALE, {
   month: "short",
   day: "numeric",
   year: "numeric",

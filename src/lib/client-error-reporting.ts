@@ -317,17 +317,19 @@ function isAutoReloadRecoverable(error: {
   message: string;
   stack?: string;
 }): boolean {
+  // Hydration mismatches (React #418, "hydration failed") are intentionally
+  // absent: React already recovers by client-rendering the tree, so a forced
+  // reload only discards that recovery and re-runs every loader. Auto-reload
+  // is reserved for asset-load failures, where a reload genuinely fixes the
+  // page (deploy version skew, flaky networks).
   const text = `${error.name}\n${error.message}\n${error.stack ?? ''}`.toLowerCase();
   return [
     'chunkloaderror',
-    'hydration failed',
     'loading chunk',
     'failed to fetch dynamically imported module',
     'error loading dynamically imported module',
     'importing a module script failed',
-    'minified react error #418',
     'module script load failed',
-    'react error #418',
     'unable to preload css',
     'loading css chunk',
   ].some((needle) => text.includes(needle));

@@ -35,6 +35,10 @@ import {
 } from "@/hooks/use-auth-actions"
 import { CreateOrgDialog } from "@/components/settings/create-org-dialog"
 import { BILLING_PLAN_LIMITS } from "@/lib/billing-plans"
+import {
+  formatDate,
+  useHydratedTimeZone,
+} from "@/lib/hydration-safe-datetime"
 import type { BillingPlan, OrgRole } from "@/types"
 
 interface OrgMembershipSummary {
@@ -51,10 +55,6 @@ interface OrgMembershipsListProps {
   orgs: OrgMembershipSummary[]
 }
 
-function formatDate(value: number) {
-  return new Date(value).toLocaleDateString()
-}
-
 function billingPlanBadgeVariant(
   plan: BillingPlan,
 ): "default" | "secondary" | "outline" {
@@ -67,6 +67,7 @@ export function OrgMembershipsList({
   orgs,
 }: OrgMembershipsListProps) {
   const { currentOrg } = useAuthData()
+  const timeZone = useHydratedTimeZone()
   const { switchOrg } = useSwitchOrg()
   const fetcher = useFetcher<{ success?: boolean; error?: string }>()
   const [createOpen, setCreateOpen] = useState(false)
@@ -149,7 +150,7 @@ export function OrgMembershipsList({
                   {org.member_count} members / {org.workspace_count} workspaces
                 </TableCell>
                 <TableCell className="text-muted-foreground text-sm">
-                  {formatDate(org.joined_at)}
+                  {formatDate(org.joined_at, timeZone)}
                 </TableCell>
                 <TableCell>
                   <DropdownMenu>
@@ -203,7 +204,7 @@ export function OrgMembershipsList({
             </CardHeader>
             <CardContent className="flex items-center justify-between text-sm">
               <span className="text-muted-foreground">
-                Joined {formatDate(org.joined_at)}
+                Joined {formatDate(org.joined_at, timeZone)}
               </span>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
