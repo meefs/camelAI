@@ -32,10 +32,19 @@ import { createPiSummaryMessage } from "./pi-compaction";
 import { buildWorkspaceScopedR2Key } from "../../../../src/lib/workspace-r2-paths";
 import type { ChatContextState } from "./types";
 
+export type PiCoreImageHydration = "provider" | "render";
+
+export interface PiCoreRevision {
+  generation: number;
+  count: number;
+}
+
 export interface PiCoreMessageStoreDeps {
   sql(): SqlStorage;
   r2(): R2Bucket;
   chatContext(): ChatContextState | null;
+  /** Privacy-safe allocation counters used by focused tests and diagnostics. */
+  recordReadOperation?(operation: "payload_row_parsed" | "r2_image_hydrated"): void;
 }
 
 export class PiCoreMessageStore {
@@ -56,6 +65,20 @@ export class PiCoreMessageStore {
         first_kept_index INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       )`,
+    );
+    // A scalar preflight lets image-blind/render readers prove that nothing
+    // changed without selecting or parsing any payload rows. INSERT...SELECT
+    // initializes old databases from their existing durable history.
+    this.deps.sql().exec(
+      `CREATE TABLE IF NOT EXISTS pi_core_state (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        generation INTEGER NOT NULL,
+        row_count INTEGER NOT NULL
+      )`,
+    );
+    this.deps.sql().exec(
+      `INSERT OR IGNORE INTO pi_core_state (id, generation, row_count)
+       SELECT 1, 1, COUNT(*) FROM pi_core_messages`,
     );
     // Staging buffer for the in-flight turn's not-yet-committed tail. It is a
     // discardable mirror of `agent.state.messages.slice(piMainBaselineIndex)`:
@@ -235,6 +258,48 @@ export class PiCoreMessageStore {
     return next;
   }
 
+  private renderSafeExternalImageMarker(ref: PiR2ImageReference): Record<string, string> {
+    const normalizedMime = normalizePiImageMimeType(ref.mimeType);
+    const mimeType = PI_PROVIDER_SUPPORTED_IMAGE_MIME_TYPES.has(normalizedMime)
+      ? normalizedMime
+      : "image/unknown";
+    // Deliberately omit metadata, hashes, and the storage key. The fixed-shape
+    // text is deterministic, bounded, and safe for legacy JSON render paths.
+    return {
+      type: "text",
+      text: `(persisted image omitted from render: ${mimeType}, ${Math.min(ref.size, 1_000_000_000)} base64 chars)`,
+    };
+  }
+
+  renderPiStoredImageReferences(value: unknown): unknown {
+    if (value === null || value === undefined || typeof value !== "object") return value;
+    if (Array.isArray(value)) {
+      return value.map((item) => this.renderPiStoredImageReferences(item));
+    }
+    const record = value as Record<string, unknown>;
+    if (record.type === "image") {
+      const metadata = record.metadata && typeof record.metadata === "object"
+        ? record.metadata as Record<string, unknown>
+        : null;
+      const hasExternalReference = !!metadata?.[PI_R2_IMAGE_REF_METADATA_KEY];
+      if (hasExternalReference && typeof record.data === "string" && record.data.length === 0) {
+        const ref = this.readPiR2ImageReference(record) ?? {
+          key: "",
+          mimeType: typeof record.mimeType === "string" ? record.mimeType : "",
+          sha256: "",
+          size: 0,
+          storedAt: 0,
+        };
+        return this.renderSafeExternalImageMarker(ref);
+      }
+    }
+    const next: Record<string, unknown> = {};
+    for (const [key, nested] of Object.entries(record)) {
+      next[key] = this.renderPiStoredImageReferences(nested);
+    }
+    return next;
+  }
+
   async hydratePiStoredImages(value: unknown): Promise<unknown> {
     if (value === null || value === undefined || typeof value !== "object") return value;
     if (Array.isArray(value)) {
@@ -255,6 +320,7 @@ export class PiCoreMessageStore {
           });
         }
         if (data) {
+          this.deps.recordReadOperation?.("r2_image_hydrated");
           return {
             ...record,
             data,
@@ -307,7 +373,33 @@ export class PiCoreMessageStore {
     return { payload, stats };
   }
 
-  async loadPiCoreMessages(options: { includeUiMetadata?: boolean } = {}): Promise<AgentMessage[]> {
+  getPiCoreRevision(): PiCoreRevision {
+    this.ensurePiCoreTables();
+    const row = this.deps.sql()
+      .exec<{ generation: number; row_count: number }>(
+        "SELECT generation, row_count FROM pi_core_state WHERE id = 1",
+      )
+      .toArray()[0];
+    return {
+      generation: Math.max(0, Math.floor(Number(row?.generation) || 0)),
+      count: Math.max(0, Math.floor(Number(row?.row_count) || 0)),
+    };
+  }
+
+  markPiCoreChanged(rowCount: number): void {
+    this.ensurePiCoreTables();
+    this.deps.sql().exec(
+      `UPDATE pi_core_state
+       SET generation = generation + 1, row_count = ?
+       WHERE id = 1`,
+      Math.max(0, Math.floor(rowCount)),
+    );
+  }
+
+  async loadPiCoreMessages(options: {
+    includeUiMetadata?: boolean;
+    imageHydration?: PiCoreImageHydration;
+  } = {}): Promise<AgentMessage[]> {
     this.ensurePiCoreTables();
     const compaction = this.loadPiCoreCompaction();
     const firstKeptIndex = compaction?.firstKeptIndex ?? 0;
@@ -326,12 +418,15 @@ export class PiCoreMessageStore {
     const messages: AgentMessage[] = [];
     for (const row of rows) {
       try {
+        this.deps.recordReadOperation?.("payload_row_parsed");
         const parsed = JSON.parse(row.payload) as AgentMessage;
         if (parsed && typeof parsed === "object" && "role" in parsed) {
-          const hydrated = await this.hydratePiStoredImages(parsed);
+          const resolved = options.imageHydration === "render"
+            ? this.renderPiStoredImageReferences(parsed)
+            : await this.hydratePiStoredImages(parsed);
           messages.push(options.includeUiMetadata
-            ? sanitizePiProviderMessage(hydrated as AgentMessage)
-            : sanitizePiModelMessage(hydrated as AgentMessage));
+            ? sanitizePiProviderMessage(resolved as AgentMessage)
+            : sanitizePiModelMessage(resolved as AgentMessage));
         }
       } catch {
         // Skip corrupt rows rather than failing the whole thread.
@@ -347,6 +442,7 @@ export class PiCoreMessageStore {
   async appendPiCoreMessages(messages: AgentMessage[]): Promise<void> {
     if (messages.length === 0) return;
     this.ensurePiCoreTables();
+    const revisionBeforeAppend = this.getPiCoreRevision();
     const rows = this.deps.sql()
       .exec<{ next_idx: number }>(
         "SELECT COALESCE(MAX(idx) + 1, 0) AS next_idx FROM pi_core_messages",
@@ -363,12 +459,17 @@ export class PiCoreMessageStore {
         serialized.payload,
         now,
       );
+      // Keep the scalar preflight in lockstep before the next serialization
+      // await, so an eviction can never leave durable rows behind its revision.
+      this.markPiCoreChanged(revisionBeforeAppend.count + offset + 1);
     }
   }
 
   async appendPiCoreMessagesIfMissing(messages: AgentMessage[]): Promise<void> {
     if (messages.length === 0) return;
-    const existingMessages = await this.loadPiCoreMessages();
+    // Identity does not depend on provider image bytes. Keep external refs as
+    // bounded markers so dedup never downloads an entire historical image set.
+    const existingMessages = await this.loadPiCoreMessages({ imageHydration: "render" });
     const existingKeys = new Set(
       existingMessages.map((message) => piCoreMessageKey(message)),
     );
@@ -379,8 +480,6 @@ export class PiCoreMessageStore {
       return true;
     });
     await this.appendPiCoreMessages(missing);
-    if (missing.length === 0) {
-    }
   }
 
   loadPiCoreCompaction(): { summary: string; firstKeptIndex: number; updatedAt: number } | null {
@@ -408,10 +507,13 @@ export class PiCoreMessageStore {
       Math.max(0, Math.floor(firstKeptIndex)),
       Date.now(),
     );
+    this.markPiCoreChanged(this.getPiCoreRevision().count);
   }
 
   clearPiCoreCompaction(): void {
     this.ensurePiCoreTables();
+    const changed = this.loadPiCoreCompaction() !== null;
     this.deps.sql().exec("DELETE FROM pi_core_compaction");
+    if (changed) this.markPiCoreChanged(this.getPiCoreRevision().count);
   }
 }

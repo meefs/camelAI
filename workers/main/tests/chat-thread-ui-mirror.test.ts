@@ -30,6 +30,7 @@ function createHarness(options: {
   const persistRenderMessages = vi.fn(async (next: UIMessage[]) => {
     messages = next;
   });
+  let piRevision = { generation: 1, count: options.piMessages?.length ?? 0 };
   const getPiCoreParsedMessages = vi.fn(async () => options.piMessages ?? []);
   const recordChatThreadObservabilityEvent = vi.fn();
   const mirror = new ChatThreadUiMirror({
@@ -60,6 +61,7 @@ function createHarness(options: {
     readPiActiveTurn: () =>
       activeTurn ? { turnId: 'turn-1', openedAt: 1 } : null,
     activePiStreamTurnId: () => (activeStream ? 'turn-1' : null),
+    getPiCoreRevision: () => piRevision,
     getPiCoreParsedMessages,
     reloadAiChatMessagesOrdered: vi.fn(),
     topUpUiMessagesFromPiCore: vi.fn(async () => {}),
@@ -81,8 +83,35 @@ function createHarness(options: {
     setActiveStream(value: boolean) {
       activeStream = value;
     },
+    setPiRevision(value: { generation: number; count: number }) {
+      piRevision = value;
+    },
   };
 }
+
+describe('ChatThreadUiMirror top-up preflight', () => {
+  it('parses zero Pi payload rows on a settled no-op top-up', async () => {
+    const harness = createHarness({
+      piMessages: [{
+        id: 'pi-user-1',
+        thread_id: 'thread-1',
+        role: 'user',
+        content: 'hello',
+        created_at: 1,
+        forkEntryId: 'pi-user-1',
+      }],
+    });
+
+    // Simulate the revision/count pinned by a prior successful mirror pass.
+    harness.kvValues.set('uiMessagesPiCoreRevisionV1', '7:1');
+    harness.setPiRevision({ generation: 7, count: 1 });
+
+    await harness.mirror.topUpUiMessagesFromPiCore();
+
+    expect(harness.getPiCoreParsedMessages).not.toHaveBeenCalled();
+    expect(harness.persistRenderMessages).not.toHaveBeenCalled();
+  });
+});
 
 describe('ChatThreadUiMirror author attribution', () => {
   it('stores normalized author/source metadata while preserving raw skeleton text', () => {

@@ -10652,7 +10652,10 @@ describe('ChatThreadDO Pi turn handling', () => {
   it('loads compacted Pi history from the compaction tail instead of every row', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     const exec = vi.fn((sql: string, ...params: unknown[]) => {
-      if (sql.trimStart().startsWith('CREATE TABLE')) {
+      if (
+        sql.trimStart().startsWith('CREATE TABLE') ||
+        sql.includes('INSERT OR IGNORE INTO pi_core_state')
+      ) {
         return { toArray: () => [] };
       }
       if (sql.includes('FROM pi_core_compaction')) {

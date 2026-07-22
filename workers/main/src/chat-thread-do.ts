@@ -255,13 +255,17 @@ import {
 } from "./chat-thread/pi-turn-journal";
 
 // pi_core message persistence (PiCoreMessageStore).
-import { PiCoreMessageStore } from "./chat-thread/pi-core-store";
+import {
+  PiCoreMessageStore,
+  type PiCoreImageHydration,
+} from "./chat-thread/pi-core-store";
 
 // pi_core → ai-chat render-mirror machinery (ChatThreadUiMirror): the top-up
 // backfill, legacy time heal, user render skeleton, and wipe-and-rebuild resync.
 import {
   ChatThreadUiMirror,
   UI_MESSAGES_PI_CORE_HIGH_WATER_KEY,
+  UI_MESSAGES_PI_CORE_REVISION_KEY,
 } from "./chat-thread/ui-mirror";
 
 // Thread metadata generation (ChatThreadMetadata): per-user-message org
@@ -1586,6 +1590,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         createdAt,
         idx,
       );
+      this.piCoreStore.markPiCoreChanged(this.piCoreStore.getPiCoreRevision().count);
       return { ok: true, inserted: false, idx };
     }
 
@@ -1595,6 +1600,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       normalizedPayload,
       createdAt,
     );
+    this.piCoreStore.markPiCoreChanged(this.piCoreStore.getPiCoreRevision().count + 1);
     return { ok: true, inserted: true, idx };
   }
 
@@ -1948,7 +1954,10 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
 
     // The browser rebuilds live assistant/tool content from the replay buffer,
     // so only canonical persisted history is returned here.
-    const storedMessages = await this.loadPiCoreMessages({ includeUiMetadata: true });
+    const storedMessages = await this.loadPiCoreMessages({
+      includeUiMetadata: true,
+      imageHydration: "render",
+    });
     storedMessages.forEach((message, index) => {
       const record = message as unknown as Record<string, unknown>;
       if (record.role === "toolResult") {
@@ -1973,7 +1982,10 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   async getAdminExplorerSummary(input: {
     userMessageCap?: number;
   } = {}): Promise<AdminExplorerThreadSummary> {
-    const messages = await this.loadPiCoreMessages({ includeUiMetadata: true });
+    const messages = await this.loadPiCoreMessages({
+      includeUiMetadata: true,
+      imageHydration: "render",
+    });
     return summarizeAdminExplorerThread(messages, {
       userMessageCap: input.userMessageCap,
       sessionModelId: this.piSession?.state.model?.id,
@@ -2812,7 +2824,10 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     } as unknown as AgentMessage;
   }
 
-  private loadPiCoreMessages(options: { includeUiMetadata?: boolean } = {}): Promise<AgentMessage[]> {
+  private loadPiCoreMessages(options: {
+    includeUiMetadata?: boolean;
+    imageHydration?: PiCoreImageHydration;
+  } = {}): Promise<AgentMessage[]> {
     return this.piCoreStore.loadPiCoreMessages(options);
   }
 
@@ -2853,6 +2868,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         now,
       );
     }
+    this.piCoreStore.markPiCoreChanged(payloads.length);
     if (options.uiRender === "rebuild") {
       await this.rebuildUiMessagesFromPiCore();
     } else {
@@ -2860,6 +2876,11 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         this.chatContext?.threadId ?? "",
       );
       this.ctx.storage.kv.put(UI_MESSAGES_PI_CORE_HIGH_WATER_KEY, parsed.length);
+      const revision = this.piCoreStore.getPiCoreRevision();
+      this.ctx.storage.kv.put(
+        UI_MESSAGES_PI_CORE_REVISION_KEY,
+        `${revision.generation}:${revision.count}`,
+      );
     }
   }
 
@@ -2882,6 +2903,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       },
       readPiActiveTurn: () => this.readPiActiveTurn(),
       activePiStreamTurnId: () => this.activePiStreamTurnId,
+      getPiCoreRevision: () => this.piCoreStore.getPiCoreRevision(),
       getPiCoreParsedMessages: (threadId) => this.getPiCoreParsedMessages(threadId),
       reloadAiChatMessagesOrdered: () => this.reloadAiChatMessagesOrdered(),
       topUpUiMessagesFromPiCore: (options) => this.topUpUiMessagesFromPiCore(options),

@@ -24,6 +24,7 @@ import {
 } from "../../../../src/lib/pi-chunk-encoder";
 import type { ContentBlock, Message } from "../../../../src/types";
 import type { PiActiveTurnMarker, SyncKvStorage } from "./pi-turn-journal";
+import type { PiCoreRevision } from "./pi-core-store";
 import type { AgentEvalParsedMessage, ChatContextState } from "./types";
 
 // High-water mark for the pi_core → ai-chat render-history top-up backfill
@@ -34,6 +35,9 @@ import type { AgentEvalParsedMessage, ChatContextState } from "./types";
 // array-index-based render ids. Every pi_core rewrite invalidates the mark;
 // replacePiCoreMessages re-pins or rebuilds it per its uiRender option.
 export const UI_MESSAGES_PI_CORE_HIGH_WATER_KEY = "uiMessagesPiCoreHighWaterIdx";
+// Raw pi_core generation/count paired with the parsed high-water mark. Unlike
+// the parsed count this can be read without selecting or parsing payload rows.
+export const UI_MESSAGES_PI_CORE_REVISION_KEY = "uiMessagesPiCoreRevisionV1";
 // Last explicit created_at (ms) written by the backfill, persisted so successive
 // top-ups keep strictly increasing timestamps even across DO wakes.
 const UI_MESSAGES_PI_CORE_LAST_CREATED_AT_KEY = "uiMessagesPiCoreLastCreatedAtMs";
@@ -76,6 +80,7 @@ export interface ChatThreadUiMirrorDeps {
   // it was when these methods lived on ChatThreadDO itself.
   readPiActiveTurn(): PiActiveTurnMarker | null;
   activePiStreamTurnId(): string | null;
+  getPiCoreRevision(): PiCoreRevision;
   getPiCoreParsedMessages(threadId: string): Promise<AgentEvalParsedMessage[]>;
   reloadAiChatMessagesOrdered(): void;
   topUpUiMessagesFromPiCore(options?: { force?: boolean }): Promise<void>;
@@ -312,6 +317,7 @@ export class ChatThreadUiMirror {
   async rebuildUiMessagesFromPiCore(): Promise<void> {
     this.deps.sql().exec("DELETE FROM cf_ai_chat_agent_messages");
     this.deps.kv().delete(UI_MESSAGES_PI_CORE_HIGH_WATER_KEY);
+    this.deps.kv().delete(UI_MESSAGES_PI_CORE_REVISION_KEY);
     this.deps.kv().delete(UI_MESSAGES_PI_CORE_LAST_CREATED_AT_KEY);
     this.deps.setRenderMessages([]);
     // ai-chat's persistMessages skips upserts whose serialized form matches its
@@ -345,12 +351,23 @@ export class ChatThreadUiMirror {
     // explicit rebuild flows (admin resync, fork seeding).
     if (!options.force && this.deps.readPiActiveTurn()) return;
     const startedAt = Date.now();
+    const revision = this.deps.getPiCoreRevision();
+    const revisionToken = `${revision.generation}:${revision.count}`;
+    if (
+      !options.force &&
+      this.deps.kv().get<string>(UI_MESSAGES_PI_CORE_REVISION_KEY) === revisionToken
+    ) {
+      return;
+    }
     const threadId = this.deps.chatContext()?.threadId ?? "";
     const parsed = await this.deps.getPiCoreParsedMessages(threadId);
     const mark = this.deps.kv().get<number>(
       UI_MESSAGES_PI_CORE_HIGH_WATER_KEY,
     ) ?? 0;
-    if (parsed.length <= mark) return;
+    if (parsed.length <= mark) {
+      this.deps.kv().put(UI_MESSAGES_PI_CORE_REVISION_KEY, revisionToken);
+      return;
+    }
 
     const newParsed = parsed.slice(mark);
     let lastCreatedAtMs =
@@ -602,6 +619,7 @@ export class ChatThreadUiMirror {
       });
     }
     this.deps.kv().put(UI_MESSAGES_PI_CORE_HIGH_WATER_KEY, parsed.length);
+    this.deps.kv().put(UI_MESSAGES_PI_CORE_REVISION_KEY, revisionToken);
   }
 
   /**
