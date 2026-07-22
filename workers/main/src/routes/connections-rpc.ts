@@ -6,6 +6,7 @@
  */
 
 import type { RouteContext } from '../types.js';
+import { createRequestObservabilityContext } from '../observability.js';
 import {
   validateSandboxProxy,
   type SandboxProxyAuthEnv,
@@ -206,8 +207,13 @@ export async function handleAuthenticatedConnectionsRpc(
     return rpcError('Invalid JSON', 400);
   }
 
+  const requestContext: ConnectionsContext = {
+    ...auth,
+    requestId: auth.requestId ?? createRequestObservabilityContext(req).requestId,
+  };
+
   try {
-    return jsonResponse(await handleRpcAction(payload, env, auth));
+    return jsonResponse(await handleRpcAction(payload, env, requestContext));
   } catch (error) {
     const status = (error as { status?: unknown })?.status;
     const httpStatus = typeof status === 'number' && status >= 400 && status < 600 ? status : 500;

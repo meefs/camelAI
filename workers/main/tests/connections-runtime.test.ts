@@ -1239,6 +1239,67 @@ describe('connections runtime', () => {
     expect(JSON.stringify(point)).not.toContain('api.example.com');
   });
 
+  it('records safe provider and error diagnostics for failed invocations', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => (
+      new Response(JSON.stringify({ ok: false, error: 'sensitive-provider-detail' }))
+    )));
+    const observabilityWrite = vi.fn();
+    const errorWrite = vi.fn();
+    const records = [
+      integration({
+        id: 'slack_workspace',
+        integration_type: 'slack',
+        name: 'workspace',
+        category: 'communication',
+        credentials_encrypted: await encryptedCredentials({ access_token: 'xoxb-secret-token' }),
+      }),
+    ];
+    const env = envWith(records);
+    env.OBSERVABILITY_EVENTS = { writeDataPoint: observabilityWrite } as never;
+    env.ERROR_ANALYTICS = { writeDataPoint: errorWrite } as never;
+
+    await expect(invokeConnectionMethod(env, {
+      ...context,
+      threadId: 'thread_1',
+      requestId: 'request_1',
+    }, {
+      connection: 'slackWorkspace',
+      method: 'slackApi',
+      input: {
+        method: 'chat.postMessage',
+        params: { text: 'private-chat-content' },
+      },
+    })).rejects.toMatchObject({ status: 400 });
+
+    expect(observabilityWrite).toHaveBeenCalledTimes(1);
+    expect(errorWrite).toHaveBeenCalledTimes(1);
+    const point = observabilityWrite.mock.calls[0]![0] as {
+      blobs: string[];
+      doubles: number[];
+    };
+    expect(point.blobs[0]).toBe('connection_invocation');
+    expect(point.blobs[1]).toBe('error');
+    expect(point.blobs[3]).toBe('slackApi');
+    expect(point.blobs[4]).toBe('error');
+    expect(point.blobs[8]).toBe('thread_1');
+    expect(point.blobs[9]).toBe('ws_1');
+    expect(point.blobs[10]).toBe('org_1');
+    expect(point.blobs[11]).toBe('user_1');
+    expect(point.blobs[12]).toBe('request_1');
+    expect(point.blobs[13]).toBe('slack');
+    expect(point.blobs[15]).toBe('ConnectionRequestError');
+    expect(point.blobs[16]).toBe('Connection invocation failed');
+    expect(point.doubles[2]).toBe(400);
+
+    const serializedPoints = JSON.stringify({
+      observability: observabilityWrite.mock.calls,
+      errors: errorWrite.mock.calls,
+    });
+    expect(serializedPoints).not.toContain('xoxb-secret-token');
+    expect(serializedPoints).not.toContain('sensitive-provider-detail');
+    expect(serializedPoints).not.toContain('private-chat-content');
+  });
+
   it('performs a live Slack auth probe and records ready health', async () => {
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       expect(String(url)).toBe('https://slack.com/api/auth.test');

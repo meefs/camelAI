@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { handleConnectionsRpc } from '../src/routes/connections-rpc.js';
 import type { ConnectionsRuntimeEnv } from '../src/connections-runtime.js';
 import type { WorkspaceIntegrationRecord } from '../src/workspace.js';
@@ -56,6 +56,8 @@ function rpcRequest(body: unknown): Request {
       'x-chiridion-org-id': 'org_1',
       'x-chiridion-workspace-id': 'ws_1',
       'x-chiridion-user-id': 'user_1',
+      'x-chiridion-thread-id': 'thread_1',
+      'cf-ray': 'ray_1',
     },
     body: JSON.stringify(body),
   });
@@ -175,6 +177,42 @@ describe('connections RPC route', () => {
         strategy: 'http_configuration',
       },
     });
+  });
+
+  it('propagates available thread and request ids into invocation telemetry', async () => {
+    const records = [
+      integration({
+        id: 'resend_txn',
+        integration_type: 'resend',
+        name: 'txn',
+        category: 'communication',
+        auth_method: 'api_key',
+        config: '{}',
+      }),
+    ];
+    const env = envWith(records);
+    const observabilityWrite = vi.fn();
+    env.OBSERVABILITY_EVENTS = { writeDataPoint: observabilityWrite } as never;
+    env.ERROR_ANALYTICS = { writeDataPoint: vi.fn() } as never;
+    const req = rpcRequest({
+      action: 'invoke',
+      connection: 'resendTxn',
+      method: 'missingMethod',
+    });
+
+    const response = await handleConnectionsRpc({
+      req,
+      env: env as never,
+      ctx: {} as ExecutionContext,
+      url: new URL(req.url),
+      match: [] as unknown as RegExpMatchArray,
+    });
+
+    expect(response.status).toBe(404);
+    const point = observabilityWrite.mock.calls[0]![0] as { blobs: string[] };
+    expect(point.blobs[8]).toBe('thread_1');
+    expect(point.blobs[12]).toBe('ray_1');
+    expect(point.blobs[13]).toBe('resend');
   });
 
   it('rejects RPC requests without a valid sandbox proxy secret', async () => {

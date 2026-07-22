@@ -1697,11 +1697,11 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   }
 
   private get connectionsContext() {
-    const { workspaceId, orgId, userId } = this.ctx.props;
+    const { workspaceId, orgId, userId, threadId } = this.ctx.props;
     if (!workspaceId || !orgId) {
       throw new Error("Code mode tool binding is missing connection scope");
     }
-    return { workspaceId, orgId, userId };
+    return { workspaceId, orgId, userId, threadId };
   }
 
   private get piContainerTools(): PiContainerTools {

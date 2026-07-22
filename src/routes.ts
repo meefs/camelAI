@@ -11,6 +11,7 @@ export default [
     route("login", "routes/_auth.login.tsx"),
     route("signup", "routes/_auth.signup.tsx"),
   ]),
+  route("signup.", "routes/signup-dot.ts"),
   route("banned", "routes/banned.tsx"),
   route("dev/billing-paywall", "routes/dev.billing-paywall.tsx"),
   route("dev/chat-credit-states", "routes/dev.chat-credit-states.tsx"),

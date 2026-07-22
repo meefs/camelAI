@@ -3,14 +3,17 @@ import { isRouteErrorResponse, ServerRouter } from 'react-router';
 import { renderToReadableStream } from 'react-dom/server';
 import { isbot } from 'isbot';
 import type { CloudflareLoadContext } from './lib/cloudflare.server';
-import { recordErrorEvent } from '../workers/main/src/observability';
+import {
+  normalizePathForObservability,
+  recordErrorEvent,
+} from '../workers/main/src/observability';
 
 // Increase stream timeout for deferred data (default is 4950ms)
 // Container boot can take 10+ seconds on cold start
 export const streamTimeout = 60_000;
 
 type RouterErrorMap = Record<string, unknown>;
-const loggedErrors = new WeakSet<Error>();
+const loggedErrors = new WeakSet<object>();
 
 type NormalizedError = {
   name: string;
@@ -32,6 +35,14 @@ function unwrapRouteError(err: unknown): unknown {
     }
   }
   return err;
+}
+
+function wasSsrErrorAlreadyLogged(err: unknown): boolean {
+  if ((typeof err !== 'object' || err === null) && typeof err !== 'function') return false;
+  const key = err as object;
+  if (loggedErrors.has(key)) return true;
+  loggedErrors.add(key);
+  return false;
 }
 
 function normalizeError(err: unknown): NormalizedError {
@@ -75,6 +86,15 @@ function getErrorStatus(err: unknown): number | undefined {
   return err.status;
 }
 
+/**
+ * React Router represents both an unmatched URL and an intentional 404 loader
+ * response as a route error response. These are expected HTTP outcomes, not SSR
+ * application exceptions, and must not pollute ERROR_ANALYTICS.
+ */
+export function isExpectedSsrNotFound(err: unknown): boolean {
+  return isRouteErrorResponse(err) && err.status === 404;
+}
+
 function captureSsrError(
   context: AppLoadContext,
   input: {
@@ -93,7 +113,7 @@ function captureSsrError(
     status: input.routeId ?? 'error',
     route: input.routeId,
     method: input.request.method,
-    path: url.pathname,
+    path: normalizePathForObservability(url.pathname),
     statusCode: input.status,
     error: Object.assign(new Error(input.details.message), {
       name: input.details.name,
@@ -103,13 +123,10 @@ function captureSsrError(
 }
 
 export const handleError: HandleErrorFunction = (error, { request, context, params }) => {
-  if (request.signal.aborted) return;
+  if (request.signal.aborted || isExpectedSsrNotFound(error)) return;
 
   const unwrapped = unwrapRouteError(error);
-  if (unwrapped instanceof Error) {
-    if (loggedErrors.has(unwrapped)) return;
-    loggedErrors.add(unwrapped);
-  }
+  if (wasSsrErrorAlreadyLogged(unwrapped)) return;
 
   const details = normalizeError(unwrapped);
   console.error('[SSR handleError]', {
@@ -128,7 +145,7 @@ export const handleError: HandleErrorFunction = (error, { request, context, para
   });
 };
 
-function logRouteErrors(
+export function logRouteErrors(
   request: Request,
   routerContext: EntryContext,
   loadContext: AppLoadContext
@@ -137,7 +154,12 @@ function logRouteErrors(
   if (!errors) return;
 
   for (const [routeId, err] of Object.entries(errors)) {
-    const details = normalizeError(err);
+    if (isExpectedSsrNotFound(err)) continue;
+
+    const unwrapped = unwrapRouteError(err);
+    if (wasSsrErrorAlreadyLogged(unwrapped)) continue;
+
+    const details = normalizeError(unwrapped);
     console.error('[SSR route error]', {
       url: request.url,
       routeId,
@@ -173,19 +195,23 @@ export default async function handleRequest(
     {
       signal: request.signal,
       onError(error: unknown) {
-        // Log streaming render errors from inside the shell
-        const details = normalizeError(error);
-        console.error('[SSR stream error]', {
-          url: request.url,
-          name: details.name,
-          message: details.message,
-          stack: details.stack,
-        });
-        captureSsrError(loadContext, {
-          source: 'stream',
-          request,
-          details,
-        });
+        // Log streaming render errors from inside the shell. The same Error can
+        // also reach handleError; keep one analytics row per Error instance.
+        const unwrapped = unwrapRouteError(error);
+        if (!wasSsrErrorAlreadyLogged(unwrapped)) {
+          const details = normalizeError(unwrapped);
+          console.error('[SSR stream error]', {
+            url: request.url,
+            name: details.name,
+            message: details.message,
+            stack: details.stack,
+          });
+          captureSsrError(loadContext, {
+            source: 'stream',
+            request,
+            details,
+          });
+        }
         responseStatusCode = 500;
       },
     }

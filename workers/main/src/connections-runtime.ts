@@ -19,6 +19,7 @@ import {
   getHostedConnectionVerificationProbe,
 } from './connection-adapters.js';
 import {
+  recordErrorEvent,
   recordObservabilityEvent,
   type ObservabilityEnv,
 } from './observability.js';
@@ -53,6 +54,8 @@ export interface ConnectionsContext {
   orgId: string;
   workspaceId: string;
   userId?: string;
+  threadId?: string;
+  requestId?: string;
 }
 
 export interface ConnectionSummary {
@@ -1399,14 +1402,57 @@ export async function verifyConnection(
   }
 }
 
+type ConnectionInvocationDiagnostics = {
+  provider?: string;
+};
+
+function connectionInvocationStatusCode(error: unknown): number | null {
+  if (!error || typeof error !== 'object') return null;
+  const candidate = error as {
+    status?: unknown;
+    statusCode?: unknown;
+    response?: { status?: unknown };
+  };
+  for (const value of [candidate.status, candidate.statusCode, candidate.response?.status]) {
+    if (typeof value === 'number' && Number.isInteger(value) && value >= 100 && value <= 599) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function connectionInvocationDiagnosticError(error: unknown, statusCode: number | null): Error {
+  const sourceName = error instanceof Error ? error.name : '';
+  let name = 'ConnectionRuntimeError';
+  if (statusCode === 401 || statusCode === 403) {
+    name = 'ConnectionAuthError';
+  } else if (statusCode === 408 || statusCode === 504 || sourceName === 'AbortError') {
+    name = 'ConnectionTimeoutError';
+  } else if (statusCode !== null && statusCode >= 400 && statusCode < 500) {
+    name = 'ConnectionRequestError';
+  } else if (statusCode !== null && statusCode >= 500) {
+    name = 'ConnectionUpstreamError';
+  } else if (/^[A-Za-z][A-Za-z0-9]*Error$/.test(sourceName)) {
+    name = sourceName;
+  }
+
+  // Provider errors can echo query text or request payloads. Emit only a stable,
+  // aggregate-friendly class; the original error still propagates to the caller.
+  const diagnostic = new Error('Connection invocation failed');
+  diagnostic.name = name;
+  diagnostic.stack = '';
+  return diagnostic;
+}
+
 export async function invokeConnectionMethod(
   env: ConnectionsRuntimeEnv,
   context: ConnectionsContext,
   request: ConnectionInvokeRequest
 ): Promise<unknown> {
   const startedAt = Date.now();
+  const diagnostics: ConnectionInvocationDiagnostics = {};
   try {
-    const result = await invokeConnectionMethodInternal(env, context, request);
+    const result = await invokeConnectionMethodInternal(env, context, request, diagnostics);
     recordObservabilityEvent(env, {
       event: 'connection_invocation',
       component: 'connections-runtime',
@@ -1415,25 +1461,30 @@ export async function invokeConnectionMethod(
       workspaceId: context.workspaceId,
       orgId: context.orgId,
       userId: context.userId,
+      threadId: context.threadId,
+      requestId: context.requestId,
+      provider: diagnostics.provider,
       durationMs: Date.now() - startedAt,
       sampleIndex: context.workspaceId,
     });
     return result;
   } catch (error) {
-    recordObservabilityEvent(env, {
+    const statusCode = connectionInvocationStatusCode(error);
+    recordErrorEvent(env, {
       event: 'connection_invocation',
-      severity: 'warn',
       component: 'connections-runtime',
       operation: typeof request.method === 'string' ? request.method : 'unknown',
       status: 'error',
       workspaceId: context.workspaceId,
       orgId: context.orgId,
       userId: context.userId,
+      threadId: context.threadId,
+      requestId: context.requestId,
+      provider: diagnostics.provider,
       durationMs: Date.now() - startedAt,
-      statusCode: typeof (error as { status?: unknown })?.status === 'number'
-        ? (error as { status: number }).status
-        : null,
+      statusCode,
       sampleIndex: context.workspaceId,
+      error: connectionInvocationDiagnosticError(error, statusCode),
     });
     throw error;
   }
@@ -1442,7 +1493,8 @@ export async function invokeConnectionMethod(
 async function invokeConnectionMethodInternal(
   env: ConnectionsRuntimeEnv,
   context: ConnectionsContext,
-  request: ConnectionInvokeRequest
+  request: ConnectionInvokeRequest,
+  diagnostics: ConnectionInvocationDiagnostics,
 ): Promise<unknown> {
   const method = typeof request.method === 'string' ? request.method : '';
   if (!method.trim()) {
@@ -1450,6 +1502,7 @@ async function invokeConnectionMethodInternal(
   }
 
   const target = await findConnectionMethodEntry(env, context, request.connection);
+  diagnostics.provider = target.connection.type;
   if (target.error) {
     const authStatus = (target.error.data as { authStatus?: unknown } | undefined)?.authStatus;
     throw Object.assign(new Error(target.error.message), {
