@@ -46,8 +46,13 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  CloseChatGroupDialog,
+  readCloseGroupConfirmationSuppressed,
+} from "@/components/close-chat-group-dialog";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { SidebarTrigger } from "@/components/ui/sidebar";
@@ -79,6 +84,7 @@ interface ChatTabBarProps {
   groupName: string;
   groupAvatar: Avatar;
   groupPinnedAt: number | null;
+  groupMemberCount: number;
   openTabs: ChatTab[];
   closedTabs: ChatTab[];
   activeThreadId: string | null;
@@ -91,6 +97,7 @@ interface ChatTabBarProps {
   onReopenClosedTab: (threadId: string) => void;
   onRenameGroup: (next: { name: string; avatar?: Avatar }) => void;
   onTogglePin: () => void;
+  onCloseGroup: () => void;
   onMoveTabToGroup: (threadId: string, targetGroupId: string | "new") => void;
 }
 
@@ -134,6 +141,7 @@ export function ChatTabBar({
   groupName,
   groupAvatar,
   groupPinnedAt,
+  groupMemberCount,
   openTabs,
   closedTabs,
   activeThreadId,
@@ -146,6 +154,7 @@ export function ChatTabBar({
   onReopenClosedTab,
   onRenameGroup,
   onTogglePin,
+  onCloseGroup,
   onMoveTabToGroup,
 }: ChatTabBarProps) {
   const navigate = useNavigate();
@@ -156,6 +165,7 @@ export function ChatTabBar({
   });
   const { renamingThreadId, draftName, contextMenuResetVersion } = localState;
   const [isRenameGroupOpen, setIsRenameGroupOpen] = useState(false);
+  const [isCloseGroupConfirmOpen, setIsCloseGroupConfirmOpen] = useState(false);
   const [hasOpenedRenameGroupDialog, setHasOpenedRenameGroupDialog] =
     useState(false);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
@@ -542,6 +552,10 @@ export function ChatTabBar({
             <TooltipContent>Settings</TooltipContent>
           </Tooltip>
           <DropdownMenuContent align="end" className="w-56">
+            <DropdownMenuItem onSelect={onTogglePin}>
+              {groupPinnedAt !== null ? <PinOff /> : <Pin />}
+              {groupPinnedAt !== null ? "Unpin group" : "Pin group"}
+            </DropdownMenuItem>
             <DropdownMenuItem
               onSelect={() => {
                 setHasOpenedRenameGroupDialog(true);
@@ -551,9 +565,18 @@ export function ChatTabBar({
               <Pencil />
               Rename group
             </DropdownMenuItem>
-            <DropdownMenuItem onSelect={onTogglePin}>
-              {groupPinnedAt !== null ? <PinOff /> : <Pin />}
-              {groupPinnedAt !== null ? "Unpin group" : "Pin group"}
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              onSelect={() => {
+                if (readCloseGroupConfirmationSuppressed()) {
+                  onCloseGroup();
+                } else {
+                  setIsCloseGroupConfirmOpen(true);
+                }
+              }}
+            >
+              <X />
+              Close group
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -569,6 +592,13 @@ export function ChatTabBar({
           />
         </Suspense>
       ) : null}
+      <CloseChatGroupDialog
+        open={isCloseGroupConfirmOpen}
+        onOpenChange={setIsCloseGroupConfirmOpen}
+        groupName={groupName}
+        chatCount={groupMemberCount}
+        onConfirm={onCloseGroup}
+      />
       </div>
     </div>
   );

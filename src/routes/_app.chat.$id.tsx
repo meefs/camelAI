@@ -65,7 +65,10 @@ import Chat from "@/components/Chat";
 import { ChatTabBar } from "@/components/chat-tab-bar";
 import { ChatLoadingSkeleton } from "@/components/chat/chat-loading";
 import { NoWorkspacesError } from "@/components/no-workspaces-error";
-import { useChatGroups } from "@/hooks/use-chat-groups";
+import {
+  getCloseGroupRedirect,
+  useChatGroups,
+} from "@/hooks/use-chat-groups";
 import { useChatThreadSnapshots } from "@/hooks/use-chat-thread-snapshots";
 import type { TodoItem } from "@/components/floating-todo";
 import type {
@@ -1196,6 +1199,20 @@ export default function ChatPage() {
       revalidate: () => revalidator.revalidate(),
     });
   };
+  const closeGroup = async () => {
+    const group = liveActiveChatGroup;
+    if (!group) return;
+    const redirect = getCloseGroupRedirect(
+      liveChatGroups,
+      group.id,
+      group.id,
+    );
+    if (redirect) navigate(redirect, { replace: true });
+    await fetch(`/api/chat-groups/${encodeURIComponent(group.id)}`, {
+      method: "DELETE",
+    });
+    revalidator.revalidate();
+  };
 
   const reorderTabs = async (orderedThreadIds: string[]) => {
     const groupId = liveActiveChatGroup?.id ?? resolvedActiveGroupId;
@@ -1252,6 +1269,7 @@ export default function ChatPage() {
             groupName={liveActiveChatGroup.name}
             groupAvatar={liveActiveChatGroup.avatar}
             groupPinnedAt={liveActiveChatGroup.pinned_at}
+            groupMemberCount={liveActiveChatGroup.member_count}
             openTabs={openTabs}
             closedTabs={closedTabs}
             activeThreadId={displayThreadId}
@@ -1266,6 +1284,7 @@ export default function ChatPage() {
             onReopenClosedTab={reopenTab}
             onRenameGroup={renameGroup}
             onTogglePin={toggleGroupPin}
+            onCloseGroup={closeGroup}
             onMoveTabToGroup={moveTabToGroup}
           />
         ) : null}

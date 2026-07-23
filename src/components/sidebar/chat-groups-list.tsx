@@ -1,22 +1,22 @@
 "use client";
 
-import { useRef, useState, type ReactNode } from "react";
-import { X } from "lucide-react";
+import { lazy, Suspense, useRef, useState, type ReactNode } from "react";
+import { MoreHorizontal, Pencil, Pin, PinOff, X } from "lucide-react";
 import type { ChatGroupThreadSummary, ChatGroupView, ThreadStatus } from "@/types";
 import { ChatGroupAvatar } from "@/components/avatar/chat-group-avatar";
 import { CamelLoader } from "@/components/camel-loader/camel-loader";
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
-import { Checkbox } from "@/components/ui/checkbox";
+  CloseChatGroupDialog,
+  readCloseGroupConfirmationSuppressed,
+} from "@/components/close-chat-group-dialog";
 import { ChatGroupHoverCard } from "@/components/sidebar/chat-group-hover-card";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   HoverCard,
   HoverCardContent,
@@ -30,36 +30,15 @@ import {
   SidebarMenuSkeleton,
 } from "@/components/ui/sidebar";
 import { useFlipList } from "@/hooks/use-flip-list";
+import type { ChatGroupRenameInput } from "@/lib/chat-group-rename.client";
 import { cn } from "@/lib/utils";
 
 const THREAD_DRAG_MIME = "application/x-camelai-thread-id";
-export const CLOSE_CHAT_GROUP_CONFIRMATION_SUPPRESSED_KEY =
-  "camelai:close-chat-group-confirmation-suppressed:v1";
-
-function readCloseGroupConfirmationSuppressed() {
-  if (typeof window === "undefined") return false;
-  try {
-    return (
-      window.localStorage.getItem(
-        CLOSE_CHAT_GROUP_CONFIRMATION_SUPPRESSED_KEY,
-      ) === "true"
-    );
-  } catch {
-    return false;
-  }
-}
-
-function writeCloseGroupConfirmationSuppressed() {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(
-      CLOSE_CHAT_GROUP_CONFIRMATION_SUPPRESSED_KEY,
-      "true",
-    );
-  } catch {
-    // Closing should still succeed if the browser rejects local storage writes.
-  }
-}
+const LazyRenameChatGroupDialog = lazy(() =>
+  import("@/components/avatar/rename-chat-group-dialog").then((module) => ({
+    default: module.RenameChatGroupDialog,
+  })),
+);
 
 interface ChatGroupsListProps {
   groups: ChatGroupView[];
@@ -69,6 +48,12 @@ interface ChatGroupsListProps {
   emptyState?: ReactNode | null;
   onSelectGroup: (groupId: string) => void;
   onCloseGroup: (groupId: string) => void;
+  onTogglePinGroup: (group: ChatGroupView) => void;
+  onRenameGroup: (groupId: string, next: ChatGroupRenameInput) => void;
+  openHoverGroupId: string | null;
+  onOpenHoverGroupIdChange: (groupId: string | null) => void;
+  openMenuGroupId: string | null;
+  onOpenMenuGroupIdChange: (groupId: string | null) => void;
   onSelectThread?: (
     groupId: string,
     thread: ChatGroupThreadSummary,
@@ -169,18 +154,29 @@ export function ChatGroupsList({
   emptyState,
   onSelectGroup,
   onCloseGroup,
+  onTogglePinGroup,
+  onRenameGroup,
+  openHoverGroupId,
+  onOpenHoverGroupIdChange,
+  openMenuGroupId,
+  onOpenMenuGroupIdChange,
   onSelectThread,
   onMoveThreadToGroup,
 }: ChatGroupsListProps) {
-  const [suppressCloseConfirmation, setSuppressCloseConfirmation] = useState(
-    readCloseGroupConfirmationSuppressed,
-  );
   const [confirmGroup, setConfirmGroup] = useState<ChatGroupView | null>(null);
-  const [rememberSuppression, setRememberSuppression] = useState(false);
+  const [renameTarget, setRenameTarget] = useState<ChatGroupView | null>(null);
+  const [isRenameOpen, setIsRenameOpen] = useState(false);
   const [dragOverGroupId, setDragOverGroupId] = useState<string | null>(null);
-  const [openHoverGroupId, setOpenHoverGroupId] = useState<string | null>(null);
   const menuRef = useRef<HTMLUListElement | null>(null);
   useFlipList(menuRef, groups.map((group) => group.id).join("\n"));
+
+  const requestCloseGroup = (group: ChatGroupView) => {
+    if (readCloseGroupConfirmationSuppressed()) {
+      onCloseGroup(group.id);
+    } else {
+      setConfirmGroup(group);
+    }
+  };
 
   if (isLoading && groups.length === 0) {
     return (
@@ -206,9 +202,6 @@ export function ChatGroupsList({
     );
   }
 
-  const confirmChatCount = confirmGroup?.member_count ?? 0;
-  const confirmChatNoun = confirmChatCount === 1 ? "chat" : "chats";
-
   return (
     <>
       <SidebarMenu ref={menuRef}>
@@ -217,8 +210,12 @@ export function ChatGroupsList({
           return (
             <SidebarMenuItem key={group.id} data-flip-id={group.id}>
               <HoverCard
-                open={openHoverGroupId === group.id}
-                onOpenChange={(open) => setOpenHoverGroupId(open ? group.id : null)}
+                open={
+                  openHoverGroupId === group.id && openMenuGroupId === null
+                }
+                onOpenChange={(open) =>
+                  onOpenHoverGroupIdChange(open ? group.id : null)
+                }
                 openDelay={250}
                 closeDelay={150}
               >
@@ -229,7 +226,7 @@ export function ChatGroupsList({
                     isActive={isActive}
                     size="sm"
                     className={cn(
-                      "group/chat-group cursor-pointer gap-2 !pr-2 select-none group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:[&_*]:pointer-events-none group-data-[collapsible=icon]:[&_*]:cursor-pointer",
+                      "group/chat-group cursor-pointer gap-2 !pr-2 select-none group-hover/menu-item:bg-sidebar-accent group-hover/menu-item:text-sidebar-accent-foreground group-has-[[data-state=open]]/menu-item:bg-sidebar-accent group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:[&_*]:pointer-events-none group-data-[collapsible=icon]:[&_*]:cursor-pointer",
                       dragOverGroupId === group.id && "bg-sidebar-accent/50",
                       dragOverGroupId === group.id &&
                         "group-data-[collapsible=icon]:bg-sidebar-accent group-data-[collapsible=icon]:ring-2 group-data-[collapsible=icon]:ring-blue-500 group-data-[collapsible=icon]:ring-offset-1",
@@ -272,25 +269,74 @@ export function ChatGroupsList({
                   <ChatGroupHoverCard
                     group={group}
                     onSelectThread={async (thread) => {
-                      setOpenHoverGroupId(null);
+                      onOpenHoverGroupIdChange(null);
                       await onSelectThread?.(group.id, thread);
                     }}
                   />
                 </HoverCardContent>
               </HoverCard>
+              <span
+                aria-hidden
+                className="pointer-events-none absolute inset-y-0 right-0 w-12 rounded-r-md bg-sidebar-accent opacity-0 transition-opacity group-hover/menu-item:opacity-100 group-has-[[data-state=open]]/menu-item:opacity-100 group-data-[collapsible=icon]:hidden"
+              />
+              <span
+                aria-hidden
+                className="pointer-events-none absolute inset-y-0 right-12 w-2.5 bg-gradient-to-l from-sidebar-accent to-transparent opacity-0 transition-opacity group-hover/menu-item:opacity-100 group-has-[[data-state=open]]/menu-item:opacity-100 group-data-[collapsible=icon]:hidden"
+              />
+              <DropdownMenu
+                onOpenChange={(open) => {
+                  onOpenMenuGroupIdChange(open ? group.id : null);
+                  onOpenHoverGroupIdChange(null);
+                }}
+              >
+                <DropdownMenuTrigger asChild>
+                  <SidebarMenuAction
+                    type="button"
+                    aria-label={`Group options for ${group.name}`}
+                    className="right-6.5 opacity-0 transition-opacity group-hover/menu-item:opacity-100 group-has-[[data-state=open]]/menu-item:opacity-100 focus-visible:opacity-100"
+                  >
+                    <MoreHorizontal className="size-3" />
+                  </SidebarMenuAction>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent
+                  side="right"
+                  align="start"
+                  sideOffset={8}
+                  collisionPadding={8}
+                  className="w-56"
+                >
+                  <DropdownMenuItem
+                    onSelect={() => onTogglePinGroup(group)}
+                  >
+                    {group.pinned_at !== null ? <PinOff /> : <Pin />}
+                    {group.pinned_at !== null ? "Unpin group" : "Pin group"}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onSelect={() => {
+                      setRenameTarget(group);
+                      setIsRenameOpen(true);
+                    }}
+                  >
+                    <Pencil />
+                    Rename group
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    onSelect={() => requestCloseGroup(group)}
+                  >
+                    <X />
+                    Close group
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
               <SidebarMenuAction
                 type="button"
                 aria-label={`Close ${group.name}`}
-                className="opacity-0 group-hover/menu-item:opacity-100"
+                className="opacity-0 transition-opacity group-hover/menu-item:opacity-100 group-has-[[data-state=open]]/menu-item:opacity-100 focus-visible:opacity-100"
                 onClick={(event) => {
                   event.preventDefault();
                   event.stopPropagation();
-                  if (!suppressCloseConfirmation) {
-                    setRememberSuppression(false);
-                    setConfirmGroup(group);
-                  } else {
-                    onCloseGroup(group.id);
-                  }
+                  requestCloseGroup(group);
                 }}
               >
                 <X className="size-3" />
@@ -300,59 +346,29 @@ export function ChatGroupsList({
         })}
       </SidebarMenu>
 
-      <AlertDialog
+      <CloseChatGroupDialog
         open={confirmGroup !== null}
         onOpenChange={(open) => {
-          if (!open) {
-            setConfirmGroup(null);
-            setRememberSuppression(false);
-          }
+          if (!open) setConfirmGroup(null);
         }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>
-              Close "{confirmGroup?.name ?? "group"}"?
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              Its {confirmChatCount} {confirmChatNoun} will be removed from
-              this group. You can reopen any of them from Chat History.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <div className="flex items-center gap-2 pt-1">
-            <Checkbox
-              id="close-chat-group-confirmation-suppressed"
-              checked={rememberSuppression}
-              onCheckedChange={(checked) =>
-                setRememberSuppression(checked === true)
-              }
-            />
-            <label
-              htmlFor="close-chat-group-confirmation-suppressed"
-              className="text-sm leading-none text-muted-foreground"
-            >
-              Do not show again
-            </label>
-          </div>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              variant="destructive"
-              onClick={() => {
-                if (rememberSuppression) {
-                  setSuppressCloseConfirmation(true);
-                  writeCloseGroupConfirmationSuppressed();
-                }
-                if (confirmGroup) onCloseGroup(confirmGroup.id);
-                setConfirmGroup(null);
-                setRememberSuppression(false);
-              }}
-            >
-              Close group
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+        groupName={confirmGroup?.name ?? "group"}
+        chatCount={confirmGroup?.member_count ?? 0}
+        onConfirm={() => {
+          if (confirmGroup) onCloseGroup(confirmGroup.id);
+        }}
+      />
+      {renameTarget ? (
+        <Suspense fallback={null}>
+          <LazyRenameChatGroupDialog
+            key={renameTarget.id}
+            open={isRenameOpen}
+            onOpenChange={setIsRenameOpen}
+            initialName={renameTarget.name}
+            initialAvatar={renameTarget.avatar}
+            onSubmit={(next) => onRenameGroup(renameTarget.id, next)}
+          />
+        </Suspense>
+      ) : null}
     </>
   );
 }

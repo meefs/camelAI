@@ -74,7 +74,10 @@ import type {
   Thread,
   WorkerScriptWithCreator,
 } from "@/types";
-import { useChatGroups } from "@/hooks/use-chat-groups";
+import {
+  getCloseGroupRedirect,
+  useChatGroups,
+} from "@/hooks/use-chat-groups";
 import {
   createRequestObservabilityContext,
   normalizePathForObservability,
@@ -1158,6 +1161,20 @@ function ChatWelcomeContent({
       revalidate: refresh,
     });
   };
+  const closeGroup = async () => {
+    const group = liveActiveChatGroup;
+    if (!group) return;
+    const redirect = getCloseGroupRedirect(
+      liveChatGroups,
+      group.id,
+      group.id,
+    );
+    if (redirect) navigate(redirect, { replace: true });
+    await fetch(`/api/chat-groups/${encodeURIComponent(group.id)}`, {
+      method: "DELETE",
+    });
+    refresh();
+  };
   const reorderTabs = async (orderedThreadIds: string[]) => {
     const groupId = liveActiveChatGroup?.id ?? resolvedActiveGroupId;
     if (!groupId) return;
@@ -1194,6 +1211,7 @@ function ChatWelcomeContent({
           groupName={liveActiveChatGroup.name}
           groupAvatar={liveActiveChatGroup.avatar}
           groupPinnedAt={liveActiveChatGroup.pinned_at}
+          groupMemberCount={liveActiveChatGroup.member_count}
           openTabs={openTabs}
           closedTabs={closedTabs}
           activeThreadId={null}
@@ -1207,6 +1225,7 @@ function ChatWelcomeContent({
           onReopenClosedTab={reopenTab}
           onRenameGroup={renameGroup}
           onTogglePin={toggleGroupPin}
+          onCloseGroup={closeGroup}
           onMoveTabToGroup={moveTabToGroup}
         />
       ) : (

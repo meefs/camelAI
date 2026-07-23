@@ -16,6 +16,7 @@ import {
   getGroupLandingHref,
   useChatGroups,
 } from "@/hooks/use-chat-groups"
+import { useAuthData } from "@/hooks/use-auth-data"
 import { GetHelpDialog } from "@/components/get-help-dialog"
 import { ByokKeyDialog } from "@/components/onboarding/byok-key-dialog"
 import { ChatGroupsList } from "@/components/sidebar/chat-groups-list"
@@ -39,6 +40,11 @@ import {
   resolveOrgScopedByokApiKey,
   type OrgScopedByokCredential,
 } from "@/lib/byok-credential-state"
+import { saveChatGroupPinned } from "@/lib/chat-group-pin.client"
+import {
+  saveChatGroupRename,
+  type ChatGroupRenameInput,
+} from "@/lib/chat-group-rename.client"
 import { useBillingDialogPresence } from "@/hooks/use-billing-dialog-presence"
 
 type BillingAccessMode =
@@ -125,6 +131,8 @@ export function AppSidebar({
   const providerApiKey = resolveOrgScopedByokApiKey(providerCredential, orgId)
   const [awsRegion, setAwsRegion] = useState("us-east-1")
   const [providerError, setProviderError] = useState<string | null>(null)
+  const [openHoverGroupId, setOpenHoverGroupId] = useState<string | null>(null)
+  const [openMenuGroupId, setOpenMenuGroupId] = useState<string | null>(null)
   const creditPacksFetcher = useFetcher<CreditPacksResourceData>()
   const providerFetcher = useFetcher<{ success?: boolean; error?: string }>()
   const location = useLocation()
@@ -132,6 +140,7 @@ export function AppSidebar({
   const navigate = useNavigate()
   const revalidator = useRevalidator()
   const { setSidebarBillingDialogOpen } = useBillingDialogPresence()
+  const { currentWorkspace } = useAuthData()
   const { groups, activeGroupId, isLoading } = useChatGroups()
   const appLoaderData = useRouteLoaderData("routes/_app") as
     | AppSidebarLoaderData
@@ -258,6 +267,30 @@ export function AppSidebar({
     revalidator.revalidate()
   }
 
+  const handleTogglePinGroup = async (group: ChatGroupView) => {
+    const workspaceId = currentWorkspace?.id
+    if (!workspaceId) return
+    await saveChatGroupPinned({
+      groupId: group.id,
+      workspaceId,
+      pinned: group.pinned_at === null,
+      currentPinnedAt: group.pinned_at,
+      currentPinnedCount: groups.filter(
+        (entry) => entry.pinned_at !== null,
+      ).length,
+      revalidate: () => revalidator.revalidate(),
+    })
+  }
+
+  const handleRenameGroup = async (
+    groupId: string,
+    next: ChatGroupRenameInput,
+  ) => {
+    await saveChatGroupRename(groupId, next, {
+      revalidate: () => revalidator.revalidate(),
+    })
+  }
+
   const handleMoveThreadToGroup = async (threadId: string, targetGroupId: string) => {
     if (activeGroup?.id === targetGroupId) return
     const response = await fetch("/api/chat-groups/move-thread", {
@@ -373,6 +406,12 @@ export function AppSidebar({
                   navigate(group ? getGroupLandingHref(group) : "/chat")
                 }}
                 onCloseGroup={handleCloseGroup}
+                onTogglePinGroup={handleTogglePinGroup}
+                onRenameGroup={handleRenameGroup}
+                openHoverGroupId={openHoverGroupId}
+                onOpenHoverGroupIdChange={setOpenHoverGroupId}
+                openMenuGroupId={openMenuGroupId}
+                onOpenMenuGroupIdChange={setOpenMenuGroupId}
                 onSelectThread={handleSelectThreadFromHover}
                 onMoveThreadToGroup={handleMoveThreadToGroup}
               />
@@ -392,6 +431,12 @@ export function AppSidebar({
                 navigate(group ? getGroupLandingHref(group) : "/chat")
               }}
               onCloseGroup={handleCloseGroup}
+              onTogglePinGroup={handleTogglePinGroup}
+              onRenameGroup={handleRenameGroup}
+              openHoverGroupId={openHoverGroupId}
+              onOpenHoverGroupIdChange={setOpenHoverGroupId}
+              openMenuGroupId={openMenuGroupId}
+              onOpenMenuGroupIdChange={setOpenMenuGroupId}
               onSelectThread={handleSelectThreadFromHover}
               onMoveThreadToGroup={handleMoveThreadToGroup}
             />

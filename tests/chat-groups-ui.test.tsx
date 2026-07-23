@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -14,8 +15,8 @@ import {
   ChatGroupIcon,
   ChatGroupRightSlot,
   ChatGroupsList,
-  CLOSE_CHAT_GROUP_CONFIRMATION_SUPPRESSED_KEY,
 } from "@/components/sidebar/chat-groups-list";
+import { CLOSE_CHAT_GROUP_CONFIRMATION_SUPPRESSED_KEY } from "@/components/close-chat-group-dialog";
 import { resolveChatGroupSidebarSections } from "@/components/sidebar/app-sidebar";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import {
@@ -111,6 +112,60 @@ const multiChatGroupView: ChatGroupView = {
   ],
   member_count: 2,
 };
+
+const chatGroupListActionProps = {
+  onTogglePinGroup: vi.fn(),
+  onRenameGroup: vi.fn(),
+  openHoverGroupId: null,
+  onOpenHoverGroupIdChange: vi.fn(),
+  openMenuGroupId: null,
+  onOpenMenuGroupIdChange: vi.fn(),
+};
+
+function CoordinatedChatGroupsListsFixture() {
+  const [openHoverGroupId, setOpenHoverGroupId] = useState<string | null>(
+    "group_pinned",
+  );
+  const [openMenuGroupId, setOpenMenuGroupId] = useState<string | null>(null);
+  const coordinatedSurfaceProps = {
+    openHoverGroupId,
+    onOpenHoverGroupIdChange: setOpenHoverGroupId,
+    openMenuGroupId,
+    onOpenMenuGroupIdChange: setOpenMenuGroupId,
+  };
+  const pinnedGroup = {
+    ...groupView,
+    id: "group_pinned",
+    name: "Pinned",
+    pinned_at: 123,
+  };
+  const recentGroup = {
+    ...groupView,
+    id: "group_recent",
+    name: "Recent",
+  };
+
+  return (
+    <SidebarProvider>
+      <ChatGroupsList
+        {...chatGroupListActionProps}
+        {...coordinatedSurfaceProps}
+        groups={[pinnedGroup]}
+        activeGroupId={null}
+        onSelectGroup={vi.fn()}
+        onCloseGroup={vi.fn()}
+      />
+      <ChatGroupsList
+        {...chatGroupListActionProps}
+        {...coordinatedSurfaceProps}
+        groups={[recentGroup]}
+        activeGroupId={null}
+        onSelectGroup={vi.fn()}
+        onCloseGroup={vi.fn()}
+      />
+    </SidebarProvider>
+  );
+}
 
 function groupViewWithThreadRevision(
   title: string,
@@ -247,6 +302,7 @@ function renderTabBar(overrides: Partial<React.ComponentProps<typeof ChatTabBar>
     groupName: "Launch",
     groupAvatar: moveGroups[0].avatar,
     groupPinnedAt: null,
+    groupMemberCount: 1,
     openTabs: [
       { threadId: "thread_1", title: "API plan", model: "haiku", status: "idle" },
       {
@@ -274,6 +330,7 @@ function renderTabBar(overrides: Partial<React.ComponentProps<typeof ChatTabBar>
     onReopenClosedTab: vi.fn(),
     onRenameGroup: vi.fn(),
     onTogglePin: vi.fn(),
+    onCloseGroup: vi.fn(),
     onMoveTabToGroup: vi.fn(),
     ...overrides,
   };
@@ -469,6 +526,60 @@ describe("ChatTabBar", () => {
     expect(unpinItem.querySelector(".lucide-pin-off")).not.toBeNull();
     await user.click(unpinItem);
     expect(onUnpin).toHaveBeenCalledTimes(1);
+  });
+
+  it("orders group options as pin, rename, then close", async () => {
+    const user = userEvent.setup();
+    renderTabBar();
+
+    await user.click(screen.getByRole("button", { name: "Group options" }));
+    await screen.findByRole("menuitem", { name: "Pin group" });
+
+    expect(
+      screen
+        .getAllByRole("menuitem")
+        .map((menuItem) => menuItem.textContent?.trim()),
+    ).toEqual(["Pin group", "Rename group", "Close group"]);
+  });
+
+  it("confirms closing a group from the group options menu", async () => {
+    const user = userEvent.setup();
+    const onCloseGroup = vi.fn();
+    renderTabBar({
+      groupMemberCount: 2,
+      onCloseGroup,
+    });
+
+    await user.click(screen.getByRole("button", { name: "Group options" }));
+    await user.click(
+      await screen.findByRole("menuitem", { name: "Close group" }),
+    );
+
+    expect(onCloseGroup).not.toHaveBeenCalled();
+    expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+    expect(screen.getByText(/Its 2 chats will be removed/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Close group" }));
+
+    expect(onCloseGroup).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes a group from the tab bar without a dialog when confirmation is suppressed", async () => {
+    const user = userEvent.setup();
+    const onCloseGroup = vi.fn();
+    window.localStorage.setItem(
+      CLOSE_CHAT_GROUP_CONFIRMATION_SUPPRESSED_KEY,
+      "true",
+    );
+    renderTabBar({ onCloseGroup });
+
+    await user.click(screen.getByRole("button", { name: "Group options" }));
+    await user.click(
+      await screen.findByRole("menuitem", { name: "Close group" }),
+    );
+
+    expect(onCloseGroup).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
   });
 
   it("closes the move-to-group context submenu immediately after selecting a group", async () => {
@@ -712,7 +823,15 @@ describe("ChatTabBar", () => {
 
 describe("ChatGroupsList", () => {
   it("renders the empty state", () => {
-    render(<ChatGroupsList groups={[]} activeGroupId={null} onSelectGroup={vi.fn()} onCloseGroup={vi.fn()} />);
+    render(
+      <ChatGroupsList
+        {...chatGroupListActionProps}
+        groups={[]}
+        activeGroupId={null}
+        onSelectGroup={vi.fn()}
+        onCloseGroup={vi.fn()}
+      />,
+    );
 
     expect(screen.getByText("No groups yet")).toBeInTheDocument();
   });
@@ -720,6 +839,7 @@ describe("ChatGroupsList", () => {
   it("renders skeleton rows while groups are loading", () => {
     render(
       <ChatGroupsList
+        {...chatGroupListActionProps}
         groups={[]}
         activeGroupId={null}
         isLoading
@@ -735,6 +855,7 @@ describe("ChatGroupsList", () => {
   it("supports section-specific skeleton counts and a suppressed empty state", () => {
     const { rerender } = render(
       <ChatGroupsList
+        {...chatGroupListActionProps}
         groups={[]}
         activeGroupId={null}
         isLoading
@@ -748,6 +869,7 @@ describe("ChatGroupsList", () => {
     expect(document.querySelectorAll('[data-sidebar="menu-skeleton"]')).toHaveLength(2);
     rerender(
       <ChatGroupsList
+        {...chatGroupListActionProps}
         groups={[]}
         activeGroupId={null}
         emptyState={null}
@@ -768,6 +890,7 @@ describe("ChatGroupsList", () => {
     const renderList = (groups: ChatGroupView[]) => (
       <SidebarProvider>
         <ChatGroupsList
+          {...chatGroupListActionProps}
           groups={groups}
           activeGroupId={null}
           onSelectGroup={vi.fn()}
@@ -821,6 +944,7 @@ describe("ChatGroupsList", () => {
     render(
       <SidebarProvider>
         <ChatGroupsList
+          {...chatGroupListActionProps}
           groups={[
             {
               ...groupView,
@@ -913,6 +1037,7 @@ describe("ChatGroupsList", () => {
     const renderList = (group: ChatGroupView) => (
       <SidebarProvider>
         <ChatGroupsList
+          {...chatGroupListActionProps}
           groups={[group]}
           activeGroupId={null}
           onSelectGroup={vi.fn()}
@@ -950,6 +1075,220 @@ describe("ChatGroupsList", () => {
     expect(within(row).queryByRole("status")).not.toBeInTheDocument();
   });
 
+  it("renders options and close actions for every group row", () => {
+    const researchGroup: ChatGroupView = {
+      ...groupView,
+      id: "group_2",
+      name: "Research",
+    };
+
+    render(
+      <SidebarProvider>
+        <ChatGroupsList
+          {...chatGroupListActionProps}
+          groups={[groupView, researchGroup]}
+          activeGroupId={null}
+          onSelectGroup={vi.fn()}
+          onCloseGroup={vi.fn()}
+        />
+      </SidebarProvider>,
+    );
+
+    expect(
+      screen.getByRole("button", { name: "Group options for Launch" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Group options for Research" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Close Launch" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Close Research" }),
+    ).toBeInTheDocument();
+  });
+
+  it("closes a hover card in another section when a group menu opens", async () => {
+    const user = userEvent.setup();
+    render(<CoordinatedChatGroupsListsFixture />);
+
+    expect(
+      await screen.findByText("API plan"),
+    ).toBeInTheDocument();
+    expect(
+      document.querySelector('[data-slot="hover-card-content"]'),
+    ).not.toBeNull();
+
+    await user.click(
+      screen.getByRole("button", { name: "Group options for Recent" }),
+    );
+
+    expect(
+      await screen.findByRole("menuitem", { name: "Pin group" }),
+    ).toBeVisible();
+    await waitFor(() => {
+      expect(
+        document.querySelector('[data-slot="hover-card-content"]'),
+      ).toBeNull();
+    });
+  });
+
+  it("pins an unpinned group from the row options menu", async () => {
+    const user = userEvent.setup();
+    const onTogglePinGroup = vi.fn();
+
+    render(
+      <SidebarProvider>
+        <ChatGroupsList
+          {...chatGroupListActionProps}
+          groups={[groupView]}
+          activeGroupId={null}
+          onSelectGroup={vi.fn()}
+          onCloseGroup={vi.fn()}
+          onTogglePinGroup={onTogglePinGroup}
+        />
+      </SidebarProvider>,
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Group options for Launch" }),
+    );
+    const pinItem = await screen.findByRole("menuitem", {
+      name: "Pin group",
+    });
+
+    expect(pinItem.querySelector(".lucide-pin")).not.toBeNull();
+    expect(screen.getByRole("menuitem", { name: "Rename group" })).toBeVisible();
+    expect(screen.getByRole("menuitem", { name: "Close group" })).toBeVisible();
+
+    await user.click(pinItem);
+
+    expect(onTogglePinGroup).toHaveBeenCalledWith(groupView);
+  });
+
+  it("shows the unpin action for a pinned group", async () => {
+    const user = userEvent.setup();
+    const pinnedGroup = { ...groupView, pinned_at: 123 };
+
+    render(
+      <SidebarProvider>
+        <ChatGroupsList
+          {...chatGroupListActionProps}
+          groups={[pinnedGroup]}
+          activeGroupId={null}
+          onSelectGroup={vi.fn()}
+          onCloseGroup={vi.fn()}
+        />
+      </SidebarProvider>,
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Group options for Launch" }),
+    );
+    const unpinItem = await screen.findByRole("menuitem", {
+      name: "Unpin group",
+    });
+
+    expect(unpinItem.querySelector(".lucide-pin-off")).not.toBeNull();
+  });
+
+  it("renames a group from the row options menu", async () => {
+    const user = userEvent.setup();
+    const onRenameGroup = vi.fn();
+
+    render(
+      <SidebarProvider>
+        <ChatGroupsList
+          {...chatGroupListActionProps}
+          groups={[groupView]}
+          activeGroupId={null}
+          onSelectGroup={vi.fn()}
+          onCloseGroup={vi.fn()}
+          onRenameGroup={onRenameGroup}
+        />
+      </SidebarProvider>,
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Group options for Launch" }),
+    );
+    await user.click(
+      await screen.findByRole("menuitem", { name: "Rename group" }),
+    );
+
+    const nameInput = await screen.findByLabelText("Name");
+    await user.clear(nameInput);
+    await user.type(nameInput, "Roadmap");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(onRenameGroup).toHaveBeenCalledWith("group_1", {
+      name: "Roadmap",
+    });
+  });
+
+  it("confirms the default-styled close action from the row options menu", async () => {
+    const user = userEvent.setup();
+    const onCloseGroup = vi.fn();
+
+    render(
+      <SidebarProvider>
+        <ChatGroupsList
+          {...chatGroupListActionProps}
+          groups={[multiChatGroupView]}
+          activeGroupId={null}
+          onSelectGroup={vi.fn()}
+          onCloseGroup={onCloseGroup}
+        />
+      </SidebarProvider>,
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Group options for Launch" }),
+    );
+    const closeItem = await screen.findByRole("menuitem", {
+      name: "Close group",
+    });
+    expect(closeItem).not.toHaveAttribute("data-variant", "destructive");
+    await user.click(closeItem);
+
+    expect(onCloseGroup).not.toHaveBeenCalled();
+    expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Close group" }));
+
+    expect(onCloseGroup).toHaveBeenCalledWith("group_multi");
+  });
+
+  it("closes from the row options menu without a dialog when confirmation is suppressed", async () => {
+    const user = userEvent.setup();
+    const onCloseGroup = vi.fn();
+    window.localStorage.setItem(
+      CLOSE_CHAT_GROUP_CONFIRMATION_SUPPRESSED_KEY,
+      "true",
+    );
+
+    render(
+      <SidebarProvider>
+        <ChatGroupsList
+          {...chatGroupListActionProps}
+          groups={[groupView]}
+          activeGroupId={null}
+          onSelectGroup={vi.fn()}
+          onCloseGroup={onCloseGroup}
+        />
+      </SidebarProvider>,
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Group options for Launch" }),
+    );
+    await user.click(
+      await screen.findByRole("menuitem", { name: "Close group" }),
+    );
+
+    expect(onCloseGroup).toHaveBeenCalledWith("group_1");
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  });
+
   it("selects and opens close confirmation for a single-chat group by default", () => {
     const onSelectGroup = vi.fn();
     const onCloseGroup = vi.fn();
@@ -957,6 +1296,7 @@ describe("ChatGroupsList", () => {
     render(
       <SidebarProvider>
         <ChatGroupsList
+          {...chatGroupListActionProps}
           groups={[groupView]}
           activeGroupId={null}
           onSelectGroup={onSelectGroup}
@@ -972,6 +1312,12 @@ describe("ChatGroupsList", () => {
     );
     expect(groupButton).toHaveClass(
       "group-data-[collapsible=icon]:[&_*]:cursor-pointer",
+    );
+    expect(groupButton).toHaveClass(
+      "group-hover/menu-item:bg-sidebar-accent",
+    );
+    expect(groupButton).toHaveClass(
+      "group-hover/menu-item:text-sidebar-accent-foreground",
     );
 
     const closeButton = screen.getByRole("button", { name: "Close Launch" });
@@ -996,6 +1342,7 @@ describe("ChatGroupsList", () => {
     render(
       <SidebarProvider>
         <ChatGroupsList
+          {...chatGroupListActionProps}
           groups={[multiChatGroupView]}
           activeGroupId={null}
           onSelectGroup={vi.fn()}
@@ -1019,6 +1366,7 @@ describe("ChatGroupsList", () => {
     const { rerender } = render(
       <SidebarProvider>
         <ChatGroupsList
+          {...chatGroupListActionProps}
           groups={[multiChatGroupView]}
           activeGroupId={null}
           onSelectGroup={vi.fn()}
@@ -1041,6 +1389,7 @@ describe("ChatGroupsList", () => {
     rerender(
       <SidebarProvider>
         <ChatGroupsList
+          {...chatGroupListActionProps}
           groups={[
             {
               ...multiChatGroupView,
@@ -1066,6 +1415,7 @@ describe("ChatGroupsList", () => {
     const { rerender } = render(
       <SidebarProvider>
         <ChatGroupsList
+          {...chatGroupListActionProps}
           groups={[multiChatGroupView]}
           activeGroupId={null}
           onSelectGroup={vi.fn()}
@@ -1093,6 +1443,7 @@ describe("ChatGroupsList", () => {
     rerender(
       <SidebarProvider>
         <ChatGroupsList
+          {...chatGroupListActionProps}
           groups={[
             {
               ...multiChatGroupView,
@@ -1123,6 +1474,7 @@ describe("ChatGroupsList", () => {
     render(
       <SidebarProvider>
         <ChatGroupsList
+          {...chatGroupListActionProps}
           groups={[multiChatGroupView]}
           activeGroupId={null}
           onSelectGroup={vi.fn()}
@@ -1147,6 +1499,7 @@ describe("ChatGroupsList", () => {
     render(
       <SidebarProvider>
         <ChatGroupsList
+          {...chatGroupListActionProps}
           groups={[multiChatGroupView]}
           activeGroupId={null}
           onSelectGroup={vi.fn()}
@@ -1173,6 +1526,7 @@ describe("ChatGroupsList", () => {
       render(
         <SidebarProvider>
           <ChatGroupsList
+            {...chatGroupListActionProps}
             groups={[multiChatGroupView]}
             activeGroupId={null}
             onSelectGroup={vi.fn()}
@@ -1195,6 +1549,7 @@ describe("ChatGroupsList", () => {
     render(
       <SidebarProvider>
         <ChatGroupsList
+          {...chatGroupListActionProps}
           groups={[multiChatGroupView]}
           activeGroupId={null}
           onSelectGroup={vi.fn()}
