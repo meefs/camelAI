@@ -86,7 +86,7 @@
 	},
 	"dependencies": {
 		"@ai-sdk/react": "^3.0.204",
-		"@cloudflare/ai-chat": "^0.9.3",
+		"@cloudflare/ai-chat": "^0.9.4",
 		"@cloudflare/dynamic-workflows": "^0.1.1",
 		"@cloudflare/sandbox": "^0.12.0",
 		"@cloudflare/shell": "0.3.7",
@@ -99,7 +99,7 @@
 		"@react-email/components": "^1.0.7",
 		"@react-email/render": "^2.0.4",
 		"@react-pdf/renderer": "^4.3.2",
-		"agents": "^0.17.3",
+		"agents": "^0.18.0",
 		"ai": "^6.0.0",
 		"class-variance-authority": "^0.7.1",
 		"clsx": "^2.1.1",
@@ -141,7 +141,7 @@
 	},
 	"devDependencies": {
 		"@cloudflare/puppeteer": "^1.0.6",
-		"@cloudflare/vitest-pool-workers": "^0.16.12",
+		"@cloudflare/vitest-pool-workers": "^0.18.7",
 		"@playwright/test": "^1.57.0",
 		"@react-router/dev": "^7.16.0",
 		"@resvg/resvg-js": "^2.6.2",
@@ -167,7 +167,7 @@
 		"vite": "8.0.16",
 		"vite-tsconfig-paths": "^5.1.4",
 		"vitest": "^4.1.8",
-		"wrangler": "^4.97.0"
+		"wrangler": "^4.113.0"
 	},
 	"overrides": {
 		"picomatch": "4.0.4",
