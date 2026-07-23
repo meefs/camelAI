@@ -7,6 +7,7 @@ import {
   getHistoryScope,
   hydrateHistoryThreads,
 } from '@/lib/history.server';
+import { canonicalizeThreadSearchQuery } from '@/lib/thread-search';
 
 const DEFAULT_LIMIT = 50;
 
@@ -29,6 +30,7 @@ export async function loader({
   const scope = getHistoryScope(url.searchParams);
   const createdBy = getHistoryCreatedBy(url.searchParams);
   const queryKey = url.searchParams.get('queryKey')?.trim() || '';
+  const q = canonicalizeThreadSearchQuery(url.searchParams.get('q'));
   const offset = parsePositiveInteger(url.searchParams.get('offset'), 0);
   const limit = parsePositiveInteger(url.searchParams.get('limit'), DEFAULT_LIMIT);
   const accessibleWorkspaceIds = authContext.workspaces.map((workspace) => workspace.id);
@@ -52,6 +54,7 @@ export async function loader({
     offset,
     limit,
     createdBy,
+    searchQuery: q || undefined,
   });
   const { threads } = await hydrateHistoryThreads(authEnv, page.items, [], {
     request,
@@ -64,5 +67,6 @@ export async function loader({
     offset: page.offset,
     limit: page.limit,
     queryKey,
+    q,
   });
 }

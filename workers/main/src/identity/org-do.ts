@@ -25,6 +25,13 @@ import {
   normalizeThreadCompletionSummary,
   normalizeThreadUserMessageText,
 } from "../../../../src/lib/thread-preview";
+import {
+  appendToThreadAskLog,
+  normalizeThreadSearchTitle,
+  parseThreadSearchTerms,
+  THREAD_ASK_LOG_MAX_BYTES,
+  THREAD_SEARCH_FIELD_MAX_CHARS,
+} from "../../../../src/lib/thread-search";
 import { slugifyWorkspaceName } from "../../../../src/lib/workspace-email";
 import type {
   OrgRole,
@@ -108,6 +115,92 @@ const TOKEN_REFRESH_RETRY_MS = 15 * 60 * 1000;
 const TOKEN_REFRESH_RETRY_MIN_MS = 30 * 1000;
 const TOKEN_REFRESH_RETRY_MAX_MS = 60 * 60 * 1000;
 const TOKEN_REFRESH_RATE_LIMIT_DEFAULT_MS = 2 * 60 * 1000;
+const THREAD_SEARCH_BACKFILL_BATCH_SIZE = 25;
+const THREAD_SEARCH_BACKFILL_CURSOR_KEY = "threadSearchBackfillCursor:v46";
+const THREAD_SEARCH_BACKFILL_COMPLETE_KEY = "threadSearchBackfillComplete:v46";
+// RPC/list projection intentionally omits the bounded prompt log. Search
+// pagination opts into it only long enough for the server wrapper to build a
+// snippet, then drops it before browser serialization.
+const THREAD_LIST_SELECT_COLUMN_NAMES = [
+  "id",
+  "workspace_id",
+  "title",
+  "provider",
+  "created_by",
+  "model",
+  "created_at",
+  "updated_at",
+  "user_message_count",
+  "first_user_message",
+  "last_user_message",
+  "last_user_message_at",
+  "last_assistant_completed_at",
+  "last_assistant_summary",
+  "last_assistant_summary_status",
+  "source",
+  "channel_kind",
+  "channel_kinds",
+  "channel_connection_id",
+  "channel_conversation_id",
+  "channel_message_id",
+  "chat_error_count",
+  "last_chat_error_at",
+  "last_chat_error_message",
+  "last_chat_error_source",
+  "last_chat_error_status",
+  "last_chat_error_provider",
+  "last_chat_error_model",
+  "model_history",
+  "last_model_changed_at",
+] as const;
+const THREAD_LIST_SELECT_COLUMNS = THREAD_LIST_SELECT_COLUMN_NAMES.join(", ");
+const BOUNDED_SEARCH_PROJECTION_COLUMNS: Readonly<Record<string, true>> =
+  Object.freeze({
+    title: true,
+    first_user_message: true,
+    last_user_message: true,
+    last_assistant_summary: true,
+  });
+const boundedThreadSearchExpression = (column: string): string =>
+  `substr(${column}, 1, ${THREAD_SEARCH_FIELD_MAX_CHARS})`;
+const THREAD_SEARCH_SELECT_COLUMNS = [
+  ...THREAD_LIST_SELECT_COLUMN_NAMES.map((column) =>
+    BOUNDED_SEARCH_PROJECTION_COLUMNS[column] === true
+      ? `${boundedThreadSearchExpression(column)} AS ${column}`
+      : column,
+  ),
+  `${boundedThreadSearchExpression("user_ask_log")} AS user_ask_log`,
+].join(", ");
+const THREAD_INTERNAL_ASK_LOG_SELECT_COLUMNS =
+  `${THREAD_LIST_SELECT_COLUMNS}, user_ask_log`;
+const SEARCHABLE_THREAD_EXPRESSIONS = [
+  boundedThreadSearchExpression("title_search"),
+  boundedThreadSearchExpression("first_user_message"),
+  boundedThreadSearchExpression("last_user_message"),
+  boundedThreadSearchExpression("user_ask_log"),
+  boundedThreadSearchExpression("last_assistant_summary"),
+] as const;
+
+function appendThreadSearchClauses(
+  whereClauses: string[],
+  whereParams: Array<string | number>,
+  searchQuery: string | undefined,
+): boolean {
+  const terms = parseThreadSearchTerms(searchQuery);
+  for (const term of terms) {
+    const escapedTerm = term.replace(/([\\%_])/g, "\\$1");
+    const titleLike = `%${term.toLowerCase().replace(/([\\%_])/g, "\\$1")}%`;
+    const like = `%${escapedTerm}%`;
+    whereClauses.push(
+      `(${SEARCHABLE_THREAD_EXPRESSIONS.map((expression) => `${expression} LIKE ? ESCAPE '\\'`).join(" OR ")})`,
+    );
+    whereParams.push(titleLike);
+    for (let index = 1; index < SEARCHABLE_THREAD_EXPRESSIONS.length; index += 1) {
+      whereParams.push(like);
+    }
+  }
+  return terms.length > 0;
+}
 
 class PermanentRefreshError extends Error {
   constructor(message: string) {
@@ -410,6 +503,7 @@ export interface OrgThread {
   user_message_count: number;
   first_user_message: string | null;
   last_user_message: string | null;
+  user_ask_log?: string | null;
   last_user_message_at: number | null;
   last_assistant_completed_at: number | null;
   last_assistant_summary: string | null;
@@ -429,6 +523,20 @@ export interface OrgThread {
   last_chat_error_model: string | null;
   model_history: string | null;
   last_model_changed_at: number | null;
+}
+
+function withoutThreadAskLog(
+  thread: OrgThread,
+): Omit<OrgThread, "user_ask_log"> {
+  const { user_ask_log: _omitted, ...threadWithoutAskLog } = thread;
+  return threadWithoutAskLog;
+}
+
+function toAdminThreadPayload(
+  thread: OrgThread,
+  orgId: string,
+): Omit<OrgThread, "user_ask_log"> & { org_id: string } {
+  return { ...withoutThreadAskLog(thread), org_id: orgId };
 }
 
 export interface CreateThreadOptions {
@@ -1786,7 +1894,29 @@ export class OrgDO extends DurableObject<DOEnv> {
       this.ensureColumn("integrations", "verification_strategy", "TEXT");
     }
 
-    const CURRENT_SCHEMA_VERSION = 44;
+    if (version < 45) {
+      // V45: Bounded rolling log of user messages for history search.
+      try {
+        this.sql.exec("ALTER TABLE threads ADD COLUMN user_ask_log TEXT");
+      } catch {
+        // Column may already exist after defensive schema repair.
+      }
+    }
+
+    if (version < 46) {
+      // V46: Unicode-aware lowercase title projection for history search.
+      try {
+        this.sql.exec("ALTER TABLE threads ADD COLUMN title_search TEXT");
+      } catch {
+        // Column may already exist after defensive schema repair.
+      }
+      // Population is intentionally lazy and checkpointed. Loading every
+      // thread here would block OrgDO startup before the schema marker can be
+      // persisted, causing large orgs to retry the same unbounded work.
+      this.resetThreadSearchBackfillCheckpoint();
+    }
+
+    const CURRENT_SCHEMA_VERSION = 46;
     if (version < CURRENT_SCHEMA_VERSION) {
       this.ctx.storage.kv.put("schemaVersion", CURRENT_SCHEMA_VERSION);
     }
@@ -1888,6 +2018,96 @@ export class OrgDO extends DurableObject<DOEnv> {
     );
   }
 
+  private resetThreadSearchBackfillCheckpoint(): void {
+    this.ctx.storage.kv.delete(THREAD_SEARCH_BACKFILL_CURSOR_KEY);
+    this.ctx.storage.kv.delete(THREAD_SEARCH_BACKFILL_COMPLETE_KEY);
+  }
+
+  private backfillThreadSearchMetadataBatch(
+    requestedBatchSize = THREAD_SEARCH_BACKFILL_BATCH_SIZE,
+  ): { processed: number; complete: boolean } {
+    if (
+      this.ctx.storage.kv.get<number>(THREAD_SEARCH_BACKFILL_COMPLETE_KEY) === 1
+    ) {
+      return { processed: 0, complete: true };
+    }
+
+    const normalizedBatchSize = Number.isFinite(requestedBatchSize)
+      ? Math.floor(requestedBatchSize)
+      : THREAD_SEARCH_BACKFILL_BATCH_SIZE;
+    const batchSize = Math.max(
+      1,
+      Math.min(THREAD_SEARCH_BACKFILL_BATCH_SIZE, normalizedBatchSize),
+    );
+    const cursor =
+      this.ctx.storage.kv.get<string>(THREAD_SEARCH_BACKFILL_CURSOR_KEY) ?? "";
+    const rows = this.sql
+      .exec<{
+        id: string;
+        title: string;
+        user_ask_log: string | null;
+      }>(
+        `SELECT id,
+                substr(title, 1, ?) AS title,
+                substr(user_ask_log, -?) AS user_ask_log
+           FROM threads
+          WHERE id > ?
+          ORDER BY id ASC
+          LIMIT ?`,
+        THREAD_SEARCH_FIELD_MAX_CHARS,
+        THREAD_ASK_LOG_MAX_BYTES + 1,
+        cursor,
+        batchSize,
+      )
+      .toArray();
+
+    const lastId = rows.at(-1)?.id ?? null;
+    const hasMore =
+      rows.length === batchSize &&
+      lastId !== null &&
+      this.sql
+        .exec<{ id: string }>(
+          "SELECT id FROM threads WHERE id > ? ORDER BY id ASC LIMIT 1",
+          lastId,
+        )
+        .toArray().length > 0;
+
+    this.ctx.storage.transactionSync(() => {
+      for (const row of rows) {
+        let askLog = row.user_ask_log;
+        const askLogCharacters = askLog ? Array.from(askLog) : [];
+        if (askLogCharacters.length > THREAD_ASK_LOG_MAX_BYTES) {
+          const precedingCharacter = askLogCharacters.shift();
+          askLog = askLogCharacters.join("");
+          if (precedingCharacter !== "\n") {
+            const firstCompleteEntry = askLog.indexOf("\n");
+            if (firstCompleteEntry >= 0) {
+              askLog = askLog.slice(firstCompleteEntry + 1);
+            }
+          }
+        }
+
+        this.sql.exec(
+          `UPDATE threads
+              SET title_search = ?, user_ask_log = ?
+            WHERE id = ?`,
+          normalizeThreadSearchTitle(row.title),
+          appendToThreadAskLog(askLog, null),
+          row.id,
+        );
+      }
+
+      if (hasMore && lastId !== null) {
+        this.ctx.storage.kv.put(THREAD_SEARCH_BACKFILL_CURSOR_KEY, lastId);
+      } else {
+        this.ctx.storage.kv.delete(THREAD_SEARCH_BACKFILL_CURSOR_KEY);
+        this.ctx.storage.kv.put(THREAD_SEARCH_BACKFILL_COMPLETE_KEY, 1);
+      }
+    });
+
+    return { processed: rows.length, complete: !hasMore };
+  }
+
   private ensureThreadSchemaColumns(): void {
     try {
       const rows = this.sql
@@ -1923,6 +2143,20 @@ export class OrgDO extends DurableObject<DOEnv> {
           this.sql.exec(
             "ALTER TABLE threads ADD COLUMN first_user_message TEXT",
           );
+        } catch {}
+      }
+
+      if (!names.has("user_ask_log")) {
+        try {
+          this.sql.exec("ALTER TABLE threads ADD COLUMN user_ask_log TEXT");
+          this.resetThreadSearchBackfillCheckpoint();
+        } catch {}
+      }
+
+      if (!names.has("title_search")) {
+        try {
+          this.sql.exec("ALTER TABLE threads ADD COLUMN title_search TEXT");
+          this.resetThreadSearchBackfillCheckpoint();
         } catch {}
       }
 
@@ -5309,7 +5543,7 @@ export class OrgDO extends DurableObject<DOEnv> {
         if (info) {
           dispatchAdminEvent(this.ctx, this.env, {
             type: "thread_upsert",
-            payload: { ...thread, org_id: info.id },
+            payload: toAdminThreadPayload(thread, info.id),
           });
         }
       })
@@ -5381,7 +5615,7 @@ export class OrgDO extends DurableObject<DOEnv> {
           try {
             dispatchAdminEvent(this.ctx, this.env, {
               type: "thread_upsert",
-              payload: { ...thread, org_id: info.id },
+              payload: toAdminThreadPayload(thread, info.id),
             });
             this.recordThreadCreateStage("admin_index_dispatch_scheduled", dispatchStartedAt, {
               threadId: thread.id,
@@ -6546,7 +6780,9 @@ export class OrgDO extends DurableObject<DOEnv> {
   getThreads(): OrgThread[] {
     this.ensureThreadSchemaColumns();
     return this.sql
-      .exec("SELECT * FROM threads ORDER BY updated_at DESC")
+      .exec(
+        `SELECT ${THREAD_LIST_SELECT_COLUMNS} FROM threads ORDER BY updated_at DESC`,
+      )
       .toArray() as unknown as OrgThread[];
   }
 
@@ -6557,7 +6793,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     this.ensureThreadSchemaColumns();
     return this.sql
       .exec(
-        "SELECT * FROM threads WHERE workspace_id = ? ORDER BY updated_at DESC",
+        `SELECT ${THREAD_LIST_SELECT_COLUMNS} FROM threads WHERE workspace_id = ? ORDER BY updated_at DESC`,
         workspaceId,
       )
       .toArray() as unknown as OrgThread[];
@@ -6571,6 +6807,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     limit = 50,
     workspaceId?: string,
     createdBy?: string,
+    searchQuery?: string,
   ): { items: OrgThread[]; total: number; offset: number; limit: number } {
     this.ensureThreadSchemaColumns();
     const resolvedOffset = Math.max(0, Math.floor(offset));
@@ -6587,13 +6824,24 @@ export class OrgDO extends DurableObject<DOEnv> {
       whereClauses.push("created_by = ?");
       whereParams.push(createdBy);
     }
+    const includeAskLog = appendThreadSearchClauses(
+      whereClauses,
+      whereParams,
+      searchQuery,
+    );
+    if (includeAskLog) {
+      this.backfillThreadSearchMetadataBatch();
+    }
 
     const whereSql =
       whereClauses.length > 0 ? `WHERE ${whereClauses.join(" AND ")}` : "";
+    const selectColumns = includeAskLog
+      ? THREAD_SEARCH_SELECT_COLUMNS
+      : THREAD_LIST_SELECT_COLUMNS;
 
     const items = this.sql
       .exec(
-        `SELECT * FROM threads ${whereSql} ORDER BY updated_at DESC LIMIT ? OFFSET ?`,
+        `SELECT ${selectColumns} FROM threads ${whereSql} ORDER BY updated_at DESC LIMIT ? OFFSET ?`,
         ...whereParams,
         resolvedLimit,
         resolvedOffset,
@@ -6621,6 +6869,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     offset = 0,
     limit = 50,
     createdBy?: string,
+    searchQuery?: string,
   ): { items: OrgThread[]; total: number; offset: number; limit: number } {
     this.ensureThreadSchemaColumns();
     const resolvedOffset = Math.max(0, Math.floor(offset));
@@ -6643,12 +6892,23 @@ export class OrgDO extends DurableObject<DOEnv> {
       whereClauses.push("created_by = ?");
       queryParams.push(createdBy);
     }
+    const includeAskLog = appendThreadSearchClauses(
+      whereClauses,
+      queryParams,
+      searchQuery,
+    );
+    if (includeAskLog) {
+      this.backfillThreadSearchMetadataBatch();
+    }
 
     const whereSql = whereClauses.join(" AND ");
+    const selectColumns = includeAskLog
+      ? THREAD_SEARCH_SELECT_COLUMNS
+      : THREAD_LIST_SELECT_COLUMNS;
 
     const items = this.sql
       .exec(
-        `SELECT * FROM threads WHERE ${whereSql} ORDER BY updated_at DESC LIMIT ? OFFSET ?`,
+        `SELECT ${selectColumns} FROM threads WHERE ${whereSql} ORDER BY updated_at DESC LIMIT ? OFFSET ?`,
         ...queryParams,
         resolvedLimit,
         resolvedOffset,
@@ -6783,6 +7043,7 @@ export class OrgDO extends DurableObject<DOEnv> {
            id,
            workspace_id,
            title,
+           title_search,
            provider,
            created_by,
            model,
@@ -6799,10 +7060,11 @@ export class OrgDO extends DurableObject<DOEnv> {
            channel_message_id,
            model_history,
            last_model_changed_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         id,
         workspaceId,
         t,
+        normalizeThreadSearchTitle(t),
         "model",
         creator,
         normalizedModel,
@@ -6876,9 +7138,19 @@ export class OrgDO extends DurableObject<DOEnv> {
    * Get a thread by ID
    */
   getThread(id: string): OrgThread | null {
+    return this.selectThreadById(id, false);
+  }
+
+  private selectThreadById(id: string, includeAskLog: boolean): OrgThread | null {
     this.ensureThreadSchemaColumns();
+    const selectColumns = includeAskLog
+      ? THREAD_INTERNAL_ASK_LOG_SELECT_COLUMNS
+      : THREAD_LIST_SELECT_COLUMNS;
     const rows = this.sql
-      .exec("SELECT * FROM threads WHERE id = ?", id)
+      .exec(
+        `SELECT ${selectColumns} FROM threads WHERE id = ?`,
+        id,
+      )
       .toArray() as unknown as OrgThread[];
     return rows[0] || null;
   }
@@ -6903,7 +7175,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     const placeholders = uniqueIds.map(() => "?").join(", ");
     return this.sql
       .exec(
-        `SELECT * FROM threads WHERE workspace_id = ? AND id IN (${placeholders})`,
+        `SELECT ${THREAD_LIST_SELECT_COLUMNS} FROM threads WHERE workspace_id = ? AND id IN (${placeholders})`,
         normalizedWorkspaceId,
         ...uniqueIds,
       )
@@ -7051,6 +7323,14 @@ export class OrgDO extends DurableObject<DOEnv> {
     this.migrate();
   }
 
+  // Test helper RPC: advance the lazy V46 data migration by one bounded batch.
+  async runThreadSearchBackfillBatchForTest(
+    batchSize = THREAD_SEARCH_BACKFILL_BATCH_SIZE,
+  ): Promise<{ processed: number; complete: boolean }> {
+    this.ensureThreadSchemaColumns();
+    return this.backfillThreadSearchMetadataBatch(batchSize);
+  }
+
   // Test helper RPC: simulate a workspace that has not crossed the tenant-data
   // migration boundary yet.
   async clearWorkspaceTenantMigrationMarkersForTest(
@@ -7068,8 +7348,9 @@ export class OrgDO extends DurableObject<DOEnv> {
     if (!existing) return null;
     const now = Date.now();
     this.sql.exec(
-      "UPDATE threads SET title = ?, updated_at = ? WHERE id = ?",
+      "UPDATE threads SET title = ?, title_search = ?, updated_at = ? WHERE id = ?",
       title,
+      normalizeThreadSearchTitle(title),
       now,
       id,
     );
@@ -7086,7 +7367,7 @@ export class OrgDO extends DurableObject<DOEnv> {
         if (info)
           dispatchAdminEvent(this.ctx, this.env, {
             type: "thread_upsert",
-            payload: { ...updated, org_id: info.id },
+            payload: toAdminThreadPayload(updated, info.id),
           });
       })
       .catch((err) => {
@@ -7140,7 +7421,7 @@ export class OrgDO extends DurableObject<DOEnv> {
         if (info)
           dispatchAdminEvent(this.ctx, this.env, {
             type: "thread_upsert",
-            payload: { ...updated, org_id: info.id },
+            payload: toAdminThreadPayload(updated, info.id),
           });
       })
       .catch((err) => {
@@ -7224,6 +7505,8 @@ export class OrgDO extends DurableObject<DOEnv> {
     if (updates.title !== undefined) {
       setClauses.push("title = ?");
       params.push(updates.title);
+      setClauses.push("title_search = ?");
+      params.push(normalizeThreadSearchTitle(updates.title));
     }
     if (updates.created_by !== undefined) {
       setClauses.push("created_by = ?");
@@ -7265,7 +7548,7 @@ export class OrgDO extends DurableObject<DOEnv> {
         if (info)
           dispatchAdminEvent(this.ctx, this.env, {
             type: "thread_upsert",
-            payload: { ...updated, org_id: info.id },
+            payload: toAdminThreadPayload(updated, info.id),
           });
       })
       .catch((err) => {
@@ -7332,7 +7615,7 @@ export class OrgDO extends DurableObject<DOEnv> {
         if (info)
           dispatchAdminEvent(this.ctx, this.env, {
             type: "thread_upsert",
-            payload: { ...updated, org_id: info.id },
+            payload: toAdminThreadPayload(updated, info.id),
           });
       })
       .catch((err) => {
@@ -7345,10 +7628,14 @@ export class OrgDO extends DurableObject<DOEnv> {
     message: string,
     source?: string | null,
   ): OrgThread | null {
-    const existing = this.getThread(id);
+    const existing = this.selectThreadById(id, true);
     if (!existing) return null;
     const now = Date.now();
     const lastUserMessage = normalizeThreadUserMessageText(message);
+    const askLog = appendToThreadAskLog(
+      existing.user_ask_log ?? null,
+      lastUserMessage,
+    );
     const userMessageCount = (existing.user_message_count ?? 0) + 1;
     const nextChannelKinds = mergeThreadChannelKinds(
       existing.channel_kinds,
@@ -7365,6 +7652,10 @@ export class OrgDO extends DurableObject<DOEnv> {
       setClauses.push("channel_kinds = ?");
       params.push(nextChannelKinds);
     }
+    if (askLog !== (existing.user_ask_log ?? null)) {
+      setClauses.push("user_ask_log = ?");
+      params.push(askLog);
+    }
     params.push(id);
     this.sql.exec(
       `UPDATE threads SET ${setClauses.join(", ")} WHERE id = ?`,
@@ -7375,6 +7666,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       updated_at: now,
       user_message_count: userMessageCount,
       last_user_message: lastUserMessage,
+      user_ask_log: askLog,
       last_user_message_at: now,
       channel_kinds: nextChannelKinds ?? existing.channel_kinds,
     };
@@ -7383,13 +7675,13 @@ export class OrgDO extends DurableObject<DOEnv> {
         if (info)
           dispatchAdminEvent(this.ctx, this.env, {
             type: "thread_upsert",
-            payload: { ...updated, org_id: info.id },
+            payload: toAdminThreadPayload(updated, info.id),
           });
       })
       .catch((err) => {
         console.error("Failed to sync thread user message to AdminIndex", err);
     });
-    return updated;
+    return withoutThreadAskLog(updated);
   }
 
   async recordThreadError(
@@ -7428,7 +7720,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       if (current) {
         dispatchAdminEvent(this.ctx, this.env, {
           type: "thread_upsert",
-          payload: { ...current, org_id: info.id },
+          payload: toAdminThreadPayload(current, info.id),
         });
         dispatchAdminEvent(this.ctx, this.env, {
           type: "thread_error_recorded",
@@ -7475,7 +7767,7 @@ export class OrgDO extends DurableObject<DOEnv> {
 
     dispatchAdminEvent(this.ctx, this.env, {
       type: "thread_upsert",
-      payload: { ...updated, org_id: info.id },
+      payload: toAdminThreadPayload(updated, info.id),
     });
     dispatchAdminEvent(this.ctx, this.env, {
       type: "thread_error_recorded",
@@ -7566,7 +7858,7 @@ export class OrgDO extends DurableObject<DOEnv> {
         if (info)
           dispatchAdminEvent(this.ctx, this.env, {
             type: "thread_upsert",
-            payload: { ...updated, org_id: info.id },
+            payload: toAdminThreadPayload(updated, info.id),
           });
       })
       .catch((err) => {
@@ -7598,7 +7890,7 @@ export class OrgDO extends DurableObject<DOEnv> {
         if (info)
           dispatchAdminEvent(this.ctx, this.env, {
             type: "thread_upsert",
-            payload: { ...updated, org_id: info.id },
+            payload: toAdminThreadPayload(updated, info.id),
           });
       })
       .catch((err) => {
@@ -7638,11 +7930,12 @@ export class OrgDO extends DurableObject<DOEnv> {
    * Search threads by title across all workspaces in this org
    */
   searchThreads(query: string, limit = 50): OrgThread[] {
+    this.ensureThreadSchemaColumns();
     const resolvedLimit = Math.max(1, Math.min(200, Math.floor(limit)));
     const searchPattern = `%${query}%`;
     return this.sql
       .exec(
-        "SELECT * FROM threads WHERE title LIKE ? ORDER BY updated_at DESC LIMIT ?",
+        `SELECT ${THREAD_LIST_SELECT_COLUMNS} FROM threads WHERE title LIKE ? ORDER BY updated_at DESC LIMIT ?`,
         searchPattern,
         resolvedLimit,
       )

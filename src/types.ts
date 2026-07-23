@@ -1,5 +1,6 @@
 import type { RuntimeCallArtifact, RuntimeArtifactPreviewTarget } from "@/lib/runtime-artifacts";
 import type { MentionableProject } from "@/lib/mentions";
+import type { ThreadSearchMatch } from "@/lib/thread-search";
 
 export interface Thread {
   id: string;
@@ -22,6 +23,7 @@ export interface Thread {
   channel_connection_id?: string | null;
   channel_conversation_id?: string | null;
   channel_message_id?: string | null;
+  search_match?: ThreadSearchMatch | null;
   creator?: User;
 }
 
@@ -535,6 +537,7 @@ export interface PaginationParams {
   offset?: number;
   limit?: number;
   search?: string;
+  searchQuery?: string;
   createdBy?: string;
 }
 

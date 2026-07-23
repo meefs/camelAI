@@ -15,6 +15,7 @@ interface HistoryPageQuery {
   offset?: number;
   limit?: number;
   createdBy?: string | null;
+  searchQuery?: string | null;
 }
 
 function toHydratedThread(thread: Thread, creator: User | undefined): Thread {
@@ -75,6 +76,7 @@ export async function fetchHistoryThreadsPage(
     offset: query.offset ?? 0,
     limit: query.limit ?? 50,
     createdBy: query.createdBy ?? undefined,
+    searchQuery: query.searchQuery ?? undefined,
   };
 
   if (query.scope === 'all-workspaces') {

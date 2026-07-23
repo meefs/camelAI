@@ -337,6 +337,23 @@ export const ChatRow = memo(function ChatRow({
               </p>
               {workspaceBadge}
             </div>
+            {thread.search_match?.snippet ? (
+              <p className="mt-0.5 text-xs text-muted-foreground truncate">
+                <span className="shrink-0">
+                  {thread.search_match.field === 'last_assistant_summary'
+                    ? 'Summary: '
+                    : 'You: '}
+                </span>
+                {thread.search_match.snippet.slice(0, thread.search_match.matchStart)}
+                <span className="text-foreground font-medium">
+                  {thread.search_match.snippet.slice(
+                    thread.search_match.matchStart,
+                    thread.search_match.matchEnd,
+                  )}
+                </span>
+                {thread.search_match.snippet.slice(thread.search_match.matchEnd)}
+              </p>
+            ) : null}
             <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
               {!hideCreator ? creatorWithTooltip : null}
               <span>{formatRelativeTime(thread.updated_at)}</span>

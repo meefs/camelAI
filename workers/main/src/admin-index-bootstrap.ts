@@ -215,9 +215,10 @@ async function bootstrapAdminIndexFromDurableObjects(
     }
 
     for (const thread of threads) {
+      const { user_ask_log: _omitted, ...adminThread } = thread;
       await appIndex.applyAdminEvent({
         type: 'thread_upsert',
-        payload: { ...thread, org_id: orgId },
+        payload: { ...adminThread, org_id: orgId },
       });
     }
 

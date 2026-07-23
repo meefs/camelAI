@@ -6,11 +6,12 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Separator } from '@/components/ui/separator';
 import { ChatRow } from './chat-row';
-import { MessagesSquare } from 'lucide-react';
+import { MessagesSquare, Search } from 'lucide-react';
 
 interface ChatsListProps {
   threads: Thread[];
   loading: boolean;
+  searchActive?: boolean;
   loadingMore?: boolean;
   hasMore?: boolean;
   loadMoreRef?: RefObject<HTMLDivElement | null>;
@@ -49,15 +50,20 @@ function LoadingSkeleton() {
   );
 }
 
-function EmptyState() {
+function EmptyState({ searchActive }: { searchActive: boolean }) {
+  const Icon = searchActive ? Search : MessagesSquare;
   return (
     <div className="flex flex-col items-center justify-center py-16 text-center">
       <div className="rounded-full bg-muted p-4 mb-4">
-        <MessagesSquare className="h-8 w-8 text-muted-foreground" />
+        <Icon className="h-8 w-8 text-muted-foreground" />
       </div>
-      <h3 className="text-lg font-medium text-foreground mb-1">No chats yet</h3>
+      <h3 className="text-lg font-medium text-foreground mb-1">
+        {searchActive ? 'No matching chats' : 'No chats yet'}
+      </h3>
       <p className="text-sm text-muted-foreground max-w-sm">
-        Start a new conversation to see your chat history here.
+        {searchActive
+          ? 'Search covers chat titles, your messages, and chat summaries. Try different keywords.'
+          : 'Start a new conversation to see your chat history here.'}
       </p>
     </div>
   );
@@ -66,6 +72,7 @@ function EmptyState() {
 export function ChatsList({
   threads,
   loading,
+  searchActive = false,
   loadingMore = false,
   hasMore = false,
   loadMoreRef,
@@ -93,7 +100,7 @@ export function ChatsList({
   }
 
   if (threads.length === 0) {
-    return <EmptyState />;
+    return <EmptyState searchActive={searchActive} />;
   }
 
   return (

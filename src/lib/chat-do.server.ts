@@ -45,6 +45,10 @@ import {
 } from "./model-picker-config";
 import { retryTransientDurableObjectRead } from "./do-rpc-retry.server";
 import { truncateThreadPreviewText } from "./thread-preview";
+import {
+  buildThreadSearchMatch,
+  parseThreadSearchTerms,
+} from "./thread-search";
 import { getThreadTitleSourceMessage } from "./thread-title";
 import type { ThreadProjectActivity } from "./thread-project-activity";
 import {
@@ -427,9 +431,19 @@ export async function getThreadsPaginated(
     limit,
     workspaceId,
     params.createdBy,
+    params.searchQuery,
   );
+  const searchTerms = parseThreadSearchTerms(params.searchQuery);
   return {
-    items: result.items.map((t) => toThreadListPreview(t)),
+    items: result.items.map((thread) => {
+      const preview = toThreadListPreview(thread);
+      return searchTerms.length > 0
+        ? {
+            ...preview,
+            search_match: buildThreadSearchMatch(thread, searchTerms),
+          }
+        : preview;
+    }),
     total: result.total,
     offset: result.offset,
     limit: result.limit,
@@ -462,9 +476,19 @@ export async function getThreadsPaginatedAllWorkspaces(
     offset,
     limit,
     params.createdBy,
+    params.searchQuery,
   );
+  const searchTerms = parseThreadSearchTerms(params.searchQuery);
   return {
-    items: result.items.map((t) => toThreadListPreview(t)),
+    items: result.items.map((thread) => {
+      const preview = toThreadListPreview(thread);
+      return searchTerms.length > 0
+        ? {
+            ...preview,
+            search_match: buildThreadSearchMatch(thread, searchTerms),
+          }
+        : preview;
+    }),
     total: result.total,
     offset: result.offset,
     limit: result.limit,

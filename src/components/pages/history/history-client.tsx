@@ -13,6 +13,8 @@ import { ChatsToolbar } from '@/components/history/chats-toolbar';
 import { ChatsList } from '@/components/history/chats-list';
 import { SwitchWorkspaceDialog } from '@/components/history/switch-workspace-dialog';
 import { ContainerLoadingDialog } from '@/components/container-loading-dialog';
+import { useDebouncedValue } from '@/hooks/use-debounced-value';
+import { canonicalizeThreadSearchQuery } from '@/lib/thread-search';
 
 // Note: Auth is handled by the (app) layout - no need to check here
 
@@ -24,6 +26,7 @@ interface HistoryPageResponse {
   offset: number;
   limit: number;
   queryKey: string;
+  q?: string;
 }
 
 function getHistoryScope(searchParams: URLSearchParams): 'this-workspace' | 'all-workspaces' {
@@ -67,6 +70,11 @@ export default function HistoryClient({
   const activeCreatorId = searchParams.get('createdBy')?.trim() || null;
 
   const [searchQuery, setSearchQuery] = useState('');
+  const effectiveQuery = canonicalizeThreadSearchQuery(
+    useDebouncedValue(searchQuery, 250),
+  );
+  const [listQuery, setListQuery] = useState('');
+  const [listQueryKey, setListQueryKey] = useState(initialQueryKey);
   const [allThreads, setAllThreads] = useState(initialThreads);
   const [total, setTotal] = useState(initialTotal);
   const [currentOffset, setCurrentOffset] = useState(initialOffset + initialThreads.length);
@@ -86,7 +94,12 @@ export default function HistoryClient({
   const previousWorkspaceIdRef = useRef<string | null | undefined>(undefined);
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
   const scrollViewportRef = useRef<HTMLDivElement | null>(null);
+  const seenHistoryResponsesRef = useRef(
+    new WeakSet<HistoryPageResponse>(),
+  );
   const isSelecting = selectMode !== 'off';
+  const searchPending =
+    effectiveQuery !== listQuery || initialQueryKey !== listQueryKey;
   const hasMore = allThreads.length < total;
   const loading = revalidatorState === 'loading' && allThreads.length === 0;
   const loadingMore = loadFetcher.state !== 'idle';
@@ -120,41 +133,12 @@ export default function HistoryClient({
     }
   }, [currentOrg?.id, currentWorkspace?.id, revalidate]);
 
-  useEffect(() => {
-    setAllThreads(initialThreads);
-    setCurrentOffset(initialOffset + initialThreads.length);
-    setTotal(initialTotal);
-  }, [initialQueryKey, initialThreads, initialOffset, initialTotal]);
-
-  useEffect(() => {
-    if (!loadFetcher.data?.threads || loadFetcher.data.queryKey !== initialQueryKey) {
-      return;
-    }
-
-    setAllThreads((prev) => {
-      const existingIds = new Set(prev.map((thread) => thread.id));
-      const nextThreads = loadFetcher.data!.threads.filter(
-        (thread) => !existingIds.has(thread.id)
-      );
-      return [...prev, ...nextThreads];
-    });
-    setCurrentOffset(loadFetcher.data.offset + loadFetcher.data.threads.length);
-    setTotal(loadFetcher.data.total);
-  }, [loadFetcher.data]);
-
-  const loadMore = useCallback(() => {
-    if (loading || loadingMore || !hasMore) {
-      return;
-    }
-
-    if (scope === 'this-workspace' && !currentWorkspace?.id) {
-      return;
-    }
-
+  const buildPageParams = useCallback((offset: number) => {
     const params = new URLSearchParams({
-      offset: String(currentOffset),
+      offset: String(offset),
       limit: String(initialLimit || PAGE_SIZE),
       scope,
+      queryKey: initialQueryKey,
     });
     if (scope === 'this-workspace' && currentWorkspace?.id) {
       params.set('workspaceId', currentWorkspace.id);
@@ -162,24 +146,112 @@ export default function HistoryClient({
     if (activeCreatorId) {
       params.set('createdBy', activeCreatorId);
     }
-    params.set('queryKey', initialQueryKey);
-    loadFetcher.load(`/api/history?${params.toString()}`);
+    if (effectiveQuery) {
+      params.set('q', effectiveQuery);
+    }
+    return params;
   }, [
     activeCreatorId,
+    currentWorkspace?.id,
+    effectiveQuery,
+    initialLimit,
+    initialQueryKey,
+    scope,
+  ]);
+
+  const loadHistoryPage = loadFetcher.load;
+
+  useEffect(() => {
+    if (!effectiveQuery) {
+      setAllThreads(initialThreads);
+      const visibleIds = new Set(initialThreads.map((thread) => thread.id));
+      setSelectedIds((previous) => {
+        const next = new Set(
+          Array.from(previous).filter((id) => visibleIds.has(id)),
+        );
+        return next.size === previous.size ? previous : next;
+      });
+      setCurrentOffset(initialOffset + initialThreads.length);
+      setTotal(initialTotal);
+      setListQuery('');
+      setListQueryKey(initialQueryKey);
+      return;
+    }
+
+    loadHistoryPage(`/api/history?${buildPageParams(0).toString()}`);
+  }, [
+    buildPageParams,
+    effectiveQuery,
+    initialOffset,
+    initialQueryKey,
+    initialThreads,
+    initialTotal,
+    loadHistoryPage,
+  ]);
+
+  useEffect(() => {
+    const data = loadFetcher.data;
+    // React Router retains fetcher.data between loads. Mark every payload as
+    // seen before validating it so later query changes cannot reprocess it.
+    if (!data || seenHistoryResponsesRef.current.has(data)) {
+      return;
+    }
+    seenHistoryResponsesRef.current.add(data);
+
+    if (!data.threads || data.queryKey !== initialQueryKey) {
+      return;
+    }
+    if ((data.q ?? '') !== effectiveQuery) return;
+
+    if (data.offset === 0) {
+      setAllThreads(data.threads);
+      const visibleIds = new Set(data.threads.map((thread) => thread.id));
+      setSelectedIds((previous) => {
+        const next = new Set(
+          Array.from(previous).filter((id) => visibleIds.has(id)),
+        );
+        return next.size === previous.size ? previous : next;
+      });
+    } else {
+      setAllThreads((prev) => {
+        const existingIds = new Set(prev.map((thread) => thread.id));
+        const nextThreads = data.threads.filter(
+          (thread) => !existingIds.has(thread.id)
+        );
+        return [...prev, ...nextThreads];
+      });
+    }
+    setCurrentOffset(data.offset + data.threads.length);
+    setTotal(data.total);
+    setListQuery(data.q ?? '');
+    setListQueryKey(data.queryKey);
+  }, [effectiveQuery, initialQueryKey, loadFetcher.data]);
+
+  const loadMore = useCallback(() => {
+    if (loading || loadingMore || searchPending || !hasMore) {
+      return;
+    }
+
+    if (scope === 'this-workspace' && !currentWorkspace?.id) {
+      return;
+    }
+
+    loadHistoryPage(`/api/history?${buildPageParams(currentOffset).toString()}`);
+  }, [
+    buildPageParams,
     currentOffset,
     currentWorkspace?.id,
     hasMore,
-    initialLimit,
-    initialQueryKey,
-    loadFetcher,
+    loadHistoryPage,
     loading,
     loadingMore,
+    searchPending,
     scope,
   ]);
 
   useEffect(() => {
     const target = loadMoreRef.current;
-    if (!target || !hasMore || loadingMore || loading) return;
+    if (!target || !hasMore || loadingMore || loading || searchPending) return;
 
     const observer = new IntersectionObserver(
       (entries) => {
@@ -192,16 +264,7 @@ export default function HistoryClient({
 
     observer.observe(target);
     return () => observer.disconnect();
-  }, [hasMore, loadMore, loading, loadingMore]);
-
-  // Filter threads by search query
-  const filteredThreads = useMemo(
-    () =>
-      allThreads.filter((thread) =>
-        thread.title.toLowerCase().includes(searchQuery.toLowerCase())
-      ),
-    [allThreads, searchQuery]
-  );
+  }, [hasMore, loadMore, loading, loadingMore, searchPending]);
   const hasActiveCreator = useMemo(
     () => threadCreators.some((creator) => creator.userId === activeCreatorId),
     [activeCreatorId, threadCreators]
@@ -274,12 +337,12 @@ export default function HistoryClient({
 
   const handleSelectAll = useCallback(() => {
     enterSelectMode('implicit');
-    if (selectedIds.size === filteredThreads.length) {
+    if (selectedIds.size === allThreads.length) {
       setSelectedIds(new Set());
     } else {
-      setSelectedIds(new Set(filteredThreads.map((thread) => thread.id)));
+      setSelectedIds(new Set(allThreads.map((thread) => thread.id)));
     }
-  }, [enterSelectMode, filteredThreads, selectedIds.size]);
+  }, [allThreads, enterSelectMode, selectedIds.size]);
 
   const handleClearSelection = useCallback(() => {
     setSelectedIds(new Set());
@@ -392,10 +455,10 @@ export default function HistoryClient({
             currentUserId={currentUserId}
             activeCreatorId={activeCreatorId}
             onCreatorChange={handleCreatorChange}
-            totalCount={searchQuery ? filteredThreads.length : total}
+            totalCount={total}
             isSelecting={isSelecting}
             selectedCount={selectedIds.size}
-            allSelected={selectedIds.size === filteredThreads.length && filteredThreads.length > 0}
+            allSelected={selectedIds.size === allThreads.length && allThreads.length > 0}
             onEnterSelectMode={() => setSelectMode('manual')}
             onSelectAll={handleSelectAll}
             onClearSelection={handleClearSelection}
@@ -404,8 +467,9 @@ export default function HistoryClient({
 
           {/* Scrollable List */}
           <ChatsList
-            threads={filteredThreads}
-            loading={loading}
+            threads={allThreads}
+            loading={loading || searchPending}
+            searchActive={listQuery !== ''}
             isSelecting={isSelecting}
             selectedIds={selectedIds}
             onToggleSelect={handleToggleSelect}
