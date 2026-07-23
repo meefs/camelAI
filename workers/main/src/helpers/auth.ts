@@ -20,8 +20,9 @@ import { getAppIndexReadDatabase } from "../app-index-db.js";
 export type AuthResult = { session: SessionData } | { error: Response };
 
 // Per-RPC budget for the chat WS auth chain. Client connectionTimeout is 20s;
-// two attempts × 2.5s per RPC prefers degrade/retry over abandoning mid-handshake
-// (legacy was 3 × 2s).
+// at most three sequential timed phases (UserDO invalidation, workspace→org
+// resolution, one OrgDO validation) × two 2.5s attempts stay below that bound,
+// including the short retry delays.
 const CHAT_WS_AUTH_RPC_TIMEOUT_MS = 2_500;
 const CHAT_WS_AUTH_RPC_ATTEMPTS = 2;
 const WORKSPACE_ORG_INDEX_PREFIX = "workspace_org:";
@@ -402,38 +403,16 @@ export async function requireChatWebSocketAccess(
       () => getWorkspaceOrgId(env, workspaceId),
     );
     const workspaceOrgId = resolvedOrgId || sessionOrgId;
-    const workspaceOrgStub = getOrgStub(env, workspaceOrgId);
-    const wsInfo = await chatWsAuthRpc(
-      "OrgDO.getWorkspaceRecord",
-      () => workspaceOrgStub.getWorkspaceRecord(workspaceId),
-    );
-
-    if (!wsInfo || wsInfo.archived) {
-      return { error: text("Workspace not found", 404) };
-    }
-
-    const orgId = wsInfo.org_id;
-    const orgStub = orgId === workspaceOrgId ? workspaceOrgStub : getOrgStub(env, orgId);
-    const workspaceAccess = await chatWsAuthRpc(
-      "OrgDO.getWorkspaceAccess",
-      () => orgStub.getWorkspaceAccess(wsInfo.id, userId),
-    );
-
-    // Deny on known restricted access before any further RPC: if the org
-    // call below fails transiently we degrade, and a denial we already hold
-    // must never be converted into a degraded (fail-open) upgrade.
-    if (workspaceAccess !== "full") {
-      return { error: text("Forbidden", 403) };
-    }
-
+    const orgStub = getOrgStub(env, workspaceOrgId);
     const orgValidation = await chatWsAuthRpc(
-      "OrgDO.validateChatThreadAccess",
-      () => orgStub.validateChatThreadAccess(userId, wsInfo.id, threadId),
+      "OrgDO.validateChatWebSocketAccess",
+      () => orgStub.validateChatWebSocketAccess(userId, workspaceId, threadId),
     );
 
     if (!orgValidation.ok) {
       switch (orgValidation.reason) {
         case "org_not_found":
+        case "workspace_not_found":
           return { error: text("Workspace not found", 404) };
         case "thread_not_found":
           return { error: text("Thread not found", 404) };
@@ -447,7 +426,7 @@ export async function requireChatWebSocketAccess(
       session,
       orgId: orgValidation.orgId,
       orgSlug: orgValidation.orgSlug,
-      workspaceId: wsInfo.id,
+      workspaceId: orgValidation.workspaceId,
       userId,
       wsStub,
       threadId: orgValidation.threadId,

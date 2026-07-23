@@ -570,6 +570,23 @@ export type OrgChatThreadAccessResult =
       reason: "org_not_found" | "forbidden" | "thread_not_found";
     };
 
+export type OrgChatWebSocketAccessResult =
+  | {
+      ok: true;
+      orgId: string;
+      orgSlug: string;
+      workspaceId: string;
+      threadId: string;
+    }
+  | {
+      ok: false;
+      reason:
+        | "org_not_found"
+        | "workspace_not_found"
+        | "forbidden"
+        | "thread_not_found";
+    };
+
 export interface ProxyUsageInput {
   input_tokens: number;
   output_tokens: number;
@@ -7897,6 +7914,64 @@ export class OrgDO extends DurableObject<DOEnv> {
         console.error("Failed to sync thread activity to AdminIndex", err);
       });
     return true;
+  }
+
+  /**
+   * One authorization RPC for the chat WebSocket handshake. All authoritative
+   * org/workspace/member/access/thread reads happen synchronously in this
+   * Durable Object turn, avoiding both a sequential client-side OrgDO RPC chain
+   * and compatibility hydration calls on the handshake path.
+   */
+  async validateChatWebSocketAccess(
+    userId: string,
+    workspaceId: string,
+    threadId: string,
+  ): Promise<OrgChatWebSocketAccessResult> {
+    const info = this.getInfoSync();
+    if (!info || info.archived) {
+      return { ok: false, reason: "org_not_found" };
+    }
+
+    // Presence in this org-sharded table establishes workspace ownership
+    // without hydrating WorkspaceDO metadata on the handshake path.
+    const workspace = this.sql
+      .exec<{ id: string; archived: number }>(
+        "SELECT id, archived FROM workspaces WHERE id = ?",
+        workspaceId,
+      )
+      .toArray()[0];
+    if (!workspace || workspace.archived === 1) {
+      return { ok: false, reason: "workspace_not_found" };
+    }
+
+    const member = this.sql
+      .exec<{ found: number }>(
+        "SELECT 1 AS found FROM members WHERE user_id = ?",
+        userId,
+      )
+      .toArray()[0];
+    if (!member) {
+      return { ok: false, reason: "forbidden" };
+    }
+
+    const workspaceAccess =
+      this.getStoredWorkspaceAccess(workspaceId, userId) ?? "full";
+    if (workspaceAccess !== "full") {
+      return { ok: false, reason: "forbidden" };
+    }
+
+    const thread = this.getThread(threadId);
+    if (!thread || thread.workspace_id !== workspaceId) {
+      return { ok: false, reason: "thread_not_found" };
+    }
+
+    return {
+      ok: true,
+      orgId: info.id,
+      orgSlug: info.slug || info.id.slice(0, 5),
+      workspaceId,
+      threadId,
+    };
   }
 
   async validateChatThreadAccess(

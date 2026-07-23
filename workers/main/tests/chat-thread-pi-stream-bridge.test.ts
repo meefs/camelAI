@@ -1221,10 +1221,20 @@ describe('ChatThreadDO onConnect render-history delivery', () => {
     fake.messages = messages;
     fake.piSession = null;
     fake.currentTodos = [];
-    fake.ctx = { storage: { kv: { get: vi.fn(() => undefined), put: vi.fn() } } };
+    const background: Promise<unknown>[] = [];
+    fake.ctx = {
+      storage: { kv: { get: vi.fn(() => undefined), put: vi.fn() } },
+      waitUntil: vi.fn((promise: Promise<unknown>) => background.push(promise)),
+    };
+    fake.sweepOrphanedActiveTurnMarker = vi.fn(async () => {});
+    fake.topUpUiMessagesFromPiCore = vi.fn(async () => {});
+    fake.healLegacyUiMessageTimes = vi.fn(async () => {});
     fake.healLegacyUiMessageAuthors = vi.fn(async () => {});
+    fake.isThreadStreaming = vi.fn(() => false);
     fake.syncAgentState = vi.fn();
+    fake.recordChatThreadObservabilityEvent = vi.fn();
     fake.maybeGenerateChatGroupAvatarForThread = vi.fn(async () => {});
+    fake.background = background;
     return fake;
   };
 
@@ -1258,6 +1268,27 @@ describe('ChatThreadDO onConnect render-history delivery', () => {
       'u1',
       'a1',
     ]);
+    await Promise.all(fake.background);
+  });
+
+  it('records background repair failures and still sends best-effort state/history', async () => {
+    const fake = makeConnectFake([{ id: 'kept', role: 'user', parts: [] }]);
+    fake.sweepOrphanedActiveTurnMarker = vi.fn(async () => {
+      throw new Error('repair gate failed');
+    });
+    const connection = { send: vi.fn(), close: vi.fn(), serializeAttachment: vi.fn() } as any;
+
+    await ChatThreadDO.prototype.onConnect.call(fake, connection, {
+      request: new Request('https://do.test/ws'),
+    } as any);
+    await Promise.all(fake.background);
+
+    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+      'chat_ws_connect_background_repair',
+      expect.objectContaining({ status: 'failed', operation: 'reconcile_connected_client' }),
+    );
+    expect(fake.syncAgentState).toHaveBeenCalledTimes(2);
+    expect(connection.send).toHaveBeenCalledTimes(2);
   });
 
   it('skips the frame when the render table is empty', async () => {
@@ -1272,6 +1303,34 @@ describe('ChatThreadDO onConnect render-history delivery', () => {
       request: new Request('https://do.test/ws'),
     } as any);
     expect(connection.send).not.toHaveBeenCalled();
+    await Promise.all(fake.background);
+  });
+
+  it('returns before repair gates resolve, then delivers corrected state and history', async () => {
+    let releaseRepair!: () => void;
+    const repairGate = new Promise<void>((resolve) => { releaseRepair = resolve; });
+    const fake = makeConnectFake([{ id: 'stale', role: 'user', parts: [] }]);
+    fake.sweepOrphanedActiveTurnMarker = vi.fn(() => repairGate);
+    fake.topUpUiMessagesFromPiCore = vi.fn(async () => {
+      fake.messages = [{ id: 'corrected', role: 'assistant', parts: [] }];
+    });
+    const connection = { send: vi.fn(), close: vi.fn(), serializeAttachment: vi.fn() } as any;
+
+    const connected = ChatThreadDO.prototype.onConnect.call(fake, connection, {
+      request: new Request('https://do.test/ws'),
+    } as any);
+
+    expect(fake.sweepOrphanedActiveTurnMarker).not.toHaveBeenCalled();
+    expect(fake.topUpUiMessagesFromPiCore).not.toHaveBeenCalled();
+    expect(connection.send).toHaveBeenCalledTimes(1);
+    await connected;
+    releaseRepair();
+    await Promise.all(fake.background);
+
+    expect(fake.topUpUiMessagesFromPiCore).toHaveBeenCalledTimes(1);
+    expect(fake.syncAgentState).toHaveBeenCalledTimes(2);
+    const corrected = JSON.parse(connection.send.mock.calls.at(-1)?.[0] as string);
+    expect(corrected.messages.map((message: AnyRecord) => message.id)).toEqual(['corrected']);
   });
 });
 
@@ -1933,18 +1992,22 @@ describe('ChatThreadDO stranded-marker healing on page open', () => {
     });
   });
 
-  it('runs the sweep on onConnect before deriving any busy state', async () => {
+  it('runs the sweep before the background busy-state correction', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.chatContext = { orgId: 'org1', threadId: 't1' };
     fake.captureChatContextFromRequest = vi.fn();
     fake.sweepOrphanedActiveTurnMarker = vi.fn(async () => {});
+    fake.topUpUiMessagesFromPiCore = vi.fn(async () => {});
+    fake.healLegacyUiMessageTimes = vi.fn(async () => {});
     fake.healLegacyUiMessageAuthors = vi.fn(async () => {});
     fake.messages = [];
     fake.isThreadStreaming = vi.fn(() => false);
     fake.currentTodos = [];
     fake.syncAgentState = vi.fn();
+    fake.recordChatThreadObservabilityEvent = vi.fn();
     fake.maybeGenerateChatGroupAvatarForThread = vi.fn(async () => {});
-    fake.ctx = { waitUntil: vi.fn((promise: Promise<unknown>) => promise) };
+    const background: Promise<unknown>[] = [];
+    fake.ctx = { waitUntil: vi.fn((promise: Promise<unknown>) => background.push(promise)) };
     const connection = { send: vi.fn(), close: vi.fn() };
     const ctx = { request: new Request('https://do/ws?orgId=org1') };
 
@@ -1955,9 +2018,9 @@ describe('ChatThreadDO stranded-marker healing on page open', () => {
     );
 
     expect(connection.close).not.toHaveBeenCalled();
+    await Promise.all(background);
     expect(fake.sweepOrphanedActiveTurnMarker).toHaveBeenCalledTimes(1);
-    // Avatar work is scheduled off the critical path (waitUntil), not awaited.
-    expect(fake.ctx.waitUntil).toHaveBeenCalledTimes(1);
+    expect(fake.ctx.waitUntil).toHaveBeenCalledTimes(2);
     expect(fake.maybeGenerateChatGroupAvatarForThread).toHaveBeenCalledWith('t1');
     // The sweep ran before the stale-todo/agent-state derivation read the marker.
     expect(

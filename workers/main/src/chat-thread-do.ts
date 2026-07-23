@@ -1343,6 +1343,58 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     }
   }
 
+  private sendRenderHistoryToConnection(connection: Connection): void {
+    if (this.messages.length === 0) return;
+    try {
+      connection.send(
+        JSON.stringify({
+          messages: this.messages,
+          type: CHAT_MESSAGE_TYPES.CHAT_MESSAGES,
+        }),
+      );
+    } catch (error) {
+      // A socket that closed while background reconciliation ran will reconnect.
+      console.error("[ChatThreadDO] failed to send render history on connect", error);
+    }
+  }
+
+  private async reconcileConnectedClient(connection: Connection): Promise<void> {
+    const startedAt = Date.now();
+    try {
+      // None of these repairs belongs on the HTTP 101 critical path. Run them in
+      // order because the mirror top-up must precede legacy metadata healing.
+      await this.sweepOrphanedActiveTurnMarker();
+      await this.topUpUiMessagesFromPiCore();
+      await this.healLegacyUiMessageTimes();
+      await this.healLegacyUiMessageAuthors();
+
+      if (!this.isThreadStreaming() && this.currentTodos.length > 0) {
+        // This syncs a completed-todo override; do not overwrite it afterward.
+        await this.completeTodoStateForTurnEnd();
+      } else {
+        this.syncAgentState();
+      }
+      this.sendRenderHistoryToConnection(connection);
+      this.recordChatThreadObservabilityEvent("chat_ws_connect_background_repair", {
+        operation: "reconcile_connected_client",
+        status: "completed",
+        durationMs: Date.now() - startedAt,
+      });
+    } catch (error) {
+      console.error("[ChatThreadDO] background connect reconciliation failed", error);
+      this.recordChatThreadObservabilityEvent("chat_ws_connect_background_repair", {
+        operation: "reconcile_connected_client",
+        status: "failed",
+        severity: "error",
+        durationMs: Date.now() - startedAt,
+      });
+      // Still deliver the best state/history currently available. A later
+      // connection or getUiMessages read retries idempotent repairs.
+      this.syncAgentState();
+      this.sendRenderHistoryToConnection(connection);
+    }
+  }
+
   async onConnect(connection: Connection, ctx: ConnectionContext): Promise<void> {
     const url = new URL(ctx.request.url);
     const incomingOrgId = url.searchParams.get("orgId")?.trim() || "";
@@ -1376,67 +1428,28 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
 
     this.captureChatContextFromRequest(url, ctx.request, connection);
 
-    // Heal a provably-dead turn before this socket derives any busy state from
-    // it (working indicator, stale-todo completion below). onStart only covers
-    // cold wakes; a marker stranded while the isolate stayed warm (e.g. an
-    // ai-chat recovery that skipped silently on an alarm wake) is cleared here,
-    // at the moment the user actually opens the thread. Guarded no-op whenever
-    // the marker is live, freshly opened, or awaiting recovery.
-    const connectPhase = this.startChatMemoryPhase("on_connect");
-    await this.sweepOrphanedActiveTurnMarker();
-    await this.healLegacyUiMessageAuthors();
+    // Keep the handshake path synchronous and bounded: publish the currently
+    // available state/history, then reconcile durable truth after the 101.
+    this.syncAgentState();
+    this.sendRenderHistoryToConnection(connection);
+    this.ctx.waitUntil(
+      Promise.resolve()
+        .then(() => this.reconcileConnectedClient(connection))
+        .catch((error) => {
+          // Defensive catch: reconcileConnectedClient already catches all repair
+          // failures, but never leave a floating rejection on lifecycle work.
+          console.error("[ChatThreadDO] connect background task failed", error);
+        }),
+    );
 
-    // Deliver the current render history to THIS socket. Turns can complete
-    // while a browser is disconnected (headless saveMessages turns from email/
-    // Slack/cron ingress, recovery re-drives) and nothing else replays them to a
-    // (re)connecting client: the resumable stream only replays an IN-FLIGHT
-    // turn, and Agents SDK state sync carries no chat messages. Uses the same
-    // frame shape ai-chat's persistMessages broadcast uses (the client handler
-    // replaces its list wholesale), sent only to the new connection.
-    const connectSyncPhase = this.startChatMemoryPhase("render_connect_sync");
-    if (this.messages.length > 0) {
-      try {
-        // Do not retain this full-history frame after send. Until render history
-        // is durably windowed, caching it would add another resident copy of R.
-        connection.send(
-          JSON.stringify({
-            messages: this.messages,
-            type: CHAT_MESSAGE_TYPES.CHAT_MESSAGES,
-          }),
-        );
-      } catch (error) {
-        // A socket that closed mid-connect just reconnects; never fail onConnect.
-        console.error(
-          "[ChatThreadDO] failed to send render history on connect",
-          error,
-        );
-      }
-    }
-    this.endChatMemoryPhase(connectSyncPhase);
-    this.endChatMemoryPhase(connectPhase);
-
-    if (!this.isThreadStreaming() && this.currentTodos.length > 0) {
-      // completeTodoStateForTurnEnd() syncs an override marking the stale todos
-      // completed; a second unconditional sync here (with currentTodos already
-      // cleared) would erase that checklist, so only sync in the else branch.
-      await this.completeTodoStateForTurnEnd();
-    } else {
-      this.syncAgentState();
-    }
-    // Avatar generation can take multiple seconds (UserDO + AI). PartyServer
-    // awaits onConnect before returning HTTP 101, so keep it off the critical
-    // path — a slow avatar must not trip the browser's connectionTimeout.
     const avatarThreadId = this.chatContext?.threadId ?? "";
     if (avatarThreadId) {
       this.ctx.waitUntil(
-        this.maybeGenerateChatGroupAvatarForThread(avatarThreadId).catch(
-          (error) => {
-            console.error(
-              "[ChatThreadDO] background chat-group avatar generation failed",
-              error,
-            );
-          },
-        ),
+        Promise.resolve()
+          .then(() => this.maybeGenerateChatGroupAvatarForThread(avatarThreadId))
+          .catch((error) => {
+            console.error("[ChatThreadDO] background chat-group avatar generation failed", error);
+          }),
       );
     }
   }

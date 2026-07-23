@@ -287,8 +287,8 @@ interface ChatProps {
   workspaceId: string;
   /**
    * Legacy `Message` transcript. Supplied by the admin read-only loader branch
-   * (pi_core, rendered directly), the pending-first-turn skeleton, and the
-   * client snapshot cache. The live loader branch leaves it empty — its
+   * (pi_core, rendered directly) and the client snapshot cache. The live
+   * loader branch leaves it empty — its
    * fallback view is derived from `initialUiMessages`.
    */
   initialMessages?: Message[];
@@ -315,12 +315,6 @@ interface ChatProps {
   experimentalSettings?: OrganizationExperimentalSettings | null;
   initialPreviewTabs?: PreviewTarget[];
   initialActiveTabId?: string | null;
-  /**
-   * A freshly-started new chat whose first turn is running in the background
-   * (set by the new-chat action via ?newThread=1). Shows the working indicator
-   * from first paint until the assistant reply appears.
-   */
-  pendingFirstTurn?: boolean;
   /** Hostname from server for consistent URL generation (avoids hydration mismatch) */
   hostname?: AppUrlInput;
   /** Org slug for namespaced app URLs */
@@ -684,7 +678,6 @@ export default function Chat({
   experimentalSettings,
   initialPreviewTabs,
   initialActiveTabId,
-  pendingFirstTurn = false,
   hostname,
   orgSlug,
   isLoadingMessages = false,
@@ -805,7 +798,7 @@ export default function Chat({
     onOpen: () => void;
     onMessage: (event: MessageEvent) => void;
     onClose: (event?: CloseEvent) => void;
-    onError: () => void;
+    onError: (error?: unknown) => void;
     onConnectionError: (error: {
       code?: number;
       reason?: string;
@@ -837,7 +830,7 @@ export default function Chat({
     onOpen: () => agentCallbacksRef.current.onOpen(),
     onMessage: (event) => agentCallbacksRef.current.onMessage(event),
     onClose: (event) => agentCallbacksRef.current.onClose(event),
-    onError: () => agentCallbacksRef.current.onError(),
+    onError: (error) => agentCallbacksRef.current.onError(error),
     onConnectionError: (error) =>
       agentCallbacksRef.current.onConnectionError(error),
     onStateUpdate: (state) => agentCallbacksRef.current.onStateUpdate(state),
@@ -1262,9 +1255,8 @@ export default function Chat({
     () => getThreadRunningState(chatGroupsContext?.groups, threadId ?? null),
     [chatGroupsContext?.groups, threadId],
   );
-  // assistantTurnActive / showGlobalAssistantIndicator are defined below, after
-  // isAwaitingAssistant, so a freshly-started new chat (pendingFirstTurn) counts
-  // as an active turn during the cold-start gap too.
+  // assistantTurnActive / showGlobalAssistantIndicator are defined below after
+  // the transcript tail and durable/live running state are available.
   const runningStartedAt = activeThreadRunningState.isRunning
     ? activeThreadRunningState.startedAt
     : null;
@@ -2859,8 +2851,8 @@ export default function Chat({
     [threadId],
   );
 
-  const handleAgentError = useCallback(() => {
-    if (threadId) trackChatSocketError(threadId);
+  const handleAgentError = useCallback((event?: unknown) => {
+    if (threadId) trackChatSocketError(threadId, event);
   }, [threadId]);
 
   const handleAgentConnectionError = useCallback(
@@ -2870,16 +2862,18 @@ export default function Chat({
         reason: error.reason,
         wasClean: error.wasClean,
       } as CloseEvent);
+      const code = normalized.code ?? error.code ?? null;
+      const wasClean = normalized.wasClean ?? error.wasClean;
       if (threadId) {
         trackChatSocketTerminalClose(threadId, {
-          code: normalized.code ?? error.code,
+          code: code ?? undefined,
           reason: normalized.reason ?? error.reason,
-          wasClean: normalized.wasClean ?? error.wasClean,
+          wasClean,
         });
       }
       toast.error(
         terminalChatWebSocketUserMessage(
-          normalized.code ?? error.code ?? null,
+          code,
           normalized.reason ?? error.reason,
         ),
         { id: "chat-ws-terminal-close", duration: 12_000 },
@@ -3117,33 +3111,22 @@ export default function Chat({
   const lastMessage = visibleMessages[visibleMessages.length - 1];
   const visibleMessageCount = visibleMessages.length;
   const lastVisibleMessageId = lastMessage?.id ?? null;
-  // See deriveIsAwaitingAssistant: shows the working indicator while a turn is
-  // pending (streaming / queued send / freshly-started new chat) and the
-  // transcript ends on a non-assistant message. pendingFirstTurn is a loader
-  // prop that stays true for this mount's lifetime, so we drop it once a
-  // terminal error lands — otherwise a failed background first turn (which
-  // clears loading/isStreaming but leaves the synthesized user message last)
-  // would keep the composer stuck in running/stop mode and treat the next
-  // submission as a steer instead of a fresh prompt.
+  // One pending-turn derivation owns both new and existing chats. The durable
+  // workspace status bridges cold starts/reconnects; local loading and the live
+  // stream bridge sends that have not reached durable status yet.
   const isAwaitingAssistant = deriveIsAwaitingAssistant({
     loading,
     isStreaming,
-    pendingFirstTurn,
+    isRunning: activeThreadRunningState.isRunning,
     lastMessage,
-    hasTerminalError: Boolean(error),
   });
-  // A turn is active while streaming/queued/running OR while a freshly-started
-  // new chat is awaiting its first reply (isAwaitingAssistant covers the cold
-  // pendingFirstTurn gap and clears once the reply lands, so the composer shows
-  // the running/stop state and a second submit is treated as a steer).
   const turnSettled = deriveTurnSettled(lastMessage);
   const assistantTurnActive =
     !turnSettled &&
     (loading ||
       isStreaming ||
       isAwaitingAssistant ||
-      activeAssistantMessageId !== null ||
-      activeThreadRunningState.isRunning);
+      activeAssistantMessageId !== null);
   const showGlobalAssistantIndicator = assistantTurnActive && !isCompacting;
   const handleFreshlyCompletedTurnAnimationScheduled =
     clearFreshlyCompletedTurnId;

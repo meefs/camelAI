@@ -1,5 +1,8 @@
 import { reportClientEvent } from "./client-error-reporting";
-import { normalizeWebSocketCloseEvent } from "./chat-ws-close";
+import {
+  isIntentionalCleanChatWebSocketTeardown,
+  normalizeWebSocketCloseEvent,
+} from "./chat-ws-close";
 
 /**
  * Client-side chat WebSocket + send-path telemetry.
@@ -32,6 +35,7 @@ interface ThreadSocketStats {
   lastOpenAt: number | null;
   lastCloseAt: number | null;
   everOpened: boolean;
+  isOpen: boolean;
   recentCloses: RecentClose[];
   lastFlapReportAt: number;
 }
@@ -48,6 +52,7 @@ function statsFor(threadId: string): ThreadSocketStats {
       lastOpenAt: null,
       lastCloseAt: null,
       everOpened: false,
+      isOpen: false,
       recentCloses: [],
       lastFlapReportAt: 0,
     };
@@ -72,6 +77,7 @@ function lifecycleCounts(stats: ThreadSocketStats): Record<string, unknown> {
     closes: stats.closes,
     errors: stats.errors,
     everOpened: stats.everOpened,
+    isOpen: stats.isOpen,
   };
 }
 
@@ -93,6 +99,7 @@ export function trackChatSocketOpen(threadId: string): void {
   stats.opens += 1;
   const reconnect = stats.everOpened;
   stats.everOpened = true;
+  stats.isOpen = true;
   const msSinceLastClose =
     stats.lastCloseAt !== null ? now - stats.lastCloseAt : undefined;
   stats.lastOpenAt = now;
@@ -118,22 +125,52 @@ export function trackChatSocketClose(
   stats.closes += 1;
   const normalized = normalizeWebSocketCloseEvent(event);
   const code = normalized.code;
+  // PartySocket represents a pre-open handshake timeout by disconnecting its
+  // synthetic socket with code 1000/wasClean=true before emitting TIMEOUT.
+  // Snapshot this concrete attempt's open state before clearing it so that
+  // synthetic close remains a handshake failure rather than navigation noise.
+  const connectionWasOpen = stats.isOpen;
   const socketLifeMs =
-    stats.lastOpenAt !== null ? now - stats.lastOpenAt : undefined;
+    connectionWasOpen && stats.lastOpenAt !== null
+      ? now - stats.lastOpenAt
+      : undefined;
   stats.lastCloseAt = now;
-  stats.recentCloses.push({ at: now, code });
-  stats.recentCloses = stats.recentCloses.filter(
-    (close) => now - close.at <= FLAP_WINDOW_MS,
-  );
+  stats.isOpen = false;
+  const intentionalCleanTeardown = isIntentionalCleanChatWebSocketTeardown({
+    code,
+    wasClean: normalized.wasClean,
+    connectionWasOpen,
+  });
+  const preOpenClose = !connectionWasOpen;
+  if (!intentionalCleanTeardown) {
+    stats.recentCloses.push({ at: now, code });
+    stats.recentCloses = stats.recentCloses.filter(
+      (close) => now - close.at <= FLAP_WINDOW_MS,
+    );
+  }
   reportClientEvent({
     source: "chat_websocket",
-    event: "chat_ws_close",
-    severity: "warn",
-    status: code !== null ? String(code) : "unknown",
+    event: intentionalCleanTeardown
+      ? "chat_ws_clean_teardown"
+      : preOpenClose
+        ? "chat_ws_preopen_close"
+        : "chat_ws_abnormal_disconnect",
+    severity: intentionalCleanTeardown ? "info" : preOpenClose ? "error" : "warn",
+    status: intentionalCleanTeardown
+      ? "intentional_clean_teardown"
+      : preOpenClose
+        ? "handshake_close"
+        : code !== null
+          ? String(code)
+          : "unknown",
     statusCode: code ?? undefined,
     // The close code is deliberately part of the message: distinct codes get
     // their own per-signature reporting budget.
-    message: `Chat websocket closed (code ${code ?? "unknown"}).`,
+    message: intentionalCleanTeardown
+      ? "Chat websocket closed cleanly during intentional teardown."
+      : preOpenClose
+        ? "Chat websocket closed before the connection opened."
+        : `Chat websocket disconnected abnormally (code ${code ?? "unknown"}).`,
     threadId,
     durationMs: socketLifeMs,
     count: stats.closes,
@@ -144,12 +181,16 @@ export function trackChatSocketClose(
       reason: normalized.reason,
       wasClean: normalized.wasClean,
       socketLifeMs,
+      connectionWasOpen,
       // Preserve raw fields when PartySocket nested the real close payload.
       rawCode: typeof event?.code === "number" ? event.code : String(event?.code ?? ""),
     },
   });
 
-  if (shouldReportFlap(stats.recentCloses, stats.lastFlapReportAt, now)) {
+  if (
+    !intentionalCleanTeardown &&
+    shouldReportFlap(stats.recentCloses, stats.lastFlapReportAt, now)
+  ) {
     stats.lastFlapReportAt = now;
     const lifetimes = stats.recentCloses
       .map((close, index) =>
@@ -178,18 +219,67 @@ export function trackChatSocketClose(
   }
 }
 
-export function trackChatSocketError(threadId: string): void {
+function socketErrorDetails(error: unknown): {
+  name?: string;
+  message?: string;
+  timeout: boolean;
+} {
+  const record =
+    error && typeof error === "object"
+      ? (error as { error?: unknown; message?: unknown; name?: unknown })
+      : null;
+  const nested =
+    record?.error && typeof record.error === "object"
+      ? (record.error as { message?: unknown; name?: unknown })
+      : null;
+  const message =
+    typeof nested?.message === "string"
+      ? nested.message
+      : typeof record?.message === "string"
+        ? record.message
+        : typeof error === "string"
+          ? error
+          : undefined;
+  const name =
+    typeof nested?.name === "string"
+      ? nested.name
+      : typeof record?.name === "string"
+        ? record.name
+        : undefined;
+  return {
+    name,
+    message,
+    timeout: message?.toUpperCase().includes("TIMEOUT") === true,
+  };
+}
+
+export function trackChatSocketError(threadId: string, error?: unknown): void {
   const stats = statsFor(threadId);
   stats.errors += 1;
+  const details = socketErrorDetails(error);
+  const preOpen = !stats.isOpen;
   reportClientEvent({
     source: "chat_websocket",
-    event: "chat_ws_error",
-    severity: "warn",
-    status: "error",
-    message: "Browser reported a websocket error event.",
+    event: preOpen ? "chat_ws_preopen_error" : "chat_ws_error",
+    severity: preOpen ? "error" : "warn",
+    status:
+      details.timeout && preOpen
+        ? "handshake_timeout"
+        : preOpen
+          ? "handshake_error"
+          : "error",
+    message: preOpen
+      ? "Chat websocket failed before the connection opened."
+      : "Browser reported a websocket error event.",
     threadId,
     count: stats.errors,
-    details: { ...connectionContext(), ...lifecycleCounts(stats) },
+    details: {
+      ...connectionContext(),
+      ...lifecycleCounts(stats),
+      errorName: details.name,
+      errorMessage: details.message,
+      timeout: details.timeout,
+    },
   });
 }
 

@@ -6,6 +6,7 @@ import {
   CHAT_WS_CLOSE_TRY_AGAIN,
   CHAT_WS_CLOSE_UNAUTHORIZED,
   chatWebSocketCloseCodeForHttpStatus,
+  isIntentionalCleanChatWebSocketTeardown,
   isTerminalChatWebSocketCloseCode,
   normalizeWebSocketCloseEvent,
   terminalChatWebSocketUserMessage,
@@ -38,6 +39,30 @@ describe("chat-ws-close helpers", () => {
     expect(isTerminalChatWebSocketCloseCode(CHAT_WS_CLOSE_TRY_AGAIN)).toBe(
       false,
     );
+  });
+
+  it("requires an opened connection before classifying clean code 1000 as intentional", () => {
+    expect(
+      isIntentionalCleanChatWebSocketTeardown({
+        code: 1000,
+        wasClean: true,
+        connectionWasOpen: false,
+      }),
+    ).toBe(false);
+    expect(
+      isIntentionalCleanChatWebSocketTeardown({
+        code: 1000,
+        wasClean: true,
+        connectionWasOpen: true,
+      }),
+    ).toBe(true);
+    expect(
+      isIntentionalCleanChatWebSocketTeardown({
+        code: 1000,
+        wasClean: false,
+        connectionWasOpen: true,
+      }),
+    ).toBe(false);
   });
 
   it("unwraps PartySocket nested synthetic CloseEvent payloads", () => {

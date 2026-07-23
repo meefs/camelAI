@@ -41,6 +41,14 @@ export function chatWebSocketCloseCodeForHttpStatus(status: number): number {
   return CHAT_WS_CLOSE_FORBIDDEN;
 }
 
+export function isIntentionalCleanChatWebSocketTeardown(input: {
+  code: number | null | undefined;
+  wasClean: boolean | undefined;
+  connectionWasOpen: boolean;
+}): boolean {
+  return input.connectionWasOpen && input.code === 1000 && input.wasClean !== false;
+}
+
 export function isTerminalChatWebSocketCloseCode(code: number | null | undefined): boolean {
   if (typeof code !== "number" || !Number.isFinite(code)) return false;
   return code === 1008 || (code >= 4000 && code <= 4999);

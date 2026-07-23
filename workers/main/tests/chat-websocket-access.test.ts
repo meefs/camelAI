@@ -39,16 +39,11 @@ function buildEnv(overrides: {
     ...overrides.workspaceStub,
   };
   const orgStub = {
-    getWorkspaceRecord: vi.fn().mockResolvedValue({
-      id: URL_WORKSPACE_ID,
-      org_id: URL_ORG_ID,
-      archived: false,
-    }),
-    getWorkspaceAccess: vi.fn().mockResolvedValue('full'),
-    validateChatThreadAccess: vi.fn().mockResolvedValue({
+    validateChatWebSocketAccess: vi.fn().mockResolvedValue({
       ok: true,
       orgId: URL_ORG_ID,
       orgSlug: 'url-org',
+      workspaceId: URL_WORKSPACE_ID,
       threadId: THREAD_ID,
     }),
     ...overrides.orgStub,
@@ -58,7 +53,12 @@ function buildEnv(overrides: {
   };
   const env = {
     TOKEN_SIGNING_SECRET: SECRET,
-    APP_KV: { get: vi.fn().mockResolvedValue(null) },
+    APP_KV: {
+      get: vi.fn(async (key: string) =>
+        key === `workspace_org:${URL_WORKSPACE_ID}` ? URL_ORG_ID : null,
+      ),
+      put: vi.fn(),
+    },
     USER: {
       idFromName: vi.fn((name: string) => name),
       get: vi.fn(() => userStub),
@@ -95,16 +95,21 @@ describe('requireChatWebSocketAccess', () => {
     // at a different org.
     expect(access.orgId).toBe(URL_ORG_ID);
     expect(env.ORG.idFromName).toHaveBeenCalledWith(URL_ORG_ID);
-    expect(
-      (orgStub.validateChatThreadAccess as ReturnType<typeof vi.fn>).mock
-        .calls[0],
-    ).toEqual([USER_ID, URL_WORKSPACE_ID, THREAD_ID]);
+    expect(orgStub.validateChatWebSocketAccess).toHaveBeenCalledTimes(1);
+    expect(orgStub.validateChatWebSocketAccess).toHaveBeenCalledWith(
+      USER_ID,
+      URL_WORKSPACE_ID,
+      THREAD_ID,
+    );
+    expect(orgStub).not.toHaveProperty('getWorkspaceRecord');
+    expect(orgStub).not.toHaveProperty('getWorkspaceAccess');
+    expect(orgStub).not.toHaveProperty('validateChatThreadAccess');
   });
 
   it('fails closed when the user is not a member of the workspace org', async () => {
     const { env } = buildEnv({
       orgStub: {
-        validateChatThreadAccess: vi
+        validateChatWebSocketAccess: vi
           .fn()
           .mockResolvedValue({ ok: false, reason: 'forbidden' }),
       },
@@ -123,16 +128,42 @@ describe('requireChatWebSocketAccess', () => {
     expect(access.error.status).toBe(403);
   });
 
-  it('retries transient workspace RPC failures before succeeding', async () => {
-    const getWorkspaceRecord = vi
+  it.each([
+    ['org_not_found', 404, 'Workspace not found'],
+    ['workspace_not_found', 404, 'Workspace not found'],
+    ['thread_not_found', 404, 'Thread not found'],
+  ] as const)('maps %s without another OrgDO RPC', async (reason, status, body) => {
+    const validateChatWebSocketAccess = vi
+      .fn()
+      .mockResolvedValue({ ok: false, reason });
+    const { env } = buildEnv({ orgStub: { validateChatWebSocketAccess } });
+
+    const access = await requireChatWebSocketAccess(
+      await buildRequest(),
+      env,
+      THREAD_ID,
+      URL_WORKSPACE_ID,
+    );
+
+    expect(validateChatWebSocketAccess).toHaveBeenCalledTimes(1);
+    expect('error' in access).toBe(true);
+    if (!('error' in access)) return;
+    expect(access.error.status).toBe(status);
+    expect(await access.error.text()).toBe(body);
+  });
+
+  it('retries the consolidated OrgDO authorization RPC before succeeding', async () => {
+    const validateChatWebSocketAccess = vi
       .fn()
       .mockRejectedValueOnce(transientError())
       .mockResolvedValue({
-        id: URL_WORKSPACE_ID,
-        org_id: URL_ORG_ID,
-        archived: false,
+        ok: true,
+        orgId: URL_ORG_ID,
+        orgSlug: 'url-org',
+        workspaceId: URL_WORKSPACE_ID,
+        threadId: THREAD_ID,
       });
-    const { env } = buildEnv({ orgStub: { getWorkspaceRecord } });
+    const { env } = buildEnv({ orgStub: { validateChatWebSocketAccess } });
     const req = await buildRequest();
 
     const access = await requireChatWebSocketAccess(
@@ -144,13 +175,13 @@ describe('requireChatWebSocketAccess', () => {
 
     expect('error' in access).toBe(false);
     expect('degraded' in access).toBe(false);
-    expect(getWorkspaceRecord).toHaveBeenCalledTimes(2);
+    expect(validateChatWebSocketAccess).toHaveBeenCalledTimes(2);
   });
 
   it('returns degraded access when authorization RPCs stay unreachable', async () => {
     const { env } = buildEnv({
       orgStub: {
-        getWorkspaceRecord: vi.fn().mockRejectedValue(transientError()),
+        validateChatWebSocketAccess: vi.fn().mockRejectedValue(transientError()),
       },
     });
     const req = await buildRequest();
@@ -175,7 +206,7 @@ describe('requireChatWebSocketAccess', () => {
     });
     const { env } = buildEnv({
       orgStub: {
-        getWorkspaceRecord: vi.fn().mockRejectedValue(overloaded),
+        validateChatWebSocketAccess: vi.fn().mockRejectedValue(overloaded),
       },
     });
     const req = await buildRequest();
@@ -195,7 +226,7 @@ describe('requireChatWebSocketAccess', () => {
   it('returns reconnectable 503 on non-degradable authorization errors', async () => {
     const { env } = buildEnv({
       orgStub: {
-        getWorkspaceRecord: vi
+        validateChatWebSocketAccess: vi
           .fn()
           .mockRejectedValue(new Error('boom')),
       },
@@ -215,11 +246,12 @@ describe('requireChatWebSocketAccess', () => {
     expect(access.error.status).toBe(503);
   });
 
-  it('denies known restricted member access even when the org RPC stays unreachable', async () => {
+  it('preserves an authoritative restricted-member denial', async () => {
     const { env } = buildEnv({
       orgStub: {
-        getWorkspaceAccess: vi.fn().mockResolvedValue('none'),
-        validateChatThreadAccess: vi.fn().mockRejectedValue(transientError()),
+        validateChatWebSocketAccess: vi
+          .fn()
+          .mockResolvedValue({ ok: false, reason: 'forbidden' }),
       },
     });
     const req = await buildRequest();

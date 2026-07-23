@@ -279,14 +279,35 @@ async function authorizeChatAgentConnect(
   env: Env,
   threadId: string,
 ): Promise<Request | Response> {
+  const startedAt = Date.now();
   const url = new URL(req.url);
   const workspaceIdParam = url.searchParams.get('workspaceId');
-  const access = await requireChatWebSocketAccess(
-    req,
-    env,
-    threadId,
-    workspaceIdParam,
-  );
+  let access: Awaited<ReturnType<typeof requireChatWebSocketAccess>>;
+  try {
+    access = await requireChatWebSocketAccess(
+      req,
+      env,
+      threadId,
+      workspaceIdParam,
+    );
+  } catch (error) {
+    recordObservabilityEvent(env, {
+      event: 'chat_ws_auth_completed',
+      severity: 'error',
+      component: 'chat_ws_auth',
+      operation: 'authorizeChatAgentConnect',
+      status: 'exception',
+      durationMs: Date.now() - startedAt,
+      route: '/agents/chat-thread/:threadId',
+      method: req.method,
+      path: url.pathname,
+      threadId,
+      workspaceId: workspaceIdParam,
+      errorName: error instanceof Error ? error.name : 'Error',
+      sampleIndex: threadId,
+    });
+    throw error;
+  }
   if ('error' in access) {
     const status = access.error.status || 403;
     const reasonText = (await access.error.clone().text().catch(() => '')) ||
@@ -299,6 +320,7 @@ async function authorizeChatAgentConnect(
       operation: 'authorizeChatAgentConnect',
       status: String(status),
       statusCode: status,
+      durationMs: Date.now() - startedAt,
       route: '/agents/chat-thread/:threadId',
       method: req.method,
       path: url.pathname,
@@ -326,6 +348,7 @@ async function authorizeChatAgentConnect(
       component: 'chat_ws_auth',
       operation: 'authorizeChatAgentConnect',
       status: 'degraded',
+      durationMs: Date.now() - startedAt,
       route: '/agents/chat-thread/:threadId',
       method: req.method,
       path: url.pathname,
@@ -356,6 +379,23 @@ async function authorizeChatAgentConnect(
     url.searchParams.delete('orgId');
     headers.set('X-Chiridion-Auth-Degraded', '1');
   }
+
+  recordObservabilityEvent(env, {
+    event: 'chat_ws_auth_completed',
+    severity: 'info',
+    component: 'chat_ws_auth',
+    operation: 'authorizeChatAgentConnect',
+    status: fullAccess ? 'authorized' : 'degraded_authorized',
+    durationMs: Date.now() - startedAt,
+    route: '/agents/chat-thread/:threadId',
+    method: req.method,
+    path: url.pathname,
+    threadId,
+    workspaceId: fullAccess?.workspaceId ?? workspaceIdParam,
+    orgId: fullAccess?.orgId,
+    userId,
+    sampleIndex: threadId,
+  });
 
   return new Request(url.toString(), { method: req.method, headers });
 }

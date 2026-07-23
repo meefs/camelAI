@@ -281,7 +281,7 @@ describe('chat loader workspace mismatch handling', () => {
     });
   });
 
-  it('renders the first message from the thread record without reading the transcript for a pending first turn', async () => {
+  it('seeds the normal transcript path from the thread record while durable history resolves', async () => {
     requireAuthContextMock.mockResolvedValue({
       currentWorkspace: { id: 'ws_active' },
       currentOrg: { id: 'org_active', slug: 'acme' },
@@ -299,90 +299,29 @@ describe('chat loader workspace mismatch handling', () => {
     });
 
     const result = await loader({
-      request: new Request('https://camelai.com/chat/thread_123?newThread=1'),
+      request: new Request('https://camelai.com/chat/thread_123'),
       context: {},
       params: { id: 'thread_123' },
     } as never);
 
-    // The first message is rendered straight from the thread record...
-    expect(await result.chatData).toEqual({
-      messages: [
-        expect.objectContaining({
-          id: 'pending-first:thread_123',
-          role: 'user',
-          content: 'Build an analytics dashboard',
-          authorDisplayName: 'Illiana Reed',
-          messageSource: 'web',
-        }),
-      ],
-      messagesError: null,
-      initialUiMessages: [],
-      todos: [],
-      previewTabs: [],
-      activeTabId: null,
-    });
-    // ...so the cold ChatThreadDO is never read on this load.
-    expect(readThreadMessagesMock).not.toHaveBeenCalled();
+    expect(result.chatDataSeed.initialUiMessages).toEqual([
+      expect.objectContaining({
+        id: 'thread-seed:thread_123',
+        role: 'user',
+        parts: [{ type: 'text', text: 'Build an analytics dashboard', state: 'done' }],
+        metadata: expect.objectContaining({ authorDisplayName: 'Illiana Reed', source: 'web' }),
+      }),
+    ]);
+    // The same deferred durable transcript path runs for every thread shape.
+    await result.chatData;
+    expect(getUiMessagesMock).toHaveBeenCalled();
   });
 
-  it('surfaces pendingFirstTurn from the warm thread record alone, so the agent working indicator shows without any cold ChatThreadDO read', async () => {
-    // The agent "working" indicator is driven by the loader's pendingFirstTurn
-    // flag (Chat.tsx feeds it into deriveIsAwaitingAssistant -> the global
-    // assistant indicator). For a freshly-started new chat that flag must come
-    // from the warm thread record only — every ChatThreadDO-backed read
-    // (transcript, preview tabs, todos) boots the cold DO (~2s), and none of
-    // them may run, or the indicator would be gated on that cold boot. This is
-    // a deterministic stand-in for "the DO is still cold": we assert those
-    // reads are simply never invoked on this path.
+  it('uses the same seed and transcript path for an API-created thread', async () => {
     requireAuthContextMock.mockResolvedValue({
       currentWorkspace: { id: 'ws_active' },
       currentOrg: { id: 'org_active', slug: 'acme' },
       orgs: [{ org_id: 'org_active', role: 'admin' }],
-      user: { id: 'user_123', name: null, email: 'illiana@example.com' },
-    });
-    getThreadMock.mockResolvedValue({
-      id: 'thread_123',
-      workspace_id: 'ws_active',
-      created_by: 'user_123',
-      title: 'New Chat',
-      model: 'sonnet',
-      user_message_count: 0,
-      first_user_message: 'Build an analytics dashboard',
-    });
-
-    const result = await loader({
-      request: new Request('https://camelai.com/chat/thread_123?newThread=1'),
-      context: {},
-      params: { id: 'thread_123' },
-    } as never);
-
-    // The signal that lights up the working indicator is available immediately...
-    expect(result.pendingFirstTurn).toBe(true);
-    // ...with zero reads against the cold ChatThreadDO.
-    expect(readThreadMessagesMock).not.toHaveBeenCalled();
-    expect(getUiMessagesMock).not.toHaveBeenCalled();
-    expect(getThreadPreviewStateMock).not.toHaveBeenCalled();
-    expect(getTodoStateMock).not.toHaveBeenCalled();
-
-    // And the optimistic first user message is present, giving the indicator a
-    // trailing non-assistant message to await (deriveIsAwaitingAssistant).
-    const chatData = await result.chatData;
-    expect(chatData.messages).toEqual([
-      expect.objectContaining({
-        id: 'pending-first:thread_123',
-        role: 'user',
-        content: 'Build an analytics dashboard',
-        authorDisplayName: 'illiana@example.com',
-        messageSource: 'web',
-      }),
-    ]);
-  });
-
-  it('does not attribute a pending first message to a different viewer', async () => {
-    requireAuthContextMock.mockResolvedValue({
-      currentWorkspace: { id: 'ws_active' },
-      currentOrg: { id: 'org_active', slug: 'acme' },
-      orgs: [{ org_id: 'org_active', role: 'member' }],
       user: { id: 'viewer_456', name: 'Different Viewer', email: 'viewer@example.com' },
     });
     getThreadMock.mockResolvedValue({
@@ -396,59 +335,14 @@ describe('chat loader workspace mismatch handling', () => {
     });
 
     const result = await loader({
-      request: new Request('https://camelai.com/chat/thread_123?newThread=1'),
-      context: {},
-      params: { id: 'thread_123' },
-    } as never);
-
-    expect(result.pendingFirstTurn).toBe(true);
-    const chatData = await result.chatData;
-    expect(chatData.messages).toEqual([
-      expect.objectContaining({
-        id: 'pending-first:thread_123',
-        role: 'user',
-        content: 'Build an analytics dashboard',
-        messageSource: 'web',
-      }),
-    ]);
-    expect(chatData.messages[0]).not.toHaveProperty('authorDisplayName');
-    expect(getUiMessagesMock).not.toHaveBeenCalled();
-  });
-
-  it('does NOT take the pending-first-turn fast path without ?newThread=1 (e.g. an API-created thread)', async () => {
-    // A thread created with a stored first_user_message + count 0 but no started
-    // run (the workspaces chat-threads API does exactly this) must load normally:
-    // read the render history, and not synthesize a pending-first message.
-    requireAuthContextMock.mockResolvedValue({
-      currentWorkspace: { id: 'ws_active' },
-      currentOrg: { id: 'org_active', slug: 'acme' },
-      orgs: [{ org_id: 'org_active', role: 'admin' }],
-    });
-    getThreadMock.mockResolvedValue({
-      id: 'thread_123',
-      workspace_id: 'ws_active',
-      title: 'New Chat',
-      model: 'sonnet',
-      user_message_count: 0,
-      first_user_message: 'Build an analytics dashboard',
-    });
-    readThreadMessagesMock.mockResolvedValue([]);
-
-    const result = await loader({
-      // No ?newThread=1 — not a freshly-started new chat.
       request: new Request('https://camelai.com/chat/thread_123'),
       context: {},
       params: { id: 'thread_123' },
     } as never);
 
-    const chatData = await result.chatData;
-    expect(chatData.messages).toEqual([]);
-    expect(
-      chatData.messages.some((m) => m.id === 'pending-first:thread_123'),
-    ).toBe(false);
+    expect(result.chatDataSeed.initialUiMessages[0]?.metadata).not.toHaveProperty('authorDisplayName');
+    await result.chatData;
     expect(getUiMessagesMock).toHaveBeenCalled();
-    // The legacy pi_core transcript read is admin-readonly only; a live load
-    // makes exactly one transcript RPC (the ai-chat render history).
     expect(readThreadMessagesMock).not.toHaveBeenCalled();
   });
 

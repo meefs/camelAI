@@ -189,10 +189,8 @@ describe('new chat create action', () => {
     } as never);
 
     expect(response.status).toBe(302);
-    // ?newThread=1 marks a freshly-started new chat so the thread loader renders
-    // the first message from the record (and skips the cold-DO transcript read).
     expect(response.headers.get('Location')).toBe(
-      '/chat/thread_123?newThread=1&group=group_123',
+      '/chat/thread_123?group=group_123',
     );
     expect(createThreadWithValidatedAccessMock).toHaveBeenCalledWith(
       {},
@@ -244,7 +242,7 @@ describe('new chat create action', () => {
 
     expect(response.status).toBe(302);
     expect(response.headers.get('Location')).toBe(
-      '/chat/thread_123?newThread=1&group=group_123',
+      '/chat/thread_123?group=group_123',
     );
     expect(createThreadWithValidatedAccessMock).toHaveBeenCalledWith(
       {},

@@ -1,7 +1,6 @@
 const ACTIVE_CHAT_LOADER_SEARCH_PARAMS = [
   "adminReadonly",
   "embed",
-  "chatCache",
   "group",
   "devCreditState",
   "devChatError",

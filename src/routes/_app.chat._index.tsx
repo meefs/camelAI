@@ -858,12 +858,9 @@ export async function action({ request, context }: Route.ActionArgs) {
           message: firstMessage,
           clientMessageId: `initial:${thread.id}`,
         };
-        // Start the turn in the BACKGROUND and redirect immediately. The first RPC
-        // to a brand-new ChatThreadDO pays a ~2s cold-isolate boot; awaiting it
-        // would freeze the welcome screen. Instead the thread page renders the
-        // first message from the thread record (loader) + a spinner, and the turn
-        // streams in once the DO is warm. The message is durable on the thread
-        // record and the turn runs in a recoverable fiber, so this stays reliable.
+        // Start the turn in the background and redirect immediately. The thread
+        // page seeds its normal transcript from the persisted thread record while
+        // durable render history and live running state connect.
         waitUntil(
           retryTransientDurableObjectRpc(
             "ChatThreadDO.startInitialUserMessage",
@@ -930,14 +927,6 @@ export async function action({ request, context }: Route.ActionArgs) {
           `/chat/${thread.id}`,
           request.url,
         );
-        // Mark this as a freshly-started new chat so the thread loader renders
-        // the first message from the record + skips the cold-DO transcript read.
-        // Gated on firstMessage: only set when a turn was actually started here,
-        // so threads created with a stored message but no run (e.g. the
-        // workspaces chat-threads API) don't get the pending-first-turn treatment.
-        if (firstMessage) {
-          nextUrl.searchParams.set("newThread", "1");
-        }
         if (group.id) {
           nextUrl.searchParams.set("group", group.id);
         }

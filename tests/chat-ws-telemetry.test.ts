@@ -7,6 +7,7 @@ import {
   shouldReportFlap,
   trackChatSendDispatched,
   trackChatSocketClose,
+  trackChatSocketError,
   trackChatSocketOpen,
 } from "@/lib/chat-ws-telemetry";
 
@@ -100,7 +101,7 @@ describe("chat websocket telemetry events", () => {
     vi.restoreAllMocks();
   });
 
-  it("reports socket close with code, status, and lifetime", async () => {
+  it("reports an abnormal disconnect with code, status, and lifetime", async () => {
     const beacons = captureBeacons();
     const threadId = crypto.randomUUID();
     trackChatSocketOpen(threadId);
@@ -113,7 +114,7 @@ describe("chat websocket telemetry events", () => {
 
     const close = beacons
       .events()
-      .find((event) => event.event === "chat_ws_close");
+      .find((event) => event.event === "chat_ws_abnormal_disconnect");
     expect(close).toBeDefined();
     expect(close?.status).toBe("1006");
     expect(close?.statusCode).toBe(1006);
@@ -122,7 +123,56 @@ describe("chat websocket telemetry events", () => {
     expect(String(close?.details)).toContain('"wasClean":false');
   });
 
-  it("escalates to a flapping report after repeated close cycles", async () => {
+  it("classifies PartySocket's pre-open synthetic clean 1000 as a handshake close", async () => {
+    const beacons = captureBeacons();
+    const threadId = crypto.randomUUID();
+    trackChatSocketClose(threadId, {
+      code: "close",
+      reason: { code: 1000, reason: "timeout", wasClean: true },
+      wasClean: undefined,
+    } as unknown as CloseEvent);
+    await beacons.flush();
+
+    const events = beacons.events();
+    const close = events.find((event) => event.event === "chat_ws_preopen_close");
+    expect(close?.status).toBe("handshake_close");
+    expect(close?.severity).toBe("error");
+    expect(String(close?.details)).toContain('"connectionWasOpen":false');
+    expect(events.find((event) => event.event === "chat_ws_clean_teardown")).toBeUndefined();
+  });
+
+  it("classifies an opened socket's clean code-1000 navigation teardown without flapping", async () => {
+    const beacons = captureBeacons();
+    const threadId = crypto.randomUUID();
+    for (let cycle = 0; cycle < FLAP_CLOSE_THRESHOLD; cycle += 1) {
+      trackChatSocketOpen(threadId);
+      trackChatSocketClose(threadId, {
+        code: 1000,
+        reason: "",
+        wasClean: true,
+      } as CloseEvent);
+    }
+    await beacons.flush();
+
+    const events = beacons.events();
+    expect(events.filter((event) => event.event === "chat_ws_clean_teardown")).toHaveLength(
+      FLAP_CLOSE_THRESHOLD,
+    );
+    expect(events.find((event) => event.event === "chat_ws_flapping")).toBeUndefined();
+  });
+
+  it("captures PartySocket TIMEOUT as a pre-open handshake failure", async () => {
+    const beacons = captureBeacons();
+    const threadId = crypto.randomUUID();
+    trackChatSocketError(threadId, { error: new Error("TIMEOUT") });
+    await beacons.flush();
+
+    const timeout = beacons.events().find((event) => event.event === "chat_ws_preopen_error");
+    expect(timeout?.status).toBe("handshake_timeout");
+    expect(String(timeout?.details)).toContain('"errorMessage":"TIMEOUT"');
+  });
+
+  it("escalates to a flapping report after repeated abnormal close cycles", async () => {
     const beacons = captureBeacons();
     const threadId = crypto.randomUUID();
     for (let cycle = 0; cycle < FLAP_CLOSE_THRESHOLD; cycle += 1) {

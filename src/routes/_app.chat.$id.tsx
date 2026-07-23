@@ -48,6 +48,7 @@ import type { ProxyAuthValidationEnv } from "../../workers/main/src/helpers/prox
 import { getChatDebugFlags } from "@/lib/chat-debug-flags";
 import { shouldRevalidateActiveChatRoute } from "@/lib/chat-route-revalidation";
 import { resolveMessageAuthorDisplayName } from "@/lib/message-author";
+import { messageToUiMessage } from "@/lib/ui-message-adapter";
 import {
   saveChatGroupRename,
   type ChatGroupRenameInput,
@@ -299,11 +300,9 @@ function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
   return typeof (value as Promise<T>).then === "function";
 }
 
-// The first user message of a not-yet-started thread, rendered from the thread
-// record so the page paints instantly without booting the ChatThreadDO. The real
-// turn (and its persisted, attributed copy) streams/loads in afterward; the
-// reconciliation effect in Chat swaps this out once the transcript arrives.
-function pendingFirstUserMessage(
+// A first user message projected from the warm thread record while the normal
+// durable render-history read resolves.
+function threadRecordFirstUserMessage(
   threadId: string,
   content: string,
   user: Pick<User, "name" | "email"> | null,
@@ -313,7 +312,7 @@ function pendingFirstUserMessage(
     user?.email,
   );
   return {
-    id: `pending-first:${threadId}`,
+    id: `thread-seed:${threadId}`,
     thread_id: threadId,
     role: "user",
     content,
@@ -342,10 +341,11 @@ type DeferredChatDataState = {
 function getInitialDeferredChatDataState(
   source: ChatDataValue,
   dataKey: string,
+  seed: ChatData = EMPTY_CHAT_DATA,
 ): DeferredChatDataState {
   return {
     source,
-    data: isPromiseLike(source) ? EMPTY_CHAT_DATA : source,
+    data: isPromiseLike(source) ? seed : source,
     loading: isPromiseLike(source),
     dataKey,
   };
@@ -364,12 +364,16 @@ function getDeferredChatDataLoadingState(
   };
 }
 
-function useDeferredChatData(chatData: ChatDataValue, dataKey: string): {
+function useDeferredChatData(
+  chatData: ChatDataValue,
+  dataKey: string,
+  seed: ChatData = EMPTY_CHAT_DATA,
+): {
   chatData: ChatData;
   isLoading: boolean;
 } {
   const [state, setState] = useState<DeferredChatDataState>(() =>
-    getInitialDeferredChatDataState(chatData, dataKey),
+    getInitialDeferredChatDataState(chatData, dataKey, seed),
   );
 
   useEffect(() => {
@@ -415,7 +419,7 @@ function useDeferredChatData(chatData: ChatDataValue, dataKey: string): {
       ? state
       : isPromiseLike(chatData) && state.dataKey === dataKey
         ? getDeferredChatDataLoadingState(state, chatData, dataKey)
-        : getInitialDeferredChatDataState(chatData, dataKey);
+        : getInitialDeferredChatDataState(chatData, dataKey, seed);
 
   return {
     chatData: currentState.data,
@@ -560,7 +564,6 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   const loaderStartedAt = Date.now();
   const url = new URL(request.url);
   const isAdminReadonly = url.searchParams.get("adminReadonly") === "1";
-  const useClientMessageCache = url.searchParams.get("chatCache") === "1";
   const env = getEnv(context);
   const hostname = getAppUrlContext(env, request);
   const authEnv = getAuthEnv(env);
@@ -624,8 +627,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       activeChatGroup: null,
       activeGroupId: null,
       moveChatGroups: [],
-      usedClientMessageCache: false,
-      pendingFirstTurn: false,
+      chatDataSeed: EMPTY_CHAT_DATA,
     };
   }
 
@@ -654,8 +656,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       recentModelScope: null,
       readOnly: false,
       activeGroupId: null,
-      usedClientMessageCache: false,
-      pendingFirstTurn: false,
+      chatDataSeed: EMPTY_CHAT_DATA,
     };
   }
 
@@ -789,37 +790,31 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     },
   ).map((option) => option.value);
 
-  // A freshly-started new chat: render the first message straight from the (warm)
-  // thread record and SKIP buildChatData, whose transcript/preview/todo reads
-  // would each boot the cold ChatThreadDO (~2s). The turn streams in over the WS
-  // once the DO is warm; once it records the turn (user_message_count > 0) later
-  // loads read the real transcript. Gated on the new-chat action's ?newThread=1
-  // signal so threads created with a stored first message but no started run
-  // (e.g. the workspaces chat-threads API) are NOT treated as pending.
-  const pendingFirstTurn =
-    url.searchParams.get("newThread") === "1" &&
-    (thread.user_message_count ?? 0) === 0 &&
-    Boolean(thread.first_user_message?.trim());
-  const chatDataStartedAt = Date.now();
-  const chatData: ChatDataValue = pendingFirstTurn
+  // Seed the ordinary transcript path from the warm thread record while the
+  // durable ai-chat render history resolves. This applies uniformly to new,
+  // existing, API-created, forked, and reloaded threads; it is paint data only,
+  // never a signal that a turn is running.
+  const firstMessage = thread.first_user_message?.trim();
+  const seededFirstMessage = firstMessage
+    ? threadRecordFirstUserMessage(
+        params.id,
+        firstMessage,
+        thread.created_by === authContext.user.id ? authContext.user : null,
+      )
+    : null;
+  const chatDataSeed: ChatData = seededFirstMessage
     ? {
         ...EMPTY_CHAT_DATA,
-        messages: [
-          pendingFirstUserMessage(
-            params.id,
-            thread.first_user_message ?? "",
-            thread.created_by === authContext.user.id
-              ? authContext.user
-              : null,
-          ),
-        ],
+        initialUiMessages: [messageToUiMessage(seededFirstMessage)],
       }
-    : thread
+    : EMPTY_CHAT_DATA;
+  const chatDataStartedAt = Date.now();
+  const chatData: ChatDataValue = thread
     ? buildChatData(context, authEnv, params.id, {
         orgId,
         workspaceId,
         loadLegacyMessages: false,
-        loadUiMessages: !useClientMessageCache,
+        loadUiMessages: true,
       })
         .then((resolvedChatData) => {
           recordChatThreadRouteLoaderStage(
@@ -829,9 +824,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
             "chat_data_resolved",
             chatDataStartedAt,
             {
-              status: useClientMessageCache
-                ? "loaded_without_messages"
-                : "loaded",
+              status: "loaded",
               model: thread.model,
               count: resolvedChatData.initialUiMessages.length,
               size: resolvedChatData.previewTabs.length,
@@ -937,8 +930,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     activeChatGroup,
     activeGroupId: url.searchParams.get("group")?.trim() || null,
     moveChatGroups,
-    usedClientMessageCache: useClientMessageCache,
-    pendingFirstTurn,
+    chatDataSeed,
   };
 }
 
@@ -967,13 +959,12 @@ export default function ChatPage() {
     activeChatGroup,
     activeGroupId,
     moveChatGroups = [],
-    usedClientMessageCache = false,
-    pendingFirstTurn = false,
+    chatDataSeed = EMPTY_CHAT_DATA,
   } = useLoaderData<typeof loader>();
   const {
     chatData: resolvedChatData,
     isLoading: isLoadingChatData,
-  } = useDeferredChatData(chatData, threadId);
+  } = useDeferredChatData(chatData, threadId, chatDataSeed);
   const navigate = useNavigate();
   const location = useLocation();
   const locationPathname = location.pathname;
@@ -1041,8 +1032,7 @@ export default function ChatPage() {
   const displayAllowedThreadModels = allowedThreadModels;
   const cachedSnapshot = displayThreadId ? getSnapshot(displayThreadId) : null;
   const shouldUseCachedSnapshot = Boolean(
-    cachedSnapshot &&
-      (!isDisplayingLoaderThread || usedClientMessageCache || isLoadingChatData),
+    cachedSnapshot && (!isDisplayingLoaderThread || isLoadingChatData),
   );
   const displayChatData = resolveDisplayChatData(
     resolvedChatData,
@@ -1053,16 +1043,6 @@ export default function ChatPage() {
     isLoadingChatData &&
     !shouldUseCachedSnapshot &&
     displayChatData.messages.length === 0;
-
-  useEffect(() => {
-    if (!usedClientMessageCache || !displayThreadId) return;
-    const nextSearch = new URLSearchParams(locationSearch);
-    nextSearch.delete("chatCache");
-    const nextUrl = `/chat/${encodeURIComponent(displayThreadId)}${
-      nextSearch.toString() ? `?${nextSearch.toString()}` : ""
-    }`;
-    navigate(nextUrl, { replace: true, preventScrollReset: true });
-  }, [displayThreadId, locationSearch, navigate, usedClientMessageCache]);
 
   useEffect(() => {
     markThreadIdleRef.current = markThreadIdle;
@@ -1129,9 +1109,6 @@ export default function ChatPage() {
     const groupId = liveActiveChatGroup?.id ?? resolvedActiveGroupId;
     if (groupId) {
       params.set("group", groupId);
-    }
-    if (snapshot) {
-      params.set("chatCache", "1");
     }
     navigate(
       `/chat/${targetThreadId}${params.toString() ? `?${params.toString()}` : ""}`,
@@ -1312,7 +1289,6 @@ export default function ChatPage() {
             experimentalSettings={experimentalSettings}
             billingCreditStatus={billingCreditStatus}
             initialError={initialChatError ?? displayChatData.messagesError}
-            pendingFirstTurn={isDisplayingLoaderThread && pendingFirstTurn}
             initialPreviewTabs={displayChatData.previewTabs}
             initialActiveTabId={displayChatData.activeTabId}
             hostname={hostname}

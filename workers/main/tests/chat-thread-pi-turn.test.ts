@@ -11532,17 +11532,21 @@ describe('ChatThreadDO Pi turn handling', () => {
       workspaceId: 'workspace1',
       orgId: 'org1',
     };
+    const background: Promise<unknown>[] = [];
     fake.ctx = {
       storage: { kv: { put: vi.fn() } },
-      waitUntil: vi.fn(),
+      waitUntil: vi.fn((promise: Promise<unknown>) => background.push(promise)),
     };
     fake.maybeGenerateChatGroupAvatarForThread = vi.fn(async () => undefined);
     fake.messages = [];
-    fake.ctx.waitUntil = vi.fn();
     fake.chatIsStreaming = false;
     fake.currentTodos = [{ content: 'Old task', status: 'in_progress' }];
     fake.syncAgentState = vi.fn();
+    fake.sweepOrphanedActiveTurnMarker = vi.fn(async () => {});
+    fake.topUpUiMessagesFromPiCore = vi.fn(async () => {});
+    fake.healLegacyUiMessageTimes = vi.fn(async () => {});
     fake.healLegacyUiMessageAuthors = vi.fn(async () => {});
+    fake.recordChatThreadObservabilityEvent = vi.fn();
     // Mirror the real method: it clears the todos and syncs an override marking
     // them completed.
     fake.completeTodoStateForTurnEnd = vi.fn(async () => {
@@ -11558,11 +11562,12 @@ describe('ChatThreadDO Pi turn handling', () => {
     };
 
     await ChatThreadDO.prototype.onConnect.call(fake, connection, ctx);
+    await Promise.all(background);
 
     expect(fake.completeTodoStateForTurnEnd).toHaveBeenCalledTimes(1);
-    // The completed-todo override must be the final sync — onConnect must not
-    // sync again afterward with the cleared list and erase the checklist.
-    expect(fake.syncAgentState).toHaveBeenCalledTimes(1);
+    // The immediate handshake sync is followed by the completed-todo override;
+    // background reconciliation must not overwrite that final correction.
+    expect(fake.syncAgentState).toHaveBeenCalledTimes(2);
     expect(fake.syncAgentState).toHaveBeenCalledWith(
       expect.objectContaining({
         currentTodos: [{ content: 'Old task', status: 'completed' }],
