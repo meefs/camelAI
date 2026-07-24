@@ -196,8 +196,8 @@ describe('requireSuperuser', () => {
 describe('Superuser email allowlist', () => {
   // Tests the email allowlist logic from worker/auth.ts
   const SUPERUSER_EMAILS = new Set([
-    'admin@example.com',
-    '1033072+Vercantez@users.noreply.github.com',
+    'admin-one@example.com',
+    'admin-two@example.com',
   ]);
 
   function isSuperuserEmail(email: string | null): boolean {
@@ -206,13 +206,13 @@ describe('Superuser email allowlist', () => {
   }
 
   it('should return true for allowlisted emails', () => {
-    expect(isSuperuserEmail('admin@example.com')).toBe(true);
-    expect(isSuperuserEmail('1033072+Vercantez@users.noreply.github.com')).toBe(true);
+    expect(isSuperuserEmail('admin-one@example.com')).toBe(true);
+    expect(isSuperuserEmail('admin-two@example.com')).toBe(true);
   });
 
   it('should be case-insensitive', () => {
-    expect(isSuperuserEmail('ILLIANA@CAMELAI.COM')).toBe(true);
-    expect(isSuperuserEmail('Miguel@CamelAI.com')).toBe(true);
+    expect(isSuperuserEmail('ADMIN-ONE@EXAMPLE.COM')).toBe(true);
+    expect(isSuperuserEmail('Admin-Two@Example.com')).toBe(true);
   });
 
   it('should return false for non-allowlisted emails', () => {

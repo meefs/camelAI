@@ -1,4 +1,7 @@
-const SUPERUSER_EMAILS = new Set(["admin@example.com", "1033072+Vercantez@users.noreply.github.com"]);
+const SUPERUSER_EMAILS = new Set([
+  "admin-one@example.com",
+  "admin-two@example.com",
+]);
 
 export function isSuperuserEmail(email: string | null): boolean {
   if (!email) return false;

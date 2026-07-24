@@ -16,7 +16,7 @@ describe('parseSlashCommand', () => {
   });
 
   it('parses bare slash commands after author attribution', () => {
-    expect(parseSlashCommand('[Illiana Reed (admin@example.com)]: /compact')).toBe('/compact');
+    expect(parseSlashCommand('[Example User (member@example.com)]: /compact')).toBe('/compact');
   });
 
   it('parses bare slash commands from content blocks', () => {

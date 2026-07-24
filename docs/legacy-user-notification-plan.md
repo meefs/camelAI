@@ -131,7 +131,7 @@ Store the 2,313 legacy emails in the `APP_KV` namespace so they can be checked a
 **Import script:** A one-time Node script (`scripts/import-legacy-emails.ts`) that:
 1. Reads the CSV from a local path (passed as CLI arg)
 2. Normalizes each email (lowercase, trim)
-3. Appends hardcoded founder emails that are not in the CSV: `admin@example.com`, `owner@example.com`, `1033072+Vercantez@users.noreply.github.com`
+3. Appends hardcoded founder emails that are not in the CSV: `admin-one@example.com`, `admin-two@example.com`, `admin-three@example.com`
 4. Deduplicates the combined list
 5. Bulk-writes to `APP_KV` via Wrangler KV API (`wrangler kv key put` or the bulk API)
 

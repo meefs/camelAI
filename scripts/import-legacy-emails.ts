@@ -5,9 +5,9 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 const FOUNDER_EMAILS = [
-  'admin@example.com',
-  'owner@example.com',
-  '1033072+Vercantez@users.noreply.github.com',
+  'admin-one@example.com',
+  'admin-two@example.com',
+  'admin-three@example.com',
 ];
 
 function printUsageAndExit(): never {

@@ -8,7 +8,7 @@ March 19, 2026 — Review of Draft v2 implementation
 
 ## Fix: Banner Does Not Show in Local Dev
 
-The loader checks `APP_KV.get("legacy_user:admin@example.com")`, but local dev uses Miniflare's **local** KV store, which is empty. The import script writes to **remote** Cloudflare KV via `wrangler kv bulk put`. The banner will work in production, but we also want to be able to test it locally.
+The loader checks `APP_KV.get("legacy_user:admin-one@example.com")`, but local dev uses Miniflare's **local** KV store, which is empty. The import script writes to **remote** Cloudflare KV via `wrangler kv bulk put`. The banner will work in production, but we also want to be able to test it locally.
 
 **Fix:** In the `_app.tsx` loader, when running in development mode, skip the KV lookup and always treat the user as a legacy user (still respect dismissal so that flow is testable too):
 
