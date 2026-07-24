@@ -2488,7 +2488,7 @@ describe('connections runtime', () => {
   });
 
   it('lists Twilio messages through the platform broker', async () => {
-    const accountSid = 'AC-test-account';
+    const accountSid = 'AC00000000000000000000000000000000';
     const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
       const target = new URL(String(url));
       expect(`${target.origin}${target.pathname}`).toBe(`https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json`);
