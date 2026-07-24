@@ -68,3 +68,7 @@ bun run selfhost:init
 bun run selfhost:doctor
 bun run selfhost:up
 ```
+
+## License
+
+camelAI is available under the [MIT License](LICENSE).
