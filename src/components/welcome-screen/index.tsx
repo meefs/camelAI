@@ -40,7 +40,10 @@ import { GroupNewChatHeader } from './group-new-chat-header';
 import { RecentlyUsedInGroup } from './recently-used-in-group';
 import { STARTER_PROMPTS, pickStarterPrompts } from './starter-prompt-catalog';
 import { useResolvedList } from './use-resolved-list';
-import type { ModelPickerOption } from '@/lib/chat-do.server';
+import type {
+  ModelPausedReason,
+  ModelPickerOption,
+} from '@/lib/model-picker-access';
 import type { RecentModelScope } from '@/lib/recent-model';
 
 interface WelcomeScreenProps {
@@ -72,6 +75,8 @@ interface WelcomeScreenProps {
   isOrgAdmin?: boolean;
   onLockedModelSelect?: (model: LlmModel) => void;
   onUnlockRequest?: () => void;
+  showMoreModelsCta?: boolean;
+  pausedSection?: { reason: ModelPausedReason } | null;
   recentModelScope?: RecentModelScope | null;
   noModelsMessage?: string | null;
 }
@@ -206,6 +211,8 @@ export function WelcomeScreen({
   isOrgAdmin = false,
   onLockedModelSelect,
   onUnlockRequest,
+  showMoreModelsCta = false,
+  pausedSection = null,
   recentModelScope,
   noModelsMessage,
 }: WelcomeScreenProps) {
@@ -316,6 +323,8 @@ export function WelcomeScreen({
             isOrgAdmin={isOrgAdmin}
             onLockedModelSelect={onLockedModelSelect}
             onUnlockRequest={onUnlockRequest}
+            showMoreModelsCta={showMoreModelsCta}
+            pausedSection={pausedSection}
             recentModelScope={recentModelScope}
             mentionables={mentionEntities}
             mentionMenuSide="top"

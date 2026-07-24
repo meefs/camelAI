@@ -4,6 +4,7 @@ import {
   applyDevBillingCreditStatusOverride,
   buildBillingCreditStatus,
   getDevChatInitialError,
+  resolveDisplayedBillingCreditStatus,
   resolveRefreshedThreadModel,
   shouldShowLowCreditAlert,
   shouldSwitchExhaustedThreadToCamelCode,
@@ -81,6 +82,31 @@ describe('chat credit status', () => {
     ).toBe(false);
   });
 
+  it('does not reconcile exhausted credential-covered threads to camelCode', () => {
+    const status = {
+      availableCreditsCents: 0,
+      totalCreditLimitCents: 500,
+      isExhausted: true,
+      hasByokProvider: true,
+    };
+
+    expect(
+      shouldSwitchExhaustedThreadToCamelCode(
+        status,
+        'sonnet',
+        'anthropic',
+      ),
+    ).toBe(false);
+    expect(
+      shouldSwitchExhaustedThreadToCamelCode(
+        status,
+        'gpt-5.6-sol',
+        'anthropic',
+        true,
+      ),
+    ).toBe(false);
+  });
+
   it('maps available credit balances to low-credit tiers', () => {
     expect(activeLowCreditTier(600)).toBeNull();
     expect(activeLowCreditTier(500)).toBeNull();
@@ -119,6 +145,7 @@ describe('chat credit status', () => {
       totalCreditLimitCents: 1000,
       isExhausted: false,
       hasByokProvider: false,
+      billingStatus: 'active',
     });
   });
 
@@ -157,7 +184,7 @@ describe('chat credit status', () => {
     });
   });
 
-  it('hides hosted credit status for threads covered by BYOK', () => {
+  it('keeps org-wide credit status for threads covered by BYOK', () => {
     expect(
       buildBillingCreditStatus(
         makeOverview({
@@ -167,7 +194,11 @@ describe('chat credit status', () => {
         'anthropic',
         'sonnet',
       ),
-    ).toBeNull();
+    ).toMatchObject({
+      availableCreditsCents: 0,
+      isExhausted: true,
+      hasByokProvider: true,
+    });
 
     expect(
       buildBillingCreditStatus(
@@ -178,10 +209,14 @@ describe('chat credit status', () => {
         'openai',
         'gpt-5.6-luna',
       ),
-    ).toBeNull();
+    ).toMatchObject({
+      availableCreditsCents: 0,
+      isExhausted: true,
+      hasByokProvider: true,
+    });
   });
 
-  it('hides hosted credit status while a thread uses camelCode', () => {
+  it('keeps exhausted status available while a thread uses camelCode', () => {
     expect(
       buildBillingCreditStatus(
         makeOverview({
@@ -190,6 +225,80 @@ describe('chat credit status', () => {
         }),
         false,
         'deepseek-v4-auto',
+      ),
+    ).toMatchObject({
+      availableCreditsCents: 0,
+      isExhausted: true,
+    });
+  });
+
+  it('shows camelCode credit status only while hosted models are paused', () => {
+    const status = buildBillingCreditStatus(
+      makeOverview({
+        available_credits_cents: 0,
+        total_credit_limit_cents: 0,
+      }),
+      false,
+      'deepseek-v4-auto',
+    );
+
+    expect(
+      resolveDisplayedBillingCreditStatus(
+        status,
+        'deepseek-v4-auto',
+        false,
+      ),
+    ).toBeNull();
+    expect(
+      resolveDisplayedBillingCreditStatus(
+        status,
+        'deepseek-v4-auto',
+        true,
+      ),
+    ).toBe(status);
+  });
+
+  it('suppresses the displayed notice for BYOK-covered model turns', () => {
+    const status = buildBillingCreditStatus(
+      makeOverview({
+        available_credits_cents: 0,
+        total_credit_limit_cents: 0,
+      }),
+      'anthropic',
+      'sonnet',
+    );
+
+    expect(
+      resolveDisplayedBillingCreditStatus(
+        status,
+        'sonnet',
+        true,
+        'anthropic',
+      ),
+    ).toBeNull();
+    expect(status).toMatchObject({
+      isExhausted: true,
+      hasByokProvider: true,
+    });
+  });
+
+  it('suppresses the displayed notice for OpenAI-login-covered model turns', () => {
+    const status = buildBillingCreditStatus(
+      makeOverview({
+        available_credits_cents: 0,
+        total_credit_limit_cents: 0,
+      }),
+      'anthropic',
+      'gpt-5.6-sol',
+    );
+
+    expect(
+      resolveDisplayedBillingCreditStatus(
+        status,
+        'gpt-5.6-sol',
+        true,
+        'anthropic',
+        true,
       ),
     ).toBeNull();
   });

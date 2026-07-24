@@ -20,6 +20,7 @@ import { loadUserProfileSummaries } from "@/lib/user-profiles.server";
 import {
   applyDevBillingCreditStatusOverride,
   buildBillingCreditStatus,
+  getDevBillingCreditStatus,
   getDevChatInitialError,
 } from "@/lib/chat-credit-status";
 import { waitUntil } from "@/lib/wait-until";
@@ -507,28 +508,53 @@ export async function loader({ request, context }: Route.LoaderArgs) {
         },
       )
     : Promise.resolve(null);
+  const billingOverviewPromise =
+    !isSelfhostRuntime(env) && authContext.currentOrg
+      ? getOrgBillingOverview(env, authContext.currentOrg).catch((error) => {
+          console.warn("Failed to load billing overview for chat:", error);
+          return null;
+        })
+      : Promise.resolve(null);
   // Interactive bundle: model picker, billing, chat-group, and sales-prompt
   // data all depend on Durable Object RPC. Bundling them into one deferred
   // promise lets the loader return immediately after auth so the welcome
   // skeleton streams right away; the real composer renders once this resolves.
   const interactive = (async () => {
-    const [activeChatGroup, moveChatGroups, pickerState] = await Promise.all([
-      activeChatGroupPromise,
-      moveChatGroupsPromise,
-      pickerStatePromise,
-    ]);
+    const [activeChatGroup, moveChatGroups, pickerState, billingOverview] =
+      await Promise.all([
+        activeChatGroupPromise,
+        moveChatGroupsPromise,
+        pickerStatePromise,
+        billingOverviewPromise,
+      ]);
+    const devCreditStatus = getDevBillingCreditStatus(url.searchParams);
+    const pausedPickerState = pickerState
+      ? chatDO.applyHostedCreditPause(
+          pickerState,
+          billingOverview
+            ? {
+                billingStatus: billingOverview.billing_status,
+                availableCreditsCents:
+                  devCreditStatus?.availableCreditsCents ??
+                  billingOverview.available_credits_cents,
+              }
+            : null,
+        )
+      : null;
     const experimentalSettings =
-      pickerState?.experimentalSettings ??
+      pausedPickerState?.experimentalSettings ??
       authContext.currentOrgExperimentalSettings;
     const effectiveLlmProviderConfig = getEffectiveLlmProviderConfig(
       env,
       authContext.currentOrgLlmProviderConfig,
     );
     const llmProvider =
-      pickerState?.llmProvider ??
+      pausedPickerState?.llmProvider ??
       ((effectiveLlmProviderConfig?.provider ?? null) as
         | import("@/types").LlmProvider
         | null);
+    const allowOpenAiSubscription =
+      pausedPickerState?.allowOpenAiSubscription ?? false;
     const customApi = getStoredCustomLlmProviderApi(effectiveLlmProviderConfig);
     const customModelId = getStoredCustomLlmProviderModelId(
       effectiveLlmProviderConfig,
@@ -549,37 +575,33 @@ export async function loader({ request, context }: Route.LoaderArgs) {
         customApi,
         customModelId,
         awsRegion,
+        allowOpenAiSubscription,
       },
     ).map((option) => option.value);
     const hasModelFallback = Boolean(workspaceId);
-    const billingOverview =
-      !isSelfhostRuntime(env) && authContext.currentOrg
-        ? await getOrgBillingOverview(env, authContext.currentOrg).catch(
-            (error) => {
-              console.warn("Failed to load billing overview for chat:", error);
-              return null;
-            },
-          )
-        : null;
-
     const threadModel =
-      pickerState?.defaultModel ??
+      pausedPickerState?.defaultModel ??
       (hasModelFallback ? fallbackThreadModel : null);
 
     return {
       threadModel,
       modelOptions:
-        pickerState?.modelOptions ??
+        pausedPickerState?.modelOptions ??
         modelCatalogEntriesForIds(
           hasModelFallback ? fallbackAllowedThreadModels : [],
         ),
       allowedThreadModels:
-        pickerState?.allowedThreadModels ??
+        pausedPickerState?.allowedThreadModels ??
         (hasModelFallback ? fallbackAllowedThreadModels : []),
       effectivePickerDefaultModel:
-        pickerState?.effectivePickerDefaultModel ?? null,
-      hasEffectivePickerDefault: pickerState?.hasEffectivePickerDefault ?? false,
-      billingAccessMode: pickerState?.billingAccessMode ?? null,
+        pausedPickerState?.effectivePickerDefaultModel ?? null,
+      hasEffectivePickerDefault:
+        pausedPickerState?.hasEffectivePickerDefault ?? false,
+      billingAccessMode: pausedPickerState?.billingAccessMode ?? null,
+      canUnlockPremiumModels:
+        pausedPickerState?.canUnlockPremiumModels ?? false,
+      hostedCreditsPaused: pausedPickerState?.hostedCreditsPaused ?? null,
+      allowOpenAiSubscription,
       billingCreditStatus: applyDevBillingCreditStatusOverride(
         buildBillingCreditStatus(billingOverview, llmProvider, threadModel),
         url.searchParams,
@@ -1063,6 +1085,9 @@ function ChatWelcomeContent({
     effectivePickerDefaultModel,
     hasEffectivePickerDefault,
     billingAccessMode,
+    canUnlockPremiumModels,
+    hostedCreditsPaused,
+    allowOpenAiSubscription,
     billingCreditStatus,
     salesPrompt,
     activeChatGroup,
@@ -1256,6 +1281,9 @@ function ChatWelcomeContent({
           effectivePickerDefaultModel={effectivePickerDefaultModel}
           hasEffectivePickerDefault={hasEffectivePickerDefault}
           billingAccessMode={billingAccessMode}
+          canUnlockPremiumModels={canUnlockPremiumModels}
+          hostedCreditsPaused={hostedCreditsPaused}
+          allowOpenAiSubscription={allowOpenAiSubscription}
           isOrgAdmin={isOrgAdmin}
           recentModelScope={recentModelScope}
           billingCreditStatus={billingCreditStatus}

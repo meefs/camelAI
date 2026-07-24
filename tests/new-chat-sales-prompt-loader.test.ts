@@ -42,6 +42,7 @@ vi.mock('@/lib/mention-sources.server', () => ({
 }));
 
 vi.mock('@/lib/chat-do.server', () => ({
+  applyHostedCreditPause: (state: unknown) => state,
   getRecentThreads: getRecentThreadsMock,
   getWorkspaceModelPickerState: getWorkspaceModelPickerStateMock,
 }));

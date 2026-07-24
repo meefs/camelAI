@@ -19,7 +19,10 @@ import { ModelPicker } from '@/components/model-picker';
 import {
   modelCatalogEntriesForIds,
 } from '@/lib/model-catalog';
-import type { ModelPickerOption } from '@/lib/chat-do.server';
+import type {
+  ModelPausedReason,
+  ModelPickerOption,
+} from '@/lib/model-picker-access';
 import type { RecentModelScope } from '@/lib/recent-model';
 import type { AtMentionEntity, LlmModel } from '@/types';
 import { AtMentionMenu, mentionItemValue } from '@/components/at-mention-menu';
@@ -64,6 +67,8 @@ interface PromptInputProps {
   isOrgAdmin?: boolean;
   onLockedModelSelect?: (model: LlmModel) => void;
   onUnlockRequest?: () => void;
+  showMoreModelsCta?: boolean;
+  pausedSection?: { reason: ModelPausedReason } | null;
   recentModelScope?: RecentModelScope | null;
   // Ref for programmatic focus
   textareaRef?: React.RefObject<HTMLTextAreaElement | null>;
@@ -141,6 +146,8 @@ export function PromptInput({
   isOrgAdmin = false,
   onLockedModelSelect,
   onUnlockRequest,
+  showMoreModelsCta = false,
+  pausedSection = null,
   recentModelScope,
   textareaRef,
   mentionables,
@@ -622,6 +629,8 @@ export function PromptInput({
                       isOrgAdmin={isOrgAdmin}
                       onLockedModelSelect={onLockedModelSelect}
                       onUnlockRequest={onUnlockRequest}
+                      showMoreModelsCta={showMoreModelsCta}
+                      pausedSection={pausedSection}
                       recentModelScope={recentModelScope}
                       disabled={modelDisabled || disabled}
                     />

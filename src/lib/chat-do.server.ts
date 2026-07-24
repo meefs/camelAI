@@ -21,12 +21,14 @@ import { OrgDO, type OrgThread } from "../../workers/main/src/auth";
 import { WorkspaceDO } from "../../workers/main/src/workspace";
 import {
   CAMEL_CODE_LLM_MODEL,
+  CUSTOM_LLM_MODEL,
   type CustomLlmProviderApi,
   type LlmProviderConfigRecord,
   getDefaultLlmModel,
   getStoredCustomLlmProviderApi,
   getStoredCustomLlmProviderModelId,
   getStoredBedrockAwsRegion,
+  isLlmModelCoveredByByokProvider,
   isLlmModelCoveredByOpenAiSubscription,
   isLlmModelAllowedForNewThread,
   isLlmModel,
@@ -36,8 +38,17 @@ import { getEffectiveLlmProviderConfig } from "./selfhost-ai-provider";
 import {
   MODEL_CATALOG,
   resolveModelPickerCatalog,
-  type ModelCatalogEntry,
 } from "./model-catalog";
+import {
+  deriveHostedCreditPause,
+  type HostedCreditPauseBilling,
+  type ModelPausedReason,
+  type ModelPickerOption,
+} from "./model-picker-access";
+export type {
+  ModelPausedReason,
+  ModelPickerOption,
+} from "./model-picker-access";
 import { parseChannelIndicatorKindsJson } from "./channel-kinds";
 import {
   resolveDefaultModelForChat,
@@ -176,12 +187,73 @@ export interface WorkspaceModelPickerState {
   effectivePickerDefaultModel: LlmModel | null;
   hasEffectivePickerDefault: boolean;
   defaultModel: LlmModel | null;
+  canUnlockPremiumModels: boolean;
+  hostedCreditsPaused: { reason: ModelPausedReason } | null;
 }
 
-export type ModelPickerOption = ModelCatalogEntry & {
-  locked?: boolean;
-  unlockHint?: "openai" | "generic";
-};
+const UNLOCKABLE_CATALOG_IDS = (
+  Object.keys(MODEL_CATALOG) as LlmModel[]
+).filter(
+  (id) =>
+    id !== CUSTOM_LLM_MODEL &&
+    id !== CAMEL_CODE_LLM_MODEL,
+);
+
+export function isBillingLockedModel(
+  modelId: LlmModel,
+  args: { isFreeMode: boolean; allowOpenAiSubscription: boolean },
+): boolean {
+  if (!args.isFreeMode || modelId === CAMEL_CODE_LLM_MODEL) {
+    return false;
+  }
+  return !(
+    args.allowOpenAiSubscription &&
+    isLlmModelCoveredByOpenAiSubscription(modelId)
+  );
+}
+
+export function applyHostedCreditPause(
+  pickerState: WorkspaceModelPickerState,
+  billing: HostedCreditPauseBilling | null,
+): WorkspaceModelPickerState {
+  const pause = deriveHostedCreditPause({
+    modelOptions: pickerState.modelOptions,
+    billingAccessMode: pickerState.billingAccessMode,
+    llmProvider: pickerState.llmProvider,
+    allowOpenAiSubscription: pickerState.allowOpenAiSubscription,
+    billing,
+  });
+  if (!pause.hostedCreditsPaused) {
+    return {
+      ...pickerState,
+      hostedCreditsPaused: null,
+    };
+  }
+
+  const { modelOptions } = pause;
+  const allowedThreadModels = modelOptions
+    .filter((entry) => !entry.locked)
+    .map((entry) => entry.id);
+  const lockedIds = new Set(
+    modelOptions.filter((entry) => entry.locked).map((entry) => entry.id),
+  );
+
+  return {
+    ...pickerState,
+    modelOptions,
+    allowedThreadModels,
+    effectivePickerDefaultModel:
+      pickerState.effectivePickerDefaultModel &&
+      lockedIds.has(pickerState.effectivePickerDefaultModel)
+        ? CAMEL_CODE_LLM_MODEL
+        : pickerState.effectivePickerDefaultModel,
+    defaultModel:
+      pickerState.defaultModel && lockedIds.has(pickerState.defaultModel)
+        ? CAMEL_CODE_LLM_MODEL
+        : pickerState.defaultModel,
+    hostedCreditsPaused: pause.hostedCreditsPaused,
+  };
+}
 
 async function getOrgModelPickerConfigCompat(
   orgStub: OrgDO,
@@ -296,13 +368,11 @@ async function getWorkspaceModelPickerStateForOrg(
       ? [MODEL_CATALOG[CAMEL_CODE_LLM_MODEL], ...resolvedCatalog]
       : resolvedCatalog;
   const modelOptions: ModelPickerOption[] = visibleCatalog.map((entry) => {
-    const isOpenAiCovered =
-      allowOpenAiSubscription &&
-      isLlmModelCoveredByOpenAiSubscription(entry.id);
     if (
-      !isFreeMode ||
-      entry.id === CAMEL_CODE_LLM_MODEL ||
-      isOpenAiCovered
+      !isBillingLockedModel(entry.id, {
+        isFreeMode,
+        allowOpenAiSubscription,
+      })
     ) {
       return entry;
     }
@@ -315,6 +385,26 @@ async function getWorkspaceModelPickerStateForOrg(
     };
   });
   const selectableCatalog = modelOptions.filter((entry) => !entry.locked);
+  const hasNonCamelCodeUnlocked = modelOptions.some(
+    (entry) => !entry.locked && entry.id !== CAMEL_CODE_LLM_MODEL,
+  );
+  const visibleModelOptions = hasNonCamelCodeUnlocked
+    ? modelOptions.filter((entry) => !entry.locked)
+    : modelOptions;
+  const unlockedIds = new Set(selectableCatalog.map((entry) => entry.id));
+  const canUnlockPremiumModels =
+    (billingAccessMode === "camel_free" || billingAccessMode === "byok") &&
+    UNLOCKABLE_CATALOG_IDS.some(
+      (id) =>
+        !unlockedIds.has(id) &&
+        !(
+          billingAccessMode === "byok" &&
+          isLlmModelCoveredByByokProvider(
+            id,
+            effectiveLlmProviderConfig?.provider,
+          )
+        ),
+    );
   const configuredDefault = effectiveConfig.default_model;
   const configuredDefaultIsLocked = modelOptions.some(
     (entry) => entry.id === configuredDefault && entry.locked,
@@ -342,11 +432,13 @@ async function getWorkspaceModelPickerStateForOrg(
     allowOpenAiSubscription,
     billingAccessMode,
     experimentalSettings,
-    modelOptions,
+    modelOptions: visibleModelOptions,
     allowedThreadModels: selectableCatalog.map((entry) => entry.id),
     effectivePickerDefaultModel,
     hasEffectivePickerDefault: effectivePickerDefaultModel !== null,
     defaultModel,
+    canUnlockPremiumModels,
+    hostedCreditsPaused: null,
   };
 }
 

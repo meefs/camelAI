@@ -36,6 +36,7 @@ vi.mock('@/lib/auth-do.server', () => ({
 }));
 
 vi.mock('@/lib/chat-do.server', () => ({
+  applyHostedCreditPause: (state: unknown) => state,
   getThread: getThreadMock,
   getThreadPreviewState: getThreadPreviewStateMock,
   getTodoState: getTodoStateMock,

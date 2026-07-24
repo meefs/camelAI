@@ -2,14 +2,16 @@ import type { OrgBillingOverview } from '@/lib/billing.server';
 import {
   isCreditFreeHostedModel,
   isLlmModelCoveredByByokProvider,
+  isLlmModelCoveredByOpenAiSubscription,
 } from '@/lib/llm-provider-config';
-import type { LlmModel } from '@/types';
+import type { BillingStatus, LlmModel } from '@/types';
 
 export interface BillingCreditStatus {
   availableCreditsCents: number;
   totalCreditLimitCents: number;
   isExhausted: boolean;
   hasByokProvider: boolean;
+  billingStatus?: BillingStatus | null;
 }
 
 export const LOW_CREDIT_THRESHOLDS_CENTS = [500, 250, 100, 50] as const;
@@ -45,38 +47,58 @@ export function shouldShowLowCreditAlert(
 export function buildBillingCreditStatus(
   overview: OrgBillingOverview | null,
   byokProvider: string | null | undefined | boolean,
-  threadModel?: LlmModel | null,
+  _threadModel?: LlmModel | null,
 ): BillingCreditStatus | null {
   if (!overview || overview.billing_status === 'enterprise') {
     return null;
   }
-  if (isCreditFreeHostedModel(threadModel)) {
-    return null;
-  }
   const hasByokProvider = Boolean(byokProvider);
-  if (
-    typeof byokProvider === 'string' &&
-    isLlmModelCoveredByByokProvider(threadModel, byokProvider)
-  ) {
-    return null;
-  }
 
   return {
     availableCreditsCents: overview.available_credits_cents,
     totalCreditLimitCents: overview.total_credit_limit_cents,
     isExhausted: overview.available_credits_cents <= 0,
     hasByokProvider,
+    billingStatus: overview.billing_status,
   };
+}
+
+export function resolveDisplayedBillingCreditStatus(
+  status: BillingCreditStatus | null | undefined,
+  threadModel: LlmModel | null | undefined,
+  hostedCreditsPaused: boolean,
+  byokProvider?: string | null,
+  allowOpenAiSubscription = false,
+): BillingCreditStatus | null {
+  if (isCreditFreeHostedModel(threadModel) && !hostedCreditsPaused) {
+    return null;
+  }
+  if (
+    isLlmModelCoveredByByokProvider(threadModel, byokProvider) ||
+    (threadModel &&
+      allowOpenAiSubscription &&
+      isLlmModelCoveredByOpenAiSubscription(threadModel))
+  ) {
+    return null;
+  }
+  return status ?? null;
 }
 
 export function shouldSwitchExhaustedThreadToCamelCode(
   status: BillingCreditStatus | null | undefined,
   threadModel: LlmModel | null | undefined,
+  byokProvider?: string | null,
+  allowOpenAiSubscription = false,
 ): boolean {
   return Boolean(
     status?.isExhausted &&
       threadModel &&
-      !isCreditFreeHostedModel(threadModel),
+      !isCreditFreeHostedModel(threadModel) &&
+      !isLlmModelCoveredByByokProvider(threadModel, byokProvider) &&
+      !(
+        allowOpenAiSubscription &&
+        isLlmModelCoveredByOpenAiSubscription(threadModel)
+      ),
   );
 }
 
@@ -134,7 +156,13 @@ export function applyDevBillingCreditStatusOverride(
   status: BillingCreditStatus | null,
   searchParams: URLSearchParams,
 ): BillingCreditStatus | null {
-  return getDevBillingCreditStatus(searchParams) ?? status;
+  const override = getDevBillingCreditStatus(searchParams);
+  return override
+    ? {
+        ...override,
+        billingStatus: status?.billingStatus ?? null,
+      }
+    : status;
 }
 
 export function getDevChatInitialError(searchParams: URLSearchParams): string | null {

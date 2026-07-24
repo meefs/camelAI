@@ -137,6 +137,7 @@ import {
   getBillingDialogIdentityKey,
   getWelcomeAutoOpenState,
   hasActiveBillingDialog,
+  shouldNavigateToBillingForPausedModel,
   transitionBillingDialogState,
   type BillingDialogState,
 } from "@/lib/billing-dialog-state";
@@ -188,10 +189,16 @@ import {
   type OrgScopedByokCredential,
 } from "@/lib/byok-credential-state";
 import { modelCatalogEntriesForIds } from "@/lib/model-catalog";
-import type { ModelPickerOption } from "@/lib/chat-do.server";
+import {
+  deriveHostedCreditPause,
+  type HostedCreditPauseBilling,
+  type ModelPausedReason,
+  type ModelPickerOption,
+} from "@/lib/model-picker-access";
 import { resolveDefaultModelForChat } from "@/lib/model-picker-config";
 import { getRecentModel, type RecentModelScope } from "@/lib/recent-model";
 import {
+  resolveDisplayedBillingCreditStatus,
   resolveRefreshedThreadModel,
   shouldSwitchExhaustedThreadToCamelCode,
   type BillingCreditStatus,
@@ -307,6 +314,9 @@ interface ChatProps {
   effectivePickerDefaultModel?: LlmModel | null;
   hasEffectivePickerDefault?: boolean;
   billingAccessMode?: ChatBillingAccessMode | null;
+  canUnlockPremiumModels?: boolean;
+  hostedCreditsPaused?: { reason: ModelPausedReason } | null;
+  allowOpenAiSubscription?: boolean;
   isOrgAdmin?: boolean;
   recentModelScope?: RecentModelScope | null;
   billingCreditStatus?: BillingCreditStatus | null;
@@ -670,6 +680,9 @@ export default function Chat({
   effectivePickerDefaultModel = null,
   hasEffectivePickerDefault = false,
   billingAccessMode = null,
+  canUnlockPremiumModels = false,
+  hostedCreditsPaused = null,
+  allowOpenAiSubscription = false,
   isOrgAdmin = false,
   recentModelScope,
   billingCreditStatus,
@@ -959,9 +972,6 @@ export default function Chat({
     transitionBillingDialog,
     user?.id,
   ]);
-  const openUnlockPremium = useCallback((triggerModel: LlmModel | null) => {
-    transitionBillingDialog({ kind: "unlock", triggerModel });
-  }, [transitionBillingDialog]);
   const openPlanUpgrade = useCallback(() => {
     transitionBillingDialog({ kind: "plans" });
   }, [transitionBillingDialog]);
@@ -1281,7 +1291,7 @@ export default function Chat({
   const authoritativeThreadModelRef = useRef<AuthoritativeThreadModel | null>(
     null,
   );
-  const availableThreadModels = useMemo<ModelPickerOption[]>(() => {
+  const baseAvailableThreadModels = useMemo<ModelPickerOption[]>(() => {
     if (Array.isArray(modelOptions)) {
       return [...modelOptions];
     }
@@ -1292,29 +1302,20 @@ export default function Chat({
     const options = getVisibleLlmModelOptions(
       experimentalSettings,
       threadModel ?? getDefaultLlmModel(llmProvider),
-      { orgProvider: llmProvider },
+      {
+        orgProvider: llmProvider,
+        allowOpenAiSubscription,
+      },
     );
     return modelCatalogEntriesForIds(options.map((option) => option.value));
   }, [
     allowedThreadModels,
+    allowOpenAiSubscription,
     experimentalSettings,
     llmProvider,
     modelOptions,
     threadModel,
   ]);
-  const availableThreadModelIds = useMemo(
-    () =>
-      new Set(
-        availableThreadModels
-          .filter((entry) => !entry.locked)
-          .map((entry) => entry.id),
-      ),
-    [availableThreadModels],
-  );
-  const selectableThreadModels = useMemo(
-    () => availableThreadModels.filter((entry) => !entry.locked),
-    [availableThreadModels],
-  );
   // A camelCode model supplied by the loader is a billing decision, not a
   // generic platform fallback. Do not let a stale premium recent-model choice
   // replace it for a zero-credit new chat.
@@ -1339,17 +1340,13 @@ export default function Chat({
       threadModel,
       allowedThreadModels,
       llmProvider,
-      availableThreadModels,
+      availableThreadModels: baseAvailableThreadModels,
       effectivePickerDefaultModel,
       hasEffectivePickerDefault,
     }),
   );
   const selectedThreadModelRef = useRef<LlmModel>(selectedThreadModel);
   const locationSearchRef = useRef(locationSearch);
-  const noModelsMessage =
-    selectableThreadModels.length === 0 && !(threadId && threadModel)
-      ? "No models are available. Ask an admin to add a model in Settings > Models."
-      : null;
 
   useEffect(() => {
     selectedThreadModelRef.current = selectedThreadModel;
@@ -1370,10 +1367,77 @@ export default function Chat({
     selectedThreadModelRef,
     locationSearchRef,
   });
-  const displayedBillingCreditStatus =
-    selectedThreadModel === CAMEL_CODE_LLM_MODEL
-      ? null
-      : currentBillingCreditStatus;
+  const liveHostedCreditPause = useMemo(
+    () =>
+      deriveHostedCreditPause({
+        modelOptions: baseAvailableThreadModels,
+        billingAccessMode,
+        llmProvider: llmProvider ?? null,
+        allowOpenAiSubscription,
+        billing: currentBillingCreditStatus
+          ? ({
+              billingStatus: currentBillingCreditStatus.billingStatus,
+              availableCreditsCents:
+                currentBillingCreditStatus.availableCreditsCents,
+            } satisfies HostedCreditPauseBilling)
+          : null,
+      }),
+    [
+      allowOpenAiSubscription,
+      baseAvailableThreadModels,
+      billingAccessMode,
+      currentBillingCreditStatus,
+      llmProvider,
+    ],
+  );
+  const availableThreadModels = liveHostedCreditPause.modelOptions;
+  const effectiveHostedCreditsPaused = currentBillingCreditStatus
+    ? liveHostedCreditPause.hostedCreditsPaused
+    : hostedCreditsPaused;
+  const availableThreadModelIds = useMemo(
+    () =>
+      new Set(
+        availableThreadModels
+          .filter((entry) => !entry.locked)
+          .map((entry) => entry.id),
+      ),
+    [availableThreadModels],
+  );
+  const selectableThreadModels = useMemo(
+    () => availableThreadModels.filter((entry) => !entry.locked),
+    [availableThreadModels],
+  );
+  const noModelsMessage =
+    selectableThreadModels.length === 0 && !(threadId && threadModel)
+      ? "No models are available. Ask an admin to add a model in Settings > Models."
+      : null;
+  const openUnlockPremium = useCallback(
+    (triggerModel: LlmModel | null) => {
+      if (
+        shouldNavigateToBillingForPausedModel(
+          effectiveHostedCreditsPaused?.reason,
+          isOrgAdmin,
+        )
+      ) {
+        navigate("/settings/organization/billing");
+        return;
+      }
+      transitionBillingDialog({ kind: "unlock", triggerModel });
+    },
+    [
+      effectiveHostedCreditsPaused?.reason,
+      isOrgAdmin,
+      navigate,
+      transitionBillingDialog,
+    ],
+  );
+  const displayedBillingCreditStatus = resolveDisplayedBillingCreditStatus(
+    currentBillingCreditStatus,
+    selectedThreadModel,
+    Boolean(effectiveHostedCreditsPaused),
+    llmProvider,
+    allowOpenAiSubscription,
+  );
 
   const lastAppliedWelcomeInputRef = useRef(initialWelcomeInput ?? "");
   const [showScrollButton, setShowScrollButton] = useState(false);
@@ -3700,6 +3764,8 @@ export default function Chat({
       !shouldSwitchExhaustedThreadToCamelCode(
         currentBillingCreditStatus,
         selectedThreadModel,
+        llmProvider,
+        allowOpenAiSubscription,
       )
     ) {
       return;
@@ -3707,8 +3773,10 @@ export default function Chat({
     handleThreadModelChange(CAMEL_CODE_LLM_MODEL);
   }, [
     availableThreadModelIds,
+    allowOpenAiSubscription,
     currentBillingCreditStatus,
     handleThreadModelChange,
+    llmProvider,
     readOnly,
     refreshedThreadModel,
     selectedThreadModel,
@@ -4424,6 +4492,8 @@ export default function Chat({
                   isOrgAdmin={isOrgAdmin}
                   onLockedModelSelect={openUnlockPremium}
                   onUnlockRequest={() => openUnlockPremium(null)}
+                  showMoreModelsCta={canUnlockPremiumModels}
+                  pausedSection={effectiveHostedCreditsPaused}
                   recentModelScope={modelRecentScope}
                   textareaRef={composerTextareaRef}
                   mentionables={mentionEntities}
@@ -4583,6 +4653,8 @@ export default function Chat({
                   isOrgAdmin={isOrgAdmin}
                   onLockedModelSelect={openUnlockPremium}
                   onUnlockRequest={() => openUnlockPremium(null)}
+                  showMoreModelsCta={canUnlockPremiumModels}
+                  pausedSection={effectiveHostedCreditsPaused}
                   recentModelScope={modelRecentScope}
                   noModelsMessage={noModelsMessage}
                 />
@@ -4612,6 +4684,12 @@ export default function Chat({
           onTopUp={openBillingTopUp}
           onAddKey={openByokDialog}
           onOpenAiSignIn={openOpenAiSignIn}
+          variant={
+            effectiveHostedCreditsPaused?.reason ===
+            "subscription_unavailable"
+              ? "unlock"
+              : effectiveHostedCreditsPaused?.reason ?? "unlock"
+          }
         />
       ) : null}
       <PlanUpgradeDialog

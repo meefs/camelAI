@@ -56,4 +56,62 @@ describe("useBillingCreditStatus", () => {
     });
     expect(result.current.currentBillingCreditStatus?.isExhausted).toBe(true);
   });
+
+  it("preserves exhausted org status across a subsequent BYOK-covered turn", () => {
+    const fetcher = {
+      data: undefined as BillingCreditStatusResourceData | undefined,
+      load: vi.fn(),
+    };
+    const selectedThreadModelRef = {
+      current: "gpt-5.6-sol" as LlmModel,
+    };
+    const locationSearchRef = { current: "" };
+    const { result, rerender } = renderHook(() =>
+      useBillingCreditStatus({
+        billingStatusFetcher: fetcher as never,
+        initialStatus: null,
+        threadId: "thread_123",
+        selectedThreadModelRef,
+        locationSearchRef,
+      }),
+    );
+
+    fetcher.data = {
+      ok: true,
+      billingCreditStatus: {
+        availableCreditsCents: 0,
+        totalCreditLimitCents: 500,
+        isExhausted: true,
+        hasByokProvider: true,
+        billingStatus: "active",
+      },
+      requestedModel: "gpt-5.6-sol",
+      threadModel: "deepseek-v4-auto",
+      threadModelUpdatedAt: 1234,
+    };
+    rerender();
+    expect(result.current.currentBillingCreditStatus?.isExhausted).toBe(true);
+
+    selectedThreadModelRef.current = "sonnet";
+    fetcher.data = {
+      ok: true,
+      billingCreditStatus: {
+        availableCreditsCents: 0,
+        totalCreditLimitCents: 500,
+        isExhausted: true,
+        hasByokProvider: true,
+        billingStatus: "active",
+      },
+      requestedModel: "sonnet",
+      threadModel: "sonnet",
+      threadModelUpdatedAt: 2345,
+    };
+    rerender();
+
+    expect(result.current.currentBillingCreditStatus).toMatchObject({
+      availableCreditsCents: 0,
+      isExhausted: true,
+      hasByokProvider: true,
+    });
+  });
 });

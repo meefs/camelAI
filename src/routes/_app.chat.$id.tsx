@@ -27,6 +27,7 @@ import { getOrgBillingOverview } from "@/lib/billing.server";
 import {
   applyDevBillingCreditStatusOverride,
   buildBillingCreditStatus,
+  getDevBillingCreditStatus,
   getDevChatInitialError,
 } from "@/lib/chat-credit-status";
 import {
@@ -617,6 +618,9 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       effectivePickerDefaultModel: null,
       hasEffectivePickerDefault: false,
       billingAccessMode: null,
+      canUnlockPremiumModels: false,
+      hostedCreditsPaused: null,
+      allowOpenAiSubscription: false,
       experimentalSettings: DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
       billingCreditStatus: null,
       initialChatError: null,
@@ -649,6 +653,9 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       effectivePickerDefaultModel: null,
       hasEffectivePickerDefault: false,
       billingAccessMode: null,
+      canUnlockPremiumModels: false,
+      hostedCreditsPaused: null,
+      allowOpenAiSubscription: false,
       experimentalSettings: DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
       billingCreditStatus: null,
       initialChatError: getDevChatInitialError(url.searchParams),
@@ -762,6 +769,20 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     threadPromise,
     pickerStatePromise,
   ]);
+  const devCreditStatus = getDevBillingCreditStatus(url.searchParams);
+  const pausedPickerState = pickerState
+    ? chatDO.applyHostedCreditPause(
+        pickerState,
+        billingOverview
+          ? {
+              billingStatus: billingOverview.billing_status,
+              availableCreditsCents:
+                devCreditStatus?.availableCreditsCents ??
+                billingOverview.available_credits_cents,
+            }
+          : null,
+      )
+    : null;
 
   // Even for newly created threads, load the persisted thread record so the UI
   // reflects the actual saved model instead of the Sonnet default.
@@ -870,7 +891,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   const [activeChatGroup, moveChatGroups] = await activeChatGroupPromise;
   const resolvedThreadModel =
     thread?.model ??
-    pickerState?.defaultModel ??
+    pausedPickerState?.defaultModel ??
     fallbackThreadModel;
   recordChatThreadRouteLoaderStage(
     env,
@@ -892,25 +913,30 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     threadTitle: thread?.title ?? null,
     threadModel: resolvedThreadModel,
     llmProvider:
-      pickerState?.llmProvider ??
+      pausedPickerState?.llmProvider ??
       ((effectiveLlmProviderConfig?.provider ?? null) as
         | import("@/types").LlmProvider
         | null),
-    customApi: pickerState?.customApi ?? customApi,
-    customModelId: pickerState?.customModelId ?? customModelId,
-    awsRegion: pickerState?.awsRegion ?? awsRegion,
+    customApi: pausedPickerState?.customApi ?? customApi,
+    customModelId: pausedPickerState?.customModelId ?? customModelId,
+    awsRegion: pausedPickerState?.awsRegion ?? awsRegion,
     modelOptions:
-      pickerState?.modelOptions ??
+      pausedPickerState?.modelOptions ??
       modelCatalogEntriesForIds(fallbackAllowedThreadModels),
     allowedThreadModels:
-      pickerState?.allowedThreadModels ?? fallbackAllowedThreadModels,
+      pausedPickerState?.allowedThreadModels ?? fallbackAllowedThreadModels,
     effectivePickerDefaultModel:
-      pickerState?.effectivePickerDefaultModel ?? null,
+      pausedPickerState?.effectivePickerDefaultModel ?? null,
     hasEffectivePickerDefault:
-      pickerState?.hasEffectivePickerDefault ?? false,
-    billingAccessMode: pickerState?.billingAccessMode ?? null,
+      pausedPickerState?.hasEffectivePickerDefault ?? false,
+    billingAccessMode: pausedPickerState?.billingAccessMode ?? null,
+    canUnlockPremiumModels:
+      pausedPickerState?.canUnlockPremiumModels ?? false,
+    hostedCreditsPaused: pausedPickerState?.hostedCreditsPaused ?? null,
+    allowOpenAiSubscription:
+      pausedPickerState?.allowOpenAiSubscription ?? false,
     experimentalSettings:
-      pickerState?.experimentalSettings ?? experimentalSettings,
+      pausedPickerState?.experimentalSettings ?? experimentalSettings,
     billingCreditStatus: applyDevBillingCreditStatusOverride(
       buildBillingCreditStatus(
         billingOverview,
@@ -949,6 +975,9 @@ export default function ChatPage() {
     effectivePickerDefaultModel,
     hasEffectivePickerDefault,
     billingAccessMode,
+    canUnlockPremiumModels,
+    hostedCreditsPaused,
+    allowOpenAiSubscription,
     experimentalSettings,
     billingCreditStatus,
     initialChatError,
@@ -1305,6 +1334,9 @@ export default function ChatPage() {
             effectivePickerDefaultModel={effectivePickerDefaultModel}
             hasEffectivePickerDefault={hasEffectivePickerDefault}
             billingAccessMode={billingAccessMode}
+            canUnlockPremiumModels={canUnlockPremiumModels}
+            hostedCreditsPaused={hostedCreditsPaused}
+            allowOpenAiSubscription={allowOpenAiSubscription}
             experimentalSettings={experimentalSettings}
             billingCreditStatus={billingCreditStatus}
             initialError={initialChatError ?? displayChatData.messagesError}
