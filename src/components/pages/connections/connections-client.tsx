@@ -10,7 +10,10 @@ import {
 import { Copy, Plus, Search, Settings, X } from "lucide-react";
 import { toast } from "sonner";
 import { useAuthData } from "@/hooks/use-auth-data";
-import type { IntegrationDefinition } from "@/lib/integration-registry";
+import {
+  hasManagedOAuthFlow,
+  type IntegrationDefinition,
+} from "@/lib/integration-registry";
 import { IntegrationIcon, hasIntegrationIcon } from "@/lib/integration-icons";
 import { getIntegrationAuthLabel } from "@/lib/integration-auth-label";
 import {
@@ -98,8 +101,6 @@ const OAUTH_SUCCESS_MESSAGES: Record<string, string> = {
   google_analytics_connected: "Successfully connected to Google Analytics 4!",
   remote_mcp_connected: "Successfully connected to the remote MCP server!",
 };
-
-const OAUTH_INTEGRATIONS = ["slack", "notion", "salesforce", "google_analytics"];
 
 interface ConnectionsClientProps {
   initialConnections: ConnectionListItem[];
@@ -512,7 +513,8 @@ export default function ConnectionsClient({
   };
 
   const handleAddClick = (type: string) => {
-    if (OAUTH_INTEGRATIONS.includes(type)) {
+    const definition = connectionTypes.find((candidate) => candidate.type === type);
+    if (hasManagedOAuthFlow(definition)) {
       window.location.href = `/api/integrations/${encodeURIComponent(type)}/oauth?redirect=/connections`;
       return;
     }

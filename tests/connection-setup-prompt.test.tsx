@@ -45,4 +45,51 @@ describe("ConnectionSetupPrompt", () => {
       },
     });
   });
+
+  it("starts the managed GA4 OAuth flow with chat completion context", async () => {
+    const user = userEvent.setup();
+    const originalLocation = window.location;
+    const location = {
+      ...originalLocation,
+      href: "http://localhost/chat/thread-123",
+      pathname: "/chat/thread-123",
+    };
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: location,
+    });
+
+    try {
+      render(
+        <ConnectionSetupPrompt
+          data={{
+            requestId: "setup-ga4",
+            integrationType: "google_analytics",
+            suggestedName: "Google Analytics 4",
+          }}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+        />,
+      );
+
+      expect(
+        screen.queryByText(/OAuth for Google Analytics 4 is not yet implemented/i),
+      ).not.toBeInTheDocument();
+
+      await user.click(
+        screen.getByRole("button", { name: /connect Google Analytics 4/i }),
+      );
+
+      const oauthUrl = new URL(location.href, "http://localhost");
+      expect(oauthUrl.pathname).toBe("/api/integrations/google_analytics/oauth");
+      expect(oauthUrl.searchParams.get("redirect")).toBe("/chat/thread-123");
+      expect(oauthUrl.searchParams.get("chat_request_id")).toBe("setup-ga4");
+      expect(oauthUrl.searchParams.get("chat_thread_id")).toBe("thread-123");
+    } finally {
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        value: originalLocation,
+      });
+    }
+  });
 });

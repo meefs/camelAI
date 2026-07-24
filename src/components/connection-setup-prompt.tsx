@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import {
+  hasManagedOAuthFlow,
   INTEGRATION_REGISTRY,
   type DynamicIntegrationSchema,
   type IntegrationDefinition,
@@ -62,10 +63,6 @@ interface ConnectionSetupPromptProps {
 }
 
 const integrationTypes = Object.values(INTEGRATION_REGISTRY);
-
-// OAuth integration types that have worker routes for OAuth flow
-const OAUTH_INTEGRATIONS = ['slack', 'notion', 'salesforce'] as const;
-type OAuthIntegrationType = (typeof OAUTH_INTEGRATIONS)[number];
 
 const applyDefaults = (
   schema: IntegrationDefinition['configSchema'],
@@ -137,8 +134,7 @@ export function ConnectionSetupPrompt({
   const isRemoteMcpOAuth =
     data.integrationType === 'remote_mcp' && config.auth_type === 'oauth';
   const isOAuthWithFlow =
-    (typeDef?.authMethod === 'oauth2' &&
-      OAUTH_INTEGRATIONS.includes(data.integrationType as OAuthIntegrationType)) ||
+    hasManagedOAuthFlow(typeDef) ||
     (isRemoteMcpOAuth && Boolean(data.integrationId));
 
   // Handle OAuth flow redirect

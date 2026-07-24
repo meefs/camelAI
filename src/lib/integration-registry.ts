@@ -1499,6 +1499,12 @@ export function getIntegrationDefinition(type: string): IntegrationDefinition | 
   return INTEGRATION_REGISTRY[type];
 }
 
+export function hasManagedOAuthFlow(
+  definition: IntegrationDefinition | undefined
+): boolean {
+  return definition?.authMethod === 'oauth2' && Boolean(definition.oauthConfig);
+}
+
 export function getIntegrationsByCategory(category: IntegrationCategory): IntegrationDefinition[] {
   return Object.values(INTEGRATION_REGISTRY).filter((def) => def.category === category);
 }

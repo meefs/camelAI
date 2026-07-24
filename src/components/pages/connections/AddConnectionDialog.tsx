@@ -3,6 +3,7 @@
 import { useState, useLayoutEffect } from 'react';
 import { useFetcher } from 'react-router';
 import {
+  hasManagedOAuthFlow,
   type IntegrationDefinition,
   shouldShowConfigField,
   shouldShowCredentialField,
@@ -57,9 +58,6 @@ function getEmptyConnectionFormState(): AddConnectionFormState {
   };
 }
 
-// OAuth integration types that have worker routes
-const OAUTH_INTEGRATIONS = ['slack', 'notion'] as const;
-
 const applyDefaults = (
   schema: IntegrationDefinition['configSchema'],
   current: Record<string, unknown>
@@ -88,6 +86,7 @@ export function AddConnectionDialog({
 
   const submitting = fetcher.state !== 'idle';
   const typeDef = connectionTypes.find((t) => t.type === connectionType);
+  const hasOAuthFlow = hasManagedOAuthFlow(typeDef);
 
   useLayoutEffect(() => {
     if (fetcher.state === 'idle' && fetcher.data) {
@@ -302,26 +301,24 @@ export function AddConnectionDialog({
             )}
 
             {/* OAuth flow for supported integrations */}
-            {typeDef.authMethod === 'oauth2' &&
-              OAUTH_INTEGRATIONS.includes(connectionType as (typeof OAUTH_INTEGRATIONS)[number]) && (
-                <Alert>
-                  <AlertDescription>
-                    Click the button below to connect your {typeDef.displayName} account.
-                    You&apos;ll be redirected to authorize access.
-                  </AlertDescription>
-                </Alert>
-              )}
+            {hasOAuthFlow && (
+              <Alert>
+                <AlertDescription>
+                  Click the button below to connect your {typeDef.displayName} account.
+                  You&apos;ll be redirected to authorize access.
+                </AlertDescription>
+              </Alert>
+            )}
 
             {/* OAuth notice for unsupported OAuth integrations */}
-            {typeDef.authMethod === 'oauth2' &&
-              !OAUTH_INTEGRATIONS.includes(connectionType as (typeof OAUTH_INTEGRATIONS)[number]) && (
-                <Alert>
-                  <AlertDescription>
-                    OAuth for {typeDef.displayName} is not yet implemented. Please check back
-                    later or use an API key if available.
-                  </AlertDescription>
-                </Alert>
-              )}
+            {typeDef.authMethod === 'oauth2' && !hasOAuthFlow && (
+              <Alert>
+                <AlertDescription>
+                  OAuth for {typeDef.displayName} is not yet implemented. Please check back
+                  later or use an API key if available.
+                </AlertDescription>
+              </Alert>
+            )}
             </div>
           </div>
 
@@ -335,8 +332,7 @@ export function AddConnectionDialog({
               Cancel
             </Button>
             {/* Show OAuth button for supported OAuth integrations */}
-            {typeDef.authMethod === 'oauth2' &&
-            OAUTH_INTEGRATIONS.includes(connectionType as (typeof OAUTH_INTEGRATIONS)[number]) ? (
+            {hasOAuthFlow ? (
               <Button
                 type="button"
                 onClick={() => {
@@ -352,8 +348,7 @@ export function AddConnectionDialog({
                 type="submit"
                 disabled={
                   submitting ||
-                  (typeDef.authMethod === 'oauth2' &&
-                    !OAUTH_INTEGRATIONS.includes(connectionType as (typeof OAUTH_INTEGRATIONS)[number]))
+                  (typeDef.authMethod === 'oauth2' && !hasOAuthFlow)
                 }
               >
                 {submitting ? 'Creating...' : 'Create Connection'}
