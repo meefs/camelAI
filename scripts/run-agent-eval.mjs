@@ -15,6 +15,10 @@ import { createEvalTranscriptCapture } from "./lib/eval-transcript-capture.mjs";
 // eval container never becomes ready ("Container failed to start"). scripts/run-eval-suite.sh
 // builds a patched interceptor image (camelai-eval-egress-fixed); for direct local runs, auto-select
 // it here if present. Remove once workerd#6794 ships in a release.
+// Must match dev.container_engine in wrangler.test.jsonc.
+const DOCKER_FUSE_PROXY_SOCKET = "/tmp/camelai-docker-fuse.sock";
+const DOCKER_FUSE_PROXY_TARGET = "/var/run/docker.sock";
+
 if (!process.env.MINIFLARE_CONTAINER_EGRESS_IMAGE) {
   const patchedEgressImage = "camelai-eval-egress-fixed:latest";
   const probe = spawnSync("docker", ["image", "inspect", patchedEgressImage], { stdio: "ignore" });
@@ -390,6 +394,54 @@ function isExpectedMarkerlessSkip(exitCode, output) {
   });
 }
 
+// FUSE for the analysis sandbox's s3fs mounts (/uploads, /outputs).
+//
+// Cloudflare's production container runtime grants containers /dev/fuse and the
+// right to call mount(2); workerd's local Docker path grants neither, so every
+// s3fs mount fails with "fuse: device not found" and file delivery cannot be
+// exercised locally at all. There is no Miniflare flag for container devices,
+// but `dev.container_engine` reaches workerd, so route container creation
+// through a proxy that injects them. See scripts/docker-fuse-proxy.mjs.
+//
+// Opt out with EVAL_DOCKER_FUSE_PROXY=0 (mount-dependent behaviour then fails
+// locally exactly as it did before).
+let fuseProxy;
+function startDockerFuseProxy() {
+  if (!existsSync(DOCKER_FUSE_PROXY_TARGET)) {
+    console.warn(`Docker socket ${DOCKER_FUSE_PROXY_TARGET} not found; skipping FUSE proxy.`);
+    return;
+  }
+  // EVAL_DOCKER_FUSE_PROXY=0 keeps the proxy but stops it injecting, so the
+  // socket wrangler points at still exists and only the FUSE grant goes away.
+  fuseProxy = spawn(process.execPath, ["scripts/docker-fuse-proxy.mjs", DOCKER_FUSE_PROXY_SOCKET], {
+    stdio: "inherit",
+    detached: false,
+    env: { ...process.env },
+  });
+  fuseProxy.on("error", (error) => {
+    console.warn(`Docker FUSE proxy failed to start: ${error.message}`);
+    fuseProxy = undefined;
+  });
+  const deadline = Date.now() + 5000;
+  while (!existsSync(DOCKER_FUSE_PROXY_SOCKET) && Date.now() < deadline) {
+    spawnSync("sleep", ["0.1"]);
+  }
+  if (existsSync(DOCKER_FUSE_PROXY_SOCKET)) {
+    console.log(`Container engine -> ${DOCKER_FUSE_PROXY_SOCKET} (grants /dev/fuse for s3fs mounts)`);
+  } else {
+    console.warn("Docker FUSE proxy socket never appeared; s3fs mounts will fail locally.");
+  }
+}
+function stopDockerFuseProxy() {
+  if (!fuseProxy) return;
+  try {
+    fuseProxy.kill("SIGTERM");
+  } catch {}
+  fuseProxy = undefined;
+}
+
+startDockerFuseProxy();
+
 sweepEvalContainers("pre-run");
 
 const child = spawn(
@@ -494,6 +546,7 @@ child.on("close", async (code) => {
   }
 
   sweepEvalContainers("post-run");
+  stopDockerFuseProxy();
 
   if (reportRun && !skippedRun) {
     // Failed runs (even without an artifact) are reported too — the viewer

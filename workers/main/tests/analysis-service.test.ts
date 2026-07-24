@@ -478,6 +478,9 @@ describe("AnalysisService workspace uploads mount", () => {
           return { objects: objects.map((key) => ({ key })) };
         },
       },
+      // Same bucket, separate binding — the sandbox SDK will not mount one
+      // binding at two prefixes, so /outputs cannot reuse the uploads binding.
+      R2_OUTPUTS_BUCKET: {},
     };
     service.ctx = { props: { orgId: "org-1", workspaceId: "ws-1" } };
     (service as unknown as { sandboxes: Map<string, AnalysisSandboxStub> }).sandboxes = new Map([["agent", sandbox]]);
@@ -485,7 +488,7 @@ describe("AnalysisService workspace uploads mount", () => {
   }
 
   const OUTPUTS_MOUNT = {
-    bucketBinding: "R2_BUCKET",
+    bucketBinding: "R2_OUTPUTS_BUCKET",
     prefix: "org-1/ws-1/user-outputs",
     mountPath: "/outputs",
     options: { readOnly: false },
@@ -526,6 +529,19 @@ describe("AnalysisService workspace uploads mount", () => {
     expect(outputs).toBeDefined();
     expect(outputs?.options?.readOnly).toBe(false);
     expect(outputs?.prefix).toBe("org-1/ws-1/user-outputs");
+  });
+
+  it("skips the outputs mount when its binding is missing, and still runs", async () => {
+    // An environment without R2_OUTPUTS_BUCKET must not try to mount /outputs
+    // from the uploads binding: the SDK rejects a second prefix on the same
+    // binding, so that attempt would fail on every run for every workspace.
+    const { service, sandbox } = serviceWithUploads(["org-1/ws-1/user-uploads/data.csv"]);
+    delete (service.env as Record<string, unknown>).R2_OUTPUTS_BUCKET;
+
+    await expect(service.runCode({ code: "print('ok')" })).resolves.toMatchObject({ ok: true });
+
+    expect(sandbox.mounts.some((mount) => mount.mountPath === "/outputs")).toBe(false);
+    expect(sandbox.mounts.some((mount) => mount.mountPath === "/uploads")).toBe(true);
   });
 
   it("still runs when the outputs mount fails", async () => {

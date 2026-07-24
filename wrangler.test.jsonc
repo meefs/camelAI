@@ -8,6 +8,7 @@
 	// Notebook deploys read the pre-built renderer SPA (public/notebook-renderer/,
 	// bun run build:renderer) through ASSETS; run-agent-eval.mjs ensures it's built.
 	"assets": { "binding": "ASSETS", "directory": "./public" },
+	"dev": { "container_engine": "unix:///tmp/camelai-docker-fuse.sock" },
 	"worker_loaders": [{ "binding": "CODE_MODE_LOADER" }],
 	"browser": { "binding": "BROWSER" },
 	"containers": [
@@ -65,7 +66,11 @@
 		}
 	],
 	"r2_buckets": [
-		{ "binding": "R2_BUCKET", "bucket_name": "chiridion-sandbox-test" }
+		{ "binding": "R2_BUCKET", "bucket_name": "chiridion-sandbox-test" },
+		// Same bucket as R2_BUCKET, under a second binding name. The sandbox SDK
+		// refuses to mount one binding at two prefixes, so the writable /outputs
+		// mount needs its own binding to coexist with read-only /uploads.
+		{ "binding": "R2_OUTPUTS_BUCKET", "bucket_name": "chiridion-sandbox-test" }
 	],
 	"d1_databases": [
 		{

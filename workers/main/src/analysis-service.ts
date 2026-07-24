@@ -38,6 +38,15 @@ export const ANALYSIS_SCRATCH_ROOT = "/scratch";
 export const ANALYSIS_EXPORT_BUCKET_BINDING = "WAREHOUSE_EXPORT_BUCKET";
 export const ANALYSIS_UPLOADS_BUCKET_BINDING = "R2_BUCKET";
 /**
+ * Second binding name for the SAME bucket as R2_BUCKET. The sandbox SDK rejects
+ * mounting one binding at two different prefixes ("R2 binding \"R2_BUCKET\" is
+ * already mounted at /uploads with a different prefix"), so the writable
+ * /outputs mount cannot reuse the uploads binding — with uploads mounted first,
+ * every outputs mount failed. Keeping them on separate bindings also keeps
+ * /uploads read-only, which a single shared parent mount could not.
+ */
+export const ANALYSIS_OUTPUTS_BUCKET_BINDING = "R2_OUTPUTS_BUCKET";
+/**
  * Where workspace uploads mount inside the container. The agent references
  * uploads as `uploads/<name>` (R2-relative), so the in-container path is that
  * same reference with a leading slash — the raw `<org>/<ws>/user-uploads` R2
@@ -888,6 +897,8 @@ interface AnalysisEnv {
   ANALYSIS_SANDBOX?: unknown;
   WAREHOUSE_EXPORT_BUCKET?: R2Bucket;
   R2_BUCKET?: R2Bucket;
+  /** Same bucket as R2_BUCKET; separate binding so /outputs can mount alongside /uploads. */
+  R2_OUTPUTS_BUCKET?: R2Bucket;
   WORKSPACE_FS?: DurableObjectNamespace<import("./workspace-filesystem-do.js").WorkspaceFilesystemDO>;
 }
 
@@ -1005,15 +1016,21 @@ export class AnalysisService extends WorkerEntrypoint<AnalysisEnv, AnalysisServi
       // and code execution entirely — a much larger regression than the one
       // this mount exists to fix.
       const outputsPrefix = `${getWorkspaceR2Prefix(this.ctx.props.orgId, this.ctx.props.workspaceId)}/user-outputs`;
-      try {
-        await sandbox.ensureMounted(
-          ANALYSIS_UPLOADS_BUCKET_BINDING,
-          outputsPrefix,
-          ANALYSIS_OUTPUTS_MOUNT_PATH,
-          { readOnly: false },
+      if (this.env.R2_OUTPUTS_BUCKET) {
+        try {
+          await sandbox.ensureMounted(
+            ANALYSIS_OUTPUTS_BUCKET_BINDING,
+            outputsPrefix,
+            ANALYSIS_OUTPUTS_MOUNT_PATH,
+            { readOnly: false },
+          );
+        } catch (error) {
+          console.error("[AnalysisService] outputs mount failed", error);
+        }
+      } else {
+        console.error(
+          "[AnalysisService] R2_OUTPUTS_BUCKET binding is not configured; generated files cannot be delivered through /outputs",
         );
-      } catch (error) {
-        console.error("[AnalysisService] outputs mount failed", error);
       }
     }
     if (this.ctx.props.orgId && this.ctx.props.workspaceId) {
