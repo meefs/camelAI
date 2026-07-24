@@ -2,7 +2,10 @@ import { redirect, type AppLoadContext } from "react-router";
 import { getEnv } from "./cloudflare.server";
 import { getSignedSessionFromRequest } from "./cookies.server";
 import { redirectIfBannedSession } from "./ban.server";
-import { createSignedSession } from "../../workers/main/src/signed-session";
+import {
+  createSignedSession,
+  ENTERPRISE_OIDC_AUTH_SOURCE,
+} from "../../workers/main/src/signed-session";
 import type { OrgAuthContextBootstrap } from "../../workers/main/src/auth";
 import type {
   Organization,
@@ -37,6 +40,7 @@ import {
 } from "../../workers/main/src/helpers/proxy-auth-providers";
 import type { ProxyAuthValidationEnv } from "../../workers/main/src/helpers/proxy-auth-core";
 import { retryTransientDurableObjectRead } from "./do-rpc-retry.server";
+import { validateOrgSsoSession } from "../../workers/main/src/org-sso";
 
 const LOCAL_AUTH_USER_ID = "local-dev-user";
 const LOCAL_AUTH_ORG_ID = "local-dev-org";
@@ -186,6 +190,10 @@ async function getSessionUncached(
     return tryCreateProxyAuthSessionContext(request, context, env);
   }
 
+  if (!(await validateOrgSsoSession(env, signedSession))) {
+    return null;
+  }
+
   if (isProxyAuthSource(signedSession.auth_source)) {
     // Read-only revalidation: confirm the live proxy identity still maps to
     // the session org without re-running the mutating provisioning flow when
@@ -236,6 +244,9 @@ async function getSessionUncached(
     workspace_id: signedSession.workspace_id,
     created_at: signedSession.created_at,
     last_accessed: signedSession.created_at,
+    expires_at: signedSession.expires_at,
+    sso_connection_id: signedSession.sso_connection_id,
+    sso_config_version: signedSession.sso_config_version,
     user_name: signedSession.user_name,
     user_email: signedSession.user_email,
     auth_source: signedSession.auth_source ?? null,
@@ -721,6 +732,10 @@ async function getAuthContextUncached(
     }
   }
 
+  if (sessionContext.session.auth_source === ENTERPRISE_OIDC_AUTH_SOURCE) {
+    orgs = orgs.filter((membership) => membership.org_id === currentOrg.id);
+  }
+
   const userContext: UserContext = {
     ...sessionContext,
     user: profile,
@@ -826,6 +841,9 @@ async function getAuthContextUncached(
         org_id: sessionContext.session.org_id,
         workspace_id: newWorkspaceId,
         created_at: sessionContext.session.created_at,
+        expires_at: sessionContext.session.expires_at,
+        sso_connection_id: sessionContext.session.sso_connection_id,
+        sso_config_version: sessionContext.session.sso_config_version,
         user_name: sessionContext.session.user_name,
         user_email: sessionContext.session.user_email,
         auth_source: sessionContext.session.auth_source ?? null,
@@ -867,6 +885,15 @@ export async function requireAuthContext(
   return authContext;
 }
 
+export function canUseSuperuserAccess(
+  context: Pick<UserContext, "user" | "session">,
+): boolean {
+  return Boolean(
+    context.user.is_superuser &&
+    context.session.auth_source !== ENTERPRISE_OIDC_AUTH_SOURCE,
+  );
+}
+
 /**
  * Require superuser access - redirects to home if not a superuser
  */
@@ -876,7 +903,7 @@ export async function requireSuperuser(
 ): Promise<AuthContext> {
   const authContext = await requireAuthContext(request, context);
 
-  if (!authContext.user.is_superuser) {
+  if (!canUseSuperuserAccess(authContext)) {
     throw redirect("/");
   }
 
@@ -897,6 +924,12 @@ export async function requireOrgAdmin(
   orgId: string,
 ): Promise<AuthContext> {
   const authContext = await requireAuthContext(request, context);
+  if (
+    authContext.session.auth_source === ENTERPRISE_OIDC_AUTH_SOURCE &&
+    authContext.session.org_id !== orgId
+  ) {
+    throw redirect("/");
+  }
 
   const userOrg = authContext.orgs.find((o) => o.org_id === orgId);
   const cachedIsAdmin = userOrg?.role === "owner" || userOrg?.role === "admin";
@@ -933,7 +966,11 @@ export async function requireWorkspaceAccess(
   const workspace = authContext.allWorkspaces.find(
     (ws) => ws.id === workspaceId,
   );
-  if (!workspace) {
+  if (
+    !workspace ||
+    (authContext.session.auth_source === ENTERPRISE_OIDC_AUTH_SOURCE &&
+      workspace.org_id !== authContext.session.org_id)
+  ) {
     throw redirect("/");
   }
 

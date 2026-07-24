@@ -1,6 +1,9 @@
 import type { Route } from "./+types/auth.switch-workspace";
 import { getEnv, type CloudflareEnv } from "@/lib/cloudflare.server";
-import { createSessionCookieHeader } from "@/lib/cookies.server";
+import {
+  createSessionCookieHeader,
+  getRemainingSessionCookieMaxAge,
+} from "@/lib/cookies.server";
 import { type AuthEnv } from "@/lib/auth-helpers";
 import { getSession } from "@/lib/auth.server";
 import {
@@ -96,6 +99,9 @@ export async function action({ request, context }: Route.ActionArgs) {
       workspace_id: session.workspace_id,
       created_at: session.created_at,
       last_accessed: session.created_at,
+      expires_at: session.expires_at,
+      sso_connection_id: session.sso_connection_id,
+      sso_config_version: session.sso_config_version,
       user_name: session.user_name,
       user_email: session.user_email,
       auth_source: session.auth_source ?? null,
@@ -129,7 +135,11 @@ export async function action({ request, context }: Route.ActionArgs) {
       { success: true, workspaceId, orgId: workspace.org_id },
       {
         headers: {
-          "Set-Cookie": createSessionCookieHeader(signedToken, request),
+          "Set-Cookie": createSessionCookieHeader(
+            signedToken,
+            request,
+            getRemainingSessionCookieMaxAge(session),
+          ),
         },
       },
     );

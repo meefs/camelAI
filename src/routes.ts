@@ -13,6 +13,8 @@ export default [
   ]),
   route("signup.", "routes/signup-dot.ts"),
   route("banned", "routes/banned.tsx"),
+  // Per-organization direct OIDC authorization entry point.
+  route("sso/:slug", "routes/sso.$slug.ts"),
   route("dev/billing-paywall", "routes/dev.billing-paywall.tsx"),
   route("dev/chat-credit-states", "routes/dev.chat-credit-states.tsx"),
 
@@ -66,6 +68,10 @@ export default [
         route(
           "settings/organization/domains",
           "routes/_app.settings.organization.domains.tsx",
+        ),
+        route(
+          "settings/organization/sso",
+          "routes/_app.settings.organization.sso.tsx",
         ),
         route(
           "settings/organization/ai-provider",
@@ -139,6 +145,14 @@ export default [
   route("api/auth/verify-email", "routes/api/auth.verify-email.ts"),
   route("api/auth/verify-email/send", "routes/api/auth.verify-email.send.ts"),
   route("api/auth/logout", "routes/api/auth.logout.ts"),
+  route(
+    "api/auth/enterprise-oidc/callback",
+    "routes/api/auth.enterprise-oidc.callback.ts",
+  ),
+  route(
+    "api/auth/enterprise-oidc/link",
+    "routes/api/auth.enterprise-oidc.link.ts",
+  ),
   route("api/auth/switch-org", "routes/api/auth.switch-org.ts"),
   route("api/auth/switch-workspace", "routes/api/auth.switch-workspace.ts"),
   route("api/orgs", "routes/api/orgs.ts"),
@@ -257,6 +271,7 @@ export default [
     "routes/api/apps.$scriptName.preview.ts",
   ),
   route("api/orgs/:id/custom-domain", "routes/api/orgs.$id.custom-domain.ts"),
+  route("api/orgs/:id/sso", "routes/api/orgs.$id.sso.ts"),
 
   // Speech API routes
   route("api/speech/transcribe", "routes/api/speech.transcribe.ts"),
@@ -271,13 +286,6 @@ export default [
     "api/invitations/:orgId/:invitationId",
     "routes/api/invitations.$orgId.$invitationId.ts",
   ),
-
-  // External API routes (CLI + OAuth)
-  route("api/ext/health", "routes/api/ext.health.ts"),
-  route("api/ext/apps", "routes/api/ext.apps.ts"),
-  route("api/ext/oauth/authorize", "routes/api/ext.oauth.authorize.tsx"),
-  route("api/ext/oauth/token", "routes/api/ext.oauth.token.ts"),
-  route("api/ext/oauth/revoke", "routes/api/ext.oauth.revoke.ts"),
 
   // API resource routes (to be created)
   // route('api/orgs/:id', 'routes/api/orgs.$id.ts'),

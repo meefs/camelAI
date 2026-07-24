@@ -29,6 +29,9 @@ import {
   getDispatcherSession,
   createDispatcherSession,
   validateAndConsumeAuthToken,
+  validateWorkerSessionForOrg,
+  isWorkerAuthCallbackOriginValid,
+  destroyDispatcherSession,
   createAuthState,
   DISPATCHER_SESSION_COOKIE,
 } from '../../main/src/worker-auth';
@@ -1045,7 +1048,12 @@ function getCookieValue(cookieHeader: string | null, name: string): string | nul
 }
 
 // Create Set-Cookie header for session
-function createSessionCookie(sessionId: string, hostname: string, cookieDomain?: string): string {
+function createSessionCookie(
+  sessionId: string,
+  hostname: string,
+  cookieDomain?: string,
+  maxAge = SESSION_MAX_AGE,
+): string {
   // Get domain for cookie (e.g., .camelai.app to cover all subdomains)
   // For custom domains, the caller provides the exact hostname.
   let domain: string;
@@ -1060,7 +1068,7 @@ function createSessionCookie(sessionId: string, hostname: string, cookieDomain?:
     `${DISPATCHER_SESSION_COOKIE}=${sessionId}`,
     `Path=/`,
     `Domain=${domain}`,
-    `Max-Age=${SESSION_MAX_AGE}`,
+    `Max-Age=${Math.max(1, Math.min(SESSION_MAX_AGE, Math.floor(maxAge)))}`,
     `HttpOnly`,
     `Secure`,
     `SameSite=Lax`,
@@ -1290,13 +1298,23 @@ async function handleAuthCallback(
   if (tokenData.script_name !== scriptName && tokenData.script_name !== legacyFallback?.scriptName) {
     return new Response('Script name mismatch', { status: 400 });
   }
+  if (!isWorkerAuthCallbackOriginValid(tokenData.callback_origin, url.toString())) {
+    return new Response('Callback origin mismatch', { status: 400 });
+  }
 
   // Create dispatcher session
-  const { sessionId } = await createDispatcherSession(
-    env.SESSIONS,
-    tokenData.user_id,
-    tokenData.org_id
-  );
+  const { sessionId } = await createDispatcherSession(env.SESSIONS, {
+    user_id: tokenData.user_id,
+    org_id: tokenData.org_id,
+    auth_source: tokenData.auth_source,
+    user_email: tokenData.user_email,
+    expires_at: tokenData.expires_at,
+    sso_connection_id: tokenData.sso_connection_id,
+    sso_config_version: tokenData.sso_config_version,
+  });
+  const cookieMaxAge = tokenData.expires_at === null
+    ? SESSION_MAX_AGE
+    : Math.max(1, Math.ceil((tokenData.expires_at - Date.now()) / 1000));
 
   // Build redirect URL (remove the callback path and query params)
   const redirectUrl = new URL(`${url.protocol}//${appendCurrentPort(url, hostname)}`);
@@ -1307,7 +1325,7 @@ async function handleAuthCallback(
     status: 302,
     headers: {
       'Location': redirectUrl.toString(),
-      'Set-Cookie': createSessionCookie(sessionId, hostname, cookieDomain),
+      'Set-Cookie': createSessionCookie(sessionId, hostname, cookieDomain, cookieMaxAge),
     },
   });
 }
@@ -1420,12 +1438,19 @@ async function handleWorkerRequest(
   // Private worker - check session
   const dispatcherSessionId = getCookieValue(cookieHeader, DISPATCHER_SESSION_COOKIE);
 
-  if (dispatcherSessionId) {
+  if (dispatcherSessionId && !isSameSiteRequest(hostname)) {
     // Validate dispatcher session
     const session = await getDispatcherSession(env.SESSIONS, dispatcherSessionId);
     if (session && session.org_id === accessInfo.org_id) {
-      // Valid session with matching org - dispatch
-      return dispatchToWorker(request, env, ctx, effectiveDispatchScriptName, effectiveScriptName, effectiveLegacyDispatchScriptName);
+      try {
+        if (await validateWorkerSessionForOrg(env, session, accessInfo.org_id)) {
+          return dispatchToWorker(request, env, ctx, effectiveDispatchScriptName, effectiveScriptName, effectiveLegacyDispatchScriptName);
+        }
+        await destroyDispatcherSession(env.SESSIONS, dispatcherSessionId);
+      } catch (error) {
+        console.error(`[dispatcher] Failed to revalidate private-app session: ${error}`);
+        return errorResponse(error503Page(getMainAppUrl(hostname, env.MAIN_APP_URL)));
+      }
     }
   }
 
@@ -1449,6 +1474,23 @@ async function handleWorkerRequest(
       if (!session) {
         console.log(`[dispatcher] Session invalid for ${effectiveScriptName}, token prefix: ${mainSessionId.slice(0, 8)}...`);
         return errorResponse(error401Page(getMainAppUrl(hostname, env.MAIN_APP_URL)));
+      }
+
+      const sessionValidForOrg = await validateWorkerSessionForOrg(
+        env,
+        {
+          user_id: session.user_id,
+          org_id: session.org_id,
+          auth_source: session.auth_source ?? null,
+          user_email: session.user_email ?? null,
+          expires_at: session.expires_at ?? null,
+          sso_connection_id: session.sso_connection_id ?? null,
+          sso_config_version: session.sso_config_version ?? null,
+        },
+        accessInfo.org_id,
+      );
+      if (!sessionValidForOrg) {
+        return errorResponse(error403Page(getMainAppUrl(hostname, env.MAIN_APP_URL)));
       }
 
       // Check if user is a member of the org that owns this worker

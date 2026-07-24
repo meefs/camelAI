@@ -7,9 +7,13 @@ import {
   useLoaderData,
 } from "react-router";
 import type { Route } from "./+types/_app";
-import { requireAuthContext } from "@/lib/auth.server";
+import { canUseSuperuserAccess, requireAuthContext } from "@/lib/auth.server";
 import { getEnv } from "@/lib/cloudflare.server";
-import { parseCookies, createSessionCookieHeader } from "@/lib/cookies.server";
+import {
+  createSessionCookieHeader,
+  getRemainingSessionCookieMaxAge,
+  parseCookies,
+} from "@/lib/cookies.server";
 import { LegacyUserBanner } from "@/components/legacy-user-banner";
 import {
   PaywallTakeover,
@@ -99,7 +103,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     /^\/chat\/[^/]+$/.test(url.pathname) &&
     url.searchParams.get("adminReadonly") === "1" &&
     url.searchParams.get("embed") === "1" &&
-    authContext.user.is_superuser === true;
+    canUseSuperuserAccess(authContext);
 
   if (embedMode) {
     const authState: AuthState = {
@@ -134,6 +138,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
           "Set-Cookie": createSessionCookieHeader(
             authContext.resignedSessionCookie,
             request,
+            getRemainingSessionCookieMaxAge(authContext.session),
           ),
         },
       });
@@ -241,6 +246,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
         "Set-Cookie": createSessionCookieHeader(
           authContext.resignedSessionCookie,
           request,
+          getRemainingSessionCookieMaxAge(authContext.session),
         ),
       },
     });

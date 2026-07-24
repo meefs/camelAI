@@ -3,6 +3,7 @@ import { requireAuthContext } from "@/lib/auth.server";
 import { getUserOrgs } from "@/lib/auth-do";
 import { getAuthEnv } from "@/lib/auth-helpers";
 import { getEnv } from "@/lib/cloudflare.server";
+import { ENTERPRISE_OIDC_AUTH_SOURCE } from "../../../workers/main/src/signed-session";
 
 /**
  * The user's full org list with names + archived filtering — i.e. the per-org
@@ -16,5 +17,10 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
   const orgs = await getUserOrgs(authEnv, authContext.user.id);
-  return { orgs };
+  return {
+    orgs:
+      authContext.session.auth_source === ENTERPRISE_OIDC_AUTH_SOURCE
+        ? orgs.filter((org) => org.org_id === authContext.session.org_id)
+        : orgs,
+  };
 }

@@ -8,6 +8,8 @@ const getDevEmailOutboxEntryByIdMock = vi.fn();
 
 vi.mock('@/lib/auth.server', () => ({
   requireAuthContext: requireAuthContextMock,
+  canUseSuperuserAccess: (context: { user: { is_superuser?: boolean }; session?: { auth_source?: string | null } }) =>
+    Boolean(context.user.is_superuser && context.session?.auth_source !== 'enterprise_oidc'),
 }));
 
 vi.mock('@/lib/cloudflare.server', () => ({
@@ -30,6 +32,7 @@ describe('dev sent emails api authorization', () => {
     isDevEmailOutboxEnabledMock.mockReturnValue(true);
     requireAuthContextMock.mockResolvedValue({
       user: { is_superuser: true },
+      session: { auth_source: null },
     });
     listDevEmailOutboxEntriesMock.mockResolvedValue({
       entries: [],

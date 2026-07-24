@@ -29,9 +29,7 @@
 		"CF_GATEWAY_NAME": "chiridion",
 		"BEDROCK_REGION": "us-west-2",
 			"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com",
-			"WORKSPACE_EMAIL_DOMAIN": "camelai.dev",
-
-				"EXT_API_CLIENT_ID": "set-me"
+			"WORKSPACE_EMAIL_DOMAIN": "camelai.dev"
 			// CF_GATEWAY_TOKEN and optional CF_GATEWAY_BASE_URL are set via .dev.vars for local dev
 		},
 	"assets": {
@@ -247,9 +245,7 @@
 				"CF_GATEWAY_NAME": "chiridion",
 				"BEDROCK_REGION": "us-west-2",
 					"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com",
-					"WORKSPACE_EMAIL_DOMAIN": "camelai.dev",
-		
-				"EXT_API_CLIENT_ID": "set-me"
+					"WORKSPACE_EMAIL_DOMAIN": "camelai.dev"
 					// CF_GATEWAY_TOKEN is set via secrets
 				},
 			"images": {
@@ -371,9 +367,7 @@
 				"CF_GATEWAY_NAME": "chiridion",
 				"BEDROCK_REGION": "us-west-2",
 				"EMAIL_FROM_ADDRESS": "agent-staging@camelai.dev",
-				"WORKSPACE_EMAIL_DOMAIN": "camelai.dev",
-	
-				"EXT_API_CLIENT_ID": "set-me"
+				"WORKSPACE_EMAIL_DOMAIN": "camelai.dev"
 				// CF_GATEWAY_TOKEN is set via secrets
 			},
 			"assets": {
@@ -498,9 +492,7 @@
 				"CF_GATEWAY_NAME": "chiridion",
 				"BEDROCK_REGION": "us-west-2",
 					"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com",
-					"WORKSPACE_EMAIL_DOMAIN": "camelai.dev",
-		
-				"EXT_API_CLIENT_ID": "set-me"
+					"WORKSPACE_EMAIL_DOMAIN": "camelai.dev"
 					// CF_GATEWAY_TOKEN is set via secrets
 				},
 			"assets": {
@@ -626,9 +618,7 @@
 				"CF_GATEWAY_NAME": "chiridion",
 				"BEDROCK_REGION": "us-west-2",
 					"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com",
-					"WORKSPACE_EMAIL_DOMAIN": "camelai.dev",
-		
-				"EXT_API_CLIENT_ID": "set-me"
+					"WORKSPACE_EMAIL_DOMAIN": "camelai.dev"
 					// CF_GATEWAY_TOKEN is set via secrets
 				},
 			"assets": {

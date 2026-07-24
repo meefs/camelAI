@@ -42,8 +42,19 @@ export function getCookie(request: Request, name: string): string | null {
   return cookies[name] || null;
 }
 
-export function createSessionCookieHeader(sessionId: string, request: Request): string {
-  return createSessionCookie(sessionId, request);
+export function createSessionCookieHeader(
+  sessionId: string,
+  request: Request,
+  maxAge?: number,
+): string {
+  return createSessionCookie(sessionId, request, maxAge);
+}
+
+export function getRemainingSessionCookieMaxAge(
+  session: Pick<SignedSessionData, "expires_at">,
+): number | undefined {
+  if (typeof session.expires_at !== "number") return undefined;
+  return Math.max(1, Math.ceil((session.expires_at - Date.now()) / 1000));
 }
 
 export function createDeleteSessionCookieHeader(request: Request): string {

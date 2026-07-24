@@ -49,7 +49,6 @@
     "STRIPE_TEAM_PRICE_ID": "price_1TS5SpGvliMKf4vHyJUSN3La",
     "STRIPE_CREDIT_PRICE_IDS": "price_1TRIGrGvliMKf4vHdDHs0tYg,price_1TRIGrGvliMKf4vHtX6WouRr,price_1TRIGsGvliMKf4vHWS9HfIkm,price_1TRIGsGvliMKf4vHte5jp64y",
 
-    "EXT_API_CLIENT_ID": "set-me",
     "CF_WORKER_NAME": "chiridion-app-staging",
     "TAIL_WORKER_NAME": "chiridion-user-logs-tail-staging",
     "CF_ZONE_ID": "94f647d6b1658a287820a83d09492c73",

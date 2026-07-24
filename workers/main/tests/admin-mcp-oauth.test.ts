@@ -212,14 +212,15 @@ describe("admin MCP OAuth resource", () => {
       token_endpoint: "https://example.com/api/admin/oauth/token",
     });
 
-    const workspaceMetadataResponse = await handleOAuthMetadata(routeContext(
+    const retiredWorkspaceMetadataResponse = await handleOAuthMetadata(routeContext(
       new Request("https://example.com/.well-known/oauth-authorization-server"),
     ));
-    expect(workspaceMetadataResponse?.status).toBe(200);
-    await expect(workspaceMetadataResponse?.json()).resolves.toMatchObject({
-      issuer: "https://example.com",
-      authorization_endpoint: "https://example.com/api/ext/oauth/authorize",
-    });
+    expect(retiredWorkspaceMetadataResponse?.status).toBe(404);
+
+    const retiredWorkspaceResourceResponse = await handleResourceMetadata(routeContext(
+      new Request("https://example.com/.well-known/oauth-protected-resource"),
+    ));
+    expect(retiredWorkspaceResourceResponse?.status).toBe(404);
   });
 
   it("requires redirect_uri during authorization-code token exchange", async () => {

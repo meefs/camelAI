@@ -1,5 +1,5 @@
 import type { Route } from './+types/dev.sent-emails.$id';
-import { requireAuthContext } from '@/lib/auth.server';
+import { canUseSuperuserAccess, requireAuthContext } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import {
   getDevEmailOutboxEntryById,
@@ -22,7 +22,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     throw error;
   }
 
-  if (!authContext.user.is_superuser) {
+  if (!canUseSuperuserAccess(authContext)) {
     return Response.json({ error: 'Forbidden' }, { status: 403 });
   }
 

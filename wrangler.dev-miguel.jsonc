@@ -36,8 +36,6 @@
 			"WORKER_BASE_URL": "https://dev-miguel.camelai.dev",
 				"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com",
 				"WORKSPACE_EMAIL_DOMAIN": "camelai.dev",
-	
-				"EXT_API_CLIENT_ID": "set-me",
 				"CF_WORKER_NAME": "chiridion-app-dev-miguel",
 			"TAIL_WORKER_NAME": "chiridion-user-logs-tail-dev-miguel",
 		},

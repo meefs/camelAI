@@ -40,6 +40,7 @@ const navGroups: NavGroup[] = [
       { label: "AI Provider", href: "/settings/organization/ai-provider", adminOnly: true },
       { label: "Models", href: "/settings/organization/models", adminOnly: true },
       { label: "Domains", href: "/settings/organization/domains" },
+      { label: "SSO", href: "/settings/organization/sso", adminOnly: true, hiddenInSelfhost: true },
     ],
   },
   {

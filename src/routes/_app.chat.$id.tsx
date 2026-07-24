@@ -14,7 +14,10 @@ import {
   requireSessionWorkspaceAccess,
   getAuthEnv,
 } from "@/lib/auth.server";
-import { createSessionCookieHeader } from "@/lib/cookies.server";
+import {
+  createSessionCookieHeader,
+  getRemainingSessionCookieMaxAge,
+} from "@/lib/cookies.server";
 import type { MentionableProject } from "@/lib/mentions";
 import { resolveDisplayChatData } from "@/lib/chat-thread-display";
 import { loadWorkspaceMentionSources } from "@/lib/mention-sources.server";
@@ -40,10 +43,7 @@ import { isSelfhostRuntime } from "@/lib/selfhost-runtime";
 import { modelCatalogEntriesForIds } from "@/lib/model-catalog";
 import { getOrg, getWorkerScript } from "@/lib/auth-do";
 import { switchSessionOrg, switchSessionWorkspace } from "@/lib/auth-do";
-import {
-  isProxyAuthSource,
-  validateSessionIdentityMapsToOrg,
-} from "../../workers/main/src/helpers/proxy-auth-providers";
+import { validateSessionIdentityMapsToOrg } from "../../workers/main/src/helpers/proxy-auth-providers";
 import type { ProxyAuthValidationEnv } from "../../workers/main/src/helpers/proxy-auth-core";
 import { getChatDebugFlags } from "@/lib/chat-debug-flags";
 import { shouldRevalidateActiveChatRoute } from "@/lib/chat-route-revalidation";
@@ -681,14 +681,10 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     });
     if (groupWorkspace && groupWorkspace.id !== workspaceId) {
       let canSwitch = true;
-      if (
-        groupWorkspace.org_id !== authContext.session.org_id &&
-        isProxyAuthSource(authContext.session.auth_source)
-      ) {
-        // A proxy-backed cookie (Cloudflare Access, Pomerium) is only accepted
-        // for orgs the live identity maps to; switching to an unmapped org
-        // would mint a cookie that every subsequent request rejects. Stay in
-        // the current workspace instead.
+      if (groupWorkspace.org_id !== authContext.session.org_id) {
+        // Proxy-backed and enterprise OIDC sessions can be restricted to a
+        // subset of the user's orgs. Never mint a cross-org cookie unless the
+        // identity validator explicitly accepts the target.
         const proxyValidation = await validateSessionIdentityMapsToOrg(
           request,
           env as unknown as ProxyAuthValidationEnv,
@@ -719,7 +715,11 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
               );
         throw redirect(`${url.pathname}${url.search}`, {
           headers: {
-            "Set-Cookie": createSessionCookieHeader(signedToken, request),
+            "Set-Cookie": createSessionCookieHeader(
+              signedToken,
+              request,
+              getRemainingSessionCookieMaxAge(authContext.session),
+            ),
           },
         });
       }

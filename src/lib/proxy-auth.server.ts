@@ -18,7 +18,10 @@ import {
   linkOAuthProvider,
 } from "./auth-do";
 import { isOrgBanned, isUserBanned } from "../../workers/main/src/ban-list";
-import type { SignedSessionData } from "../../workers/main/src/signed-session";
+import {
+  ENTERPRISE_OIDC_AUTH_SOURCE,
+  type SignedSessionData,
+} from "../../workers/main/src/signed-session";
 import {
   ProxyAuthUnavailableError,
   emailMatchesRequiredDomain,
@@ -161,9 +164,21 @@ export async function tryProxySilentLogin(
 export async function requireProxyMappedOrg(
   request: Request,
   env: unknown,
-  session: { auth_source?: string | null; user_email?: string | null },
+  session: {
+    auth_source?: string | null;
+    user_email?: string | null;
+    org_id?: string | null;
+  },
   orgId: string,
 ): Promise<Response | null> {
+  if (session.auth_source === ENTERPRISE_OIDC_AUTH_SOURCE) {
+    return session.org_id === orgId
+      ? null
+      : Response.json(
+          { error: "This SSO session is restricted to its organization" },
+          { status: 403 },
+        );
+  }
   const provider = providerForAuthSource(session.auth_source);
   if (!provider) return null;
   const validation = await validateProxyIdentityMapsToOrg(

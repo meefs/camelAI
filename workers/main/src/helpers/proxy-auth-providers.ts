@@ -15,6 +15,8 @@ import {
 } from "./proxy-auth-core.js";
 import { CLOUDFLARE_ACCESS_PROVIDER } from "./access-session.js";
 import { POMERIUM_PROVIDER } from "./pomerium-session.js";
+import { ENTERPRISE_OIDC_AUTH_SOURCE } from "../signed-session.js";
+import { validateOrgSsoSession } from "../org-sso.js";
 
 /**
  * All supported providers, in precedence order. Order only matters when more
@@ -73,12 +75,23 @@ export function validateSessionMapsToOrg(
  * against an explicit target `orgId` (e.g. an org the user is switching into),
  * dispatching on the session's auth source. Non-proxy sessions are "valid".
  */
-export function validateSessionIdentityMapsToOrg(
+export async function validateSessionIdentityMapsToOrg(
   request: Request,
   env: ProxyAuthValidationEnv,
-  session: { auth_source?: string | null; user_email?: string | null },
+  session: {
+    auth_source?: string | null;
+    user_id?: string | null;
+    user_email?: string | null;
+    org_id?: string | null;
+    sso_connection_id?: string | null;
+    sso_config_version?: number | null;
+  },
   orgId: string | null | undefined,
 ): Promise<ProxySessionValidation> {
+  if (session.auth_source === ENTERPRISE_OIDC_AUTH_SOURCE) {
+    if (!orgId || session.org_id !== orgId) return "invalid";
+    return (await validateOrgSsoSession(env, session)) ? "valid" : "invalid";
+  }
   const provider = providerForAuthSource(session.auth_source);
   if (!provider) return Promise.resolve("valid");
   return validateProxyIdentityMapsToOrg(

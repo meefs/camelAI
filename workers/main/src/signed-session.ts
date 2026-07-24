@@ -14,21 +14,27 @@
 export const CLOUDFLARE_ACCESS_AUTH_SOURCE = "cloudflare_access";
 /** `auth_source` tag for sessions minted from a Pomerium assertion. */
 export const POMERIUM_AUTH_SOURCE = "pomerium";
+/** `auth_source` tag for an org-scoped direct enterprise OIDC session. */
+export const ENTERPRISE_OIDC_AUTH_SOURCE = "enterprise_oidc";
 
-/** `auth_source` tag for any session minted from a trusted reverse-proxy
- * identity assertion (Cloudflare Access, Pomerium, ...). */
-export type ProxyAuthSource =
+/** Identity source attached to signed sessions. */
+export type AuthSource =
   | typeof CLOUDFLARE_ACCESS_AUTH_SOURCE
-  | typeof POMERIUM_AUTH_SOURCE;
+  | typeof POMERIUM_AUTH_SOURCE
+  | typeof ENTERPRISE_OIDC_AUTH_SOURCE;
 
 export interface SignedSessionData {
   user_id: string;
   org_id: string;
   workspace_id: string | null;
   created_at: number;
+  /** Optional shorter absolute expiry for enterprise SSO sessions. */
+  expires_at?: number;
+  sso_connection_id?: string | null;
+  sso_config_version?: number | null;
   user_name?: string | null;
   user_email?: string | null;
-  auth_source?: ProxyAuthSource | null;
+  auth_source?: AuthSource | null;
 }
 
 export interface SignedOAuthStateData {
@@ -38,10 +44,28 @@ export interface SignedOAuthStateData {
   created_at: number;
 }
 
+export interface SignedEnterpriseSsoStateData {
+  org_id: string;
+  transaction_id: string;
+  connection_id: string;
+  config_version: number;
+  created_at: number;
+}
+
+export interface SignedEnterpriseSsoLinkData {
+  org_id: string;
+  user_id: string;
+  created_at: number;
+}
+
 const SESSION_PREFIX = 'ss_';
 const OAUTH_STATE_PREFIX = 'os_';
+const ENTERPRISE_SSO_STATE_PREFIX = 'es_';
+const ENTERPRISE_SSO_LINK_PREFIX = 'el_';
 const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const OAUTH_STATE_MAX_AGE_MS = 5 * 60 * 1000; // 5 minutes
+const ENTERPRISE_SSO_STATE_MAX_AGE_MS = 10 * 60 * 1000; // 10 minutes
+const ENTERPRISE_SSO_LINK_MAX_AGE_MS = 5 * 60 * 1000; // 5 minutes
 
 function base64urlEncode(data: Uint8Array): string {
   return btoa(String.fromCharCode(...data))
@@ -104,9 +128,13 @@ async function verify<T>(secret: string, prefix: string, token: string, maxAgeMs
     if (!valid) return null;
 
     const decoder = new TextDecoder();
-    const payload = JSON.parse(decoder.decode(payloadBytes)) as T & { created_at: number };
+    const payload = JSON.parse(decoder.decode(payloadBytes)) as T & {
+      created_at: number;
+      expires_at?: number;
+    };
 
     if (Date.now() - payload.created_at > maxAgeMs) return null;
+    if (typeof payload.expires_at === "number" && Date.now() >= payload.expires_at) return null;
 
     return payload;
   } catch {
@@ -144,4 +172,42 @@ export async function parseSignedOAuthState(
   token: string
 ): Promise<SignedOAuthStateData | null> {
   return verify<SignedOAuthStateData>(secret, OAUTH_STATE_PREFIX, token, OAUTH_STATE_MAX_AGE_MS);
+}
+
+export function createSignedEnterpriseSsoState(
+  secret: string,
+  data: SignedEnterpriseSsoStateData,
+): Promise<string> {
+  return sign(secret, ENTERPRISE_SSO_STATE_PREFIX, data);
+}
+
+export function parseSignedEnterpriseSsoState(
+  secret: string,
+  token: string,
+): Promise<SignedEnterpriseSsoStateData | null> {
+  return verify<SignedEnterpriseSsoStateData>(
+    secret,
+    ENTERPRISE_SSO_STATE_PREFIX,
+    token,
+    ENTERPRISE_SSO_STATE_MAX_AGE_MS,
+  );
+}
+
+export function createSignedEnterpriseSsoLink(
+  secret: string,
+  data: SignedEnterpriseSsoLinkData,
+): Promise<string> {
+  return sign(secret, ENTERPRISE_SSO_LINK_PREFIX, data);
+}
+
+export function parseSignedEnterpriseSsoLink(
+  secret: string,
+  token: string,
+): Promise<SignedEnterpriseSsoLinkData | null> {
+  return verify<SignedEnterpriseSsoLinkData>(
+    secret,
+    ENTERPRISE_SSO_LINK_PREFIX,
+    token,
+    ENTERPRISE_SSO_LINK_MAX_AGE_MS,
+  );
 }

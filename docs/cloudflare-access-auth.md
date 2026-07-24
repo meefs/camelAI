@@ -43,3 +43,7 @@ Cloudflare Access's `/cdn-cgi/access/get-identity` endpoint is fetched from the
 protected application origin best-effort after JWT verification, so richer IdP
 fields can be used for org mapping. Missing full identity data does not break
 login if the verified JWT has enough configured claims to map the user to an org.
+
+Deployment-wide Cloudflare Access authentication is separate from product
+enterprise SSO. Per-organization customer SSO uses direct OIDC; see
+[Enterprise OIDC SSO](./enterprise-oidc-sso.md).

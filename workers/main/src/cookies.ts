@@ -92,12 +92,16 @@ export function getSessionIdFromRequest(request: Request): string | null {
   return parseCookie(request.headers.get('Cookie'), getSessionCookieName(hostname));
 }
 
-export function createSessionCookie(sessionId: string, request: Request): string {
+export function createSessionCookie(
+  sessionId: string,
+  request: Request,
+  maxAge: number = SESSION_MAX_AGE,
+): string {
   const hostname = getHostname(request);
   return buildCookie(
     getSessionCookieName(hostname),
     sessionId,
-    SESSION_MAX_AGE,
+    maxAge,
     isSecure(request),
     getCookieDomain(hostname)
   );

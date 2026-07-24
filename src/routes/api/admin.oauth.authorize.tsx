@@ -2,7 +2,7 @@ import type { Route } from "./+types/admin.oauth.authorize";
 import { data, redirect } from "react-router";
 import { ShieldCheck } from "lucide-react";
 import { getEnv } from "@/lib/cloudflare.server";
-import { requireUserContext } from "@/lib/auth.server";
+import { canUseSuperuserAccess, requireUserContext } from "@/lib/auth.server";
 import {
   ADMIN_MCP_SCOPE,
   getAdminMcpOAuth,
@@ -65,7 +65,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   }
 
   const authContext = await requireUserContext(request, context);
-  if (!authContext.user.is_superuser) {
+  if (!canUseSuperuserAccess(authContext)) {
     return data({ error: "Only camelAI admins can authorize the admin MCP server." }, { status: 403 });
   }
 
@@ -122,7 +122,7 @@ export async function action({ request, context }: Route.ActionArgs) {
   }
 
   const authContext = await requireUserContext(request, context);
-  if (!authContext.user.is_superuser) {
+  if (!canUseSuperuserAccess(authContext)) {
     return new OAuthError("access_denied", "Only admins can authorize this MCP server").toResponse(403);
   }
 

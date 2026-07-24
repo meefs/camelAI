@@ -13,6 +13,7 @@ conventions. Active cross-cutting architecture work also lives in
 | [self-hosting.md](./self-hosting.md) | Docker Compose / self-host operator guide |
 | [pomerium-auth.md](./pomerium-auth.md) | Pomerium reverse-proxy auth |
 | [cloudflare-access-auth.md](./cloudflare-access-auth.md) | Cloudflare Access reverse-proxy auth |
+| [enterprise-oidc-sso.md](./enterprise-oidc-sso.md) | Direct multi-tenant enterprise OIDC SSO |
 | [admin-api-reference.md](./admin-api-reference.md) | Admin REST API reference |
 | [admin-api-migration-guide.md](./admin-api-migration-guide.md) | Admin API migration notes |
 | [admin-js-exec.md](./admin-js-exec.md) | Generic remote JavaScript console for staging and production |

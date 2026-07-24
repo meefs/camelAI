@@ -95,6 +95,12 @@ export async function handleWorkerAuth({ req, env, url }: RouteContext): Promise
     org_id: stateData.required_org_id,
     state: state,
     script_name: stateData.script_name,
+    callback_origin: new URL(stateData.return_url).origin,
+    auth_source: session.auth_source ?? null,
+    user_email: session.user_email ?? null,
+    expires_at: session.expires_at ?? null,
+    sso_connection_id: session.sso_connection_id ?? null,
+    sso_config_version: session.sso_config_version ?? null,
   });
 
   // Build callback URL on the dispatcher domain

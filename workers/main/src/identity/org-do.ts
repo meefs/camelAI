@@ -85,6 +85,11 @@ import {
   parseModelHistory,
 } from "../chat-error-metadata";
 import { ORG_SLUG_KV_PREFIX, generateUniqueOrgSlug, hashOrgSlug, registerOrgSlug } from "./org-slugs";
+import {
+  ORG_SSO_CONFIG_KEY,
+  type OrgSsoConfig,
+  type OrgSsoTransaction,
+} from "../org-sso.js";
 import { normalizeThreadCompletionSummaryStatus } from "./thread-summary";
 import { usageCost, usageInteger, usageText } from "./usage";
 import { generateEmailHandle } from "../../../../src/lib/workspace-email";
@@ -1933,7 +1938,38 @@ export class OrgDO extends DurableObject<DOEnv> {
       this.resetThreadSearchBackfillCheckpoint();
     }
 
-    const CURRENT_SCHEMA_VERSION = 46;
+    if (version < 47) {
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS enterprise_sso_transactions (
+          id TEXT PRIMARY KEY,
+          connection_id TEXT NOT NULL,
+          config_version INTEGER NOT NULL,
+          pkce_verifier TEXT NOT NULL,
+          nonce TEXT NOT NULL,
+          browser_binding_hash TEXT NOT NULL,
+          link_user_id TEXT,
+          redirect_path TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          expires_at INTEGER NOT NULL
+        )
+      `);
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS enterprise_sso_identities (
+          connection_id TEXT NOT NULL,
+          issuer TEXT NOT NULL,
+          subject TEXT NOT NULL,
+          user_id TEXT NOT NULL,
+          email TEXT NOT NULL,
+          linked_at INTEGER NOT NULL,
+          PRIMARY KEY (connection_id, issuer, subject)
+        )
+      `);
+      this.sql.exec(
+        "CREATE INDEX IF NOT EXISTS idx_enterprise_sso_identities_user ON enterprise_sso_identities(user_id)",
+      );
+    }
+
+    const CURRENT_SCHEMA_VERSION = 47;
     if (version < CURRENT_SCHEMA_VERSION) {
       this.ctx.storage.kv.put("schemaVersion", CURRENT_SCHEMA_VERSION);
     }
@@ -2625,6 +2661,178 @@ export class OrgDO extends DurableObject<DOEnv> {
     } catch {
       return { ...DEFAULT_ORG_EXPERIMENTAL_SETTINGS };
     }
+  }
+
+  claimSsoProvisioning(): string | null {
+    const key = "sso_provisioning_lease";
+    const current = this.ctx.storage.kv.get<{ token: string; startedAt: number }>(key);
+    if (current && Date.now() - current.startedAt < 2 * 60 * 1000) return null;
+    const token = crypto.randomUUID();
+    this.ctx.storage.kv.put(key, { token, startedAt: Date.now() });
+    return token;
+  }
+
+  releaseSsoProvisioning(token: string): void {
+    const key = "sso_provisioning_lease";
+    if (this.ctx.storage.kv.get<{ token: string }>(key)?.token === token) {
+      this.ctx.storage.kv.delete(key);
+    }
+  }
+
+  getSsoConfig(): OrgSsoConfig | null {
+    const row = this.sql
+      .exec<{ value: string }>(
+        "SELECT value FROM org_info WHERE key = ?",
+        ORG_SSO_CONFIG_KEY,
+      )
+      .next().value;
+    if (!row) return null;
+    try {
+      const config = JSON.parse(row.value) as OrgSsoConfig;
+      return config.protocol === "oidc" && config.connection_id && config.issuer
+        ? config
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  setSsoConfig(config: OrgSsoConfig, actorId: string): OrgSsoConfig {
+    this.sql.exec(
+      "INSERT OR REPLACE INTO org_info (key, value) VALUES (?, ?)",
+      ORG_SSO_CONFIG_KEY,
+      JSON.stringify(config),
+    );
+    this.log("sso_config_updated", actorId, undefined, {
+      connection_id: config.connection_id,
+      issuer: config.issuer,
+      email_domains: config.email_domains,
+      config_version: config.config_version,
+      enabled: config.enabled,
+    });
+    return config;
+  }
+
+  disableSsoConfig(actorId: string): OrgSsoConfig | null {
+    const previous = this.getSsoConfig();
+    if (!previous) return null;
+    const next = {
+      ...previous,
+      enabled: false,
+      config_version: previous.config_version + 1,
+      updated_at: Date.now(),
+      updated_by: actorId,
+    };
+    this.setSsoConfig(next, actorId);
+    this.sql.exec("DELETE FROM enterprise_sso_transactions");
+    this.log("sso_config_disabled", actorId, undefined, {
+      connection_id: next.connection_id,
+      config_version: next.config_version,
+    });
+    return next;
+  }
+
+  allowSsoLoginAttempt(clientKey: string, now = Date.now()): boolean {
+    const bucket = Math.floor(now / 60_000);
+    const key = `sso_login_rate:${bucket}`;
+    const state = this.ctx.storage.kv.get<{
+      total: number;
+      clients: Record<string, number>;
+    }>(key) ?? { total: 0, clients: {} };
+    const clientCount = state.clients[clientKey] ?? 0;
+    if (state.total >= 2_000 || clientCount >= 20) return false;
+    state.total += 1;
+    state.clients[clientKey] = clientCount + 1;
+    this.ctx.storage.kv.put(key, state);
+    this.ctx.storage.kv.delete(`sso_login_rate:${bucket - 2}`);
+    return true;
+  }
+
+  createSsoTransaction(transaction: OrgSsoTransaction): void {
+    this.sql.exec("DELETE FROM enterprise_sso_transactions WHERE expires_at <= ?", Date.now());
+    const outstanding = this.sql
+      .exec<{ count: number }>("SELECT COUNT(*) AS count FROM enterprise_sso_transactions")
+      .next().value?.count ?? 0;
+    if (outstanding >= 5_000) throw new Error("Too many pending SSO sign-ins");
+    this.sql.exec(
+      `INSERT INTO enterprise_sso_transactions (
+        id, connection_id, config_version, pkce_verifier, nonce,
+        browser_binding_hash, link_user_id, redirect_path, created_at, expires_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      transaction.id,
+      transaction.connection_id,
+      transaction.config_version,
+      transaction.pkce_verifier,
+      transaction.nonce,
+      transaction.browser_binding_hash,
+      transaction.link_user_id,
+      transaction.redirect_path,
+      transaction.created_at,
+      transaction.expires_at,
+    );
+  }
+
+  consumeSsoTransaction(
+    id: string,
+    browserBindingHash: string,
+  ): OrgSsoTransaction | null {
+    return this.ctx.storage.transactionSync(() => {
+      const row = this.sql
+        .exec<OrgSsoTransaction & Record<string, SqlStorageValue>>(
+          `SELECT id, connection_id, config_version, pkce_verifier, nonce,
+                  browser_binding_hash, link_user_id, redirect_path, created_at, expires_at
+             FROM enterprise_sso_transactions WHERE id = ?`,
+          id,
+        )
+        .next().value;
+      if (!row) return null;
+      if (row.expires_at <= Date.now()) {
+        this.sql.exec("DELETE FROM enterprise_sso_transactions WHERE id = ?", id);
+        return null;
+      }
+      if (row.browser_binding_hash !== browserBindingHash) return null;
+      this.sql.exec("DELETE FROM enterprise_sso_transactions WHERE id = ?", id);
+      return row;
+    });
+  }
+
+  getSsoIdentityUserId(
+    connectionId: string,
+    issuer: string,
+    subject: string,
+  ): string | null {
+    return this.sql
+      .exec<{ user_id: string }>(
+        `SELECT user_id FROM enterprise_sso_identities
+          WHERE connection_id = ? AND issuer = ? AND subject = ?`,
+        connectionId,
+        issuer,
+        subject,
+      )
+      .next().value?.user_id ?? null;
+  }
+
+  bindSsoIdentity(
+    connectionId: string,
+    issuer: string,
+    subject: string,
+    userId: string,
+    email: string,
+  ): string {
+    const existing = this.getSsoIdentityUserId(connectionId, issuer, subject);
+    if (existing && existing !== userId) throw new Error("sso_identity_conflict");
+    this.sql.exec(
+      `INSERT OR IGNORE INTO enterprise_sso_identities
+        (connection_id, issuer, subject, user_id, email, linked_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      connectionId,
+      issuer,
+      subject,
+      userId,
+      email,
+      Date.now(),
+    );
+    return existing ?? userId;
   }
 
   setExperimentalSettings(
@@ -3514,6 +3722,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     }
     this.sql.exec("DELETE FROM members WHERE user_id = ?", userId);
     this.sql.exec("DELETE FROM workspace_memberships WHERE user_id = ?", userId);
+    this.sql.exec("DELETE FROM enterprise_sso_identities WHERE user_id = ?", userId);
     if (existing) {
       this.log("member_removed", actorId, userId, { role: existing.role });
       const info = await this.getInfo();
@@ -6700,7 +6909,9 @@ export class OrgDO extends DurableObject<DOEnv> {
       // Best-effort cleanup; stale index only affects enumeration.
     }
 
-    this.sql.exec("DELETE FROM org_info WHERE key = ?", "data");
+    this.sql.exec("DELETE FROM org_info WHERE key IN (?, ?)", "data", ORG_SSO_CONFIG_KEY);
+    this.sql.exec("DELETE FROM enterprise_sso_transactions");
+    this.sql.exec("DELETE FROM enterprise_sso_identities");
     this.sql.exec("DELETE FROM members");
     this.sql.exec("DELETE FROM workspace_memberships");
     this.sql.exec("DELETE FROM invitations");

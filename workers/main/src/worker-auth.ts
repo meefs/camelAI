@@ -12,6 +12,13 @@
  * - Dispatcher session: worker_session:{uuid} in SESSIONS KV (30d TTL)
  */
 
+import type { OrgDO } from './auth.js';
+import { validateOrgSsoSession } from './org-sso.js';
+import {
+  ENTERPRISE_OIDC_AUTH_SOURCE,
+  type AuthSource,
+} from './signed-session.js';
+
 // Key prefixes
 const AUTH_STATE_PREFIX = 'wauth_state:';
 const AUTH_TOKEN_PREFIX = 'wauth_token:';
@@ -40,22 +47,62 @@ export interface WorkerAuthState {
  * One-time token data generated after successful authentication.
  * Used to establish a dispatcher session on the worker domain.
  */
-export interface WorkerAuthToken {
+export interface WorkerSessionConstraints {
+  auth_source: AuthSource | null;
+  user_email: string | null;
+  expires_at: number | null;
+  sso_connection_id: string | null;
+  sso_config_version: number | null;
+}
+
+export interface WorkerAuthToken extends WorkerSessionConstraints {
+  security_version: 1;
   user_id: string;
   org_id: string;
   state: string;
   script_name: string;
+  callback_origin: string;
   created_at: number;
 }
 
 /**
  * Session data for authenticated access to workers on the dispatcher domain.
  */
-export interface DispatcherSession {
+export interface DispatcherSession extends WorkerSessionConstraints {
+  security_version: 1;
   user_id: string;
   org_id: string;
   created_at: number;
   last_accessed: number;
+}
+
+function dispatcherSessionTtl(
+  session: Pick<DispatcherSession, 'expires_at'>,
+  now: number,
+): number {
+  if (session.expires_at === null) return DISPATCHER_SESSION_TTL_SECONDS;
+  const remainingSeconds = Math.ceil((session.expires_at - now) / 1000);
+  return Math.max(60, Math.min(DISPATCHER_SESSION_TTL_SECONDS, remainingSeconds));
+}
+
+export async function validateWorkerSessionForOrg(
+  env: { ORG: DurableObjectNamespace<OrgDO> },
+  session: WorkerSessionConstraints & { user_id: string; org_id: string },
+  requiredOrgId: string,
+): Promise<boolean> {
+  if (session.expires_at !== null && session.expires_at <= Date.now()) return false;
+  if (session.auth_source !== ENTERPRISE_OIDC_AUTH_SOURCE) {
+    const orgStub = env.ORG.get(env.ORG.idFromName(requiredOrgId));
+    return orgStub.isMember(session.user_id);
+  }
+  if (
+    session.org_id !== requiredOrgId ||
+    session.expires_at === null ||
+    !Number.isFinite(session.expires_at)
+  ) {
+    return false;
+  }
+  return validateOrgSsoSession(env, session);
 }
 
 /**
@@ -131,11 +178,12 @@ export async function validateAndConsumeAuthState(
  */
 export async function createWorkerAuthToken(
   kv: KVNamespace,
-  data: Omit<WorkerAuthToken, 'created_at'>
+  data: Omit<WorkerAuthToken, 'created_at' | 'security_version'>
 ): Promise<string> {
   const token = generateSecureToken(TOKEN_PREFIX);
   const tokenData: WorkerAuthToken = {
     ...data,
+    security_version: 1,
     created_at: Date.now(),
   };
   await kv.put(
@@ -167,9 +215,13 @@ export async function validateAndConsumeAuthToken(
   // Delete immediately (single-use)
   await kv.delete(key);
 
-  // Additional timestamp validation
+  // Additional timestamp and format validation.
   const age = Date.now() - data.created_at;
-  if (age > AUTH_TOKEN_TTL_SECONDS * 1000) {
+  if (
+    data.security_version !== 1 ||
+    age > AUTH_TOKEN_TTL_SECONDS * 1000 ||
+    (data.expires_at !== null && data.expires_at <= Date.now())
+  ) {
     return null;
   }
 
@@ -186,21 +238,23 @@ export async function validateAndConsumeAuthToken(
  */
 export async function createDispatcherSession(
   kv: KVNamespace,
-  userId: string,
-  orgId: string
+  data: Omit<DispatcherSession, 'created_at' | 'last_accessed' | 'security_version'>,
 ): Promise<{ sessionId: string; session: DispatcherSession }> {
   const sessionId = crypto.randomUUID();
   const now = Date.now();
+  if (data.expires_at !== null && data.expires_at <= now) {
+    throw new Error('Cannot create an expired dispatcher session');
+  }
   const session: DispatcherSession = {
-    user_id: userId,
-    org_id: orgId,
+    ...data,
+    security_version: 1,
     created_at: now,
     last_accessed: now,
   };
   await kv.put(
     `${DISPATCHER_SESSION_PREFIX}${sessionId}`,
     JSON.stringify(session),
-    { expirationTtl: DISPATCHER_SESSION_TTL_SECONDS }
+    { expirationTtl: dispatcherSessionTtl(session, now) },
   );
   return { sessionId, session };
 }
@@ -214,7 +268,16 @@ export async function getDispatcherSession(
   sessionId: string
 ): Promise<DispatcherSession | null> {
   const key = `${DISPATCHER_SESSION_PREFIX}${sessionId}`;
-  return kv.get<DispatcherSession>(key, 'json');
+  const session = await kv.get<DispatcherSession>(key, 'json');
+  if (
+    !session ||
+    session.security_version !== 1 ||
+    (session.expires_at !== null && session.expires_at <= Date.now())
+  ) {
+    if (session) await kv.delete(key);
+    return null;
+  }
+  return session;
 }
 
 /**
@@ -226,12 +289,13 @@ export async function touchDispatcherSession(
   sessionId: string
 ): Promise<DispatcherSession | null> {
   const key = `${DISPATCHER_SESSION_PREFIX}${sessionId}`;
-  const session = await kv.get<DispatcherSession>(key, 'json');
+  const session = await getDispatcherSession(kv, sessionId);
   if (!session) return null;
 
-  session.last_accessed = Date.now();
+  const now = Date.now();
+  session.last_accessed = now;
   await kv.put(key, JSON.stringify(session), {
-    expirationTtl: DISPATCHER_SESSION_TTL_SECONDS,
+    expirationTtl: dispatcherSessionTtl(session, now),
   });
   return session;
 }
@@ -249,6 +313,18 @@ export async function destroyDispatcherSession(
 // ============================================================================
 // URL Validation
 // ============================================================================
+
+export function isWorkerAuthCallbackOriginValid(
+  expectedOrigin: string,
+  callbackUrl: string,
+): boolean {
+  try {
+    return new URL(expectedOrigin).origin === expectedOrigin &&
+      new URL(callbackUrl).origin === expectedOrigin;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Validate that a return URL is safe (points to allowed domain).

@@ -1,0 +1,91 @@
+import { describe, expect, it } from "vitest";
+import { env } from "cloudflare:test";
+import { createOrg, createUser, type TestEnv } from "./test-helpers";
+import type { OrgSsoConfig } from "../src/org-sso";
+
+const testEnv = env as unknown as TestEnv;
+
+async function freshOrg() {
+  const email = `sso-${crypto.randomUUID()}@example.com`;
+  const { userId } = await createUser(testEnv, email, "password", "SSO Admin");
+  const { org } = await createOrg(testEnv, "SSO Org", userId);
+  return {
+    userId,
+    orgStub: testEnv.ORG.get(testEnv.ORG.idFromName(org.id)),
+  };
+}
+
+function config(actor: string): OrgSsoConfig {
+  return {
+    enabled: true,
+    connection_id: crypto.randomUUID(),
+    protocol: "oidc",
+    issuer: "https://idp.example.com",
+    client_id: "client",
+    client_secret_encrypted: "ciphertext",
+    client_auth_method: "client_secret_post",
+    email_claim: "email",
+    email_domains: ["example.com"],
+    config_version: 1,
+    session_ttl_seconds: 28_800,
+    updated_at: Date.now(),
+    updated_by: actor,
+  };
+}
+
+describe("OrgDO enterprise SSO state", () => {
+  it("atomically consumes a login transaction once", async () => {
+    const { orgStub } = await freshOrg();
+    const transaction = {
+      id: crypto.randomUUID(),
+      connection_id: "connection",
+      config_version: 1,
+      pkce_verifier: "verifier",
+      nonce: "nonce",
+      browser_binding_hash: "binding-hash",
+      link_user_id: null,
+      redirect_path: "/chat",
+      created_at: Date.now(),
+      expires_at: Date.now() + 60_000,
+    };
+    await orgStub.createSsoTransaction(transaction);
+    await expect(orgStub.consumeSsoTransaction(transaction.id, "wrong-hash")).resolves.toBeNull();
+    await expect(orgStub.consumeSsoTransaction(transaction.id, "binding-hash")).resolves.toMatchObject(transaction);
+    await expect(orgStub.consumeSsoTransaction(transaction.id, "binding-hash")).resolves.toBeNull();
+  });
+
+  it("does not return an expired transaction", async () => {
+    const { orgStub } = await freshOrg();
+    const id = crypto.randomUUID();
+    await orgStub.createSsoTransaction({
+      id,
+      connection_id: "connection",
+      config_version: 1,
+      pkce_verifier: "verifier",
+      nonce: "nonce",
+      browser_binding_hash: "binding-hash",
+      link_user_id: null,
+      redirect_path: "/",
+      created_at: Date.now() - 20_000,
+      expires_at: Date.now() - 10_000,
+    });
+    await expect(orgStub.consumeSsoTransaction(id, "binding-hash")).resolves.toBeNull();
+  });
+
+  it("version-bumps on disable so issued sessions are revocable", async () => {
+    const { orgStub, userId } = await freshOrg();
+    const active = config(userId);
+    await orgStub.setSsoConfig(active, userId);
+    const disabled = await orgStub.disableSsoConfig(userId);
+    expect(disabled).toMatchObject({ enabled: false, config_version: 2 });
+    await expect(orgStub.getSsoConfig()).resolves.toMatchObject({ enabled: false, config_version: 2 });
+  });
+
+  it("keys external identities by connection, issuer, and subject", async () => {
+    const { orgStub } = await freshOrg();
+    await expect(orgStub.bindSsoIdentity("connection-a", "https://one.example", "same-sub", "user-a", "a@example.com")).resolves.toBe("user-a");
+    await expect(orgStub.bindSsoIdentity("connection-b", "https://two.example", "same-sub", "user-b", "b@example.com")).resolves.toBe("user-b");
+    await expect(orgStub.getSsoIdentityUserId("connection-a", "https://one.example", "same-sub")).resolves.toBe("user-a");
+    await expect(orgStub.getSsoIdentityUserId("connection-b", "https://two.example", "same-sub")).resolves.toBe("user-b");
+  });
+});

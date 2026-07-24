@@ -28,7 +28,10 @@ describe("GET /api/orgs (lazy switcher org list)", () => {
     vi.clearAllMocks();
     getEnvMock.mockReturnValue({ env: true });
     getAuthEnvMock.mockReturnValue({ auth: true });
-    requireAuthContextMock.mockResolvedValue({ user: { id: "user_1" } });
+    requireAuthContextMock.mockResolvedValue({
+      user: { id: "user_1" },
+      session: { auth_source: null, org_id: "org_1" },
+    });
   });
 
   it("returns the user's full, named org list from getUserOrgs", async () => {
@@ -48,6 +51,26 @@ describe("GET /api/orgs (lazy switcher org list)", () => {
     // in the auth critical path), keyed by the authenticated user.
     expect(getUserOrgsMock).toHaveBeenCalledWith({ auth: true }, "user_1");
     expect(result).toEqual({ orgs });
+  });
+
+  it("returns only the bound org for an enterprise SSO session", async () => {
+    const orgs = [
+      { org_id: "org_1", org_name: "Primary", role: "owner", joined_at: 10, last_workspace_id: null },
+      { org_id: "org_2", org_name: "Side Project", role: "member", joined_at: 20, last_workspace_id: null },
+    ];
+    getUserOrgsMock.mockResolvedValue(orgs);
+    requireAuthContextMock.mockResolvedValue({
+      user: { id: "user_1" },
+      session: { auth_source: "enterprise_oidc", org_id: "org_1" },
+    });
+
+    const result = await loader({
+      request: new Request("https://camelai.test/api/orgs"),
+      context: {},
+      params: {},
+    } as never);
+
+    expect(result).toEqual({ orgs: [orgs[0]] });
   });
 
   it("requires auth (propagates the redirect thrown by requireAuthContext)", async () => {

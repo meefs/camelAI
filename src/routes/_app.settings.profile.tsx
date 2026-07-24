@@ -1,7 +1,7 @@
 import { Form, redirect, useLoaderData } from 'react-router';
 import { parseWithZod } from '@conform-to/zod/v4';
 import type { Route } from './+types/_app.settings.profile';
-import { requireAuthContext, getAuthEnv } from '@/lib/auth.server';
+import { canUseSuperuserAccess, requireAuthContext, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import * as authDO from '@/lib/auth-do';
 import { resetOnboardingForUser } from '@/lib/auth-do';
@@ -28,7 +28,7 @@ export async function action({ request, context }: Route.ActionArgs) {
   const intent = formData.get('intent');
 
   if (intent === 'restartOnboarding') {
-    if (!authContext.user?.is_superuser) {
+    if (!canUseSuperuserAccess(authContext)) {
       return Response.json({ error: 'Forbidden' }, { status: 403 });
     }
     await resetOnboardingForUser(authEnv, authContext.user.id);
@@ -72,11 +72,20 @@ export async function action({ request, context }: Route.ActionArgs) {
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   const authContext = await requireAuthContext(request, context);
-  return { user: authContext.user };
+  const env = getEnv(context);
+  const orgStub = env.ORG.get(env.ORG.idFromName(authContext.currentOrg.id));
+  const ssoConfig = await orgStub.getSsoConfig();
+  return {
+    user: authContext.user,
+    canUseSuperuser: canUseSuperuserAccess(authContext),
+    sso: ssoConfig?.enabled && !authContext.user.is_superuser
+      ? { orgId: authContext.currentOrg.id, orgName: authContext.currentOrg.name }
+      : null,
+  };
 }
 
 export default function ProfilePage() {
-  const { user } = useLoaderData<typeof loader>();
+  const { user, sso, canUseSuperuser } = useLoaderData<typeof loader>();
 
   return (
     <div className="space-y-6">
@@ -88,7 +97,22 @@ export default function ProfilePage() {
       <ProfileForm user={user} />
       <Separator />
       <ThemePreference />
-      {user.is_superuser ? (
+      {sso ? (
+        <>
+          <Separator />
+          <div className="space-y-3 rounded-lg border p-4">
+            <h2 className="text-sm font-semibold">Enterprise SSO</h2>
+            <p className="text-sm text-muted-foreground">
+              Link this account to the identity provider configured for {sso.orgName}.
+            </p>
+            <Form method="post" action="/api/auth/enterprise-oidc/link">
+              <input type="hidden" name="org_id" value={sso.orgId} />
+              <Button type="submit" variant="outline">Link my account with SSO</Button>
+            </Form>
+          </div>
+        </>
+      ) : null}
+      {canUseSuperuser ? (
         <>
           <Separator />
           <div className="space-y-3 rounded-lg border border-dashed p-4">

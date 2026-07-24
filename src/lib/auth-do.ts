@@ -13,6 +13,7 @@ import type {
 import { validateApiToken as validateApiTokenKV } from "../../workers/main/src/api-tokens";
 import {
   createSignedSession,
+  ENTERPRISE_OIDC_AUTH_SOURCE,
   type SignedSessionData,
 } from "../../workers/main/src/signed-session";
 import {
@@ -152,7 +153,12 @@ export async function createSession(
   orgId: string,
   workspaceId: string | null = null,
   userInfo?: { name?: string | null; email?: string | null },
-  options?: { authSource?: SignedSessionData["auth_source"] },
+  options?: {
+    authSource?: SignedSessionData["auth_source"];
+    expiresAt?: number;
+    ssoConnectionId?: string;
+    ssoConfigVersion?: number;
+  },
 ): Promise<{ signedToken: string; sessionData: SessionData }> {
   const now = Date.now();
   const sessionData: SessionData = {
@@ -161,6 +167,9 @@ export async function createSession(
     workspace_id: workspaceId,
     created_at: now,
     last_accessed: now,
+    expires_at: options?.expiresAt,
+    sso_connection_id: options?.ssoConnectionId ?? null,
+    sso_config_version: options?.ssoConfigVersion ?? null,
     user_name: userInfo?.name ?? null,
     user_email: userInfo?.email ?? null,
     auth_source: options?.authSource ?? null,
@@ -170,6 +179,9 @@ export async function createSession(
     org_id: orgId,
     workspace_id: workspaceId,
     created_at: now,
+    expires_at: options?.expiresAt,
+    sso_connection_id: options?.ssoConnectionId ?? null,
+    sso_config_version: options?.ssoConfigVersion ?? null,
     user_name: userInfo?.name ?? null,
     user_email: userInfo?.email ?? null,
     auth_source: options?.authSource ?? null,
@@ -190,11 +202,20 @@ export async function switchSessionOrg(
   orgId: string,
   workspaceId: string | null = null,
 ): Promise<string> {
+  if (
+    currentSession.auth_source === ENTERPRISE_OIDC_AUTH_SOURCE &&
+    currentSession.org_id !== orgId
+  ) {
+    throw new Error("Enterprise SSO sessions cannot switch organizations");
+  }
   const signedSession: SignedSessionData = {
     user_id: currentSession.user_id,
     org_id: orgId,
     workspace_id: workspaceId,
     created_at: Date.now(),
+    expires_at: currentSession.expires_at,
+    sso_connection_id: currentSession.sso_connection_id,
+    sso_config_version: currentSession.sso_config_version,
     user_name: currentSession.user_name,
     user_email: currentSession.user_email,
     auth_source: currentSession.auth_source ?? null,
@@ -224,6 +245,9 @@ export async function switchSessionWorkspace(
     org_id: currentSession.org_id,
     workspace_id: workspaceId,
     created_at: Date.now(),
+    expires_at: currentSession.expires_at,
+    sso_connection_id: currentSession.sso_connection_id,
+    sso_config_version: currentSession.sso_config_version,
     user_name: currentSession.user_name,
     user_email: currentSession.user_email,
     auth_source: currentSession.auth_source ?? null,

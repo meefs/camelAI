@@ -3,7 +3,7 @@
  * Key structure: session:{sessionId} -> SessionData (with TTL)
  */
 
-import type { ProxyAuthSource } from "./signed-session.js";
+import type { AuthSource } from "./signed-session.js";
 
 export interface SessionData {
   user_id: string;
@@ -11,9 +11,12 @@ export interface SessionData {
   workspace_id: string | null;
   created_at: number;
   last_accessed: number;
+  expires_at?: number;
+  sso_connection_id?: string | null;
+  sso_config_version?: number | null;
   user_name?: string | null;
   user_email?: string | null;
-  auth_source?: ProxyAuthSource | null;
+  auth_source?: AuthSource | null;
 }
 
 const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60; // 30 days

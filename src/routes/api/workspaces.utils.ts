@@ -4,6 +4,7 @@ import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
 import { type AuthEnv } from '@/lib/auth-helpers';
 import { getWorkspaceAccessContext } from '@/lib/auth-do';
 import type { WorkspaceAccessLevel } from '../../../workers/main/src/workspace';
+import { ENTERPRISE_OIDC_AUTH_SOURCE } from '../../../workers/main/src/signed-session';
 import type {
   WorkspaceFilesystemClient,
   WorkspaceListResponse as DoWorkspaceListResponse,
@@ -103,6 +104,7 @@ export async function requireWorkspaceAccess(
 
   let superuser: boolean | null = null;
   const isSuperuser = async (): Promise<boolean> => {
+    if (sessionContext.session.auth_source === ENTERPRISE_OIDC_AUTH_SOURCE) return false;
     if (superuser !== null) return superuser;
     const userProfile = await authEnv.USER
       .get(authEnv.USER.idFromName(sessionContext.session.user_id))

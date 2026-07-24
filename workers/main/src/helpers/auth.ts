@@ -16,6 +16,8 @@ import {
   retryTransientDurableObjectRpc,
 } from "../../../../src/lib/do-rpc-retry.server";
 import { getAppIndexReadDatabase } from "../app-index-db.js";
+import { validateOrgSsoSession } from "../org-sso.js";
+import { ENTERPRISE_OIDC_AUTH_SOURCE } from "../signed-session.js";
 
 export type AuthResult = { session: SessionData } | { error: Response };
 
@@ -96,6 +98,9 @@ export async function requireSession(
     env.TOKEN_SIGNING_SECRET,
   );
   if (!signedSession) return { error: text("Unauthorized", 401) };
+  if (!(await validateOrgSsoSession(env, signedSession))) {
+    return { error: text("Unauthorized", 401) };
+  }
   const proxyValidation = await validateSessionMapsToOrg(req, env, signedSession);
   if (proxyValidation === "unavailable") {
     return {
@@ -159,6 +164,9 @@ export async function requireSession(
     workspace_id: signedSession.workspace_id,
     created_at: signedSession.created_at,
     last_accessed: signedSession.created_at,
+    expires_at: signedSession.expires_at,
+    sso_connection_id: signedSession.sso_connection_id,
+    sso_config_version: signedSession.sso_config_version,
     user_name: signedSession.user_name,
     user_email: signedSession.user_email,
     auth_source: signedSession.auth_source ?? null,
@@ -403,6 +411,12 @@ export async function requireChatWebSocketAccess(
       () => getWorkspaceOrgId(env, workspaceId),
     );
     const workspaceOrgId = resolvedOrgId || sessionOrgId;
+    if (
+      session.auth_source === ENTERPRISE_OIDC_AUTH_SOURCE &&
+      workspaceOrgId !== sessionOrgId
+    ) {
+      return { error: text("Forbidden", 403) };
+    }
     const orgStub = getOrgStub(env, workspaceOrgId);
     const orgValidation = await chatWsAuthRpc(
       "OrgDO.validateChatWebSocketAccess",
