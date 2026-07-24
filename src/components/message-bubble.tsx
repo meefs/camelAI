@@ -21,7 +21,10 @@ import { useAuthData } from '@/hooks/use-auth-data';
 import { FilePreviewChip } from '@/components/chat-file-preview';
 import { CollapsibleUserMessage } from '@/components/collapsible-user-message';
 import { ChannelLogo } from '@/components/chat/channel-logo';
-import { ChatRateLimitNotice } from '@/components/chat-api-error-notice';
+import {
+  ChatApiErrorNotice,
+  ChatRateLimitNotice,
+} from '@/components/chat-api-error-notice';
 import { isSupportedSlashCommand } from '@/lib/slash-commands';
 import {
   getChatApiErrorPresentation,
@@ -419,7 +422,9 @@ export function ContentBlockRenderer({
       items.push({
         kind: 'other',
         key: `error-${index}`,
-        node: isRateLimitChatApiErrorPresentation(presentation) ? (
+        node: presentation.kind === 'provider_auth_action' ? (
+          <ChatApiErrorNotice presentation={presentation} />
+        ) : isRateLimitChatApiErrorPresentation(presentation) ? (
           <ChatRateLimitNotice presentation={presentation} />
         ) : (
           <div className="flex gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">

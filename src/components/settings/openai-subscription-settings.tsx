@@ -50,7 +50,7 @@ export function OpenAiSubscriptionSettings({
   };
 
   return (
-    <section className="max-w-2xl space-y-3">
+    <section id="openai-subscription" className="max-w-2xl scroll-mt-6 space-y-3">
       <div className="space-y-1">
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="text-base font-semibold">OpenAI subscription</h2>

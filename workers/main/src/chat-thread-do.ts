@@ -5475,7 +5475,8 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         modelMapping: this.piModelMapping,
         forceHosted: options.forceHosted,
         getChatMetadata: () => this.chatContext,
-        resolveByokCredentials: (ctx) => this.resolveCurrentByokCredentials(ctx),
+        resolveByokCredentials: (ctx, byokOptions) =>
+          this.resolveCurrentByokCredentials(ctx, byokOptions),
         checkHostedModelAccess: options.creditChargeable === undefined
           ? (ctx, model) => this.checkHostedPiModelAccess(ctx, model)
           : async () => ({
@@ -5616,11 +5617,15 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     return value;
   }
 
-  private resolveCurrentByokCredentials(context: ChatContextState) {
+  private resolveCurrentByokCredentials(
+    context: ChatContextState,
+    options: { includeOpenAiSubscription: boolean },
+  ) {
     return resolveCurrentByokCredentials(
       this.env,
       (orgId) => this.getCachedLlmProviderConfig(orgId),
       context,
+      options,
     );
   }
 

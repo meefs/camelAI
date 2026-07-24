@@ -41,6 +41,13 @@ export type ChatApiErrorPresentation =
       actionLabel: string;
     }
   | {
+      kind: "provider_auth_action";
+      title: string;
+      message: string;
+      actionHref: string;
+      actionLabel: string;
+    }
+  | {
       kind: "generic";
       title?: string;
       message: string;
@@ -235,6 +242,13 @@ function isBedrockProviderDataShareRequired(lowerMessage: string): boolean {
   );
 }
 
+function isOpenAiSubscriptionReconnectRequired(lowerMessage: string): boolean {
+  return (
+    lowerMessage.includes("your openai connection has expired or was revoked") ||
+    /openai token refresh returned 40[01]\b/.test(lowerMessage)
+  );
+}
+
 export function isChatBillingOrCreditError(error: unknown): boolean {
   const details = parseChatApiError(error);
   const message = details.providerMessage || details.rawMessage;
@@ -319,6 +333,18 @@ export function getChatApiErrorPresentation(
   }
 
   const lowerMessage = message.toLowerCase();
+  if (isOpenAiSubscriptionReconnectRequired(lowerMessage)) {
+    return {
+      kind: "provider_auth_action",
+      title: "Reconnect your OpenAI account",
+      message:
+        "OpenAI rejected the saved ChatGPT/Codex login. Reconnect it in AI Provider settings, or ask an organization admin to reconnect it.",
+      actionHref:
+        "/settings/organization/ai-provider#openai-subscription",
+      actionLabel: "Reconnect OpenAI",
+    };
+  }
+
   if (
     context.llmProvider === "bedrock" &&
     isBedrockProviderDataShareRequired(lowerMessage)

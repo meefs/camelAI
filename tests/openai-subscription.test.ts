@@ -109,6 +109,29 @@ describe("OpenAI subscription device authentication", () => {
     expect(result.credentials.access_token).toBe(accessToken);
   });
 
+  it.each([400, 401])(
+    "turns a rejected refresh (%s) into an actionable reconnect error",
+    async (status) => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          Response.json({ error: "invalid_grant" }, { status }),
+        ),
+      );
+
+      await expect(
+        refreshOpenAiSubscriptionCredentials({
+          access_token: "expired-access",
+          refresh_token: "revoked-refresh",
+          account_id: "account-1",
+          expires_at: 1,
+        }),
+      ).rejects.toThrow(
+        "Your OpenAI connection has expired or was revoked. Reconnect it in Settings → AI Provider.",
+      );
+    },
+  );
+
   it("reads identity claims from the namespaced ChatGPT auth claim", () => {
     expect(getOpenAiSubscriptionIdentity(jwt({
       "https://api.openai.com/auth": {

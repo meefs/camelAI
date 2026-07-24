@@ -137,6 +137,7 @@ export interface ResolvePiRequestConfigDeps {
   } | null;
   resolveByokCredentials(
     context: ChatContextState,
+    options: { includeOpenAiSubscription: boolean },
   ): Promise<Awaited<ReturnType<typeof resolveCurrentByokCredentials>>>;
   checkHostedModelAccess(
     context: ChatContextState,
@@ -468,13 +469,15 @@ export async function resolvePiRequestConfig(
   context: ChatContextState,
   requestedModelId: string,
 ): Promise<PiRequestConfig> {
+  const byokAllowed = resolved.byokAllowed !== false;
   const selfhostProvider = deps.forceHosted
     ? null
     : getSelfhostAiProviderCredentials(deps.env);
-  const byok = deps.forceHosted
+  const byok = deps.forceHosted || !byokAllowed
     ? null
-    : selfhostProvider ?? await deps.resolveByokCredentials(context);
-  const byokAllowed = resolved.byokAllowed !== false;
+    : selfhostProvider ?? await deps.resolveByokCredentials(context, {
+      includeOpenAiSubscription: resolved.provider === "openai",
+    });
   if (
     byokAllowed &&
     byok &&
@@ -714,6 +717,7 @@ export async function resolveCurrentByokCredentials(
   env: ChatEnv,
   getProviderConfig: (orgId: string) => Promise<LlmProviderConfigRecord>,
   context: ChatContextState,
+  options: { includeOpenAiSubscription: boolean },
 ): Promise<{
   provider: string;
   apiKey?: string;
@@ -731,18 +735,20 @@ export async function resolveCurrentByokCredentials(
   let openAiSubscription:
     | { accessToken: string; accountId: string }
     | undefined;
-  const orgStub = env.ORG.get(env.ORG.idFromName(context.orgId));
-  const storedSubscription = await orgStub.getFreshOpenAiSubscription();
-  if (storedSubscription) {
-    const creds = await decryptCredentials<Record<string, string>>(
-      storedSubscription.credentials_encrypted,
-      env.INTEGRATION_SECRET_KEY,
-    );
-    if (creds.access_token && creds.refresh_token && creds.account_id) {
-      openAiSubscription = {
-        accessToken: creds.access_token,
-        accountId: creds.account_id,
-      };
+  if (options.includeOpenAiSubscription) {
+    const orgStub = env.ORG.get(env.ORG.idFromName(context.orgId));
+    const storedSubscription = await orgStub.getFreshOpenAiSubscription();
+    if (storedSubscription) {
+      const creds = await decryptCredentials<Record<string, string>>(
+        storedSubscription.credentials_encrypted,
+        env.INTEGRATION_SECRET_KEY,
+      );
+      if (creds.access_token && creds.refresh_token && creds.account_id) {
+        openAiSubscription = {
+          accessToken: creds.access_token,
+          accountId: creds.account_id,
+        };
+      }
     }
   }
   const withSubscription = <T extends { provider: string }>(value: T): T & {

@@ -217,6 +217,11 @@ export async function refreshOpenAiSubscriptionCredentials(
   });
   const payload = await readJson(response);
   if (!response.ok) {
+    if (response.status === 400 || response.status === 401) {
+      throw new Error(
+        "Your OpenAI connection has expired or was revoked. Reconnect it in Settings → AI Provider.",
+      );
+    }
     throw new Error(errorMessage(payload, `OpenAI token refresh returned ${response.status}.`));
   }
   return normalizeTokenResponse(payload, credentials);

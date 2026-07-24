@@ -1,4 +1,11 @@
-import { ArrowRight, CircleAlert, Clock3, CreditCard, X } from "lucide-react";
+import {
+  ArrowRight,
+  CircleAlert,
+  Clock3,
+  CreditCard,
+  KeyRound,
+  X,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Alert,
@@ -86,10 +93,15 @@ export function ChatApiErrorNotice({
     );
   }
 
-  if (presentation.kind === "billing_action") {
+  if (
+    presentation.kind === "billing_action" ||
+    presentation.kind === "provider_auth_action"
+  ) {
+    const ActionIcon =
+      presentation.kind === "billing_action" ? CreditCard : KeyRound;
     return (
       <Alert className={cn("px-3 py-2 text-sm", className)}>
-        <CreditCard className="h-4 w-4 text-muted-foreground" />
+        <ActionIcon className="h-4 w-4 text-muted-foreground" />
         <AlertTitle className="text-sm">{presentation.title}</AlertTitle>
         <AlertDescription className="space-y-2 text-sm text-muted-foreground">
           <p>{presentation.message}</p>

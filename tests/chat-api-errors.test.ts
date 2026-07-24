@@ -104,6 +104,21 @@ describe('chat API error classification', () => {
     });
   });
 
+  it.each([
+    'OpenAI token refresh returned 401.',
+    'Your OpenAI connection has expired or was revoked. Reconnect it in Settings → AI Provider.',
+  ])('links OpenAI refresh failures to the reconnect settings', (error) => {
+    expect(getChatApiErrorPresentation(error)).toEqual({
+      kind: 'provider_auth_action',
+      title: 'Reconnect your OpenAI account',
+      message:
+        'OpenAI rejected the saved ChatGPT/Codex login. Reconnect it in AI Provider settings, or ask an organization admin to reconnect it.',
+      actionHref:
+        '/settings/organization/ai-provider#openai-subscription',
+      actionLabel: 'Reconnect OpenAI',
+    });
+  });
+
   it('extracts simple JSON error strings', () => {
     const presentation = getChatApiErrorPresentation(
       '{"error":"Usage limit exceeded. Add credits."}',

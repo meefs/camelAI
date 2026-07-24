@@ -20,6 +20,7 @@ import { PiCoreMessageStore } from '../src/chat-thread/pi-core-store';
 import {
   HostedModelCreditsExhaustedError,
   HostedModelSubscriptionUnavailableError,
+  resolveCurrentByokCredentials,
 } from '../src/chat-thread/pi-model-config';
 import { BrowserPromptCoordinator } from '../src/chat-thread-browser-prompts';
 import { CamelAiService } from '../src/camelai-service';
@@ -2069,6 +2070,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       expect.anything(),
       'deepseek-v4-auto',
     );
+    expect(fake.resolveCurrentByokCredentials).not.toHaveBeenCalled();
     expect(fake.piCurrentUsageProvider).toBe('compat');
   });
 
@@ -2887,7 +2889,34 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
     expect(model.apiKey).toBe('chatgpt-access-token');
     expect(model.billingSource).toBe('byok');
+    expect(fake.resolveCurrentByokCredentials).toHaveBeenCalledWith(
+      expect.anything(),
+      { includeOpenAiSubscription: true },
+    );
     expect(fake.checkHostedPiModelAccess).not.toHaveBeenCalled();
+  });
+
+  it('does not refresh an unrelated OpenAI subscription for non-OpenAI models', async () => {
+    const getFreshOpenAiSubscription = vi.fn(async () => {
+      throw new Error('expired OpenAI subscription should not be refreshed');
+    });
+    const env = {
+      ORG: {
+        idFromName: vi.fn((name: string) => name),
+        get: vi.fn(() => ({ getFreshOpenAiSubscription })),
+      },
+    } as any;
+
+    const credentials = await resolveCurrentByokCredentials(
+      env,
+      vi.fn(async () => null),
+      { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' } as any,
+      { includeOpenAiSubscription: false },
+    );
+
+    expect(credentials).toBeNull();
+    expect(getFreshOpenAiSubscription).not.toHaveBeenCalled();
+    expect(env.ORG.get).not.toHaveBeenCalled();
   });
 
   it('routes OpenAI subscription inference through the configured authenticated proxy', async () => {
