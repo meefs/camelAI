@@ -76,7 +76,7 @@ One-time setup (already done for the production deployment; kept here for refere
    (`camelai-evals`, `cloudflared`) can be stopped and the box downsized/retired. Old runs stay in
    the VM's SQLite; they are not migrated.
 3. Add a Workers Build trigger on `main` for auto-deploy (Cloudflare dashboard → the worker →
-   Settings → Build, or via the account's existing `qaml-ai/chiridion-app` repo connection).
+   Settings → Build, or via the account's existing `qaml-ai/camelAI` repo connection).
 
 ## Local dev
 

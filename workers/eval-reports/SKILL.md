@@ -1,6 +1,6 @@
 # Running agent evals
 
-camelAI agent evals **run locally** in a `qaml-ai/chiridion-app` checkout — there is no remote
+camelAI agent evals **run locally** in a `qaml-ai/camelAI` checkout — there is no remote
 runner. This service (**`https://evals.camelai.dev`**, `workers/eval-reports`) is only the shared
 results history: a read-only dashboard + JSON API plus an upload endpoint the local reporter uses.
 Everything is behind **Cloudflare Access**.
