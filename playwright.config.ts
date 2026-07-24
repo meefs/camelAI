@@ -25,7 +25,7 @@ export default defineConfig({
   // run. The manual staging-billing suite has its own config, global setup, and
   // runner, so it must not be collected by the deterministic local suite.
   testIgnore: useLocalServer
-    ? ['**/auth.spec.ts', '**/staging-billing/**']
+    ? ['**/auth.spec.ts', '**/auth-signup.spec.ts', '**/staging-billing/**']
     : [],
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
