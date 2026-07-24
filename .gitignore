@@ -26,6 +26,10 @@
 /dist/desktop/
 /workers/eval-reports/dist/
 
+# Internal planning and documentation
+/docs/
+/plans/
+
 # misc
 .DS_Store
 *.pem
