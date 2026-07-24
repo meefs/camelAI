@@ -1,0 +1,21 @@
+# Historical false positives reviewed during the public-release audit.
+# These fingerprints are intentionally narrow so changed or new matches still fail.
+
+# Environment-variable placeholders in documentation.
+536c9d2663251c222ffa2ade8fee31218c51116b:docs/pricing-tier-update-plan.md:curl-auth-user:158
+a31502b1b7854d174c63826ed29859c01345371f:docs/plans/bulk-add-connection-templates-plan.md:curl-auth-user:524
+
+# Non-secret application/storage identifiers.
+5c9c5070adff4f7b90b6e0a88ae58616e58cca46:AGENTS.md:generic-api-key:39
+1a63dbc41caeec85df33899d7677374d93a87536:src/lib/marketing-attribution.client.ts:generic-api-key:1
+
+# Synthetic integration-test credentials and key material.
+23ea93debefc701beea825e3bcf4ab57f3e6443b:tests/integration-env.test.ts:private-key:469
+23ea93debefc701beea825e3bcf4ab57f3e6443b:tests/integration-env.test.ts:generic-api-key:500
+23ea93debefc701beea825e3bcf4ab57f3e6443b:tests/integration-env.test.ts:generic-api-key:504
+73dcfde417487002da2ac364664126eaac17cb33:workers/main/tests/admin-api-billing-reconciliation.test.ts:stripe-access-token:24
+
+# Source code that formats, strips, or synthesizes credential-shaped strings.
+fa442c5aa39d3c4ef07a1697041ab2164309c227:src/components/snowflake-credentials-form.tsx:private-key:45
+be692fa68b44d242e53097ac539d20517e942db6:src/lib/gmail.server.ts:private-key:62
+d622a6fcd3734e2fde4a50e13084251dacb1b976:workers/main/src/eval-sandbox.ts:jwt:23
