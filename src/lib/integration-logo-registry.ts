@@ -70,3 +70,8 @@ export const logoRegistry: Record<string, IntegrationLogoVariant> = {
   vercel: 'single',
   zendesk: 'single',
 };
+
+/** Integration types that intentionally share another provider's logo asset. */
+export const integrationLogoAliases: Record<string, string> = {
+  discord_channel: 'discord',
+};

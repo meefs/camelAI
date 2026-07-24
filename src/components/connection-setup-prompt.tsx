@@ -2,8 +2,8 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import {
+  getIntegrationDefinition,
   hasManagedOAuthFlow,
-  INTEGRATION_REGISTRY,
   type DynamicIntegrationSchema,
   type IntegrationDefinition,
 } from '@/lib/integration-registry';
@@ -28,7 +28,8 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { AlertCircle, ExternalLink, Plug } from 'lucide-react';
+import { Checkbox } from '@/components/ui/checkbox';
+import { AlertCircle, ExternalLink, Plug, ShieldAlert } from 'lucide-react';
 import { MarkdownRenderer } from '@/components/markdown-renderer';
 import { SnowflakeCredentialsForm } from '@/components/snowflake-credentials-form';
 import { SandboxIpNotice } from '@/components/connections/sandbox-ip-notice';
@@ -61,8 +62,6 @@ interface ConnectionSetupPromptProps {
   onSubmit: (response: ConnectionSetupResponse) => void | Promise<void>;
   onCancel: () => void;
 }
-
-const integrationTypes = Object.values(INTEGRATION_REGISTRY);
 
 const applyDefaults = (
   schema: IntegrationDefinition['configSchema'],
@@ -123,8 +122,13 @@ export function ConnectionSetupPrompt({
   const [credentials, setCredentials] = useState<Record<string, unknown>>(data.initialCredentials ?? {});
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [discordSecurityAcknowledgedRequestId, setDiscordSecurityAcknowledgedRequestId] =
+    useState<string | null>(null);
 
-  const typeDef = integrationTypes.find((t) => t.type === data.integrationType);
+  const typeDef = getIntegrationDefinition(data.integrationType);
+  const isDiscordChannel = data.integrationType === 'discord_channel';
+  const discordSecurityAcknowledged =
+    discordSecurityAcknowledgedRequestId === data.requestId;
 
   // Check if this is a dynamic "other" integration with custom fields
   const isDynamic = data.integrationType === 'other' && data.dynamicSchema && data.dynamicSchema.fields.length > 0;
@@ -139,6 +143,10 @@ export function ConnectionSetupPrompt({
 
   // Handle OAuth flow redirect
   const handleOAuthConnect = useCallback(() => {
+    if (isDiscordChannel && !discordSecurityAcknowledged) {
+      setError('Acknowledge the Discord channel security boundary before authorizing.');
+      return;
+    }
     // Build OAuth URL with MCP context for callback completion
     const params = new URLSearchParams();
     params.set('redirect', window.location.pathname);
@@ -152,9 +160,13 @@ export function ConnectionSetupPrompt({
     if (data.integrationId) {
       params.set('integration_id', data.integrationId);
     }
+    if (isDiscordChannel) {
+      params.set('security_acknowledged', 'true');
+    }
     // Redirect to OAuth flow - this will complete the MCP request via callback
-    window.location.href = `/api/integrations/${data.integrationType}/oauth?${params.toString()}`;
-  }, [data.integrationId, data.integrationType, data.requestId]);
+    const oauthType = data.integrationType === 'discord_channel' ? 'discord' : data.integrationType;
+    window.location.href = `/api/integrations/${oauthType}/oauth?${params.toString()}`;
+  }, [data.integrationId, data.integrationType, data.requestId, discordSecurityAcknowledged, isDiscordChannel]);
 
   // Set defaults from config schema on mount
   useEffect(() => {
@@ -514,12 +526,45 @@ export function ConnectionSetupPrompt({
 
               {/* OAuth flow for supported integrations */}
               {isOAuthWithFlow && (
-                <Alert>
-                  <AlertDescription>
-                    Click the button below to authorize access.
-                    You&apos;ll return to this chat when it completes.
-                  </AlertDescription>
-                </Alert>
+                <>
+                  {isDiscordChannel ? (
+                    <Alert variant="destructive">
+                      <ShieldAlert className="size-4" />
+                      <AlertDescription>
+                        People who can post in the selected Discord channel can instruct Camel
+                        with this workspace&apos;s files, connected services, credits, and deploy
+                        permissions. Use a private or appropriately restricted channel.
+                      </AlertDescription>
+                    </Alert>
+                  ) : null}
+                  <Alert>
+                    <AlertDescription>
+                      Click the button below to authorize access.
+                      You&apos;ll return to this chat when it completes.
+                    </AlertDescription>
+                  </Alert>
+                  {isDiscordChannel ? (
+                    <div className="flex items-start gap-2 rounded-md border p-3">
+                      <Checkbox
+                        id={`discord-security-${data.requestId}`}
+                        checked={discordSecurityAcknowledged}
+                        onCheckedChange={(checked) => {
+                          setDiscordSecurityAcknowledgedRequestId(
+                            checked === true ? data.requestId : null
+                          );
+                          if (checked === true) setError(null);
+                        }}
+                      />
+                      <Label
+                        htmlFor={`discord-security-${data.requestId}`}
+                        className="text-xs font-normal leading-5"
+                      >
+                        I understand that Discord channel participants can instruct Camel with
+                        this workspace&apos;s authority.
+                      </Label>
+                    </div>
+                  ) : null}
+                </>
               )}
 
               {/* OAuth notice for unsupported OAuth integrations */}
@@ -540,7 +585,11 @@ export function ConnectionSetupPrompt({
             </Button>
             {/* Show OAuth connect button for supported OAuth integrations */}
             {isOAuthWithFlow ? (
-              <Button type="button" onClick={handleOAuthConnect}>
+              <Button
+                type="button"
+                onClick={handleOAuthConnect}
+                disabled={isDiscordChannel && !discordSecurityAcknowledged}
+              >
                 <ExternalLink className="mr-2 size-4" />
                 {data.integrationId ? 'Reauthorize' : `Connect ${typeDef?.displayName}`}
               </Button>

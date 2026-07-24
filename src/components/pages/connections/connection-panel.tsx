@@ -1,6 +1,7 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import { useFetcher } from "react-router";
 import {
   Copy,
   ExternalLink,
@@ -10,13 +11,26 @@ import {
   Plug,
   Settings,
   ShieldCheck,
+  ShieldAlert,
+  RefreshCw,
+  Unplug,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { IntegrationIcon, hasIntegrationIcon, resolveLogoType } from "@/lib/integration-icons";
@@ -27,6 +41,7 @@ import {
   TYPE_COPY,
   connectionRequiresOutboundIpAllowlist,
   getConnectionDetailRows,
+  getDiscordChannelMetadata,
   getSlackChannelMetadata,
   panelItemConnection,
   panelItemName,
@@ -296,13 +311,16 @@ function StatusAndHousekeeping({
         : verification?.status === "misconfigured"
           ? "Needs setup"
           : verification?.status === "degraded"
-            ? "Unavailable"
+            ? connection.integration_type === "discord_channel" &&
+                connection.config.message_content_mode === "mention_only"
+              ? "Mention-only"
+              : "Unavailable"
             : "Not verified";
   return (
     <Section
       title="Status & housekeeping"
       action={
-        canManage ? (
+        canManage && connection.integration_type !== "discord_channel" ? (
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
@@ -532,6 +550,261 @@ function TelegramDestination({ connection }: { connection: ConnectionListItem })
   );
 }
 
+interface DiscordSetupActionData {
+  success?: boolean;
+  error?: string;
+  warning?: string;
+  returnTo?: string;
+  discordSetup?: {
+    integrationId: string;
+    guild: { id: string; name: string };
+    channels: Array<{
+      id: string;
+      name: string;
+      categoryId: string | null;
+      categoryName: string | null;
+      missingPermissions: string[];
+      canActivate: boolean;
+      exposure: "restricted" | "visible_to_everyone";
+    }>;
+  };
+}
+
+function DiscordDestination({
+  connection,
+  canManage,
+}: {
+  connection: ConnectionListItem;
+  canManage: boolean;
+}) {
+  const fetcher = useFetcher<DiscordSetupActionData>();
+  const metadata = getDiscordChannelMetadata(connection);
+  const active = metadata.status === "active";
+  const [selecting, setSelecting] = useState(false);
+  const [selectedChannelId, setSelectedChannelId] = useState(
+    metadata.parent_channel_id || "",
+  );
+  const [acknowledged, setAcknowledged] = useState(
+    typeof connection.config.security_acknowledged_at === "number",
+  );
+  const setup = fetcher.data?.discordSetup?.integrationId === connection.id
+    ? fetcher.data.discordSetup
+    : null;
+  const channels = setup?.channels || [];
+  const selectedChannel = channels.find((channel) => channel.id === selectedChannelId);
+  const showSelector = canManage && (!active || selecting);
+  const busy = fetcher.state !== "idle";
+
+  useEffect(() => {
+    if (
+      fetcher.state === "idle" &&
+      fetcher.data?.success &&
+      !fetcher.data.error &&
+      !fetcher.data.discordSetup
+    ) {
+      if (
+        fetcher.data.returnTo?.startsWith("/") &&
+        !fetcher.data.returnTo.startsWith("//")
+      ) {
+        window.location.assign(fetcher.data.returnTo);
+        return;
+      }
+      setSelecting(false);
+      setAcknowledged(false);
+    }
+  }, [fetcher.data, fetcher.state]);
+
+  const loadChannels = () => {
+    fetcher.submit(
+      { intent: "discordListChannels", integrationId: connection.id },
+      { method: "post", action: "/connections" },
+    );
+  };
+
+  const disconnect = () => {
+    fetcher.submit(
+      { intent: "discordDisconnect", integrationId: connection.id },
+      { method: "post", action: "/connections" },
+    );
+  };
+
+  return (
+    <Section title="Destination & identity">
+      <div className="space-y-4">
+        <div>
+          <p className="break-words text-lg font-semibold text-foreground">
+            {formatValue(metadata.guild_name)}
+          </p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {metadata.parent_channel_name
+              ? `#${metadata.parent_channel_name}`
+              : "Choose one server text channel to finish setup."}
+          </p>
+        </div>
+
+        <Alert variant="destructive">
+          <ShieldAlert />
+          <AlertTitle>Discord members can instruct this workspace</AlertTitle>
+          <AlertDescription>
+            Anyone who can post in the selected channel can use this workspace&apos;s files,
+            connected services, credits, and deploy permissions. Use a private or
+            appropriately restricted channel.
+          </AlertDescription>
+        </Alert>
+
+        {metadata.message_content_mode === "mention_only" ? (
+          <Alert>
+            <AlertTitle>Mention-only mode</AlertTitle>
+            <AlertDescription>
+              Every message, including follow-ups in Camel-created threads, must mention @Camel.
+            </AlertDescription>
+          </Alert>
+        ) : null}
+
+        {fetcher.data?.error ? (
+          <p className="text-sm text-destructive">{fetcher.data.error}</p>
+        ) : null}
+        {fetcher.data?.warning ? (
+          <p className="text-sm text-amber-700 dark:text-amber-300">{fetcher.data.warning}</p>
+        ) : null}
+
+        {showSelector ? (
+          <div className="space-y-3 rounded-md border bg-muted/20 p-3">
+            {setup ? (
+              <fetcher.Form
+                method="post"
+                action="/connections"
+                className="space-y-3"
+              >
+                <input type="hidden" name="intent" value="discordActivateChannel" />
+                <input type="hidden" name="integrationId" value={connection.id} />
+                <input type="hidden" name="parentChannelId" value={selectedChannelId} />
+                <input
+                  type="hidden"
+                  name="securityAcknowledged"
+                  value={acknowledged ? "true" : "false"}
+                />
+                <div className="space-y-1.5">
+                  <Label htmlFor={`discord-channel-${connection.id}`}>Server channel</Label>
+                  <Select value={selectedChannelId} onValueChange={setSelectedChannelId}>
+                    <SelectTrigger id={`discord-channel-${connection.id}`} className="w-full">
+                      <SelectValue placeholder="Select a text channel" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {channels.map((channel) => (
+                        <SelectItem
+                          key={channel.id}
+                          value={channel.id}
+                          disabled={!channel.canActivate}
+                        >
+                          <span className="flex min-w-0 items-center gap-2">
+                            <span className="truncate">
+                              {channel.categoryName ? `${channel.categoryName} / ` : ""}#{channel.name}
+                            </span>
+                            <Badge variant="secondary" className="font-normal">
+                              {channel.exposure === "visible_to_everyone"
+                                ? "visible to @everyone"
+                                : "restricted"}
+                            </Badge>
+                          </span>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                {selectedChannel?.missingPermissions.length ? (
+                  <p className="text-xs text-destructive">
+                    Missing: {selectedChannel.missingPermissions.join(", ")}
+                  </p>
+                ) : null}
+                {selectedChannel?.exposure === "visible_to_everyone" ? (
+                  <p className="text-xs font-medium text-amber-700 dark:text-amber-300">
+                    This channel is visible and writable by @everyone. Restrict Discord roles
+                    before connecting if that is not intentional.
+                  </p>
+                ) : null}
+                <div className="flex items-start gap-2">
+                  <Checkbox
+                    id={`discord-security-${connection.id}`}
+                    checked={acknowledged}
+                    onCheckedChange={(checked) => setAcknowledged(checked === true)}
+                  />
+                  <Label
+                    htmlFor={`discord-security-${connection.id}`}
+                    className="text-xs font-normal leading-5"
+                  >
+                    I understand that people who can post here can instruct Camel with this
+                    workspace&apos;s authority.
+                  </Label>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    type="submit"
+                    disabled={busy || !selectedChannel?.canActivate || !acknowledged}
+                  >
+                    {active ? "Change channel" : "Connect channel"}
+                  </Button>
+                  {active ? (
+                    <Button type="button" variant="ghost" onClick={() => setSelecting(false)}>
+                      Cancel
+                    </Button>
+                  ) : null}
+                </div>
+              </fetcher.Form>
+            ) : (
+              <Button type="button" variant="outline" disabled={busy} onClick={loadChannels}>
+                <RefreshCw />
+                {busy ? "Loading channels…" : "Load server channels"}
+              </Button>
+            )}
+          </div>
+        ) : null}
+
+        {active && canManage && !selecting ? (
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setSelecting(true);
+                loadChannels();
+              }}
+            >
+              <RefreshCw />
+              Change channel
+            </Button>
+            <Button type="button" variant="outline" asChild>
+              <a
+                href={`/api/integrations/discord/oauth?${new URLSearchParams({
+                  integration_id: connection.id,
+                  redirect: "/connections",
+                }).toString()}`}
+              >
+                Reinstall permissions
+              </a>
+            </Button>
+            <Button type="button" variant="ghost" disabled={busy} onClick={disconnect}>
+              <Unplug />
+              Disconnect
+            </Button>
+          </div>
+        ) : null}
+
+        <dl className="space-y-2">
+          <DetailRow label="Status">
+            <Badge variant={active ? "default" : "secondary"} className="font-normal">
+              {active ? "Active" : formatValue(metadata.status)}
+            </Badge>
+          </DetailRow>
+          <DetailRow label="Content mode">
+            {metadata.message_content_mode === "mention_only" ? "Mention every message" : "Mention once"}
+          </DetailRow>
+        </dl>
+      </div>
+    </Section>
+  );
+}
+
 function EmailHousekeeping({
   item,
   onManageEmailSettings,
@@ -591,6 +864,8 @@ function ChannelBody({
     <>
       {item.channel === "slack" ? (
         <SlackDestination connection={connection} />
+      ) : item.channel === "discord_channel" ? (
+        <DiscordDestination connection={connection} canManage={canManage} />
       ) : (
         <TelegramDestination connection={connection} />
       )}

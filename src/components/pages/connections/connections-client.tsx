@@ -100,7 +100,12 @@ const OAUTH_SUCCESS_MESSAGES: Record<string, string> = {
   salesforce_connected: "Successfully connected to Salesforce!",
   google_analytics_connected: "Successfully connected to Google Analytics 4!",
   remote_mcp_connected: "Successfully connected to the remote MCP server!",
+  discord_installed: "Camel was added to Discord. Choose a channel to finish setup.",
 };
+
+function oauthRouteType(integrationType: string): string {
+  return integrationType === "discord_channel" ? "discord" : integrationType;
+}
 
 interface ConnectionsClientProps {
   initialConnections: ConnectionListItem[];
@@ -376,7 +381,7 @@ export default function ConnectionsClient({
 
   const startReauth = useCallback(
     (connection: ConnectionListItem) => {
-      window.location.href = `/api/integrations/${encodeURIComponent(connection.integration_type)}/oauth?${new URLSearchParams({
+      window.location.href = `/api/integrations/${encodeURIComponent(oauthRouteType(connection.integration_type))}/oauth?${new URLSearchParams({
         workspace_id: currentWorkspace?.id ?? "",
         integration_id: connection.id,
         redirect: "/connections",
@@ -514,8 +519,8 @@ export default function ConnectionsClient({
 
   const handleAddClick = (type: string) => {
     const definition = connectionTypes.find((candidate) => candidate.type === type);
-    if (hasManagedOAuthFlow(definition)) {
-      window.location.href = `/api/integrations/${encodeURIComponent(type)}/oauth?redirect=/connections`;
+    if (hasManagedOAuthFlow(definition) && type !== "discord_channel") {
+      window.location.href = `/api/integrations/${encodeURIComponent(oauthRouteType(type))}/oauth?redirect=/connections`;
       return;
     }
 

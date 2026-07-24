@@ -12,6 +12,10 @@ import { buildWorkspaceEmailSenderAddress, getWorkspaceEmailDomain } from "../..
 import { getBillingPlanLimits } from "../../../src/lib/billing-plans";
 import { formatMarkdownForTelegram } from "../../../src/lib/telegram-format";
 import {
+  discordBridgeRequest,
+  parseDiscordChannelConfig,
+} from "./discord-types";
+import {
   appendEmailThreadReferenceIds,
   buildEmailReplyHeaders,
   EMAIL_REPLY_REFERENCE_TTL_SECONDS,
@@ -59,7 +63,7 @@ export class ChannelTools {
 
   async markThreadChannelUsedBestEffort(
     context: { orgId?: string | null; threadId?: string | null },
-    channelKind: "email" | "slack" | "telegram",
+    channelKind: "email" | "slack" | "telegram" | "discord",
   ): Promise<void> {
     if (!context.orgId || !context.threadId) return;
     try {
@@ -103,7 +107,7 @@ export class ChannelTools {
 
   private async getOriginatingChannelThread(
     context: ChatContextState,
-    kind: "email" | "slack" | "telegram",
+    kind: "email" | "slack" | "telegram" | "discord",
   ): Promise<OrgThread | null> {
     const thread = await this.getCurrentThreadRecordIfAvailable(context);
     if (!thread) return null;
@@ -740,6 +744,270 @@ export class ChannelTools {
         channelHistoryStatus,
       },
     };
+  }
+
+  async sendChannelDiscordMessageTool(
+    context: ChatContextState,
+    params: unknown,
+    options: { operationId?: string } = {},
+  ): Promise<AgentToolResult<unknown>> {
+    if (!this.env.DISCORD_BRIDGE) {
+      throw new Error("Discord channel is not configured");
+    }
+    const thread = await this.getOriginatingChannelThread(context, "discord");
+    const raw = this.readToolObjectParams(params);
+    const text = this.optionalToolString(raw, "text");
+    const attachments = await this.resolveChannelOutboundAttachments(context, raw);
+    if (!text && attachments.length === 0) {
+      throw new Error("send_discord_message requires text or attachments");
+    }
+
+    const explicitIntegrationId = this.optionalToolString(raw, "integration_id");
+    const originatingIntegrationId = thread?.channel_connection_id?.trim() || "";
+    if (
+      originatingIntegrationId &&
+      explicitIntegrationId &&
+      explicitIntegrationId !== originatingIntegrationId
+    ) {
+      throw new Error(
+        "integration_id does not match the originating Discord conversation",
+      );
+    }
+    let integrationId = originatingIntegrationId || explicitIntegrationId;
+    const orgStub = this.getOrgStub(context.orgId);
+    if (!integrationId) {
+      const integrations = await orgStub.getWorkspaceIntegrations(context.workspaceId);
+      const activeDiscord = integrations.filter((candidate) => {
+        if (candidate.integration_type !== "discord_channel") return false;
+        const config = parseDiscordChannelConfig(candidate.config || "{}");
+        return config?.status === "active" && Boolean(config.parent_channel_id);
+      });
+      if (activeDiscord.length === 0) {
+        throw new Error(
+          "No active Discord channel is available. Ask the user to connect Discord first.",
+        );
+      }
+      if (activeDiscord.length > 1) {
+        throw new Error(
+          "Multiple Discord channels are available. Call tools.list_integrations({}) and pass the desired integration id as integration_id.",
+        );
+      }
+      integrationId = activeDiscord[0].id;
+    }
+    if (!integrationId) throw new Error("Discord integration_id is required");
+    const integration = await orgStub.getWorkspaceIntegration(
+      context.workspaceId,
+      integrationId,
+    );
+    if (!integration || integration.integration_type !== "discord_channel") {
+      throw new Error("Discord integration is no longer available");
+    }
+    const config = parseDiscordChannelConfig(integration.config || "{}");
+    if (!config || config.status !== "active" || !config.parent_channel_id) {
+      throw new Error("Discord integration is not connected to an active channel");
+    }
+
+    const stableOperationId = options.operationId?.trim() ||
+      `discord-tool-fallback:${crypto.randomUUID()}`;
+    let guildId = config.guild_id;
+    let discordThreadId = "";
+    let recordChannelHistory = false;
+    let proactiveStarterMessageId = "";
+    let proactiveStarterConsumedText = false;
+    const conversationId = thread?.channel_conversation_id?.trim() || "";
+    if (conversationId) {
+      const separator = conversationId.indexOf(":");
+      if (separator <= 0 || separator === conversationId.length - 1) {
+        throw new Error("Originating Discord conversation is invalid");
+      }
+      guildId = conversationId.slice(0, separator);
+      discordThreadId = conversationId.slice(separator + 1);
+      if (guildId !== config.guild_id) {
+        throw new Error("Originating Discord server no longer matches the integration");
+      }
+    } else {
+      const proactive = await discordBridgeRequest<{
+        ok: true;
+        threadId: string;
+        guildId: string;
+        starterMessageId?: string;
+      }>(this.env.DISCORD_BRIDGE, "/internal/v1/threads/proactive", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          integrationId,
+          name: text?.replace(/\s+/gu, " ").trim().slice(0, 100) || "Camel update",
+          // A short text send can be the Discord thread's stable starter
+          // message. Reusing it avoids posting the same text again in-thread.
+          ...(text && text.length <= 2_000 ? { starterText: text } : {}),
+          idempotencyKey: `${stableOperationId}:thread`,
+        }),
+      });
+      discordThreadId = proactive.threadId;
+      guildId = proactive.guildId;
+      proactiveStarterMessageId = proactive.starterMessageId?.trim() || "";
+      proactiveStarterConsumedText = Boolean(
+        proactiveStarterMessageId && text && text.length <= 2_000,
+      );
+      recordChannelHistory = true;
+    }
+
+    const operationId = `${stableOperationId}:message`;
+    let response: {
+      ok: true;
+      threadId: string;
+      integrationId: string;
+      messageIds: string[];
+      chunkCount: number;
+      attachmentCount: number;
+    };
+    if (attachments.length > 0) {
+      const form = new FormData();
+      form.set("payload", JSON.stringify({
+        integrationId,
+        threadId: discordThreadId,
+        text: proactiveStarterConsumedText ? undefined : text || undefined,
+        idempotencyKey: operationId,
+      }));
+      for (const attachment of attachments) {
+        form.append(
+          "files",
+          new Blob([attachment.content], { type: attachment.contentType }),
+          attachment.filename,
+        );
+      }
+      const attachmentResponse = await discordBridgeRequest<typeof response>(
+        this.env.DISCORD_BRIDGE,
+        "/internal/v1/messages",
+        { method: "POST", body: form },
+      );
+      response = proactiveStarterConsumedText
+        ? {
+            ...attachmentResponse,
+            messageIds: [
+              proactiveStarterMessageId,
+              ...attachmentResponse.messageIds,
+            ],
+            chunkCount: attachmentResponse.chunkCount + 1,
+          }
+        : attachmentResponse;
+    } else if (proactiveStarterConsumedText) {
+      response = {
+        ok: true,
+        threadId: discordThreadId,
+        integrationId,
+        messageIds: [proactiveStarterMessageId],
+        chunkCount: 1,
+        attachmentCount: 0,
+      };
+    } else {
+      response = await discordBridgeRequest(
+        this.env.DISCORD_BRIDGE,
+        "/internal/v1/messages",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            integrationId,
+            threadId: discordThreadId,
+            text,
+            idempotencyKey: operationId,
+          }),
+        },
+      );
+    }
+
+    const channelHistoryStatus = await this.recordDiscordOutboundHistory(context, {
+      guildId,
+      threadId: discordThreadId,
+      integrationId,
+      title: config.parent_channel_name || integration.name || "Discord",
+      recordHistory: recordChannelHistory,
+      text: text || undefined,
+      messageIds: response.messageIds,
+      attachmentCount: attachments.length,
+    }).catch((error) => {
+      console.error("[ChatThreadDO] failed to record Discord outbound history", error);
+      return "error" as const;
+    });
+    await this.markThreadChannelUsedBestEffort(context, "discord");
+
+    return {
+      content: [{ type: "text", text: "Discord message sent." }],
+      details: {
+        status: "sent",
+        channel: "discord",
+        integrationId,
+        guildId,
+        threadId: discordThreadId,
+        messageId: response.messageIds[0],
+        messageIds: response.messageIds,
+        chunkCount: response.chunkCount,
+        attachmentCount: response.attachmentCount,
+        channelHistoryStatus,
+      },
+    };
+  }
+
+  private async recordDiscordOutboundHistory(
+    context: ChatContextState,
+    args: {
+      guildId: string;
+      threadId: string;
+      integrationId: string;
+      title: string;
+      recordHistory: boolean;
+      text?: string;
+      messageIds: string[];
+      attachmentCount: number;
+    },
+  ): Promise<"recorded" | "skipped"> {
+    if (!args.recordHistory) return "skipped";
+    const remoteConversationId = `${args.guildId}:${args.threadId}`;
+    const channelThread = await getOrCreateChannelThread(
+      this.env as Parameters<typeof getOrCreateChannelThread>[0],
+      {
+        kind: "discord",
+        workspaceId: context.workspaceId,
+        orgId: context.orgId,
+        connectionId: args.integrationId,
+        remoteConversationId,
+        title: args.title,
+        createdBy: "discord",
+        // This is an outbound mirror, not a user-authored inbound turn.
+        // appendChannelHistoryEvent below writes the single visible history row.
+        firstUserMessage: null,
+        firstRemoteMessageId: args.messageIds[0]
+          ? `outbound:${args.messageIds[0]}`
+          : undefined,
+      },
+    );
+    if (channelThread.threadId === context.threadId) return "skipped";
+    const stub = this.env.CHAT_THREAD.get(
+      this.env.CHAT_THREAD.idFromName(channelThread.threadId),
+    ) as unknown as {
+      appendChannelHistoryEvent: (
+        input: ChannelHistoryEventRequest,
+      ) => Promise<ChannelHistoryEventResult> | ChannelHistoryEventResult;
+    };
+    const result = await stub.appendChannelHistoryEvent({
+      threadId: channelThread.threadId,
+      workspaceId: context.workspaceId,
+      orgId: context.orgId,
+      channelKind: "discord",
+      connectionId: args.integrationId,
+      remoteConversationId,
+      sourceThreadId: context.threadId,
+      direction: "outbound",
+      text: args.text,
+      providerMessageIds: args.messageIds,
+      attachmentCount: args.attachmentCount,
+      sentAt: Date.now(),
+    });
+    if (result.status === "error") {
+      throw new Error(result.error || "Failed to record Discord channel history");
+    }
+    return result.status === "appended" ? "recorded" : "skipped";
   }
 
   private async recordTelegramOutboundHistory(

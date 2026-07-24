@@ -148,6 +148,8 @@ export interface ChatEnv extends WorkspaceFilesystemEnv {
   EMAIL_FROM_ADDRESS?: string;
   EMAIL?: CloudflareEmailSender;
   TELEGRAM_BOT_TOKEN?: string;
+  DISCORD_BRIDGE?: import("../discord-types.js").DiscordBridgeFetcher;
+  DISCORD_CHANNEL_ENABLED?: string;
   NEXTJS_ENV?: string;
   FIRECRAWL_API_KEY?: string;
   FIRECRAWL_BASE_URL?: string;

@@ -2124,6 +2124,8 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     const channelSkeleton = text
       ? this.buildUserUiSkeleton({
           rawContent: text,
+          authorDisplayName: "Camel",
+          messageSource: channelKind,
           channelHistory: true,
           piCoreMessageKey: sentAt,
         })

@@ -34,6 +34,7 @@
 	"services": [],
 	"vars": {
 		"AI_VIRTUAL_MODEL": "dynamic/auto",
+		"DISCORD_CHANNEL_ENABLED": "false",
 		"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
 		"CF_GATEWAY_NAME": "chiridion",
 		"TOKEN_SIGNING_SECRET": "test-signing-secret-for-unit-tests-only",

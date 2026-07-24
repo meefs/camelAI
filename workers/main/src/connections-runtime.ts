@@ -34,6 +34,12 @@ import type {
 } from './workspace.js';
 import type { OrgDO } from './auth.js';
 import type { DataProxyEnv } from './data-proxy.js';
+import {
+  discordBridgeRequest,
+  discordChannelEnabled,
+  parseDiscordChannelConfig,
+  type DiscordBridgeFetcher,
+} from './discord-types.js';
 
 type JsonValue =
   | null
@@ -48,6 +54,10 @@ export interface ConnectionsRuntimeEnv extends DataProxyEnv, ObservabilityEnv {
   ORG: DurableObjectNamespace<OrgDO>;
   /** Auto-expiring R2 staging bucket for warehouse exports (connection `export` method). */
   WAREHOUSE_EXPORT_BUCKET?: R2Bucket;
+  DISCORD_BRIDGE?: DiscordBridgeFetcher;
+  DISCORD_CHANNEL_ENABLED?: string;
+  DISCORD_CLIENT_ID?: string;
+  DISCORD_CLIENT_SECRET?: string;
 }
 
 export interface ConnectionsContext {
@@ -280,6 +290,7 @@ const SLACK_COMMON_API_METHODS: ConnectionMethodSummary[] = [
   },
 ];
 const TELEGRAM_SEND_TOOL = 'send_telegram_message';
+const DISCORD_SEND_TOOL = 'send_discord_message';
 const SLACK_SEND_METHOD: ConnectionMethodSummary = {
   name: 'sendSlackMessage',
   tool: SLACK_SEND_TOOL,
@@ -361,6 +372,43 @@ const TELEGRAM_SEND_METHOD: ConnectionMethodSummary = {
           },
           required: ['path'],
           additionalProperties: true,
+        },
+      },
+    },
+    anyOf: [
+      { required: ['text'] },
+      { required: ['attachments'] },
+    ],
+    additionalProperties: false,
+  },
+};
+const DISCORD_SEND_METHOD: ConnectionMethodSummary = {
+  name: 'sendDiscordMessage',
+  tool: DISCORD_SEND_TOOL,
+  invokeVia: 'tools.send_discord_message',
+  description:
+    'Virtual channel action for sending a Discord message to this integration or the originating Discord thread.',
+  example: 'await tools.send_discord_message({ integration_id: "<integration_id>", text: "Hello" })',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      integration_id: {
+        type: 'string',
+        description: 'Native Discord integration id. Optional only when one active integration exists or the current thread originated from Discord.',
+      },
+      text: { type: 'string', description: 'Message text to send.' },
+      attachments: {
+        type: 'array',
+        description: 'Optional attachments from workspace paths.',
+        items: {
+          type: 'object',
+          properties: {
+            path: { type: 'string' },
+            filename: { type: 'string' },
+            content_type: { type: 'string' },
+          },
+          required: ['path'],
+          additionalProperties: false,
         },
       },
     },
@@ -498,6 +546,17 @@ function recommendedConnectionActions(
       },
     ];
   }
+  if (record.integration_type === 'discord_channel') {
+    return [
+      {
+        name: DISCORD_SEND_TOOL,
+        tool: `tools.${DISCORD_SEND_TOOL}`,
+        usage: `await tools.${DISCORD_SEND_TOOL}({ integration_id: ${JSON.stringify(record.id)}, text: "Hello" })`,
+        description: 'Send a Discord message from js_exec through this native channel.',
+        routing: 'The configured parent channel and Camel-created threads are the only allowed destinations.',
+      },
+    ];
+  }
   if (record.integration_type !== 'telegram') return [];
   return [
     {
@@ -525,7 +584,10 @@ function reauthUrl(record: WorkspaceIntegrationRecord, context: ConnectionsConte
       integration_id: record.id,
       redirect: '/connections',
     });
-    return `/api/integrations/${encodeURIComponent(record.integration_type)}/oauth?${params.toString()}`;
+    const oauthType = record.integration_type === 'discord_channel'
+      ? 'discord'
+      : record.integration_type;
+    return `/api/integrations/${encodeURIComponent(oauthType)}/oauth?${params.toString()}`;
   }
   return `/connections?${new URLSearchParams({ connection: record.id, reauth: '1' }).toString()}`;
 }
@@ -922,11 +984,19 @@ function virtualChannelMethods(connection: ConnectionSummary): ConnectionMethodS
       ...SLACK_COMMON_API_METHODS,
     ];
   }
-  if (connection.type !== 'telegram') return [];
-  return [{
-    ...TELEGRAM_SEND_METHOD,
-    example: `await tools.${TELEGRAM_SEND_TOOL}({ integration_id: ${JSON.stringify(connection.id)}, text: "Hello" })`,
-  }];
+  if (connection.type === 'telegram') {
+    return [{
+      ...TELEGRAM_SEND_METHOD,
+      example: `await tools.${TELEGRAM_SEND_TOOL}({ integration_id: ${JSON.stringify(connection.id)}, text: "Hello" })`,
+    }];
+  }
+  if (connection.type === 'discord_channel') {
+    return [{
+      ...DISCORD_SEND_METHOD,
+      example: `await tools.${DISCORD_SEND_TOOL}({ integration_id: ${JSON.stringify(connection.id)}, text: "Hello" })`,
+    }];
+  }
+  return [];
 }
 
 export function resolveIntegration(records: WorkspaceIntegrationRecord[], query: string):
@@ -1360,6 +1430,72 @@ export async function verifyConnection(
       if (!hasTelegramDefaultRecipient(parseJsonObject(record.config))) {
         return finish('misconfigured', 'Choose a default Telegram chat before using this connection.');
       }
+    } else if (strategy === 'discord_channel_access') {
+      method = 'discord_channel_access';
+      if (!discordChannelEnabled(env)) {
+        return finish('degraded', 'Discord channels are unavailable in this environment.', method);
+      }
+      const config = parseDiscordChannelConfig(record.config || '{}');
+      if (!config) {
+        return finish('misconfigured', 'Discord connection configuration is invalid.', method);
+      }
+      const [bridgeStatus, result] = await Promise.all([
+        discordBridgeRequest<{
+          ok: true;
+          applicationId: string;
+          botUserId: string | null;
+          readiness: { ready: boolean; status: string; reason: string; message: string };
+          gateway: { state: string; lastHeartbeatAckAt: number | null };
+        }>(env.DISCORD_BRIDGE, '/internal/v1/status'),
+        discordBridgeRequest<{
+          ok: true;
+          verification: {
+            status: ConnectionVerificationStatus;
+            message: string;
+            checkedAt?: number;
+            binding: {
+              guildId: string;
+              parentChannelId: string;
+              integrationId: string;
+              orgId: string;
+              workspaceId: string;
+              version: number;
+            } | null;
+          };
+        }>(
+          env.DISCORD_BRIDGE,
+          `/internal/v1/bindings/${encodeURIComponent(record.id)}/verify`,
+          { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
+        ),
+      ]);
+      if (
+        bridgeStatus.applicationId !== env.DISCORD_CLIENT_ID ||
+        config.application_id !== env.DISCORD_CLIENT_ID ||
+        !bridgeStatus.botUserId ||
+        bridgeStatus.botUserId !== config.bot_user_id
+      ) {
+        return finish('misconfigured', 'Discord application identity does not match the connected bot.', method);
+      }
+      if (!bridgeStatus.readiness.ready) {
+        return finish('degraded', bridgeStatus.readiness.message, method);
+      }
+      const binding = result.verification.binding;
+      if (
+        !binding ||
+        binding.integrationId !== record.id ||
+        binding.orgId !== context.orgId ||
+        binding.workspaceId !== context.workspaceId ||
+        binding.guildId !== config.guild_id ||
+        binding.parentChannelId !== config.parent_channel_id ||
+        binding.version !== config.binding_version
+      ) {
+        return finish('misconfigured', 'Discord channel binding changed; reconnect this connection.', method);
+      }
+      return finish(
+        result.verification.status,
+        result.verification.message || 'Discord verification completed.',
+        method,
+      );
     } else if (strategy === 'http_configuration') {
       const provider = NATIVE_HTTP_API_CONNECTIONS[record.integration_type];
       if (provider) {
@@ -1567,6 +1703,14 @@ async function invokeConnectionMethodInternal(
     throw Object.assign(
       new Error(
         `Telegram send is available in js_exec as tools.${TELEGRAM_SEND_TOOL}(...), not as connections.${target.alias}.${targetMethod.name}(...). Use the method catalog example: await tools.${TELEGRAM_SEND_TOOL}({ integration_id: ${JSON.stringify(target.connection.id)}, text: "Hello" })`
+      ),
+      { status: 400 }
+    );
+  }
+  if (target.connection.type === 'discord_channel' && targetMethod.tool === DISCORD_SEND_TOOL) {
+    throw Object.assign(
+      new Error(
+        `Discord send is available in js_exec as tools.${DISCORD_SEND_TOOL}(...), not as connections.${target.alias}.${targetMethod.name}(...). Use the method catalog example: await tools.${DISCORD_SEND_TOOL}({ integration_id: ${JSON.stringify(target.connection.id)}, text: "Hello" })`
       ),
       { status: 400 }
     );

@@ -15,7 +15,7 @@ import {
   encryptCredentials,
 } from "../../../../src/lib/integration-crypto.js";
 import { requireSession } from "../helpers/auth.js";
-import type { ConnectionSetupResponse } from "../chat-thread-do.js";
+import { completeConnectionSetupPromptContext } from "../connection-setup-completion.js";
 import { getOrgStub } from "../helpers/stubs.js";
 import { redirect, text } from "../helpers/response.js";
 import type { SlackEventCallbackPayload } from "../slack-types.js";
@@ -46,12 +46,6 @@ import {
 import { getAppIndexReadDatabase } from "../app-index-db.js";
 import type { OrgDO } from "../auth.js";
 import type { WorkspaceIntegrationRecord } from "../workspace.js";
-
-interface ChatThreadConnectionSetupRpc {
-  receiveConnectionSetupResponse(
-    response: ConnectionSetupResponse,
-  ): Promise<{ accepted: boolean }>;
-}
 
 interface SlackCredentials {
   access_token?: string;
@@ -306,40 +300,32 @@ function normalizeSlackMessageText(
 /**
  * Complete a chat connection setup prompt after OAuth succeeds.
  */
-async function completeConnectionSetupPrompt(
+export async function completeConnectionSetupPrompt(
   env: RouteContext["env"],
   stateData: IntegrationOAuthState,
   integrationId: string,
   integrationType: string,
   integrationName: string,
-): Promise<void> {
+): Promise<boolean> {
   const chatRequestId = stateData.extra_config?.chat_request_id;
   const chatThreadId = stateData.extra_config?.chat_thread_id;
   if (typeof chatRequestId !== "string" || typeof chatThreadId !== "string") {
-    return;
+    return false;
   }
 
-  try {
-    const chatThreadStub = env.CHAT_THREAD.get(
-      env.CHAT_THREAD.idFromName(chatThreadId),
-    ) as unknown as ChatThreadConnectionSetupRpc;
-    const response: ConnectionSetupResponse = {
+  return completeConnectionSetupPromptContext(
+    env,
+    {
       requestId: chatRequestId,
-      cancelled: false,
-      integration: {
-        type: integrationType,
-        name: integrationName,
-        config: {},
-        credentials: { _oauth_completed: true, integration_id: integrationId },
-      },
-    };
-    await chatThreadStub.receiveConnectionSetupResponse(response);
-  } catch (err) {
-    console.error("[Integration OAuth] Failed to complete chat connection setup request:", err);
-  }
+      threadId: chatThreadId,
+    },
+    integrationId,
+    integrationType,
+    integrationName,
+  );
 }
 
-function buildConnectionSetupOAuthExtraConfig(
+export function buildConnectionSetupOAuthExtraConfig(
   reauthIntegrationId: string | undefined,
   chatRequestId: string | null,
   chatThreadId: string | null,
@@ -355,7 +341,7 @@ function buildConnectionSetupOAuthExtraConfig(
   return Object.keys(extraConfig).length > 0 ? extraConfig : undefined;
 }
 
-function hasConnectionSetupPromptContext(stateData: IntegrationOAuthState): boolean {
+export function hasConnectionSetupPromptContext(stateData: IntegrationOAuthState): boolean {
   return Boolean(
     typeof stateData.extra_config?.chat_request_id === "string" &&
       typeof stateData.extra_config?.chat_thread_id === "string",

@@ -1,0 +1,127 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "chiridion-discord-bridge-local",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-21",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "observability": { "enabled": true },
+  "vars": {
+    "DISCORD_APPLICATION_ID": "test-discord-application",
+    "DISCORD_MESSAGE_CONTENT_MODE": "full",
+    "DISCORD_INGRESS_ENABLED": "false",
+    "DISCORD_OUTBOUND_ENABLED": "true"
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "GATEWAY", "class_name": "DiscordGatewayDO" },
+      { "name": "CONTROL", "class_name": "DiscordControlDO" }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["DiscordGatewayDO", "DiscordControlDO"]
+    }
+  ],
+  "queues": {
+    "producers": [
+      { "binding": "DISCORD_EVENTS_QUEUE", "queue": "chiridion-app-discord-events-local" }
+    ]
+  },
+  "triggers": { "crons": ["* * * * *"] },
+  "env": {
+    "staging": {
+      "name": "chiridion-discord-bridge-staging",
+      "vars": {
+        "DISCORD_APPLICATION_ID": "SET_IN_DISCORD_DEVELOPER_PORTAL",
+        "DISCORD_MESSAGE_CONTENT_MODE": "full",
+        "DISCORD_INGRESS_ENABLED": "false",
+        "DISCORD_OUTBOUND_ENABLED": "true"
+      },
+      "durable_objects": {
+        "bindings": [
+          { "name": "GATEWAY", "class_name": "DiscordGatewayDO" },
+          { "name": "CONTROL", "class_name": "DiscordControlDO" }
+        ]
+      },
+      "queues": {
+        "producers": [
+          { "binding": "DISCORD_EVENTS_QUEUE", "queue": "chiridion-app-discord-events-staging" }
+        ]
+      },
+      "analytics_engine_datasets": [
+        { "binding": "OBSERVABILITY_EVENTS", "dataset": "chiridion_observability_staging" },
+        { "binding": "ERROR_ANALYTICS", "dataset": "chiridion_errors_staging" }
+      ],
+      "triggers": { "crons": ["* * * * *"] }
+    },
+    "prod": {
+      "name": "chiridion-discord-bridge",
+      "vars": {
+        "DISCORD_APPLICATION_ID": "SET_IN_DISCORD_DEVELOPER_PORTAL",
+        "DISCORD_MESSAGE_CONTENT_MODE": "full",
+        "DISCORD_INGRESS_ENABLED": "false",
+        "DISCORD_OUTBOUND_ENABLED": "true"
+      },
+      "durable_objects": {
+        "bindings": [
+          { "name": "GATEWAY", "class_name": "DiscordGatewayDO" },
+          { "name": "CONTROL", "class_name": "DiscordControlDO" }
+        ]
+      },
+      "queues": {
+        "producers": [
+          { "binding": "DISCORD_EVENTS_QUEUE", "queue": "chiridion-app-discord-events" }
+        ]
+      },
+      "analytics_engine_datasets": [
+        { "binding": "OBSERVABILITY_EVENTS", "dataset": "chiridion_observability_prod" },
+        { "binding": "ERROR_ANALYTICS", "dataset": "chiridion_errors_prod" }
+      ],
+      "triggers": { "crons": ["* * * * *"] }
+    },
+    "dev-illiana": {
+      "name": "chiridion-discord-bridge-dev-illiana",
+      "vars": {
+        "DISCORD_APPLICATION_ID": "1529210284898779277",
+        "DISCORD_MESSAGE_CONTENT_MODE": "full",
+        "DISCORD_INGRESS_ENABLED": "true",
+        "DISCORD_OUTBOUND_ENABLED": "true"
+      },
+      "durable_objects": {
+        "bindings": [
+          { "name": "GATEWAY", "class_name": "DiscordGatewayDO" },
+          { "name": "CONTROL", "class_name": "DiscordControlDO" }
+        ]
+      },
+      "queues": {
+        "producers": [
+          { "binding": "DISCORD_EVENTS_QUEUE", "queue": "chiridion-app-discord-events-dev-illiana" }
+        ]
+      },
+      "triggers": { "crons": ["* * * * *"] }
+    },
+    "dev-miguel": {
+      "name": "chiridion-discord-bridge-dev-miguel",
+      "vars": {
+        "DISCORD_APPLICATION_ID": "SET_IN_DISCORD_DEVELOPER_PORTAL",
+        "DISCORD_MESSAGE_CONTENT_MODE": "full",
+        "DISCORD_INGRESS_ENABLED": "false",
+        "DISCORD_OUTBOUND_ENABLED": "true"
+      },
+      "durable_objects": {
+        "bindings": [
+          { "name": "GATEWAY", "class_name": "DiscordGatewayDO" },
+          { "name": "CONTROL", "class_name": "DiscordControlDO" }
+        ]
+      },
+      "queues": {
+        "producers": [
+          { "binding": "DISCORD_EVENTS_QUEUE", "queue": "chiridion-app-discord-events-dev-miguel" }
+        ]
+      },
+      "triggers": { "crons": ["* * * * *"] }
+    }
+  }
+}

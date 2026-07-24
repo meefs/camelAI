@@ -22,7 +22,7 @@ import {
 } from '@/lib/integration-definition';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
 import {
-  INTEGRATION_REGISTRY,
+  getAllIntegrations,
   getIntegrationDefinition,
   isCredentialFieldRequired,
   shouldShowConfigField,
@@ -61,6 +61,16 @@ import {
   loadUserProfileSummaries,
   type UserProfileSummary,
 } from '@/lib/user-profiles.server';
+import {
+  DiscordBridgeRequestError,
+  discordBridgeRequest,
+  discordChannelEnabled,
+  getDiscordChannelAvailability,
+  parseDiscordChannelConfig,
+  type DiscordBridgeBindingRecord,
+  type DiscordSelectableChannel,
+} from '../../workers/main/src/discord-types';
+import { completeConnectionSetupPromptContext } from '../../workers/main/src/connection-setup-completion';
 
 const CONNECTION_MANAGEMENT_INTENTS = new Set([
   'createIntegration',
@@ -69,7 +79,18 @@ const CONNECTION_MANAGEMENT_INTENTS = new Set([
   'duplicateIntegration',
   'discoverIntegration',
   'createDiscoveredIntegration',
+  'discordListChannels',
+  'discordActivateChannel',
+  'discordDisconnect',
 ]);
+
+interface DiscordBindingTransaction {
+  transactionId: string;
+  binding: DiscordBridgeBindingRecord;
+  previousBinding: DiscordBridgeBindingRecord | null;
+  state: string;
+  confirmationMessageIds: string[];
+}
 
 export function shouldRevalidate(
   args: Parameters<typeof shouldRevalidateConnectionsRoute>[0],
@@ -149,6 +170,20 @@ async function slackChannelMetadata(
   config: Record<string, unknown>,
   env: CloudflareEnv,
 ): Promise<ConnectionListItem['channelMetadata']> {
+  if (record.integration_type === 'discord_channel') {
+    return {
+      guild_id: typeof config.guild_id === 'string' ? config.guild_id : null,
+      guild_name: typeof config.guild_name === 'string' ? config.guild_name : null,
+      parent_channel_id:
+        typeof config.parent_channel_id === 'string' ? config.parent_channel_id : null,
+      parent_channel_name:
+        typeof config.parent_channel_name === 'string' ? config.parent_channel_name : null,
+      bot_user_id: typeof config.bot_user_id === 'string' ? config.bot_user_id : null,
+      message_content_mode:
+        typeof config.message_content_mode === 'string' ? config.message_content_mode : null,
+      status: typeof config.status === 'string' ? config.status : null,
+    };
+  }
   if (record.integration_type !== 'slack') return undefined;
   const fromConfig = {
     team_id: typeof config.team_id === 'string' ? config.team_id : null,
@@ -180,6 +215,7 @@ async function recordToIntegration(
   record: WorkspaceIntegrationRecord,
   creators: Map<string, UserProfileSummary>,
   env: CloudflareEnv,
+  discordOperationalReady: boolean,
 ): Promise<ConnectionListItem> {
   const config = parseIntegrationConfig(record.config);
   const importedDefinition = parseWorkspaceIntegrationDefinition(record.definition);
@@ -188,6 +224,8 @@ async function recordToIntegration(
     config,
     definition: importedDefinition,
   });
+  const discordUnavailable = record.integration_type === 'discord_channel' &&
+    !discordOperationalReady;
   return {
     id: record.id,
     integration_type: record.integration_type,
@@ -217,8 +255,10 @@ async function recordToIntegration(
       : undefined,
     contract,
     verification: {
-      status: record.verification_status ?? 'unknown',
-      message: record.verification_message ?? null,
+      status: discordUnavailable ? 'degraded' : record.verification_status ?? 'unknown',
+      message: discordUnavailable
+        ? 'Discord channels are unavailable in this environment.'
+        : record.verification_message ?? null,
       checkedAt: record.verification_checked_at ?? null,
       live: record.verification_live === 1,
       strategy: record.verification_strategy ?? contract.verification.strategy,
@@ -265,6 +305,364 @@ export async function action({ request, context }: Route.ActionArgs) {
     }
   }
 
+  if (intent === 'discordListChannels') {
+    const integrationId = String(formData.get('integrationId') ?? '').trim();
+    if (!integrationId) return { error: 'Integration ID is required' };
+    if (!discordChannelEnabled(env)) {
+      return { error: 'Discord channel is not configured in this environment' };
+    }
+    const record = await getWorkspaceIntegrationRecord(authEnv, workspaceId, integrationId);
+    const config = record && record.integration_type === 'discord_channel'
+      ? parseDiscordChannelConfig(record.config || '{}')
+      : null;
+    if (!record || !config) return { error: 'Discord integration not found' };
+    try {
+      const result = await discordBridgeRequest<{
+        ok: true;
+        guild: { id: string; name: string };
+        channels: DiscordSelectableChannel[];
+      }>(
+        env.DISCORD_BRIDGE,
+        `/internal/v1/guilds/${encodeURIComponent(config.guild_id)}/channels`,
+      );
+      return {
+        success: true,
+        discordSetup: {
+          integrationId,
+          guild: result.guild,
+          channels: result.channels,
+        },
+      };
+    } catch (error) {
+      return {
+        error: error instanceof Error ? error.message : 'Failed to list Discord channels',
+      };
+    }
+  }
+
+  if (intent === 'discordActivateChannel') {
+    const integrationId = String(formData.get('integrationId') ?? '').trim();
+    const parentChannelId = String(formData.get('parentChannelId') ?? '').trim();
+    const acknowledged = formData.get('securityAcknowledged') === 'true';
+    if (!integrationId || !parentChannelId) {
+      return { error: 'Choose a Discord channel' };
+    }
+    if (!acknowledged) {
+      return { error: 'Acknowledge the Discord channel security boundary before connecting' };
+    }
+    if (!discordChannelEnabled(env)) {
+      return { error: 'Discord channel is not configured in this environment' };
+    }
+    const record = await getWorkspaceIntegrationRecord(authEnv, workspaceId, integrationId);
+    const priorConfig = record && record.integration_type === 'discord_channel'
+      ? parseDiscordChannelConfig(record.config || '{}')
+      : null;
+    if (!record || !priorConfig) return { error: 'Discord integration not found' };
+    let authoritativeBinding: DiscordBridgeBindingRecord | null = null;
+    try {
+      const live = await discordBridgeRequest<{
+        ok: true;
+        binding: DiscordBridgeBindingRecord;
+      }>(
+        env.DISCORD_BRIDGE,
+        `/internal/v1/bindings/${encodeURIComponent(integrationId)}`,
+      );
+      if (
+        live.binding.integrationId !== integrationId ||
+        live.binding.orgId !== authContext.currentOrg.id ||
+        live.binding.workspaceId !== workspaceId
+      ) {
+        return { error: 'Discord binding ownership does not match this workspace' };
+      }
+      authoritativeBinding = live.binding;
+    } catch (error) {
+      if (!(error instanceof DiscordBridgeRequestError) || error.code !== 'binding_not_found') {
+        return {
+          error: error instanceof Error ? error.message : 'Failed to inspect Discord binding',
+        };
+      }
+    }
+    const pendingSetup = priorConfig.pending_setup &&
+      typeof priorConfig.pending_setup.request_id === 'string' &&
+      typeof priorConfig.pending_setup.thread_id === 'string' &&
+      typeof priorConfig.pending_setup.return_path === 'string' &&
+      priorConfig.pending_setup.return_path.startsWith('/') &&
+      !priorConfig.pending_setup.return_path.startsWith('//')
+      ? priorConfig.pending_setup
+      : null;
+    const liveMatchesProduct = Boolean(
+      authoritativeBinding &&
+      priorConfig.status === 'active' &&
+      priorConfig.binding_version === authoritativeBinding.version &&
+      priorConfig.guild_id === authoritativeBinding.guildId &&
+      priorConfig.parent_channel_id === authoritativeBinding.parentChannelId &&
+      parentChannelId === authoritativeBinding.parentChannelId,
+    );
+
+    if (liveMatchesProduct && authoritativeBinding) {
+      try {
+        if (priorConfig.binding_transaction_id) {
+          await discordBridgeRequest(
+            env.DISCORD_BRIDGE,
+            `/internal/v1/binding-transactions/${encodeURIComponent(priorConfig.binding_transaction_id)}/finalize`,
+            { method: 'POST' },
+          );
+        }
+        if (pendingSetup) {
+          const completed = await completeConnectionSetupPromptContext(
+            env,
+            {
+              requestId: pendingSetup.request_id,
+              threadId: pendingSetup.thread_id,
+            },
+            integrationId,
+            'discord_channel',
+            record.name,
+          );
+          if (!completed) {
+            return {
+              error: 'Discord is connected, but the original chat setup request could not be resumed. Retry Connect channel.',
+            };
+          }
+        }
+        if (priorConfig.binding_transaction_id || pendingSetup) {
+          const settledConfig = {
+            ...priorConfig,
+            binding_transaction_id: undefined,
+            pending_setup: undefined,
+            last_verified_at: Date.now(),
+          };
+          await updateWorkspaceIntegrationRecord(
+            authEnv,
+            workspaceId,
+            integrationId,
+            { config: JSON.stringify(settledConfig) },
+            authContext.user.id,
+          );
+        }
+        return {
+          success: true,
+          ...(pendingSetup ? { returnTo: pendingSetup.return_path } : {}),
+        };
+      } catch (error) {
+        return {
+          error: error instanceof Error
+            ? error.message
+            : 'Failed to finish Discord channel setup',
+        };
+      }
+    }
+
+    const expectedVersion = authoritativeBinding?.version;
+    const transactionId = [
+      'discord-binding-activation',
+      integrationId,
+      expectedVersion ?? 'none',
+      priorConfig.guild_id,
+      parentChannelId,
+    ].join(':');
+    let transaction: DiscordBindingTransaction | null = null;
+    try {
+      const prepared = await discordBridgeRequest<{
+        ok: true;
+        transaction: DiscordBindingTransaction;
+      }>(
+        env.DISCORD_BRIDGE,
+        '/internal/v1/binding-transactions/prepare',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            guildId: priorConfig.guild_id,
+            parentChannelId,
+            integrationId,
+            orgId: authContext.currentOrg.id,
+            workspaceId,
+            idempotencyKey: transactionId,
+            ...(expectedVersion === undefined ? {} : { expectedVersion }),
+          }),
+        },
+      );
+      transaction = prepared.transaction;
+      await discordBridgeRequest(
+        env.DISCORD_BRIDGE,
+        `/internal/v1/binding-transactions/${encodeURIComponent(transactionId)}/confirm`,
+        { method: 'POST' },
+      );
+      const committed = await discordBridgeRequest<{
+        ok: true;
+        transaction: DiscordBindingTransaction;
+      }>(
+        env.DISCORD_BRIDGE,
+        `/internal/v1/binding-transactions/${encodeURIComponent(transactionId)}/commit`,
+        { method: 'POST' },
+      );
+      transaction = committed.transaction;
+    } catch (error) {
+      if (transaction) {
+        await discordBridgeRequest(
+          env.DISCORD_BRIDGE,
+          `/internal/v1/binding-transactions/${encodeURIComponent(transactionId)}/abort`,
+          { method: 'POST' },
+        ).catch(() => undefined);
+      }
+      return {
+        error: error instanceof Error
+          ? `Discord could not confirm and activate the channel: ${error.message}`
+          : 'Discord could not confirm and activate the channel',
+      };
+    }
+
+    const binding = transaction.binding;
+    const nextConfig = {
+      ...priorConfig,
+      status: 'active' as const,
+      guild_id: binding.guildId,
+      guild_name: binding.guildName,
+      parent_channel_id: binding.parentChannelId,
+      parent_channel_name: binding.parentChannelName,
+      binding_version: binding.version,
+      binding_transaction_id: transactionId,
+      security_acknowledged_at: Date.now(),
+      last_verified_at: Date.now(),
+      error_code: undefined,
+    };
+    try {
+      await updateWorkspaceIntegrationRecord(
+        authEnv,
+        workspaceId,
+        integrationId,
+        {
+          name: `${binding.guildName} #${binding.parentChannelName}`,
+          config: JSON.stringify(nextConfig),
+        },
+        authContext.user.id,
+      );
+    } catch (error) {
+      let compensationError: unknown = null;
+      try {
+        await discordBridgeRequest(
+          env.DISCORD_BRIDGE,
+          `/internal/v1/binding-transactions/${encodeURIComponent(transactionId)}/abort`,
+          { method: 'POST' },
+        );
+      } catch (abortError) {
+        compensationError = abortError;
+      }
+      return {
+        error: compensationError
+          ? 'Product persistence failed and the exact Discord binding could not be restored; retry after reconciliation'
+          : error instanceof Error
+            ? error.message
+            : 'Failed to persist the Discord channel',
+      };
+    }
+    try {
+      await discordBridgeRequest(
+        env.DISCORD_BRIDGE,
+        `/internal/v1/binding-transactions/${encodeURIComponent(transactionId)}/finalize`,
+        { method: 'POST' },
+      );
+    } catch (error) {
+      return {
+        error: error instanceof Error
+          ? `Discord is active, but activation reconciliation is incomplete: ${error.message}`
+          : 'Discord is active, but activation reconciliation is incomplete',
+      };
+    }
+
+    if (pendingSetup) {
+      const completed = await completeConnectionSetupPromptContext(
+        env,
+        {
+          requestId: pendingSetup.request_id,
+          threadId: pendingSetup.thread_id,
+        },
+        integrationId,
+        'discord_channel',
+        `${binding.guildName} #${binding.parentChannelName}`,
+      );
+      if (!completed) {
+        return {
+          error: 'Discord is connected, but the original chat setup request could not be resumed. Retry Connect channel.',
+        };
+      }
+    }
+
+    try {
+      const settledConfig = {
+        ...nextConfig,
+        binding_transaction_id: undefined,
+        pending_setup: undefined,
+        last_verified_at: Date.now(),
+      };
+      await updateWorkspaceIntegrationRecord(
+        authEnv,
+        workspaceId,
+        integrationId,
+        { config: JSON.stringify(settledConfig) },
+        authContext.user.id,
+      );
+    } catch (error) {
+      return {
+        error: error instanceof Error
+          ? `Discord is connected, but setup finalization could not be recorded: ${error.message}`
+          : 'Discord is connected, but setup finalization could not be recorded',
+      };
+    }
+    return {
+      success: true,
+      ...(pendingSetup ? { returnTo: pendingSetup.return_path } : {}),
+    };
+  }
+
+  if (intent === 'discordDisconnect') {
+    const integrationId = String(formData.get('integrationId') ?? '').trim();
+    if (!integrationId) return { error: 'Integration ID is required' };
+    const record = await getWorkspaceIntegrationRecord(authEnv, workspaceId, integrationId);
+    const config = record && record.integration_type === 'discord_channel'
+      ? parseDiscordChannelConfig(record.config || '{}')
+      : null;
+    if (!record || !config) return { error: 'Discord integration not found' };
+    if (env.DISCORD_BRIDGE) {
+      try {
+        const version = Number.isInteger(config.binding_version)
+          ? `?version=${config.binding_version}`
+          : '';
+        await discordBridgeRequest(
+          env.DISCORD_BRIDGE,
+          `/internal/v1/bindings/${encodeURIComponent(integrationId)}${version}`,
+          { method: 'DELETE' },
+        );
+      } catch (error) {
+        return {
+          error: error instanceof Error
+            ? `Failed to release Discord channel: ${error.message}`
+            : 'Failed to release Discord channel',
+        };
+      }
+    } else if (config.binding_version) {
+      return { error: 'Discord bridge is unavailable; the channel was not disconnected' };
+    }
+    const disconnectedConfig = {
+      ...config,
+      status: 'disconnected' as const,
+      parent_channel_id: undefined,
+      parent_channel_name: undefined,
+      binding_version: undefined,
+      error_code: undefined,
+      last_verified_at: Date.now(),
+    };
+    await updateWorkspaceIntegrationRecord(
+      authEnv,
+      workspaceId,
+      integrationId,
+      { config: JSON.stringify(disconnectedConfig) },
+      authContext.user.id,
+    );
+    return { success: true };
+  }
+
   if (intent === 'verifyIntegration') {
     const integrationId = String(formData.get('integrationId') ?? '').trim();
     if (!integrationId) return { error: 'Integration ID is required' };
@@ -300,6 +698,12 @@ export async function action({ request, context }: Route.ActionArgs) {
     const definition = getIntegrationDefinition(integrationType);
     if (!definition) {
       return { error: `Unknown integration type: ${integrationType}` };
+    }
+    if (definition.deprecated?.hiddenFromCreate) {
+      return { error: `${definition.displayName} can no longer be created` };
+    }
+    if (integrationType === 'discord_channel') {
+      return { error: 'Use Add Camel to Discord to create this connection' };
     }
 
     try {
@@ -658,12 +1062,29 @@ export async function action({ request, context }: Route.ActionArgs) {
     }
 
     try {
+      const existing = await getWorkspaceIntegrationRecord(
+        authEnv,
+        workspaceId,
+        integrationId,
+      );
       await deleteWorkspaceIntegrationRecord(
         authEnv,
         workspaceId,
         integrationId,
         authContext.user.id,
       );
+      if (existing?.integration_type === 'discord_channel' && env.DISCORD_BRIDGE) {
+        await discordBridgeRequest(
+          env.DISCORD_BRIDGE,
+          `/internal/v1/bindings/${encodeURIComponent(integrationId)}`,
+          { method: 'DELETE' },
+        ).catch((error) => {
+          console.warn('Discord binding release failed after integration deletion', {
+            integrationId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }
       return { success: true };
     } catch (err) {
       return { error: err instanceof Error ? err.message : 'Failed to delete integration' };
@@ -692,6 +1113,12 @@ export async function action({ request, context }: Route.ActionArgs) {
       );
       if (!sourceRecord) {
         return { error: 'Integration not found' };
+      }
+      if (
+        sourceRecord.integration_type === 'telegram' ||
+        sourceRecord.integration_type === 'discord_channel'
+      ) {
+        return { error: 'Native channel integrations cannot be duplicated' };
       }
 
       // Deduplicate name: append " (copy)" if the name already exists on target
@@ -775,9 +1202,13 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const authEnv = getAuthEnv(env);
   const workspaceId = authContext.currentWorkspace?.id;
   const workspace = authContext.currentWorkspace;
+  const discordAvailability = await getDiscordChannelAvailability(env);
 
   // Get integration types
-  const integrations = Object.values(INTEGRATION_REGISTRY);
+  const integrations = getAllIntegrations({ includeFeatureGated: true }).filter(
+    (integration) =>
+      integration.type !== 'discord_channel' || discordAvailability.catalogAvailable,
+  );
   const categories = Array.from(
     new Set(integrations.map((i) => i.category))
   ) as string[];
@@ -791,7 +1222,12 @@ export async function loader({ request, context }: Route.LoaderArgs) {
             workspace?.created_by ?? '',
           ], request, [authContext.user], 'workspace connection');
           return Promise.all(
-            records.map((record) => recordToIntegration(record, creators, env)),
+            records.map((record) => recordToIntegration(
+              record,
+              creators,
+              env,
+              discordAvailability.operationalReady,
+            )),
           );
         })
         .catch((error) => {

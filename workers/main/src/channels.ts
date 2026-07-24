@@ -24,7 +24,7 @@ import {
   getWorkspaceModelPickerConfigCompat,
 } from "./model-picker-config-compat.js";
 
-export type ChannelKind = "email" | "slack" | "telegram" | (string & {});
+export type ChannelKind = "email" | "slack" | "telegram" | "discord" | (string & {});
 
 export interface ChannelAddress {
   kind: ChannelKind;
@@ -67,6 +67,7 @@ const CHANNEL_REPLY_TOOLS: Record<string, string> = {
   email: "send_email",
   slack: "send_slack_message",
   telegram: "send_telegram_message",
+  discord: "send_discord_message",
 };
 const MAX_CHANNEL_KEY_PART_LENGTH = 96;
 
@@ -227,7 +228,7 @@ export function buildChannelReplySystemMessage(
       ? ` The sender email is ${request.userEmail.trim()}; use it as the to value if replying to the sender.`
       : "";
   const routingHint =
-    safeKind === "slack" || safeKind === "telegram"
+    safeKind === "slack" || safeKind === "telegram" || safeKind === "discord"
       ? " You do not need to provide the channel/chat id because the tool is already scoped to the originating conversation."
       : "";
   const replyInstruction = toolName

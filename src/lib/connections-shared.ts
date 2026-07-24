@@ -6,7 +6,7 @@ import {
   type ConnectionContract,
 } from "@/lib/connection-contract";
 
-export const CHANNEL_INTEGRATION_TYPES = ["slack", "telegram"] as const;
+export const CHANNEL_INTEGRATION_TYPES = ["slack", "telegram", "discord_channel"] as const;
 
 export type ChannelIntegrationType = (typeof CHANNEL_INTEGRATION_TYPES)[number];
 export type ConnectionSort = "updated" | "name" | "created";
@@ -25,6 +25,12 @@ export interface ConnectionListItem extends Integration {
     team_id?: string | null;
     team_name?: string | null;
     bot_user_id?: string | null;
+    guild_id?: string | null;
+    guild_name?: string | null;
+    parent_channel_id?: string | null;
+    parent_channel_name?: string | null;
+    message_content_mode?: string | null;
+    status?: string | null;
   };
   definitionMetadata?: {
     source: string;
@@ -184,6 +190,11 @@ const DETAIL_FIELDS_BY_TYPE: Record<string, DetailField[]> = {
   anthropic: [{ label: "Provider", keys: ["display_name"] }],
   openrouter: [{ label: "Provider", keys: ["display_name"] }],
   discord: [{ label: "Application ID", keys: ["application_id"] }],
+  discord_channel: [
+    { label: "Server", keys: ["guild_name", "guild_id"] },
+    { label: "Channel", keys: ["parent_channel_name", "parent_channel_id"] },
+    { label: "Content mode", keys: ["message_content_mode"] },
+  ],
   teams: [{ label: "Tenant ID", keys: ["tenant_id"] }],
 };
 
@@ -260,6 +271,7 @@ export function canReconnectConnection(connection: ConnectionListItem): boolean 
   if (connection.integration_type === "telegram") return false;
   if (
     connection.integration_type === "slack" ||
+    connection.integration_type === "discord_channel" ||
     connection.integration_type === "notion" ||
     connection.integration_type === "salesforce"
   ) {
@@ -269,6 +281,36 @@ export function canReconnectConnection(connection: ConnectionListItem): boolean 
     connection.integration_type === "remote_mcp" &&
     connection.config.auth_type === "oauth"
   );
+}
+
+export function getDiscordChannelMetadata(connection: ConnectionListItem): {
+  guild_id: string | null;
+  guild_name: string | null;
+  parent_channel_id: string | null;
+  parent_channel_name: string | null;
+  message_content_mode: string | null;
+  status: string | null;
+} {
+  return {
+    guild_id:
+      connection.channelMetadata?.guild_id ??
+      stringConfigValue(connection.config, "guild_id"),
+    guild_name:
+      connection.channelMetadata?.guild_name ??
+      stringConfigValue(connection.config, "guild_name"),
+    parent_channel_id:
+      connection.channelMetadata?.parent_channel_id ??
+      stringConfigValue(connection.config, "parent_channel_id"),
+    parent_channel_name:
+      connection.channelMetadata?.parent_channel_name ??
+      stringConfigValue(connection.config, "parent_channel_name"),
+    message_content_mode:
+      connection.channelMetadata?.message_content_mode ??
+      stringConfigValue(connection.config, "message_content_mode"),
+    status:
+      connection.channelMetadata?.status ??
+      stringConfigValue(connection.config, "status"),
+  };
 }
 
 export function getSlackChannelMetadata(connection: ConnectionListItem): {

@@ -168,7 +168,7 @@ export default defineConfig({
     ],
   },
   test: {
-    include: ['workers/**/tests/**/*.test.ts'],
+    include: ['workers/main/tests/**/*.test.ts'],
     testTimeout: 20_000,
     // Agent-eval runs only: don't let vitest's exit code flip to 1 on unhandled
     // errors. The vitest-pool-workers handler-context shim re-reports tool throws

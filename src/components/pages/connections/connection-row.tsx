@@ -75,8 +75,19 @@ export function ConnectionActionsMenu({
   const isEmail = item.kind === "channel" && item.channel === "email";
   const showRecordActions = Boolean(connection && isAdmin);
   const showReconnect = Boolean(connection && isAdmin && canReconnectConnection(connection));
-  const showClone = Boolean(connection && isAdmin && otherWorkspacesCount > 0);
+  const showClone = Boolean(
+    connection &&
+    isAdmin &&
+    otherWorkspacesCount > 0 &&
+    connection.integration_type !== "telegram" &&
+    connection.integration_type !== "discord_channel",
+  );
   const showVerify = Boolean(connection);
+  const showConfigure = Boolean(
+    connection &&
+    showRecordActions &&
+    connection.integration_type !== "discord_channel",
+  );
   const hasActions = isEmail || showVerify || showRecordActions || showReconnect || showClone;
 
   if (!hasActions) return null;
@@ -161,17 +172,19 @@ export function ConnectionActionsMenu({
               </MenuItemIcon>
               Rename
             </DropdownMenuItem>
-            <DropdownMenuItem
-              onSelect={(event) => {
-                event.stopPropagation();
-                onConfigure(connection);
-              }}
-            >
-              <MenuItemIcon>
-                <Settings />
-              </MenuItemIcon>
-              Configure
-            </DropdownMenuItem>
+            {showConfigure ? (
+              <DropdownMenuItem
+                onSelect={(event) => {
+                  event.stopPropagation();
+                  onConfigure(connection);
+                }}
+              >
+                <MenuItemIcon>
+                  <Settings />
+                </MenuItemIcon>
+                Configure
+              </DropdownMenuItem>
+            ) : null}
             {showReconnect ? (
               <DropdownMenuItem
                 onSelect={(event) => {

@@ -17,6 +17,10 @@ import type {
 } from "./channel-registries.js";
 import type { AppScreenshotJob } from "./screenshot-queue.js";
 import type { SlackEventQueueMessage } from "./slack-types.js";
+import type {
+  DiscordBridgeFetcher,
+  DiscordEventQueueMessage,
+} from "./discord-types.js";
 import type { ArtifactsRepo } from "./workspace-filesystem-do.js";
 import type { DispatcherBinding } from "./workspace-app-fetcher.js";
 
@@ -71,6 +75,8 @@ export interface Env
   ERROR_ANALYTICS?: AnalyticsEngineDataset;
   APP_SCREENSHOT_QUEUE?: Queue<AppScreenshotJob>;
   SLACK_EVENTS_QUEUE?: Queue<SlackEventQueueMessage>;
+  DISCORD_EVENTS_QUEUE?: Queue<DiscordEventQueueMessage>;
+  DISCORD_BRIDGE?: DiscordBridgeFetcher;
   BROWSER?: Fetcher;
   DISPATCHER?: DispatcherBinding;
   ARTIFACTS?: ArtifactsBinding;
@@ -83,6 +89,9 @@ export interface Env
   SLACK_CLIENT_ID?: string;
   SLACK_CLIENT_SECRET?: string;
   SLACK_SIGNING_SECRET?: string;
+  DISCORD_CLIENT_ID?: string;
+  DISCORD_CLIENT_SECRET?: string;
+  DISCORD_CHANNEL_ENABLED?: string;
   NOTION_CLIENT_ID?: string;
   NOTION_CLIENT_SECRET?: string;
   SALESFORCE_CLIENT_ID?: string;

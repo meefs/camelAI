@@ -29,7 +29,9 @@
 		"CF_GATEWAY_NAME": "chiridion",
 		"BEDROCK_REGION": "us-west-2",
 			"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com",
-			"WORKSPACE_EMAIL_DOMAIN": "camelai.dev"
+			"WORKSPACE_EMAIL_DOMAIN": "camelai.dev",
+			"DISCORD_CHANNEL_ENABLED": "false",
+			"DISCORD_CLIENT_ID": "SET_IN_DISCORD_DEVELOPER_PORTAL"
 			// CF_GATEWAY_TOKEN and optional CF_GATEWAY_BASE_URL are set via .dev.vars for local dev
 		},
 	"assets": {
@@ -144,6 +146,19 @@
 			},
 			{
 				"queue": "chiridion-app-slack-events-local"
+			},
+			{
+				"queue": "chiridion-app-discord-events-local",
+				"max_batch_size": 10,
+				"max_batch_timeout": 1,
+				"max_retries": 5,
+				"dead_letter_queue": "chiridion-app-discord-events-dlq-local"
+			},
+			{
+				"queue": "chiridion-app-discord-events-dlq-local",
+				"max_batch_size": 10,
+				"max_batch_timeout": 1,
+				"max_retries": 3
 			}
 		]
 	},
@@ -156,6 +171,10 @@
 		{
 			"binding": "DISPATCHER",
 			"service": "chiridion-dispatcher-local",
+		},
+		{
+			"binding": "DISCORD_BRIDGE",
+			"service": "chiridion-discord-bridge-local"
 		}
 	],
 	"vpc_services": [],
@@ -245,7 +264,9 @@
 				"CF_GATEWAY_NAME": "chiridion",
 				"BEDROCK_REGION": "us-west-2",
 					"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com",
-					"WORKSPACE_EMAIL_DOMAIN": "camelai.dev"
+					"WORKSPACE_EMAIL_DOMAIN": "camelai.dev",
+					"DISCORD_CHANNEL_ENABLED": "false",
+					"DISCORD_CLIENT_ID": "SET_IN_DISCORD_DEVELOPER_PORTAL"
 					// CF_GATEWAY_TOKEN is set via secrets
 				},
 			"images": {
@@ -307,6 +328,19 @@
 					},
 					{
 						"queue": "chiridion-app-slack-events"
+					},
+					{
+						"queue": "chiridion-app-discord-events",
+						"max_batch_size": 10,
+						"max_batch_timeout": 1,
+						"max_retries": 5,
+						"dead_letter_queue": "chiridion-app-discord-events-dlq"
+					},
+					{
+						"queue": "chiridion-app-discord-events-dlq",
+						"max_batch_size": 10,
+						"max_batch_timeout": 1,
+						"max_retries": 3
 					}
 				]
 			},
@@ -318,6 +352,10 @@
 				{
 					"binding": "DISPATCHER",
 					"service": "chiridion-dispatcher",
+				},
+				{
+					"binding": "DISCORD_BRIDGE",
+					"service": "chiridion-discord-bridge"
 				}
 			],
 			"analytics_engine_datasets": [
@@ -367,7 +405,9 @@
 				"CF_GATEWAY_NAME": "chiridion",
 				"BEDROCK_REGION": "us-west-2",
 				"EMAIL_FROM_ADDRESS": "agent-staging@camelai.dev",
-				"WORKSPACE_EMAIL_DOMAIN": "camelai.dev"
+				"WORKSPACE_EMAIL_DOMAIN": "camelai.dev",
+				"DISCORD_CHANNEL_ENABLED": "false",
+				"DISCORD_CLIENT_ID": "SET_IN_DISCORD_DEVELOPER_PORTAL"
 				// CF_GATEWAY_TOKEN is set via secrets
 			},
 			"assets": {
@@ -442,6 +482,19 @@
 					},
 					{
 						"queue": "chiridion-app-slack-events-staging"
+					},
+					{
+						"queue": "chiridion-app-discord-events-staging",
+						"max_batch_size": 10,
+						"max_batch_timeout": 1,
+						"max_retries": 5,
+						"dead_letter_queue": "chiridion-app-discord-events-dlq-staging"
+					},
+					{
+						"queue": "chiridion-app-discord-events-dlq-staging",
+						"max_batch_size": 10,
+						"max_batch_timeout": 1,
+						"max_retries": 3
 					}
 				]
 			},
@@ -453,6 +506,10 @@
 				{
 					"binding": "DISPATCHER",
 					"service": "chiridion-dispatcher-staging",
+				},
+				{
+					"binding": "DISCORD_BRIDGE",
+					"service": "chiridion-discord-bridge-staging"
 				}
 			],
 			"durable_objects": {
@@ -492,7 +549,9 @@
 				"CF_GATEWAY_NAME": "chiridion",
 				"BEDROCK_REGION": "us-west-2",
 					"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com",
-					"WORKSPACE_EMAIL_DOMAIN": "camelai.dev"
+					"WORKSPACE_EMAIL_DOMAIN": "camelai.dev",
+					"DISCORD_CHANNEL_ENABLED": "false",
+					"DISCORD_CLIENT_ID": "SET_IN_DISCORD_DEVELOPER_PORTAL"
 					// CF_GATEWAY_TOKEN is set via secrets
 				},
 			"assets": {
@@ -568,6 +627,19 @@
 					},
 					{
 						"queue": "chiridion-app-slack-events-dev-miguel"
+					},
+					{
+						"queue": "chiridion-app-discord-events-dev-miguel",
+						"max_batch_size": 10,
+						"max_batch_timeout": 1,
+						"max_retries": 5,
+						"dead_letter_queue": "chiridion-app-discord-events-dlq-dev-miguel"
+					},
+					{
+						"queue": "chiridion-app-discord-events-dlq-dev-miguel",
+						"max_batch_size": 10,
+						"max_batch_timeout": 1,
+						"max_retries": 3
 					}
 				]
 			},
@@ -579,6 +651,10 @@
 				{
 					"binding": "DISPATCHER",
 					"service": "chiridion-dispatcher-dev-miguel",
+				},
+				{
+					"binding": "DISCORD_BRIDGE",
+					"service": "chiridion-discord-bridge-dev-miguel"
 				}
 			],
 			"durable_objects": {
@@ -618,7 +694,9 @@
 				"CF_GATEWAY_NAME": "chiridion",
 				"BEDROCK_REGION": "us-west-2",
 					"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com",
-					"WORKSPACE_EMAIL_DOMAIN": "camelai.dev"
+					"WORKSPACE_EMAIL_DOMAIN": "camelai.dev",
+					"DISCORD_CHANNEL_ENABLED": "false",
+					"DISCORD_CLIENT_ID": "SET_IN_DISCORD_DEVELOPER_PORTAL"
 					// CF_GATEWAY_TOKEN is set via secrets
 				},
 			"assets": {
@@ -694,6 +772,19 @@
 					},
 					{
 						"queue": "chiridion-app-slack-events-dev-illiana"
+					},
+					{
+						"queue": "chiridion-app-discord-events-dev-illiana",
+						"max_batch_size": 10,
+						"max_batch_timeout": 1,
+						"max_retries": 5,
+						"dead_letter_queue": "chiridion-app-discord-events-dlq-dev-illiana"
+					},
+					{
+						"queue": "chiridion-app-discord-events-dlq-dev-illiana",
+						"max_batch_size": 10,
+						"max_batch_timeout": 1,
+						"max_retries": 3
 					}
 				]
 			},
@@ -705,6 +796,10 @@
 				{
 					"binding": "DISPATCHER",
 					"service": "chiridion-dispatcher-dev-illiana",
+				},
+				{
+					"binding": "DISCORD_BRIDGE",
+					"service": "chiridion-discord-bridge-dev-illiana"
 				}
 			],
 			"durable_objects": {

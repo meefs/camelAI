@@ -426,11 +426,15 @@ export function createDeterministicAutomationRuntimeBindings(input: {
   orgId: string;
   workspaceId: string;
   userId?: string;
+  invocationId?: string;
 }): Record<string, unknown> {
   const scopedProps = {
     orgId: input.orgId,
     workspaceId: input.workspaceId,
     userId: input.userId,
+    parentToolUseId: input.invocationId
+      ? `automation:${input.invocationId}`
+      : undefined,
   };
   const exports = input.ctx.exports;
   if (!exports) {
@@ -483,6 +487,7 @@ export function createDeterministicAutomationRuntimeBindings(input: {
 
 async function loadDeterministicAutomationRunner(
   input: LoadWorkflowRunnerContext<DeterministicAutomationWorkflowEnv> & {
+    runtimeInvocationId?: string;
     onStatusTarget?: (
       target: Omit<AutomationRunStatusTarget, "instanceId">,
     ) => void;
@@ -516,6 +521,7 @@ async function loadDeterministicAutomationRunner(
       orgId: workspace.org_id,
       workspaceId,
       userId: snapshot.created_by,
+      invocationId: input.runtimeInvocationId,
     }),
   });
 
@@ -542,6 +548,7 @@ export class DeterministicAutomationWorkflow extends WorkflowEntrypoint<
       >({ env: this.env, ctx: this.ctx }, event, step, async (context) =>
         loadDeterministicAutomationRunner({
           ...context,
+          runtimeInvocationId: event.instanceId,
           onStatusTarget: (target) => {
             statusTarget = {
               ...target,

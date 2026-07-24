@@ -7,6 +7,10 @@ declare namespace Cloudflare {
 		WORKER_SELF_REFERENCE: Fetcher /* chiridion-app */;
 		IMAGES: ImagesBinding;
 		ASSETS: Fetcher;
+		DISCORD_BRIDGE?: Fetcher;
+		DISCORD_CLIENT_ID?: string;
+		DISCORD_CLIENT_SECRET?: string;
+		DISCORD_CHANNEL_ENABLED?: string;
 	}
 }
 interface CloudflareEnv extends Cloudflare.Env {}

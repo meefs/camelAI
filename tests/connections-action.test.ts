@@ -165,6 +165,8 @@ function setEnv(overrides: Record<string, unknown> = {}) {
 
   getEnvMock.mockReturnValue({
     INTEGRATION_SECRET_KEY: "test-secret",
+    DISCORD_CLIENT_ID: "123456789012345678",
+    DISCORD_CLIENT_SECRET: "test-discord-client-secret-value",
     WORKSPACE_EMAIL_DOMAIN: "mail.camelai.test",
     TELEGRAM_BOT_USERNAME: "@camelai_test_bot",
     TELEGRAM_BOT_TOKEN: "telegram-token",
@@ -222,6 +224,9 @@ describe("connections action admin guard", () => {
     ["updateIntegration", { integrationId: "int_1", name: "Renamed" }],
     ["deleteIntegration", { integrationId: "int_1" }],
     ["duplicateIntegration", { integrationId: "int_1", targetWorkspaceId: "ws_2" }],
+    ["discordListChannels", { integrationId: "int_1" }],
+    ["discordActivateChannel", { integrationId: "int_1", parentChannelId: "channel_1" }],
+    ["discordDisconnect", { integrationId: "int_1" }],
   ])("blocks %s for full-access non-admins", async (intent, fields) => {
     await expect(
       action({
@@ -387,6 +392,643 @@ describe("connections action admin guard", () => {
     expect(targetCreateIntegrationMock).not.toHaveBeenCalled();
   });
 
+  it("lists eligible Discord channels and activates the acknowledged selection", async () => {
+    isOrgAdminMock.mockResolvedValue(true);
+    getIntegrationMock.mockResolvedValue(makeRecord({
+      integration_type: "discord_channel",
+      name: "Example Guild",
+      category: "communication",
+      auth_method: "oauth2",
+      config: JSON.stringify({
+        schema_version: 1,
+        status: "pending_channel",
+        application_id: "app_1",
+        guild_id: "guild_1",
+        guild_name: "Example Guild",
+        bot_user_id: "bot_1",
+        message_content_mode: "full",
+      }),
+    }));
+    const bridgeFetch = vi.fn(async (request: Request) => {
+      const path = new URL(request.url).pathname;
+      if (path === "/internal/v1/guilds/guild_1/channels") {
+        return Response.json({
+          ok: true,
+          guild: { id: "guild_1", name: "Example Guild" },
+          channels: [{
+            id: "channel_1",
+            name: "camel",
+            categoryId: null,
+            categoryName: null,
+            position: 1,
+            missingPermissions: [],
+            canActivate: true,
+            exposure: "restricted",
+          }],
+        });
+      }
+      if (request.method === "GET" && path === "/internal/v1/bindings/int_1") {
+        return Response.json(
+          { ok: false, error: "binding_not_found" },
+          { status: 404 },
+        );
+      }
+      if (path === "/internal/v1/binding-transactions/prepare") {
+        return Response.json({
+          ok: true,
+          transaction: {
+            transactionId: "activation-1",
+            binding: {
+              guildId: "guild_1",
+              parentChannelId: "channel_1",
+              integrationId: "int_1",
+              orgId: "org_1",
+              workspaceId: "ws_1",
+              guildName: "Example Guild",
+              parentChannelName: "camel",
+              status: "active",
+              version: 7,
+            },
+            previousBinding: null,
+            state: "prepared",
+            confirmationMessageIds: [],
+          },
+        });
+      }
+      if (path.includes("/binding-transactions/") && path.endsWith("/commit")) {
+        return Response.json({
+          ok: true,
+          transaction: {
+            transactionId: "activation-1",
+            binding: {
+              guildId: "guild_1",
+              parentChannelId: "channel_1",
+              integrationId: "int_1",
+              orgId: "org_1",
+              workspaceId: "ws_1",
+              guildName: "Example Guild",
+              parentChannelName: "camel",
+              status: "active",
+              version: 7,
+            },
+            previousBinding: null,
+            state: "committed",
+            confirmationMessageIds: ["confirmation-1"],
+          },
+        });
+      }
+      if (path.includes("/binding-transactions/")) {
+        return Response.json({ ok: true });
+      }
+      return Response.json({ ok: false, error: "not_found" }, { status: 404 });
+    });
+    setEnv({
+      DISCORD_CHANNEL_ENABLED: "true",
+      DISCORD_BRIDGE: { fetch: bridgeFetch },
+    });
+
+    await expect(action({
+      request: postForm({ intent: "discordListChannels", integrationId: "int_1" }),
+      context: {},
+      params: {},
+    } as never)).resolves.toMatchObject({
+      success: true,
+      discordSetup: {
+        integrationId: "int_1",
+        channels: [{ id: "channel_1", canActivate: true }],
+      },
+    });
+
+    await expect(action({
+      request: postForm({
+        intent: "discordActivateChannel",
+        integrationId: "int_1",
+        parentChannelId: "channel_1",
+        securityAcknowledged: "true",
+      }),
+      context: {},
+      params: {},
+    } as never)).resolves.toEqual({ success: true });
+
+    expect(updateIntegrationMock).toHaveBeenCalledWith(
+      "int_1",
+      expect.objectContaining({
+        name: "Example Guild #camel",
+        config: expect.stringContaining('"binding_version":7'),
+      }),
+      "user_1",
+    );
+    expect(bridgeFetch.mock.calls.map(([request]) => new URL(request.url).pathname)).toEqual([
+      "/internal/v1/guilds/guild_1/channels",
+      "/internal/v1/bindings/int_1",
+      "/internal/v1/binding-transactions/prepare",
+      expect.stringMatching(/\/internal\/v1\/binding-transactions\/.+\/confirm/),
+      expect.stringMatching(/\/internal\/v1\/binding-transactions\/.+\/commit/),
+      expect.stringMatching(/\/internal\/v1\/binding-transactions\/.+\/finalize/),
+    ]);
+  });
+
+  it("completes a pending chat setup exactly once after confirmation and exact binding persistence", async () => {
+    isOrgAdminMock.mockResolvedValue(true);
+    let record = makeRecord({
+      integration_type: "discord_channel",
+      name: "Example Guild",
+      category: "communication",
+      auth_method: "oauth2",
+      config: JSON.stringify({
+        schema_version: 1,
+        status: "pending_channel",
+        application_id: "123456789012345678",
+        guild_id: "guild_1",
+        guild_name: "Example Guild",
+        bot_user_id: "123456789012345678",
+        message_content_mode: "full",
+        pending_setup: {
+          request_id: "request-1",
+          thread_id: "thread-1",
+          return_path: "/chat/thread-1",
+          created_at: 123,
+        },
+      }),
+    });
+    getIntegrationMock.mockImplementation(async () => record);
+    updateIntegrationMock.mockImplementation(async (_id, updates) => {
+      record = {
+        ...record,
+        ...(updates.name ? { name: updates.name } : {}),
+        ...(updates.config ? { config: updates.config } : {}),
+      };
+    });
+    const receiveConnectionSetupResponse = vi.fn(async () => ({ accepted: true }));
+    let live = false;
+    const binding = {
+      guildId: "guild_1",
+      parentChannelId: "channel_1",
+      integrationId: "int_1",
+      orgId: "org_1",
+      workspaceId: "ws_1",
+      guildName: "Example Guild",
+      parentChannelName: "camel",
+      status: "active",
+      version: 7,
+    };
+    const mutationPaths: string[] = [];
+    const bridgeFetch = vi.fn(async (request: Request) => {
+      const path = new URL(request.url).pathname;
+      if (request.method === "GET" && path === "/internal/v1/bindings/int_1") {
+        return live
+          ? Response.json({ ok: true, binding })
+          : Response.json(
+              { ok: false, error: "binding_not_found" },
+              { status: 404 },
+            );
+      }
+      mutationPaths.push(path);
+      if (path === "/internal/v1/binding-transactions/prepare") {
+        return Response.json({
+          ok: true,
+          transaction: {
+            transactionId: "activation-1",
+            binding,
+            previousBinding: null,
+            state: "prepared",
+            confirmationMessageIds: [],
+          },
+        });
+      }
+      if (path.endsWith("/commit")) {
+        live = true;
+        return Response.json({
+          ok: true,
+          transaction: {
+            transactionId: "activation-1",
+            binding,
+            previousBinding: null,
+            state: "committed",
+            confirmationMessageIds: ["confirmation-1"],
+          },
+        });
+      }
+      return Response.json({ ok: true });
+    });
+    setEnv({
+      DISCORD_CHANNEL_ENABLED: "true",
+      DISCORD_BRIDGE: { fetch: bridgeFetch },
+      CHAT_THREAD: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({ receiveConnectionSetupResponse })),
+      },
+    });
+
+    const activate = () => action({
+      request: postForm({
+        intent: "discordActivateChannel",
+        integrationId: "int_1",
+        parentChannelId: "channel_1",
+        securityAcknowledged: "true",
+      }),
+      context: {},
+      params: {},
+    } as never);
+
+    await expect(activate()).resolves.toEqual({
+      success: true,
+      returnTo: "/chat/thread-1",
+    });
+    expect(receiveConnectionSetupResponse).toHaveBeenCalledOnce();
+    expect(receiveConnectionSetupResponse).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestId: "request-1",
+        cancelled: false,
+      }),
+    );
+    expect(JSON.parse(record.config)).not.toHaveProperty("pending_setup");
+    expect(JSON.parse(record.config)).not.toHaveProperty("binding_transaction_id");
+
+    await expect(activate()).resolves.toEqual({ success: true });
+    expect(receiveConnectionSetupResponse).toHaveBeenCalledOnce();
+    expect(mutationPaths.filter((path) => path.endsWith("/confirm"))).toHaveLength(1);
+  });
+
+  it("releases a claimed Discord binding when product persistence fails", async () => {
+    isOrgAdminMock.mockResolvedValue(true);
+    getIntegrationMock.mockResolvedValue(makeRecord({
+      integration_type: "discord_channel",
+      category: "communication",
+      auth_method: "oauth2",
+      config: JSON.stringify({
+        schema_version: 1,
+        status: "pending_channel",
+        application_id: "app_1",
+        guild_id: "guild_1",
+        guild_name: "Example Guild",
+        message_content_mode: "full",
+      }),
+    }));
+    updateIntegrationMock.mockRejectedValueOnce(new Error("product persistence failed"));
+    const bridgeFetch = vi.fn(async (request: Request) => {
+      const path = new URL(request.url).pathname;
+      if (request.method === "GET" && path === "/internal/v1/bindings/int_1") {
+        return Response.json(
+          { ok: false, error: "binding_not_found" },
+          { status: 404 },
+        );
+      }
+      if (path === "/internal/v1/binding-transactions/prepare") {
+        return Response.json({
+          ok: true,
+          transaction: {
+            transactionId: "activation-1",
+            binding: {
+              guildId: "guild_1",
+              parentChannelId: "channel_1",
+              integrationId: "int_1",
+              orgId: "org_1",
+              workspaceId: "ws_1",
+              guildName: "Example Guild",
+              parentChannelName: "camel",
+              status: "active",
+              version: 8,
+            },
+            previousBinding: null,
+            state: "prepared",
+            confirmationMessageIds: [],
+          },
+        });
+      }
+      if (path.includes("/binding-transactions/") && path.endsWith("/commit")) {
+        return Response.json({
+          ok: true,
+          transaction: {
+            transactionId: "activation-1",
+            binding: {
+              guildId: "guild_1",
+              parentChannelId: "channel_1",
+              integrationId: "int_1",
+              orgId: "org_1",
+              workspaceId: "ws_1",
+              guildName: "Example Guild",
+              parentChannelName: "camel",
+              status: "active",
+              version: 8,
+            },
+            previousBinding: null,
+            state: "committed",
+            confirmationMessageIds: ["confirmation-1"],
+          },
+        });
+      }
+      if (path.includes("/binding-transactions/")) {
+        return Response.json({ ok: true });
+      }
+      return Response.json({ ok: false, error: "not_found" }, { status: 404 });
+    });
+    setEnv({
+      DISCORD_CHANNEL_ENABLED: "true",
+      DISCORD_BRIDGE: { fetch: bridgeFetch },
+    });
+
+    await expect(action({
+      request: postForm({
+        intent: "discordActivateChannel",
+        integrationId: "int_1",
+        parentChannelId: "channel_1",
+        securityAcknowledged: "true",
+      }),
+      context: {},
+      params: {},
+    } as never)).resolves.toEqual({ error: "product persistence failed" });
+
+    const compensation = bridgeFetch.mock.calls
+      .map(([request]) => request)
+      .find((request) => new URL(request.url).pathname.endsWith("/abort"));
+    expect(compensation).toBeDefined();
+    expect(compensation!.method).toBe("POST");
+  });
+
+  it("restores the previous Discord channel when replacement confirmation fails", async () => {
+    isOrgAdminMock.mockResolvedValue(true);
+    getIntegrationMock.mockResolvedValue(makeRecord({
+      integration_type: "discord_channel",
+      category: "communication",
+      auth_method: "oauth2",
+      config: JSON.stringify({
+        schema_version: 1,
+        status: "active",
+        application_id: "app_1",
+        guild_id: "guild_1",
+        guild_name: "Example Guild",
+        parent_channel_id: "channel_old",
+        parent_channel_name: "old-camel",
+        binding_version: 4,
+        message_content_mode: "full",
+        pending_setup: {
+          request_id: "request-1",
+          thread_id: "thread-1",
+          return_path: "/chat/thread-1",
+          created_at: 123,
+        },
+      }),
+    }));
+    const transactionPaths: string[] = [];
+    const bridgeFetch = vi.fn(async (request: Request) => {
+      const path = new URL(request.url).pathname;
+      if (request.method === "GET" && path === "/internal/v1/bindings/int_1") {
+        return Response.json({
+          ok: true,
+          binding: {
+            guildId: "guild_1",
+            parentChannelId: "channel_old",
+            integrationId: "int_1",
+            orgId: "org_1",
+            workspaceId: "ws_1",
+            guildName: "Example Guild",
+            parentChannelName: "old-camel",
+            status: "active",
+            version: 4,
+          },
+        });
+      }
+      if (path === "/internal/v1/binding-transactions/prepare") {
+        transactionPaths.push(path);
+        return Response.json({
+          ok: true,
+          transaction: {
+            transactionId: "replacement-activation",
+            binding: {
+              guildId: "guild_1",
+              parentChannelId: "channel_new",
+              integrationId: "int_1",
+              orgId: "org_1",
+              workspaceId: "ws_1",
+              guildName: "Example Guild",
+              parentChannelName: "new-camel",
+              status: "active",
+              version: 8,
+            },
+            previousBinding: {
+              guildId: "guild_1",
+              parentChannelId: "channel_old",
+              integrationId: "int_1",
+              orgId: "org_1",
+              workspaceId: "ws_1",
+              guildName: "Example Guild",
+              parentChannelName: "old-camel",
+              status: "active",
+              version: 4,
+            },
+            state: "prepared",
+            confirmationMessageIds: [],
+          },
+        });
+      }
+      if (path.includes("/binding-transactions/") && path.endsWith("/confirm")) {
+        transactionPaths.push(path);
+        return Response.json({
+          ok: false,
+          error: "missing_permissions",
+          message: "Send Messages in Threads is missing",
+        }, { status: 403 });
+      }
+      if (path.includes("/binding-transactions/") && path.endsWith("/abort")) {
+        transactionPaths.push(path);
+        return Response.json({ ok: true });
+      }
+      return Response.json({ ok: false, error: "not_found" }, { status: 404 });
+    });
+    setEnv({
+      DISCORD_CHANNEL_ENABLED: "true",
+      DISCORD_BRIDGE: { fetch: bridgeFetch },
+    });
+
+    await expect(action({
+      request: postForm({
+        intent: "discordActivateChannel",
+        integrationId: "int_1",
+        parentChannelId: "channel_new",
+        securityAcknowledged: "true",
+      }),
+      context: {},
+      params: {},
+    } as never)).resolves.toEqual({
+      error: "Discord could not confirm and activate the channel: Send Messages in Threads is missing",
+    });
+
+    expect(transactionPaths).toEqual([
+      "/internal/v1/binding-transactions/prepare",
+      expect.stringMatching(/\/confirm$/),
+      expect.stringMatching(/\/abort$/),
+    ]);
+    expect(updateIntegrationMock).not.toHaveBeenCalled();
+  });
+
+  it("requires the Discord delegated-access acknowledgement before claiming a channel", async () => {
+    isOrgAdminMock.mockResolvedValue(true);
+    const bridgeFetch = vi.fn();
+    setEnv({
+      DISCORD_CHANNEL_ENABLED: "true",
+      DISCORD_BRIDGE: { fetch: bridgeFetch },
+    });
+
+    await expect(action({
+      request: postForm({
+        intent: "discordActivateChannel",
+        integrationId: "int_1",
+        parentChannelId: "channel_1",
+      }),
+      context: {},
+      params: {},
+    } as never)).resolves.toEqual({
+      error: "Acknowledge the Discord channel security boundary before connecting",
+    });
+    expect(bridgeFetch).not.toHaveBeenCalled();
+  });
+
+  it("releases before disconnecting and clears stale binding metadata for reconnect", async () => {
+    isOrgAdminMock.mockResolvedValue(true);
+    getIntegrationMock.mockResolvedValue(makeRecord({
+      integration_type: "discord_channel",
+      category: "communication",
+      auth_method: "oauth2",
+      config: JSON.stringify({
+        schema_version: 1,
+        status: "active",
+        application_id: "123456789012345678",
+        guild_id: "guild_1",
+        guild_name: "Example Guild",
+        parent_channel_id: "channel_1",
+        parent_channel_name: "camel",
+        bot_user_id: "123456789012345678",
+        binding_version: 7,
+        message_content_mode: "full",
+      }),
+    }));
+    const events: string[] = [];
+    updateIntegrationMock.mockImplementationOnce(async () => {
+      events.push("persist-disconnected");
+    });
+    const bridgeFetch = vi.fn(async (request: Request) => {
+      events.push("release-binding");
+      expect(request.method).toBe("DELETE");
+      expect(new URL(request.url).searchParams.get("version")).toBe("7");
+      return Response.json({ ok: true, released: true });
+    });
+    setEnv({
+      DISCORD_CHANNEL_ENABLED: "true",
+      DISCORD_BRIDGE: { fetch: bridgeFetch },
+    });
+
+    await expect(action({
+      request: postForm({ intent: "discordDisconnect", integrationId: "int_1" }),
+      context: {},
+      params: {},
+    } as never)).resolves.toEqual({ success: true });
+
+    expect(events).toEqual(["release-binding", "persist-disconnected"]);
+    const persistedConfig = JSON.parse(
+      String(updateIntegrationMock.mock.calls[0]?.[1]?.config),
+    );
+    expect(persistedConfig).toMatchObject({ status: "disconnected" });
+    expect(persistedConfig).not.toHaveProperty("parent_channel_id");
+    expect(persistedConfig).not.toHaveProperty("parent_channel_name");
+    expect(persistedConfig).not.toHaveProperty("binding_version");
+  });
+
+  it("claims instead of replacing when a stale product record has no live bridge binding", async () => {
+    isOrgAdminMock.mockResolvedValue(true);
+    getIntegrationMock.mockResolvedValue(makeRecord({
+      integration_type: "discord_channel",
+      category: "communication",
+      auth_method: "oauth2",
+      config: JSON.stringify({
+        schema_version: 1,
+        status: "active",
+        application_id: "123456789012345678",
+        guild_id: "guild_1",
+        guild_name: "Example Guild",
+        parent_channel_id: "stale-channel",
+        parent_channel_name: "stale",
+        bot_user_id: "123456789012345678",
+        binding_version: 7,
+        message_content_mode: "full",
+      }),
+    }));
+    const paths: string[] = [];
+    const bridgeFetch = vi.fn(async (request: Request) => {
+      const path = new URL(request.url).pathname;
+      paths.push(path);
+      if (request.method === "GET") {
+        return Response.json(
+          { ok: false, error: "binding_not_found" },
+          { status: 404 },
+        );
+      }
+      if (path === "/internal/v1/binding-transactions/prepare") {
+        return Response.json({
+          ok: true,
+          transaction: {
+            transactionId: "activation-1",
+            binding: {
+              guildId: "guild_1",
+              parentChannelId: "channel_1",
+              integrationId: "int_1",
+              orgId: "org_1",
+              workspaceId: "ws_1",
+              guildName: "Example Guild",
+              parentChannelName: "camel",
+              status: "active",
+              version: 8,
+            },
+            previousBinding: null,
+            state: "prepared",
+            confirmationMessageIds: [],
+          },
+        });
+      }
+      if (path.endsWith("/commit")) {
+        return Response.json({
+          ok: true,
+          transaction: {
+            transactionId: "activation-1",
+            binding: {
+              guildId: "guild_1",
+              parentChannelId: "channel_1",
+              integrationId: "int_1",
+              orgId: "org_1",
+              workspaceId: "ws_1",
+              guildName: "Example Guild",
+              parentChannelName: "camel",
+              status: "active",
+              version: 8,
+            },
+            previousBinding: null,
+            state: "committed",
+            confirmationMessageIds: ["confirmation-1"],
+          },
+        });
+      }
+      if (path.includes("/binding-transactions/")) return Response.json({ ok: true });
+      return Response.json({ ok: false, error: "not_found" }, { status: 404 });
+    });
+    setEnv({
+      DISCORD_CHANNEL_ENABLED: "true",
+      DISCORD_BRIDGE: { fetch: bridgeFetch },
+    });
+
+    await expect(action({
+      request: postForm({
+        intent: "discordActivateChannel",
+        integrationId: "int_1",
+        parentChannelId: "channel_1",
+        securityAcknowledged: "true",
+      }),
+      context: {},
+      params: {},
+    } as never)).resolves.toEqual({ success: true });
+    expect(paths).toContain("/internal/v1/binding-transactions/prepare");
+    expect(paths).not.toContain("/internal/v1/bindings/replace");
+  });
+
   it("creates Telegram setup records and returns the setup deep link", async () => {
     isOrgAdminMock.mockResolvedValue(true);
 
@@ -421,6 +1063,38 @@ describe("connections action admin guard", () => {
       },
       30 * 60,
     );
+  });
+
+  it("requires OAuth for native Discord and blocks new legacy token records", async () => {
+    isOrgAdminMock.mockResolvedValue(true);
+
+    await expect(action({
+      request: postForm({
+        intent: "createIntegration",
+        integration_type: "discord_channel",
+        name: "Discord",
+        config: "{}",
+        credentials: "{}",
+      }),
+      context: {},
+      params: {},
+    } as never)).resolves.toEqual({
+      error: "Use Add Camel to Discord to create this connection",
+    });
+    await expect(action({
+      request: postForm({
+        intent: "createIntegration",
+        integration_type: "discord",
+        name: "Legacy Discord",
+        config: JSON.stringify({ application_id: "app" }),
+        credentials: JSON.stringify({ bot_token: "secret" }),
+      }),
+      context: {},
+      params: {},
+    } as never)).resolves.toEqual({
+      error: "Discord bot token (legacy) can no longer be created",
+    });
+    expect(createIntegrationMock).not.toHaveBeenCalled();
   });
 
   it("normalizes remote MCP OAuth URLs and returns the follow-up OAuth URL", async () => {
@@ -683,6 +1357,121 @@ describe("connections loader", () => {
 
   afterEach(() => {
     consoleErrorSpy.mockRestore();
+  });
+
+  it("shows Discord only when configured bridge identity and heartbeat are healthy", async () => {
+    const applicationId = "123456789012345678";
+    getIntegrationsMock.mockResolvedValue([makeRecord({
+      id: "discord-existing",
+      integration_type: "discord_channel",
+      name: "Support Discord",
+      category: "communication",
+      auth_method: "oauth2",
+      config: JSON.stringify({
+        schema_version: 1,
+        status: "active",
+        application_id: applicationId,
+        guild_id: "guild-1",
+        guild_name: "Camel",
+        parent_channel_id: "channel-1",
+        parent_channel_name: "support",
+        bot_user_id: applicationId,
+        binding_version: 1,
+        message_content_mode: "full",
+      }),
+      verification_status: "ready",
+      verification_message: "Discord channel is ready",
+      verification_checked_at: Date.now(),
+      verification_live: 1,
+      verification_strategy: "discord_channel_access",
+    })]);
+    const statusFetch = vi.fn(async () => Response.json({
+      ok: true,
+      applicationId,
+      botUserId: applicationId,
+      readiness: { ready: false, reason: "ingress_disabled" },
+      gateway: {
+        state: "ready",
+        heartbeatIntervalMs: 45_000,
+        lastHeartbeatAckAt: Date.now(),
+      },
+    }));
+    setEnv({
+      DISCORD_CHANNEL_ENABLED: "true",
+      DISCORD_CLIENT_ID: applicationId,
+      DISCORD_CLIENT_SECRET: "test-discord-client-secret-value",
+      DISCORD_BRIDGE: { fetch: statusFetch },
+    });
+
+    const healthy = await loader({
+      request: new Request("https://camelai.test/connections"),
+      context: {},
+      params: {},
+    } as never);
+    expect(healthy.integrations.map((integration) => integration.type))
+      .toContain("discord_channel");
+    await expect(healthy.pageData).resolves.toMatchObject({
+      connections: [expect.objectContaining({
+        id: "discord-existing",
+        verification: expect.objectContaining({
+          status: "degraded",
+          message: "Discord channels are unavailable in this environment.",
+        }),
+      })],
+    });
+    getIntegrationsMock.mockResolvedValue([]);
+
+    setEnv({
+      DISCORD_CHANNEL_ENABLED: "true",
+      DISCORD_CLIENT_ID: applicationId,
+      DISCORD_CLIENT_SECRET: "test-discord-client-secret-value",
+      DISCORD_BRIDGE: {
+        fetch: vi.fn(async () => Response.json({
+          ok: true,
+          applicationId,
+          botUserId: applicationId,
+          readiness: { ready: false, reason: "outbound_disabled" },
+          gateway: {
+            state: "ready",
+            heartbeatIntervalMs: 45_000,
+            lastHeartbeatAckAt: Date.now(),
+          },
+        })),
+      },
+    });
+    const outboundDisabled = await loader({
+      request: new Request("https://camelai.test/connections"),
+      context: {},
+      params: {},
+    } as never);
+    expect(outboundDisabled.integrations.map((integration) => integration.type))
+      .not.toContain("discord_channel");
+
+    setEnv({
+      DISCORD_CHANNEL_ENABLED: "true",
+      DISCORD_CLIENT_ID: applicationId,
+      DISCORD_CLIENT_SECRET: "test-discord-client-secret-value",
+      DISCORD_BRIDGE: {
+        fetch: vi.fn(async () => Response.json({
+          ok: true,
+          applicationId,
+          botUserId: applicationId,
+          readiness: { ready: false, reason: "heartbeat_stale" },
+          gateway: {
+            state: "ready",
+            heartbeatIntervalMs: 45_000,
+            lastHeartbeatAckAt: 1,
+          },
+        })),
+      },
+    });
+    const stale = await loader({
+      request: new Request("https://camelai.test/connections"),
+      context: {},
+      params: {},
+    } as never);
+    expect(stale.integrations.map((integration) => integration.type))
+      .not.toContain("discord_channel");
   });
 
   it("keeps connection records when optional creator profile lookup fails", async () => {

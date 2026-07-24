@@ -5,7 +5,7 @@ import type { WorkspaceIntegrationDefinition } from "@/lib/integration-definitio
 
 describe("connection contracts", () => {
   it("assigns every setup type exactly one execution and verification strategy", () => {
-    for (const definition of getAllIntegrations()) {
+    for (const definition of getAllIntegrations({ includeFeatureGated: true })) {
       const contract = getConnectionContract(definition.type, {
         config: definition.type === "other" ? { base_url: "https://api.example.com" } : {},
       });
@@ -31,6 +31,12 @@ describe("connection contracts", () => {
   });
 
   it("classifies specialized families consistently", () => {
+    expect(getConnectionContract("discord_channel")).toMatchObject({
+      driver: "channel",
+      capabilities: ["channel_send"],
+      permissions: { read: true, write: true },
+      verification: { strategy: "discord_channel_access", live: true },
+    });
     expect(getConnectionContract("postgres")).toMatchObject({
       driver: "sql",
       capabilities: ["query_database", "mcp_tools"],

@@ -24,6 +24,7 @@ export type ConnectionVerificationStrategy =
   | "mcp_discovery"
   | "slack_auth"
   | "telegram_setup"
+  | "discord_channel_access"
   | "curated_api"
   | "http_configuration"
   | "credential_configuration";
@@ -139,6 +140,18 @@ export function getConnectionContract(
       capabilities: ["channel_send"],
       verification: { strategy: "telegram_setup", live: false },
       permissions: { read: false, write: true },
+      provenance,
+    };
+  }
+
+  if (integrationType === "discord_channel") {
+    return {
+      schemaVersion: 1,
+      integrationType,
+      driver: "channel",
+      capabilities: ["channel_send"],
+      verification: { strategy: "discord_channel_access", live: true },
+      permissions: { read: true, write: true },
       provenance,
     };
   }

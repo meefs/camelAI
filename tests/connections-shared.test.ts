@@ -44,7 +44,7 @@ describe("buildConnectionGroups", () => {
     expect(groups.connections).toEqual([]);
   });
 
-  it("pins native email and classifies only Slack and Telegram integration records as channels", () => {
+  it("pins native email and classifies native messaging integration records as channels", () => {
     const groups = buildConnectionGroups(
       [
         connection({
@@ -57,6 +57,18 @@ describe("buildConnectionGroups", () => {
           id: "telegram",
           integration_type: "telegram",
           name: "Telegram group",
+          category: "communication",
+        }),
+        connection({
+          id: "discord",
+          integration_type: "discord_channel",
+          name: "Discord channel",
+          category: "communication",
+        }),
+        connection({
+          id: "legacy-discord",
+          integration_type: "discord",
+          name: "Legacy Discord token",
           category: "communication",
         }),
         connection({
@@ -85,8 +97,10 @@ describe("buildConnectionGroups", () => {
       "email",
       "slack",
       "telegram",
+      "discord",
     ]);
     expect(groups.connections.map((item) => item.id)).toEqual([
+      "legacy-discord",
       "gmail",
       "sendgrid",
       "postgres",
@@ -172,7 +186,7 @@ describe("deriveCapabilities", () => {
     ).toEqual(["mcp_tools"]);
   });
 
-  it("keeps generic API integrations and Telegram channel sends distinct", () => {
+  it("keeps generic API integrations and native channel sends distinct", () => {
     expect(
       deriveCapabilities(
         connection({
@@ -190,6 +204,17 @@ describe("deriveCapabilities", () => {
           id: "telegram",
           integration_type: "telegram",
           name: "Telegram",
+          category: "communication",
+        }),
+      ),
+    ).toEqual(["channel_send"]);
+
+    expect(
+      deriveCapabilities(
+        connection({
+          id: "discord",
+          integration_type: "discord_channel",
+          name: "Discord",
           category: "communication",
         }),
       ),
