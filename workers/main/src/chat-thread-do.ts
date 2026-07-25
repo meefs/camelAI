@@ -224,7 +224,6 @@ import {
   createFallbackPiCompactionSummary,
   createPiSummaryMessage,
 } from "./chat-thread/pi-compaction";
-import { measurePiContextTokens } from "./chat-thread/pi-token-count";
 
 // Agent-eval helpers (timeout, result extraction, deployed-app collection).
 import {
@@ -5379,14 +5378,14 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     const contextWindow = piModelContextWindow(model);
     const reserveTokens = piCompactionReserveTokens(model);
     const keepRecentTokens = 20_000;
-    // Three sources, most trustworthy first: what the provider actually charged
-    // for everything up to the last turn (exact and free), plus a real BPE
-    // count of only the messages added since (accurate, and cheap because that
-    // tail is small). The character heuristic alone used to decide this, and it
-    // read 137,964 tokens for a request the provider billed at 216,184 — far
-    // enough under the threshold that compaction never ran while the thread was
-    // already too full to answer.
-    const tokens = await measurePiContextTokens(messages, contextWindow);
+    // Floored by what the provider actually charged for everything up to the
+    // last assistant turn: exact, free, and it accounts for the system prompt
+    // and tool schemas that no message-only estimate can see. The character
+    // heuristic alone used to decide this, and it read 137,964 tokens for a
+    // request the provider billed at 216,184 — far enough under the threshold
+    // that compaction never ran while the thread was already too full to
+    // answer. Measured against that same thread this lands within 0.02%.
+    const tokens = effectivePiContextTokens(messages);
     if (!force && tokens < contextWindow - reserveTokens) {
       return messages;
     }

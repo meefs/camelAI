@@ -215,10 +215,10 @@ export function effectivePiContextTokens(messages: AgentMessage[]): number {
  * 2. The per-character rate is deliberately pessimistic, NOT an estimate of
  *    true density. Measured with o200k, real base64 runs about 5.4 chars/token
  *    — slightly *cheaper* than prose, not "near one token per character" as
- *    this rule originally assumed. The rate is kept high on purpose: this
- *    heuristic's only remaining job is to decide whether a precise count is
- *    worth taking (see ./pi-token-count), and over-counting merely buys an
- *    accurate measurement, while under-counting silently skips compaction.
+ *    this rule originally assumed. The rate is kept high on purpose:
+ *    over-counting a dense payload only compacts a little early, while
+ *    under-counting silently skips compaction until the model has no room
+ *    left to answer — the failure this whole path exists to prevent.
  *
  * Anything that actually depends on the number, rather than on "are we close",
  * should use the tokenizer or the provider-reported count instead.
@@ -247,10 +247,9 @@ export function estimatePiTextTokens(text: string): number {
 }
 
 /**
- * The text a message contributes to the context, as both the character
- * heuristic and the real tokenizer in ./pi-token-count see it. Shared so the
- * two measurements always agree on *what* is being counted and differ only in
- * how.
+ * The text a message contributes to the context. Split out so the per-message
+ * estimate and anything else that needs to weigh a message agree on exactly
+ * what is being counted.
  */
 export function stringifyPiMessageForTokenCount(message: AgentMessage): string {
   const record = message as unknown as { role?: unknown; content?: unknown };

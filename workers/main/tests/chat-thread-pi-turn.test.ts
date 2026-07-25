@@ -21,12 +21,6 @@ import {
   PI_MAIN_REQUEST_DEFAULT_OUTPUT_TOKENS,
   PI_MAIN_REQUEST_MAX_OUTPUT_TOKENS,
 } from '../src/chat-thread/pi-compaction';
-import {
-  countPiContextTokensPrecise,
-  findLastPricedContextSplit,
-  measurePiContextTokens,
-  shouldMeasurePiContextPrecisely,
-} from '../src/chat-thread/pi-token-count';
 import { extractToolContent } from '../src/chat-thread/pi-message-helpers';
 import { PiCoreMessageStore } from '../src/chat-thread/pi-core-store';
 import {
@@ -3777,118 +3771,6 @@ describe('ChatThreadDO Pi turn handling', () => {
       expect(estimatePiCompactionTokens(messages)).toBeLessThan(200_000);
       expect(observedPiContextTokens(messages)).toBeGreaterThanOrEqual(200_000);
       expect(effectivePiContextTokens(messages)).toBeGreaterThanOrEqual(200_000);
-    });
-
-    it('counts context with a real tokenizer inside the Worker runtime', async () => {
-      // Also proves the o200k BPE ranks load under workerd, not just in the
-      // bundler: the import is dynamic, so a runtime failure would otherwise
-      // only show up in production as a silent fall back to the heuristic.
-      const messages = [
-        { role: 'user', content: 'the quick brown fox jumps over the lazy dog', timestamp: 0 },
-      ] as any;
-
-      const precise = await countPiContextTokensPrecise(messages);
-
-      expect(precise).not.toBeNull();
-      // Nine short English words tokenize to roughly one token each.
-      expect(precise).toBeGreaterThan(5);
-      expect(precise).toBeLessThan(20);
-    });
-
-    it('identifies the prefix the provider has already priced', () => {
-      const messages = [
-        { role: 'user', content: 'first', timestamp: 0 },
-        {
-          role: 'assistant',
-          content: [{ type: 'text', text: 'older' }],
-          usage: { input: 100, output: 5, cacheRead: 0 },
-          timestamp: 1,
-        },
-        {
-          role: 'assistant',
-          content: [{ type: 'text', text: 'newer' }],
-          usage: { input: 900, output: 5, cacheRead: 100 },
-          timestamp: 2,
-        },
-        { role: 'user', content: 'latest', timestamp: 3 },
-      ] as any;
-
-      // Most recent priced turn wins, and cacheRead counts as input.
-      expect(findLastPricedContextSplit(messages)).toEqual({ index: 2, reported: 1_000 });
-      expect(findLastPricedContextSplit([{ role: 'user', content: 'hi' }] as any)).toBeNull();
-    });
-
-    it('measures only the unpriced tail rather than re-tokenizing the history', async () => {
-      // The CPU guard. transformContext runs once per provider request — 25+
-      // times in one agent-loop turn — and a full 560KB context takes ~117ms to
-      // tokenize. Only the messages after the last priced turn are measured, so
-      // the cost tracks new content instead of total history size.
-      const hugePricedPrefix = {
-        role: 'assistant',
-        content: [{ type: 'text', text: 'x'.repeat(400_000) }],
-        usage: { input: 150_000, output: 10, cacheRead: 0 },
-        stopReason: 'stop',
-        timestamp: 1,
-      };
-      const messages = [
-        { role: 'user', content: 'y'.repeat(400_000), timestamp: 0 },
-        hugePricedPrefix,
-        { role: 'user', content: 'one short follow-up', timestamp: 2 },
-      ] as any;
-
-      const measured = await measurePiContextTokens(messages, 220_000);
-
-      // 150k reported + the assistant's own output + a short user message.
-      // A full recount of ~800KB of history would land far above this.
-      expect(measured).toBeGreaterThan(150_000);
-      expect(measured).toBeLessThan(275_000);
-    });
-
-    it('does not load the tokenizer for a thread far from its context limit', async () => {
-      // The BPE ranks cost ~19.8MB of resident heap, 15% of a Durable Object's
-      // 128MB budget, and DO isolate OOM is an active production failure. A
-      // small thread must never pay it: the provider-reported prefix is already
-      // exact, so the cheap tail estimate is enough to decide not to compact.
-      const messages = [
-        { role: 'user', content: 'hello', timestamp: 0 },
-        {
-          role: 'assistant',
-          content: [{ type: 'text', text: 'hi' }],
-          usage: { input: 4_000, output: 10, cacheRead: 0 },
-          stopReason: 'stop',
-          timestamp: 1,
-        },
-        { role: 'user', content: 'a short follow-up', timestamp: 2 },
-      ] as any;
-
-      const measured = await measurePiContextTokens(messages, 220_000);
-
-      // Reported prefix plus a cheaply-estimated tail, nowhere near 110k.
-      expect(measured).toBeGreaterThanOrEqual(4_000);
-      expect(measured).toBeLessThan(10_000);
-    });
-
-    it('only pays for tokenization when the cheap estimate is near the limit', () => {
-      expect(shouldMeasurePiContextPrecisely(10_000, 220_000)).toBe(false);
-      expect(shouldMeasurePiContextPrecisely(150_000, 220_000)).toBe(true);
-      expect(shouldMeasurePiContextPrecisely(10_000, 0)).toBe(false);
-    });
-
-    it('never returns less than the provider-reported floor', async () => {
-      const messages = [
-        { role: 'user', content: 'short', timestamp: 0 },
-        {
-          role: 'assistant',
-          content: [{ type: 'text', text: 'ok' }],
-          usage: { input: 200_000, output: 2, cacheRead: 0 },
-          stopReason: 'stop',
-          timestamp: 1,
-        },
-      ] as any;
-
-      await expect(
-        measurePiContextTokens(messages, 220_000),
-      ).resolves.toBeGreaterThanOrEqual(200_000);
     });
 
     it('falls back to the character estimate before any turn reports usage', () => {
