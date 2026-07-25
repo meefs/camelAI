@@ -3844,6 +3844,30 @@ describe('ChatThreadDO Pi turn handling', () => {
       expect(measured).toBeLessThan(275_000);
     });
 
+    it('does not load the tokenizer for a thread far from its context limit', async () => {
+      // The BPE ranks cost ~19.8MB of resident heap, 15% of a Durable Object's
+      // 128MB budget, and DO isolate OOM is an active production failure. A
+      // small thread must never pay it: the provider-reported prefix is already
+      // exact, so the cheap tail estimate is enough to decide not to compact.
+      const messages = [
+        { role: 'user', content: 'hello', timestamp: 0 },
+        {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'hi' }],
+          usage: { input: 4_000, output: 10, cacheRead: 0 },
+          stopReason: 'stop',
+          timestamp: 1,
+        },
+        { role: 'user', content: 'a short follow-up', timestamp: 2 },
+      ] as any;
+
+      const measured = await measurePiContextTokens(messages, 220_000);
+
+      // Reported prefix plus a cheaply-estimated tail, nowhere near 110k.
+      expect(measured).toBeGreaterThanOrEqual(4_000);
+      expect(measured).toBeLessThan(10_000);
+    });
+
     it('only pays for tokenization when the cheap estimate is near the limit', () => {
       expect(shouldMeasurePiContextPrecisely(10_000, 220_000)).toBe(false);
       expect(shouldMeasurePiContextPrecisely(150_000, 220_000)).toBe(true);

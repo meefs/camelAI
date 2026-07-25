@@ -174,6 +174,14 @@ export async function measurePiContextTokens(
   const split = findLastPricedContextSplit(messages);
   if (split) {
     const tail = messages.slice(split.index);
+    const cheap = split.reported + estimatePiContextTokens(tail);
+    // Loading the BPE ranks costs ~19.8MB of heap that then stays resident for
+    // the isolate's life — 15% of a Durable Object's 128MB budget, and DO
+    // isolate OOM is an active production failure. The provider-reported prefix
+    // is already exact, so precision is only worth that price when the cheap
+    // number is close enough to the limit to change the compaction decision.
+    // Below the trigger, return the cheap number and never load the tokenizer.
+    if (!shouldMeasurePiContextPrecisely(cheap, contextWindow)) return cheap;
     const measured = await countPiContextTokensPrecise(tail);
     return split.reported + (measured ?? estimatePiContextTokens(tail));
   }
