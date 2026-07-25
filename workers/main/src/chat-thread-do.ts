@@ -1575,6 +1575,12 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     }
   }
 
+  /**
+   * Ceiling on how much pi_core payload one read may materialise in the isolate.
+   * 4MB leaves ample room in a 128MB budget for the rest of a turn's state.
+   */
+  private static readonly PI_CORE_ROW_READ_MAX_BYTES = 4 * 1024 * 1024;
+
   getPreviewTarget(): PreviewTarget | null {
     return this.previewTarget;
   }
@@ -1584,12 +1590,46 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       ? Math.max(1, Math.min(2000, Math.floor(limit)))
       : 200;
 
-    return this.ctx.storage.sql
-      .exec<{ idx: number; payload: string; created_at: number }>(
-        "SELECT idx, payload, created_at FROM pi_core_messages ORDER BY idx DESC LIMIT ?",
-        resolvedLimit,
-      )
-      .toArray()
+    // Bounded by BYTES, not just row count. A row payload is capped at 1.5MB and
+    // production threads carry rows over 200KB, so a caller-supplied row limit
+    // says almost nothing about the allocation: asking this for 2000 rows of a
+    // real thread built a 37,187,107-byte value in-isolate — 29% of a Durable
+    // Object's 128MB budget, from a read-only admin call. Iterate the cursor
+    // instead of materialising every row up front, and stop at the budget.
+    const rows: Array<{ idx: number; payload: string; created_at: number }> = [];
+    let bytes = 0;
+    let truncated = false;
+    const cursor = this.ctx.storage.sql.exec<{ idx: number; payload: string; created_at: number }>(
+      "SELECT idx, payload, created_at FROM pi_core_messages ORDER BY idx DESC LIMIT ?",
+      resolvedLimit,
+    );
+    for (const row of cursor) {
+      const size = row.payload?.length ?? 0;
+      // Always take one row, so a single oversized payload is still readable.
+      if (rows.length > 0 && bytes + size > ChatThreadDO.PI_CORE_ROW_READ_MAX_BYTES) {
+        truncated = true;
+        break;
+      }
+      rows.push(row);
+      bytes += size;
+    }
+    if (truncated) {
+      // Say so rather than silently returning a short page: a caller comparing
+      // row counts would otherwise read a byte-bounded page as "that is all
+      // there is". Rows come back newest-first-trimmed, so page with `limit`.
+      console.warn(
+        `[ChatThreadDO] pi_core row read truncated at ${rows.length} row(s) / ${bytes} bytes (requested ${resolvedLimit})`,
+      );
+      this.recordChatThreadObservabilityEvent("pi_core_row_read_truncated", {
+        operation: "admin_row_read",
+        status: "truncated",
+        severity: "warn",
+        count: rows.length,
+        size: bytes,
+      });
+    }
+
+    return rows
       .reverse()
       .map((row) => {
         try {

@@ -18,7 +18,17 @@ describe('privacy-safe chat memory aggregates', () => {
       sql.exec('DELETE FROM cf_ai_chat_agent_messages');
       sql.exec('DELETE FROM pi_core_messages');
       sql.exec('DELETE FROM pi_turn_journal');
-      sql.exec('DELETE FROM cf_ai_chat_stream_chunks');
+      // NOTE: this test previously CREATED cf_ai_chat_stream_chunks itself, which
+      // is why the telemetry pointing at that table went unnoticed — the table
+      // exists in neither @cloudflare/ai-chat nor agents, so in production that
+      // store reported 0 forever. Measure a table that really exists.
+      sql.exec(
+        `CREATE TABLE IF NOT EXISTS cf_ai_chat_agent_tool_runs (
+           run_id text primary key, request_id text, status text not null,
+           input_json text, output_json text, summary text, error_message text,
+           started_at integer not null)`,
+      );
+      sql.exec('DELETE FROM cf_ai_chat_agent_tool_runs');
 
       sql.exec(
         'INSERT INTO cf_ai_chat_agent_messages (id, message) VALUES (?, ?)',
@@ -38,21 +48,20 @@ describe('privacy-safe chat memory aggregates', () => {
         1,
       );
       sql.exec(
-        `INSERT INTO cf_ai_chat_stream_chunks
-          (id, stream_id, body, chunk_index, created_at) VALUES (?, ?, ?, ?, ?)`,
-        'c1',
-        's1',
+        `INSERT INTO cf_ai_chat_agent_tool_runs
+          (run_id, status, output_json, started_at) VALUES (?, ?, ?, ?)`,
+        'run1',
+        'complete',
         '1234567',
-        0,
         1,
       );
 
       const stats = collectChatMemoryStats(sql);
       expect(stats.stores).toEqual({
-        render: { rows: 1, bytes: 2, maxRowBytes: 2 },
-        pi: { rows: 1, bytes: 5, maxRowBytes: 5 },
-        journal: { rows: 1, bytes: 3, maxRowBytes: 3 },
-        stream: { rows: 1, bytes: 7, maxRowBytes: 7 },
+        render: { rows: 1, bytes: 2, maxRowBytes: 2, measured: true },
+        pi: { rows: 1, bytes: 5, maxRowBytes: 5, measured: true },
+        journal: { rows: 1, bytes: 3, maxRowBytes: 3, measured: true },
+        toolRuns: { rows: 1, bytes: 7, maxRowBytes: 7, measured: true },
       });
       expect(stats).toMatchObject({
         totalRows: 4,
@@ -209,6 +218,28 @@ describe('ChatThreadDO memory telemetry integration', () => {
     await runInDurableObject(stub, async (instance: any) => {
       expect(instance.chatRecovery).toMatchObject({ maxAttempts: 3 });
       expect(instance.chatRecovery).not.toHaveProperty('maxOomRetries');
+    });
+  });
+
+  it('reports measured:false for a store whose table does not exist', async () => {
+    // The signal that keeps a mistargeted store from reporting a confident 0
+    // forever. Previously indistinguishable from a genuinely empty store.
+    const stub = await newChatThreadStub('thread-memory-unmeasurable');
+    await runInDurableObject(stub, async (instance: any) => {
+      const sql = instance.ctx.storage.sql;
+      instance.ensurePiCoreTables();
+      sql.exec('DROP TABLE IF EXISTS cf_ai_chat_agent_tool_runs');
+
+      const stats = collectChatMemoryStats(sql);
+
+      expect(stats.stores.toolRuns).toEqual({
+        rows: 0,
+        bytes: 0,
+        maxRowBytes: 0,
+        measured: false,
+      });
+      // An unmeasurable store must not be silently folded into the totals as 0.
+      expect(stats.stores.pi.measured).toBe(true);
     });
   });
 });

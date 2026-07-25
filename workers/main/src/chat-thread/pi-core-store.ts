@@ -332,10 +332,19 @@ export class PiCoreMessageStore {
       const hydrated = new Array<unknown>(value.length);
       // Prefer recent provider context and avoid concurrently materializing
       // several R2 bodies/base64 strings. The source/session graph is untouched.
+      let changed = false;
       for (let index = value.length - 1; index >= 0; index -= 1) {
         hydrated[index] = await this.hydratePiStoredImages(value[index], budget, state);
+        if (hydrated[index] !== value[index]) changed = true;
       }
-      return hydrated;
+      // Return the original when nothing below it hydrated. This runs from
+      // transformContext, i.e. once per provider request and 25+ times in a
+      // single agent-loop turn, and threads with no stored images at all — the
+      // common case, and every thread in the OOM sample — were paying a full
+      // clone of the message graph each time for no change. Strings are shared
+      // by reference either way, so the waste was the spine, but the spine of a
+      // long transcript is not nothing in a 128MB isolate.
+      return changed ? hydrated : value;
     }
     const record = value as Record<string, unknown>;
     if (record.type === "image") {
@@ -389,10 +398,12 @@ export class PiCoreMessageStore {
       }
     }
     const next: Record<string, unknown> = {};
+    let changed = false;
     for (const [key, nested] of Object.entries(record)) {
       next[key] = await this.hydratePiStoredImages(nested, budget, state);
+      if (next[key] !== nested) changed = true;
     }
-    return next;
+    return changed ? next : value;
   }
 
   async serializePiMessageForSqlStorageDetailed(message: AgentMessage): Promise<PiSqlStorageSerialization> {

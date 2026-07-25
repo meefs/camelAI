@@ -3863,6 +3863,67 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
   });
 
+  describe('bounded pi_core admin row reads', () => {
+    function rowReadFake(rowCount: number, payloadBytes: number) {
+      const fake = Object.create(ChatThreadDO.prototype) as any;
+      const rows = Array.from({ length: rowCount }, (_unused, index) => ({
+        idx: index,
+        payload: JSON.stringify({ role: 'user', content: 'x'.repeat(payloadBytes) }),
+        created_at: index,
+      }));
+      fake.ctx = {
+        storage: {
+          sql: {
+            // Return a lazy iterable: the point of the fix is that the reader
+            // stops consuming rather than materialising everything first.
+            exec: () => rows.slice().reverse()[Symbol.iterator](),
+          },
+        },
+      };
+      Object.defineProperty(fake, 'piCoreStore', {
+        value: { renderPiStoredImageReferences: (value: unknown) => value },
+        writable: true,
+        configurable: true,
+      });
+      fake.recordChatThreadObservabilityEvent = vi.fn();
+      return fake;
+    }
+
+    it('stops reading once the byte budget is reached', () => {
+      // 200 rows x ~256KB would be ~51MB. Asking this for 2000 rows of a real
+      // thread once built a 37,187,107-byte value inside the Durable Object.
+      const fake = rowReadFake(200, 256 * 1024);
+
+      const rows = ChatThreadDO.prototype.getPiCoreMessageRows.call(fake, 200);
+
+      const bytes = rows.reduce((sum: number, row: any) => sum + row.payload.length, 0);
+      expect(bytes).toBeLessThanOrEqual(5 * 1024 * 1024);
+      expect(rows.length).toBeLessThan(200);
+      // Truncation is reported, not silent.
+      expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+        'pi_core_row_read_truncated',
+        expect.objectContaining({ status: 'truncated' }),
+      );
+    });
+
+    it('returns every row when the whole page fits', () => {
+      const fake = rowReadFake(10, 100);
+
+      const rows = ChatThreadDO.prototype.getPiCoreMessageRows.call(fake, 200);
+
+      expect(rows.length).toBe(10);
+      expect(fake.recordChatThreadObservabilityEvent).not.toHaveBeenCalled();
+    });
+
+    it('still returns a single oversized row rather than nothing', () => {
+      const fake = rowReadFake(3, 6 * 1024 * 1024);
+
+      const rows = ChatThreadDO.prototype.getPiCoreMessageRows.call(fake, 200);
+
+      expect(rows.length).toBe(1);
+    });
+  });
+
   it('caps the main Pi request output without mutating catalog metadata', () => {
     const catalogModel = { id: 'large-output', maxTokens: 262_144, contextWindow: 1_000_000 } as any;
 
@@ -11065,8 +11126,9 @@ describe('ChatThreadDO Pi turn handling', () => {
     fake.ctx = {
       storage: {
         sql: {
-          exec: vi.fn(() => ({
-            toArray: () => [{
+          // A real SqlStorage cursor is iterable; the reader iterates it so it can
+          // stop at a byte budget instead of materialising every row first.
+          exec: vi.fn(() => [{
               idx: 1,
               created_at: 1,
               payload: JSON.stringify({
@@ -11086,8 +11148,7 @@ describe('ChatThreadDO Pi turn handling', () => {
                   },
                 }],
               }),
-            }],
-          })),
+            }][Symbol.iterator]()),
         },
       },
     };
