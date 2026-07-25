@@ -15,8 +15,10 @@ import {
   runtimeToolReferenceOrder,
   seedDoProjectFiles,
   snapshotProjectFiles,
+  succeededWithTool,
   toolCallReferences,
   toolProgressText,
+  usedTool,
 } from "./project-eval-helpers";
 
 const testEnv = env as unknown as {
@@ -370,5 +372,68 @@ describe("project eval runtime evidence extraction", () => {
     expect(codeCells.length).toBeGreaterThan(0);
     expect(codeCells.every((cell) => cell.execution_count === null)).toBe(true);
     expect(codeCells.every((cell) => Array.isArray(cell.outputs) && cell.outputs.length === 0)).toBe(true);
+  });
+});
+
+describe("succeededWithTool", () => {
+  function jsExecEvent(code: string, status: string, isError: boolean) {
+    return {
+      type: "runtime_event",
+      event: {
+        method: "item/completed",
+        params: {
+          item: {
+            id: "j1",
+            type: "dynamicToolCall",
+            tool: "js_exec",
+            status,
+            isError,
+            arguments: { code },
+            result: { details: {} },
+          },
+        },
+      },
+    } as Record<string, unknown>;
+  }
+
+  function topLevelEvent(tool: string, status: string, isError: boolean) {
+    return {
+      type: "runtime_event",
+      event: {
+        method: "item/completed",
+        params: {
+          item: { id: "t1", type: "dynamicToolCall", tool, status, isError, result: { details: {} } },
+        },
+      },
+    } as Record<string, unknown>;
+  }
+
+  it("accepts a top-level call that succeeded", () => {
+    expect(succeededWithTool([topLevelEvent("get_custom_domain", "completed", false)], "get_custom_domain")).toBe(true);
+  });
+
+  it("rejects a top-level call that failed", () => {
+    // The false green this helper exists to close: "Tool X not found" must not count.
+    expect(succeededWithTool([topLevelEvent("get_custom_domain", "failed", true)], "get_custom_domain")).toBe(false);
+  });
+
+  it("accepts a lean-mode call nested in a successful js_exec", () => {
+    // Lean-mode tools emit no runtime item of their own, so requiring a
+    // top-level item would reject the path those evals are built to test.
+    const events = [jsExecEvent("const r = await tools.get_custom_domain({});\nreturn r;", "completed", false)];
+    expect(succeededWithTool(events, "get_custom_domain")).toBe(true);
+  });
+
+  it("rejects a nested call when the js_exec block itself failed", () => {
+    // This is the line between succeededWithTool and usedTool: usedTool matches
+    // the name in source text even when the block threw.
+    const events = [jsExecEvent("await tools.get_custom_domain({});", "failed", true)];
+    expect(succeededWithTool(events, "get_custom_domain")).toBe(false);
+    expect(usedTool(events, "get_custom_domain")).toBe(true);
+  });
+
+  it("does not match an unrelated tool mentioned nowhere", () => {
+    const events = [jsExecEvent("await tools.list_apps({});", "completed", false)];
+    expect(succeededWithTool(events, "get_custom_domain")).toBe(false);
   });
 });

@@ -328,11 +328,31 @@ export function succeededWithTool(
   toolName: string,
 ): boolean {
   const expected = toolName.toLowerCase();
-  return collectRuntimeItems(events).some((item) => {
+  const items = collectRuntimeItems(events);
+
+  // A top-level call that succeeded.
+  const succeededTopLevel = items.some((item) => {
     const tool = runtimeToolName(item);
     if (tool !== expected && !tool?.endsWith(`__${expected}`)) return false;
     return runtimeItemSucceeded(item);
   });
+  if (succeededTopLevel) return true;
+
+  // Or a SUCCEEDED js_exec whose code calls it. Lean-mode tools live only inside
+  // js_exec (`tools.<name>()`) and emit no runtime item of their own, so
+  // requiring a top-level item rejects the very path those evals are testing:
+  // custom-domain-live and warehouse-list-live both failed this way while the
+  // agent had in fact got a real answer — get_custom_domain returned
+  // `{ ok: true, data: {...} }` from inside js_exec.
+  //
+  // Requiring the js_exec item itself to have succeeded is what separates this
+  // from usedTool, which matches the tool name in code even when the block threw.
+  return items.some(
+    (item) =>
+      isJsExecItem(item) &&
+      runtimeItemSucceeded(item) &&
+      jsExecCodeMentionsTool(asString(asRecord(item.arguments)?.code) ?? "", expected),
+  );
 }
 
 export function toolCallReferences(
