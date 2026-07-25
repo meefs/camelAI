@@ -73,6 +73,7 @@ import {
   getStoredCustomLlmProviderModelId,
   normalizeLlmModel,
 } from "../../../src/lib/llm-provider-config";
+import { isTransientDurableObjectRpcError } from "../../../src/lib/do-rpc-retry.server";
 import type { HostedCapability } from "../../../src/lib/capability-allowances";
 import {
   getEffectiveLlmProviderConfig,
@@ -6313,7 +6314,21 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       const finalText = stoppedByUser
         ? PI_USER_STOP_TEXT
         : this.piAssistantText || extractLatestPiAssistantText(newMessages);
-      const errorMessage = finalText
+      // Deliberately NOT gated on finalText. It used to be, which meant a run
+      // that failed AFTER emitting any visible token surfaced nothing at all:
+      // pushChatEvent is the only funnel for the thread error record, the
+      // observability event, the composer banner, and the durable inline error
+      // part, so skipping it skipped every channel. Across 100 production
+      // threads, 14 abnormal turns that had emitted text recorded zero errors
+      // while 9 of 17 that had emitted none recorded them — perfect separation.
+      // One real case had piAssistantText === "\n\n", truthy enough to hide a
+      // failure, and the user's next message was "can you do it or not? I've
+      // been waiting about 3 or 4 hours now".
+      //
+      // Safe because a completed run cannot carry an error: Pi's loop returns
+      // immediately on stopReason "error", so only a run's last message has one;
+      // stopped-by-user is a separate branch below, and aborted yields "".
+      const errorMessage = stoppedByUser
         ? ""
         : getLatestPiAssistantErrorMessage(newMessages);
       const summarySource = extractThreadCompletionSummarySource(
@@ -6328,6 +6343,13 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
           itemKind: "userStop",
           delta: PI_USER_STOP_TEXT,
         });
+      }
+      // Before turn/completed on purpose: that event encodes `finish`, and a
+      // durable error part written after `finish` does not stick — which is why
+      // an already-reported error could still reappear as a fresh banner on
+      // every reload instead of staying inline in the transcript.
+      if (!stoppedByUser && errorMessage) {
+        this.pushChatEvent(this.piProviderErrorEvent(errorMessage));
       }
       this.pushPiRuntimeEvent("turn/completed", {
         threadId,
@@ -6351,8 +6373,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
           completedAt: completedAtMs,
           clear: true,
         });
-      } else if (!finalText && errorMessage) {
-        this.pushChatEvent(this.piProviderErrorEvent(errorMessage));
+      } else if (errorMessage) {
         this.updateActiveAutomationRun({
           status: "error",
           message: errorMessage,
@@ -7475,6 +7496,26 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       error instanceof Error &&
       (error.name === "AbortError" || /aborted/i.test(error.message))
     ) {
+      return;
+    }
+    // A Durable Object reset is not a turn failure. Until now AbortError was the
+    // only exemption, so a platform reset took the terminal path: it showed the
+    // user the raw workerd string ("Durable Object reset because its code was
+    // updated.") AND cleared the marker + journal that chatRecovery needs — so
+    // the same handler that reported the failure also disabled the recovery that
+    // would have fixed it. Recovery demonstrably works when left armed: one
+    // production thread absorbed 15 consecutive resets and still completed with
+    // a correct answer. Leave the marker and journal in place, record it as a
+    // warning rather than a user-visible terminal error, and let chatRecovery
+    // re-drive within its existing bounded budget.
+    if (isTransientDurableObjectRpcError(error)) {
+      console.warn("[ChatThreadDO] Pi turn hit a transient DO reset; leaving recovery armed", error);
+      this.recordChatThreadObservabilityEvent("pi_turn_transient_reset", {
+        operation: "pi_turn",
+        status: "recoverable",
+        severity: "warn",
+        error,
+      });
       return;
     }
     console.error("[ChatThreadDO] Pi turn failed", error);

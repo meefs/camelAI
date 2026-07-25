@@ -11385,6 +11385,107 @@ describe('ChatThreadDO Pi turn handling', () => {
     }));
   });
 
+  // Regression cluster for the finalText mask. Error surfacing used to be gated
+  // on the turn having produced no text, so a run that failed AFTER emitting a
+  // visible token surfaced nothing at all — no banner, no inline error, no
+  // telemetry — and was affirmatively stamped as completed. Every pre-existing
+  // test here passed `content: []`, which is exactly why it was never caught.
+  it('emits a provider error even when the failed turn already streamed text', async () => {
+    const { fake, events } = createPiEventFake();
+    const errorMessage = '429 {"error":{"type":"rate_limit_error","message":"slow down"}}';
+
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, { type: 'agent_start' });
+    fake.piAssistantText = 'Let me check that file for you.';
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+      type: 'agent_end',
+      messages: [{
+        role: 'assistant',
+        content: [{ type: 'text', text: 'Let me check that file for you.' }],
+        errorMessage,
+        stopReason: 'error',
+        timestamp: 789,
+      }],
+    });
+
+    expect(events).toContainEqual(expect.objectContaining({ type: 'error', error: errorMessage }));
+    // The partial text still reaches the client as the turn result.
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'result',
+      result: 'Let me check that file for you.',
+    }));
+  });
+
+  it('emits a provider error when the streamed text was only whitespace', async () => {
+    // The real production case: piAssistantText === "\n\n" is truthy, so the
+    // error was suppressed and the user's next message was
+    // "can you do it or not? I've been waiting about 3 or 4 hours now".
+    const { fake, events } = createPiEventFake();
+    const errorMessage = 'Stream ended without finish_reason';
+
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, { type: 'agent_start' });
+    fake.piAssistantText = '\n\n';
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+      type: 'agent_end',
+      messages: [{
+        role: 'assistant',
+        content: [{ type: 'text', text: '\n\n' }],
+        errorMessage,
+        stopReason: 'error',
+        timestamp: 900,
+      }],
+    });
+
+    expect(events).toContainEqual(expect.objectContaining({ type: 'error', error: errorMessage }));
+  });
+
+  it('emits a provider error when earlier sub-turns produced text before the failure', async () => {
+    const { fake, events } = createPiEventFake();
+    const errorMessage = '500 upstream exploded';
+
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, { type: 'agent_start' });
+    fake.piAssistantText = 'Reading the config now.';
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+      type: 'agent_end',
+      messages: [
+        {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Reading the config now.' }],
+          stopReason: 'toolUse',
+          timestamp: 100,
+        },
+        { role: 'toolResult', toolCallId: 't1', toolName: 'read', content: [{ type: 'text', text: 'ok' }], timestamp: 101 },
+        {
+          role: 'assistant',
+          content: [],
+          errorMessage,
+          stopReason: 'error',
+          timestamp: 102,
+        },
+      ],
+    });
+
+    expect(events).toContainEqual(expect.objectContaining({ type: 'error', error: errorMessage }));
+  });
+
+  it('stays silent for a turn that genuinely completed', async () => {
+    const { fake, events } = createPiEventFake();
+
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, { type: 'agent_start' });
+    fake.piAssistantText = 'All done — the file is updated.';
+    await ChatThreadDO.prototype['handlePiSessionEvent'].call(fake, {
+      type: 'agent_end',
+      messages: [{
+        role: 'assistant',
+        content: [{ type: 'text', text: 'All done — the file is updated.' }],
+        usage: { input: 1_200, output: 40, cacheRead: 0, cacheWrite: 0, totalTokens: 1_240 },
+        stopReason: 'stop',
+        timestamp: 200,
+      }],
+    });
+
+    expect(events.some((event: any) => event?.type === 'error')).toBe(false);
+  });
+
   it('records Bedrock 524 assistant errors with structured provider metadata', async () => {
     const { fake, events } = createPiEventFake();
     fake.piCurrentUsageProvider = 'bedrock';

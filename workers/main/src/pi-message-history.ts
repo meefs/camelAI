@@ -17,7 +17,24 @@ export interface PiMessageHistoryRepairResult {
   repairedCount: number;
 }
 
-const INTERRUPTED_TOOL_RESULT_TEXT = "Tool call interrupted; no result was recorded.";
+/**
+ * Stands in for a tool call that was cut off before its result was committed —
+ * a Durable Object reset mid-call, most often inside a long `js_exec`.
+ *
+ * The wording matters. It used to say only "no result was recorded", which the
+ * model reasonably read as "it never ran" and retried blind. Production shows
+ * that misreading: three interrupted `js_exec` deploys in one thread were each
+ * re-run, and each deployed again. A redeploy is harmless, but the same
+ * mechanism on `send_email` or a connection write sends twice, and there is no
+ * idempotency guard keyed by tool-call id anywhere on the execution path.
+ *
+ * So be explicit that the outcome is UNKNOWN, not that nothing happened, and
+ * tell the model to check state before repeating anything with a side effect.
+ */
+const INTERRUPTED_TOOL_RESULT_TEXT =
+  "Tool call interrupted: its result was not recorded, so it MAY OR MAY NOT have completed. " +
+  "If it had side effects (a deploy, an email, a write to an external system), check the current " +
+  "state before running it again rather than assuming it did not run.";
 
 export function repairPiMessageHistoryForReplay(
   messages: AgentMessage[],

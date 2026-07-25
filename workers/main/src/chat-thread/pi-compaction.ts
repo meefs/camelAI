@@ -137,6 +137,12 @@ export function isPiContextOverflowMessage(message: AgentMessage, contextWindow:
   };
   if (record.role !== "assistant") return false;
   if (isPiLengthStopContextExhaustion(message, contextWindow)) return true;
+  // Pi's isContextOverflow dereferences `message.usage.input` without checking
+  // that usage exists, so handing it a message without usage throws — and this
+  // runs inside the agent_end handler, where a throw would take down the whole
+  // turn's terminal surfacing. Overflow is a usage-derived judgement
+  // anyway: with no usage there is no overflow to detect.
+  if (!record.usage || typeof record.usage !== "object") return false;
   return isContextOverflow(record as Parameters<typeof isContextOverflow>[0], contextWindow);
 }
 

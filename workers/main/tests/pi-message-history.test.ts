@@ -39,8 +39,11 @@ describe('repairPiMessageHistoryForReplay', () => {
       toolCallId: 'toolu_bdrk_01KrRfZTYj5KqFZAxKQexJbK',
       toolName: 'read',
       isError: true,
+      // The placeholder must say the outcome is UNKNOWN, not that nothing ran:
+      // production showed the model reading "no result was recorded" as "it
+      // never ran" and re-deploying three already-deployed js_exec calls.
       content: [
-        { type: 'text', text: 'Tool call interrupted; no result was recorded.' },
+        { type: 'text', text: expect.stringContaining('MAY OR MAY NOT have completed') },
       ],
     });
     expect(result.messages[2]).toBe(messages[1]);
