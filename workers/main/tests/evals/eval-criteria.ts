@@ -384,6 +384,36 @@ export function buildRuntimeEventsCriterion(result: unknown): EvalPassFailCriter
   });
 }
 
+/**
+ * Fails when the environment could not run the tools the eval depends on.
+ *
+ * `evaluateAgentEvalSignal` now classifies sandbox/container/mount/binding
+ * failures as harness errors rather than bad tool calls. Without a criterion
+ * consuming that, a run whose subject never worked still greened: with a bogus
+ * Docker socket, `analysis-tools-reachable-live` reported 7/7 passed and a 96.43
+ * judge score while 6 of 8 tool calls returned "internal error".
+ *
+ * Spread this into an eval's `passFail` whenever its criteria depend on a
+ * container capability. It is intentionally an integrity gate, not an efficiency
+ * gate — it fires on the environment being broken, not on the agent fumbling.
+ */
+export function buildHarnessIntegrityCriterion(signal: {
+  harnessErrorCount?: number;
+  harnessErrors?: Array<{ tool?: string; reason?: string }>;
+}): EvalPassFailCriterion {
+  const count = signal.harnessErrorCount ?? 0;
+  const clean = count === 0;
+  return passFailCriterion({
+    id: "harness_intact",
+    label: "Environment could run the tools under test",
+    passed: clean,
+    reason: clean
+      ? undefined
+      : `${count} tool call(s) failed for infrastructure reasons, so this run cannot say whether the agent behaved correctly.`,
+    details: { harnessErrorCount: count, harnessErrors: signal.harnessErrors ?? [] },
+  });
+}
+
 export function buildResultEventCriterion(result: unknown): EvalPassFailCriterion {
   const events = asRecord(result)?.events;
   const hasResultEvent = Array.isArray(events) &&

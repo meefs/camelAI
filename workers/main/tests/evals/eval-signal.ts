@@ -102,6 +102,33 @@ function classifyKnownEvalEnvToolLimitation(output: string | undefined): string 
   return undefined;
 }
 
+/**
+ * Failures that mean the environment could not run the tool, as opposed to the
+ * agent using it wrongly. These must not be counted as bad tool calls — they say
+ * nothing about agent behaviour — and they must not be silently excused either,
+ * because an eval whose subject never ran should report an inconclusive harness
+ * failure rather than a pass.
+ *
+ * This existed as a hardcoded `harnessErrorCount: 0`, so the one real hard gate
+ * in the runner could never fire. A run with a bogus Docker socket produced 6
+ * failed tool calls and still scored 96.43.
+ */
+const EVAL_INFRA_FAILURE_PATTERNS: Array<[RegExp, string]> = [
+  [/internal error; reference = /i, "sandbox_internal_error"],
+  [/S3FS mount failed|fuse: device not found/i, "sandbox_mount_failed"],
+  [/Container failed to start|container is not (?:running|ready)/i, "container_start_failed"],
+  [/kj\/timer|operation timed out/i, "container_timeout"],
+  [/binding is (?:not configured|required)/i, "missing_binding"],
+];
+
+export function classifyEvalInfraFailure(output: string | undefined): string | undefined {
+  if (!output) return undefined;
+  for (const [pattern, reason] of EVAL_INFRA_FAILURE_PATTERNS) {
+    if (pattern.test(output)) return reason;
+  }
+  return undefined;
+}
+
 function classifyFailedToolCall(
   tool: string,
   output: string | undefined,
@@ -288,6 +315,7 @@ export function evaluateAgentEvalSignal(
 ): EvalSignal {
   const toolCallsByName: Record<string, number> = {};
   const badToolCallsByKey = new Map<string, EvalToolCallSummary>();
+  const harnessErrorsByKey = new Map<string, EvalToolCallSummary>();
   const filteredEnvLimitations: EvalToolCallSummary[] = [];
   const filteredEnvLimitationsByReason: Record<string, number> = {};
 
@@ -373,6 +401,21 @@ export function evaluateAgentEvalSignal(
     }
 
     if (!reason) continue;
+    // Infrastructure failures are checked BEFORE the known-env-limitation
+    // filter: they are neither the agent's fault (so not a bad tool call) nor
+    // something to silently excuse (so not an env limitation). They mean the
+    // eval's subject could not run.
+    const infraReason = classifyEvalInfraFailure(output);
+    if (infraReason) {
+      harnessErrorsByKey.set(key, {
+        id,
+        tool,
+        reason: infraReason,
+        status,
+        output: excerpt(output),
+      });
+      continue;
+    }
     const envLimitationReason = classifyKnownEvalEnvToolLimitation(output);
     if (envLimitationReason) {
       filteredEnvLimitationsByReason[envLimitationReason] =
@@ -396,6 +439,7 @@ export function evaluateAgentEvalSignal(
   }
 
   const badToolCalls = [...badToolCallsByKey.values()];
+  const harnessErrors = [...harnessErrorsByKey.values()];
   const violations: string[] = [];
   if (
     thresholds.maxAssistantTurns !== undefined &&
@@ -429,8 +473,8 @@ export function evaluateAgentEvalSignal(
     messageCount: result.messages.length,
     toolCallCount,
     toolCallsByName,
-    harnessErrorCount: 0,
-    harnessErrors: [],
+    harnessErrorCount: harnessErrors.length,
+    harnessErrors,
     filteredEnvLimitationCount: filteredEnvLimitations.length,
     filteredEnvLimitations,
     filteredEnvLimitationsByReason,

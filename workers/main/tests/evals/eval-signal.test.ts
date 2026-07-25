@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { countEvalTokenUsage, evaluateAgentEvalSignal } from "./eval-signal";
+import { classifyEvalInfraFailure, countEvalTokenUsage, evaluateAgentEvalSignal } from "./eval-signal";
 
 describe("eval signal scoring", () => {
   it("counts turns and flags failed or suspicious tool calls", () => {
@@ -124,6 +124,8 @@ describe("eval signal scoring", () => {
     expect(signal.sdkTurnCompletedCount).toBe(0);
     expect(signal.toolCallCount).toBe(2);
     expect(signal.toolCallsByName).toEqual({ bash: 1, ls: 1 });
+    // No infrastructure-shaped failures in this fixture, so harness errors stay
+    // empty. This used to be hardcoded 0 regardless of input.
     expect(signal.harnessErrorCount).toBe(0);
     expect(signal.filteredEnvLimitationCount).toBe(0);
     expect(signal.badToolCalls.map((call) => call.reason)).toEqual([
@@ -401,5 +403,61 @@ describe("eval signal scoring", () => {
       turnCount: 2,
       costUsd: 0.001,
     });
+  });
+});
+
+describe("infrastructure failure classification", () => {
+  it("recognises the failure shapes that mean the sandbox could not run", () => {
+    expect(classifyEvalInfraFailure("internal error; reference = lef93vejlk5915n5cvop8jo8"))
+      .toBe("sandbox_internal_error");
+    expect(classifyEvalInfraFailure("S3FS mount failed: fuse: device not found"))
+      .toBe("sandbox_mount_failed");
+    expect(classifyEvalInfraFailure("Container failed to start"))
+      .toBe("container_start_failed");
+    expect(classifyEvalInfraFailure("kj/timer ... operation timed out"))
+      .toBe("container_timeout");
+    expect(classifyEvalInfraFailure("Screenshot capture requires the BROWSER binding is not configured"))
+      .toBe("missing_binding");
+  });
+
+  it("does not mistake ordinary agent mistakes for infrastructure failures", () => {
+    expect(classifyEvalInfraFailure("Validation failed for tool write")).toBeUndefined();
+    expect(classifyEvalInfraFailure("Tool run_notebook not found")).toBeUndefined();
+    expect(classifyEvalInfraFailure("File not found: src/App.tsx")).toBeUndefined();
+    expect(classifyEvalInfraFailure(undefined)).toBeUndefined();
+  });
+
+  it("routes an infrastructure failure to harnessErrors, not badToolCalls", () => {
+    // The false-green shape: the agent used the tool correctly and the sandbox
+    // broke. That is not a bad tool call and must not be silently excused.
+    const signal = evaluateAgentEvalSignal(
+      {
+        status: "completed",
+        messages: [],
+        events: [
+          {
+            type: "runtime_event",
+            event: {
+              method: "item/completed",
+              params: {
+                item: {
+                  id: "tool1",
+                  type: "dynamicToolCall",
+                  tool: "run_code",
+                  status: "failed",
+                  aggregatedOutput: "internal error; reference = abc123",
+                  result: { details: {} },
+                },
+              },
+            },
+          },
+        ],
+      } as never,
+      { maxAssistantTurns: 10, maxBadToolCalls: 0 },
+    );
+
+    expect(signal.harnessErrorCount).toBe(1);
+    expect(signal.harnessErrors[0]?.reason).toBe("sandbox_internal_error");
+    expect(signal.badToolCallCount).toBe(0);
   });
 });

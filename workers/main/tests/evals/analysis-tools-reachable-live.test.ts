@@ -8,6 +8,7 @@ import {
   buildNoAssistantErrorCriterion,
   buildResultEventCriterion,
   buildRuntimeEventsCriterion,
+  buildHarnessIntegrityCriterion,
   buildSessionCompletedCriterion,
   passFailCriterion,
   scoreSignalEfficiency,
@@ -24,7 +25,7 @@ import {
   type EvalModelEnv,
 } from "./model-config";
 import type { ChatThreadDO } from "../../src/chat-thread-do";
-import { usedTool } from "./project-eval-helpers";
+import { succeededWithTool, usedTool } from "./project-eval-helpers";
 
 // Regression eval for analysis-tool reachability.
 //
@@ -134,7 +135,14 @@ describe("analysis tools reachable agent eval", () => {
       );
 
       const notFoundTools = findAnalysisToolNotFound(result);
+      // usedTool would pass on a call that errored — which is exactly how this
+      // eval greened while the sandbox returned "internal error" 6 times. Require
+      // one of the analysis tools to have actually produced a result. Still
+      // spelling-agnostic: any of the four counts.
       const reachedAnalysisSurface = ANALYSIS_TOOL_NAMES.some((name) =>
+        succeededWithTool(result.events, name),
+      );
+      const attemptedAnalysisSurface = ANALYSIS_TOOL_NAMES.some((name) =>
         usedTool(result.events, name),
       );
 
@@ -159,12 +167,14 @@ describe("analysis tools reachable agent eval", () => {
           }),
           passFailCriterion({
             id: "reached_analysis_surface",
-            label: "Agent reached an analysis execution tool",
+            label: "An analysis execution tool ran successfully",
             passed: reachedAnalysisSurface,
             reason: reachedAnalysisSurface
               ? undefined
-              : "Agent never called run_notebook, run_code, analysis_exec, or add_python_dependency.",
-            details: { toolCallsByName: signal.toolCallsByName },
+              : attemptedAnalysisSurface
+                ? "Agent called an analysis tool but no call succeeded."
+                : "Agent never called run_notebook, run_code, analysis_exec, or add_python_dependency.",
+            details: { attemptedAnalysisSurface, toolCallsByName: signal.toolCallsByName },
           }),
           passFailCriterion({
             id: "reported_correct_totals",
@@ -176,6 +186,7 @@ describe("analysis tools reachable agent eval", () => {
                 : "Expected 44523 (excavators), 12708 (dumpers), and 57231 (combined) in the reply.",
             details: { reportedExcavators, reportedDumpers, reportedTotal },
           }),
+          buildHarnessIntegrityCriterion(signal),
           buildNoAssistantErrorCriterion(result),
           buildRuntimeEventsCriterion(result),
           buildResultEventCriterion(result),
@@ -205,6 +216,8 @@ describe("analysis tools reachable agent eval", () => {
         runtimeAssertions: {
           notFoundTools,
           reachedAnalysisSurface,
+          attemptedAnalysisSurface,
+          harnessErrors: signal.harnessErrors,
           reportedExcavators,
           reportedDumpers,
           reportedTotal,

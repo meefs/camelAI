@@ -310,6 +310,31 @@ export function usedTool(
   );
 }
 
+/**
+ * Like `usedTool`, but requires the call to have actually SUCCEEDED.
+ *
+ * `usedTool` only proves a call was issued — it ignores status/isError, and it
+ * additionally matches a tool name appearing in js_exec source text, so a block
+ * that merely writes `tools.foo(...)` and then throws still counts. That is the
+ * right semantics for NEGATIVE assertions ("did not reach for X") and the wrong
+ * semantics for positive ones: an eval asserting a capability works must fail
+ * when the capability is dead. A run where the analysis sandbox returned
+ * "internal error" on 6 of 8 calls passed 7/7 criteria because of this.
+ *
+ * Prefer this for any pass/fail criterion that claims a tool worked.
+ */
+export function succeededWithTool(
+  events: Array<Record<string, unknown>>,
+  toolName: string,
+): boolean {
+  const expected = toolName.toLowerCase();
+  return collectRuntimeItems(events).some((item) => {
+    const tool = runtimeToolName(item);
+    if (tool !== expected && !tool?.endsWith(`__${expected}`)) return false;
+    return runtimeItemSucceeded(item);
+  });
+}
+
 export function toolCallReferences(
   events: Array<Record<string, unknown>>,
   toolName: string,
