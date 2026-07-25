@@ -150,6 +150,21 @@ export interface HostedModelAccess {
   vllmPriority: string;
 }
 
+function hostedDeepseekStickyKey(
+  resolved: PiResolvedModelReference,
+  metadata: ReturnType<ResolvePiRequestConfigDeps["getChatMetadata"]>,
+): string | null {
+  if (!resolved.hostedStickyRouting || !metadata?.threadId) {
+    return null;
+  }
+  // Namespace the thread by its owning scope. Thread IDs are normally globally
+  // unique, but the full identity keeps imported/legacy IDs from sharing a KV
+  // cache affinity bucket with another workspace.
+  return ["chiridion", metadata.orgId, metadata.workspaceId, metadata.threadId]
+    .filter(Boolean)
+    .join(":");
+}
+
 const PI_MODEL_CATALOG_FALLBACKS: Record<string, Model<any>> = {
   "anthropic/claude-sonnet-5": {
     id: "claude-sonnet-5",
@@ -615,6 +630,7 @@ export async function resolvePiRequestConfig(
   }
 
   const chatMetadata = deps.getChatMetadata();
+  const stickyKey = hostedDeepseekStickyKey(resolved, chatMetadata);
   return {
     apiKey: token,
     billingSource: "hosted",
@@ -630,11 +646,10 @@ export async function resolvePiRequestConfig(
       ...(resolved.hostedGatewayProvider === "openrouter"
         ? deps.modelMapping.openRouterAttributionHeaders()
         : {}),
-      // Pi's session is the chat thread. Forward it explicitly so the
-      // self-hosted DeepSeek router can keep a thread on one warm KV cache.
-      ...(chatMetadata?.threadId
-        ? { "x-sticky-key": chatMetadata.threadId }
-        : {}),
+      // Pi's session is the chat thread. Only the DeepSeek dynamic routes can
+      // reach our sticky router; do not leak this internal affinity header to
+      // unrelated hosted providers.
+      ...(stickyKey ? { "x-sticky-key": stickyKey } : {}),
       // The self-hosted DeepSeek provider translates this trusted header to
       // vLLM's request priority. Do not add it to unrelated model routes.
       ...(resolved.hostedModelId?.startsWith("dynamic/deepseek-v4-")

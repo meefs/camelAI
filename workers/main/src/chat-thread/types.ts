@@ -57,6 +57,8 @@ export interface PiResolvedModelReference {
   api?: string;
   hostedGatewayProvider: string;
   hostedModelId?: string;
+  /** True only when the hosted route can reach the thread-affine RTX router. */
+  hostedStickyRouting?: boolean;
   /** False for hosted-only camelAI routes that must not be served by BYOK keys. */
   byokAllowed?: boolean;
   hostedRequestProfile?: {

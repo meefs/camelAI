@@ -2038,6 +2038,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       },
       contextWindow: 500000,
     });
+    expect(model.model.headers).not.toHaveProperty('x-sticky-key');
     expect(model.apiKey).toBe('cf-token');
     expect(model.provider).toBe('openrouter');
     expect(model.modelId).toBe('x-ai/grok-4.5');
@@ -2089,7 +2090,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       baseUrl: 'https://gateway.ai.cloudflare.com/v1/acct_1/gateway_1/compat',
     });
     expect(model.model.headers).toMatchObject({
-      'x-sticky-key': 'thread1',
+      'x-sticky-key': 'chiridion:org1:workspace1:thread1',
       'X-Chiridion-VLLM-Priority': '100',
     });
     // Dynamic routes fan out across RTX/Azure/OpenRouter. Keep high reasoning,
@@ -2333,6 +2334,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(model.model.headers).toMatchObject({
       'X-Chiridion-VLLM-Priority': '0',
     });
+    expect(model.model.headers).not.toHaveProperty('x-sticky-key');
     expect(model.model.compat).toMatchObject({ supportsReasoningEffort: true });
     expect(model.model.thinkingLevelMap).toEqual({
       minimal: 'xhigh',
@@ -2463,6 +2465,9 @@ describe('ChatThreadDO Pi turn handling', () => {
       provider: 'cloudflare-ai-gateway',
       api: 'openai-completions',
       baseUrl: 'https://gateway.ai.cloudflare.com/v1/acct_1/gateway_1/compat',
+    });
+    expect(model.model.headers).toMatchObject({
+      'x-sticky-key': 'chiridion:org1:workspace1:thread1',
     });
     expect(model.model.compat).toMatchObject({ supportsReasoningEffort: true });
     expect(model.model.thinkingLevelMap).toEqual({
@@ -4375,6 +4380,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       modelId: 'deepseek/deepseek-v4-pro',
       hostedGatewayProvider: 'compat',
       hostedModelId: 'dynamic/deepseek-v4-auto',
+      hostedStickyRouting: true,
       hostedReasoningEffort: 'high',
       byokAllowed: false,
       hostedRequestProfile: {
@@ -4396,6 +4402,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       modelId: 'deepseek/deepseek-v4-flash',
       hostedGatewayProvider: 'compat',
       hostedModelId: 'dynamic/deepseek-v4-flash-fallback',
+      hostedStickyRouting: true,
       hostedReasoningEffort: 'xhigh',
       hostedRequestProfile: {
         name: 'deepseek-v4-flash-rtx',
