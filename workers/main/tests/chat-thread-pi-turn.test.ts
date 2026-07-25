@@ -3890,15 +3890,18 @@ describe('ChatThreadDO Pi turn handling', () => {
     }
 
     it('stops reading once the byte budget is reached', () => {
-      // 200 rows x ~256KB would be ~51MB. Asking this for 2000 rows of a real
-      // thread once built a 37,187,107-byte value inside the Durable Object.
-      const fake = rowReadFake(200, 256 * 1024);
+      // Production scale: ~2400 rows averaging 150KB is ~350MB available, and
+      // asking this for 2000 rows of such a thread built a 37,187,107-byte value
+      // inside the Durable Object — 29% of the 128MB isolate budget, from a
+      // read-only admin call.
+      const fake = rowReadFake(2400, 150 * 1024);
 
-      const rows = ChatThreadDO.prototype.getPiCoreMessageRows.call(fake, 200);
+      const rows = ChatThreadDO.prototype.getPiCoreMessageRows.call(fake, 2000);
 
       const bytes = rows.reduce((sum: number, row: any) => sum + row.payload.length, 0);
+      // Ceiling holds regardless of how much the table could have offered.
       expect(bytes).toBeLessThanOrEqual(5 * 1024 * 1024);
-      expect(rows.length).toBeLessThan(200);
+      expect(rows.length).toBeLessThan(2000);
       // Truncation is reported, not silent.
       expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
         'pi_core_row_read_truncated',
