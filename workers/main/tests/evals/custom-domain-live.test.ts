@@ -8,6 +8,7 @@ import {
   buildNoAssistantErrorCriterion,
   buildResultEventCriterion,
   buildRuntimeEventsCriterion,
+  buildHarnessIntegrityCriterion,
   buildSessionCompletedCriterion,
   passFailCriterion,
   scoreSignalEfficiency,
@@ -24,7 +25,7 @@ import {
   type EvalModelEnv,
 } from "./model-config";
 import type { ChatThreadDO } from "../../src/chat-thread-do";
-import { usedTool } from "./project-eval-helpers";
+import { succeededWithTool, usedTool } from "./project-eval-helpers";
 
 // This eval exercises the custom-domain tools (get_custom_domain). Those tools live in
 // the "domains" category, which the lean tool surface (now the default) drops from the
@@ -95,7 +96,12 @@ describe("custom domain agent eval", () => {
         }),
       );
 
-      const calledGetCustomDomain = usedTool(result.events, "get_custom_domain");
+      // succeededWithTool, not usedTool: this eval exists to catch the tool
+      // becoming unreachable, and usedTool passes on a call that came back
+      // "Tool not found" — it also matches the name appearing in js_exec source
+      // text, so the agent merely writing tools.get_custom_domain(...) counted.
+      const calledGetCustomDomain = succeededWithTool(result.events, "get_custom_domain");
+      const attemptedGetCustomDomain = usedTool(result.events, "get_custom_domain");
       const evaluation = buildEvalCriteriaSummary({
         passFail: [
           buildSessionCompletedCriterion(result),
@@ -104,12 +110,14 @@ describe("custom domain agent eval", () => {
           // invoked it.
           passFailCriterion({
             id: "called_get_custom_domain",
-            label: "Agent discovered and called get_custom_domain",
+            label: "Agent discovered and successfully called get_custom_domain",
             passed: calledGetCustomDomain,
             reason: calledGetCustomDomain
               ? undefined
-              : "Agent did not discover/call get_custom_domain.",
-            details: { toolCallsByName: signal.toolCallsByName },
+              : attemptedGetCustomDomain
+                ? "Agent called get_custom_domain but the call did not succeed."
+                : "Agent did not discover/call get_custom_domain.",
+            details: { attemptedGetCustomDomain, toolCallsByName: signal.toolCallsByName },
           }),
           passFailCriterion({
             id: "produced_token_usage",
@@ -121,6 +129,7 @@ describe("custom domain agent eval", () => {
                 : "Signal reported zero total tokens.",
             details: { totalTokens: signal.tokenUsage.totalTokens },
           }),
+          buildHarnessIntegrityCriterion(signal),
           buildNoAssistantErrorCriterion(result),
           buildRuntimeEventsCriterion(result),
           buildResultEventCriterion(result),

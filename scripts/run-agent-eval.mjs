@@ -136,7 +136,8 @@ Options:
   --custom-model <id>       Upstream model id for EVAL_MODEL=custom
   --custom-model-id <id>    Alias for --custom-model
   --timeout-ms <ms>         Agent session timeout override
-  --enforce-signal          Set EVAL_ENFORCE_SIGNAL for legacy evals
+  --enforce-signal          Fail the run on signal threshold violations
+                            (turn/bad-tool budgets; advisory unless set)
   --max-assistant-turns <n> Assistant turn warning/failure threshold
   --max-bad-tool-calls <n>  Bad tool call warning/failure threshold
   --max-sdk-turns <n>       SDK turn_start warning/failure threshold
@@ -515,6 +516,20 @@ child.on("close", async (code) => {
       // exiting 1 on the enveloped-tool duplicates filtered above — but that
       // also silences REAL unhandled errors. Any that survived the filter must
       // still fail the run here.
+      // --enforce-signal / EVAL_ENFORCE_SIGNAL is advertised in --help but had no
+      // effect on any committed eval: assertEvalSignal (the only consumer) is
+      // called by none of them, so signal violations were computed, printed as
+      // warnings, and discarded. Enforce it here instead. Opt-in on purpose —
+      // the manifest's design keeps machine checks diagnostic and the judge
+      // primary by default, and turn/bad-tool budgets are an efficiency gate
+      // that should not silently fail runs.
+      const signalViolations = transcript?.signal?.violations ?? [];
+      if (evalEnv.EVAL_ENFORCE_SIGNAL === "1" && signalViolations.length > 0) {
+        console.error(
+          `Failing eval (EVAL_ENFORCE_SIGNAL=1): ${signalViolations.join("; ")}`,
+        );
+        exitCode = 1;
+      }
       const realHarnessErrors = transcript?.signal?.harnessErrorCount ?? 0;
       if (realHarnessErrors > 0) {
         console.error(
@@ -522,9 +537,30 @@ child.on("close", async (code) => {
         );
         exitCode = 1;
       } else if (transcript?.grading?.primary === true) {
-        exitCode = transcript.grading.passed === true ? 0 : 1;
+        // The judge is primary by design (manifest: machine checks are
+        // diagnostic evidence) — but harness failures stay hard gates, and the
+        // judge itself reports when it thinks the environment was at fault.
+        // That signal was captured and never consumed: a run with a dead sandbox
+        // scored 96.43 with failureAttribution "harness" and passed. Trust the
+        // judge's own attribution rather than its verdict in that case.
+        const judgeBlamedHarness =
+          transcript?.llmJudge?.failureAttribution === "harness";
+        if (transcript.grading.passed === true && judgeBlamedHarness) {
+          console.error(
+            "Failing eval: judge passed the run but attributed the failure to the harness; the environment could not exercise the subject.",
+          );
+          exitCode = 1;
+        } else if (transcript.grading.passed !== true) {
+          exitCode = 1;
+        } else if (exitCode === 0) {
+          // Judge passed: leave a green run green, but never rescue a run that an
+          // enforced signal violation already failed.
+          exitCode = 0;
+        }
         console.log(
-          `Primary eval grade: ${transcript.grading.outcome} via ${transcript.grading.judgeModel}`,
+          `Primary eval grade: ${transcript.grading.outcome} via ${transcript.grading.judgeModel}${
+            judgeBlamedHarness ? " (attributed to harness)" : ""
+          }`,
         );
       }
     } catch (error) {

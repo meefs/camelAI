@@ -8,6 +8,7 @@ import {
   buildNoAssistantErrorCriterion,
   buildResultEventCriterion,
   buildRuntimeEventsCriterion,
+  buildHarnessIntegrityCriterion,
   buildSessionCompletedCriterion,
   passFailCriterion,
   scoreCriterion,
@@ -29,6 +30,7 @@ import {
   asString,
   collectRuntimeEvidence,
   legacyDeployPathEvidence,
+  succeededWithTool,
   usedTool,
 } from "./project-eval-helpers";
 import { ProjectFilesystemClient } from "../../src/workspace-filesystem-do";
@@ -298,13 +300,24 @@ describe("shadcn components agent eval", () => {
         legacyFailures: legacyDeployPathEvidence(result.events),
         usedShadcnAddCommand: commandAndCodeEvidence.some(commandOrCodeMentionsShadcnAdd),
         usedBuildOrTypecheckCommand: commandAndCodeEvidence.some(commandOrCodeMentionsBuild),
+        succeededAddShadcnComponent: succeededWithTool(result.events, "add_shadcn_component"),
         evidence,
         toolArgumentCommands,
       };
       const finalMentionsMethodAndValidation = /shadcn|accordion|tabs|progress/i.test(result.result ?? "") &&
         /build|typecheck|validat|success|passed/i.test(result.result ?? "");
-      const validatedProject = runtimeAssertions.usedBuildProject ||
+      // "Validated" must mean validation SUCCEEDED. usedTool/command-text
+      // evidence is satisfied by a build that FAILED, so a broken build pipeline
+      // silently counted as validation — the eval could not detect the very
+      // regression it is meant to guard. Require a successful build/typecheck
+      // run: build_project completing, or an analysis_exec/js_exec that both
+      // mentions a build and succeeded.
+      const succeededBuildProject = succeededWithTool(result.events, "build_project");
+      const succeededBuildCommand =
+        (succeededWithTool(result.events, "analysis_exec") ||
+          succeededWithTool(result.events, "js_exec")) &&
         runtimeAssertions.usedBuildOrTypecheckCommand;
+      const validatedProject = succeededBuildProject || succeededBuildCommand;
 
       const evaluation = buildEvalCriteriaSummary({
         passFail: [
@@ -367,6 +380,7 @@ describe("shadcn components agent eval", () => {
                   ].filter(Boolean).join("; "),
             details: runtimeAssertions,
           }),
+          buildHarnessIntegrityCriterion(signal),
           buildNoAssistantErrorCriterion(result),
           buildRuntimeEventsCriterion(result),
           buildResultEventCriterion(result),

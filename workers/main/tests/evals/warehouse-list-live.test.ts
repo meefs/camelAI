@@ -8,6 +8,7 @@ import {
   buildNoAssistantErrorCriterion,
   buildResultEventCriterion,
   buildRuntimeEventsCriterion,
+  buildHarnessIntegrityCriterion,
   buildSessionCompletedCriterion,
   passFailCriterion,
   scoreSignalEfficiency,
@@ -24,7 +25,7 @@ import {
   type EvalModelEnv,
 } from "./model-config";
 import type { ChatThreadDO } from "../../src/chat-thread-do";
-import { usedTool } from "./project-eval-helpers";
+import { succeededWithTool, usedTool } from "./project-eval-helpers";
 
 // This eval exercises connection discovery through the lean code-mode surface.
 // The specialized analysis listing and the general connections listing both
@@ -95,21 +96,34 @@ describe("warehouse list connections agent eval", () => {
 
       // The canonical tool is analysis_list_connections; warehouse_list_connections
       // remains a callable-but-hidden source-compat alias, so accept either.
-      const calledWarehouseList =
-        usedTool(result.events, "analysis_list_connections") ||
-        usedTool(result.events, "warehouse_list_connections") ||
-        usedTool(result.events, "connections_list");
+      // Requires a listing call to have actually SUCCEEDED. With usedTool this
+      // eval was near-vacuous: an empty workspace gives it no state to check, so
+      // "did the agent emit the call" was its entire substance — and that passes
+      // even when the listing tool errors or is unreachable.
+      const LISTING_TOOLS = [
+        "analysis_list_connections",
+        "warehouse_list_connections",
+        "connections_list",
+      ];
+      const calledWarehouseList = LISTING_TOOLS.some((name) =>
+        succeededWithTool(result.events, name),
+      );
+      const attemptedWarehouseList = LISTING_TOOLS.some((name) =>
+        usedTool(result.events, name),
+      );
       const evaluation = buildEvalCriteriaSummary({
         passFail: [
           buildSessionCompletedCriterion(result),
           passFailCriterion({
             id: "called_warehouse_list",
-            label: "Agent used a connection-listing path to inspect warehouses",
+            label: "A connection-listing call succeeded",
             passed: calledWarehouseList,
             reason: calledWarehouseList
               ? undefined
-              : "Agent did not call a supported connection-listing path.",
-            details: { toolCallsByName: signal.toolCallsByName },
+              : attemptedWarehouseList
+                ? "Agent called a connection-listing path but it did not succeed."
+                : "Agent did not call a supported connection-listing path.",
+            details: { attemptedWarehouseList, toolCallsByName: signal.toolCallsByName },
           }),
           passFailCriterion({
             id: "produced_token_usage",
@@ -121,6 +135,7 @@ describe("warehouse list connections agent eval", () => {
                 : "Signal reported zero total tokens.",
             details: { totalTokens: signal.tokenUsage.totalTokens },
           }),
+          buildHarnessIntegrityCriterion(signal),
           buildNoAssistantErrorCriterion(result),
           buildRuntimeEventsCriterion(result),
           buildResultEventCriterion(result),
