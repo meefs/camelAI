@@ -185,6 +185,30 @@ describe('TranscriptLakeMirror', () => {
     expect(harness.sent[1][0].text).toBe('compacted');
   });
 
+  it('serializes concurrent syncs so a turn does not ship every row twice', async () => {
+    // A turn commits several times and each commit schedules a sync. Run
+    // concurrently they would all read the same pending range before any
+    // advanced the mark — the production symptom was every row landing 2-3x.
+    const harnessSent: PiMessageLakeRecord[][] = [];
+    const harness = createMirrorHarness([userRow(0, 'one'), userRow(1, 'two')], {
+      send: async (records) => {
+        // Yield inside the send so overlapping syncs would interleave between
+        // the pending-row read and the mark advance if they were not chained.
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        harnessSent.push(records);
+      },
+    });
+
+    await Promise.all([
+      harness.mirror.syncTranscriptLake(),
+      harness.mirror.syncTranscriptLake(),
+      harness.mirror.syncTranscriptLake(),
+    ]);
+
+    expect(harnessSent.flat().map((record) => record.idx)).toEqual([0, 1]);
+    expect(harness.kvStore.get(__testing.TRANSCRIPT_LAKE_MARK_KEY)).toBe(2);
+  });
+
   it('caps a single sync so a long backfill stays resumable', async () => {
     const rows = Array.from(
       { length: __testing.TRANSCRIPT_LAKE_MAX_ROWS_PER_SYNC + 10 },

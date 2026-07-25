@@ -145,8 +145,27 @@ export class TranscriptLakeMirror {
    * Export pi_core rows at or beyond the high-water mark. Safe to call on every
    * append and on connect: with no new rows (or no configured binding) it costs
    * one scalar read and returns.
+   *
+   * Calls are serialized against each other. A single turn commits several
+   * times (user message, turn_end, agent_end) and each commit schedules a sync;
+   * run concurrently they all read the same pending range before any of them
+   * advances the mark, so every row ships two or three times. Chaining makes
+   * each sync observe its predecessor's mark, which leaves duplicates to their
+   * intended cause — a failed send or an eviction replay — rather than making
+   * them the norm. Correctness never depended on this (readers dedupe on
+   * (thread_id, idx)), but ingest, storage, and scan cost all did.
    */
-  async syncTranscriptLake(options: { force?: boolean } = {}): Promise<void> {
+  syncTranscriptLake(options: { force?: boolean } = {}): Promise<void> {
+    const previous = this.inFlightSync ?? Promise.resolve();
+    // Swallow a predecessor's rejection here only: its own caller still sees it.
+    const next = previous.catch(() => {}).then(() => this.runSync(options));
+    this.inFlightSync = next;
+    return next;
+  }
+
+  private inFlightSync?: Promise<void>;
+
+  private async runSync(options: { force?: boolean }): Promise<void> {
     if (!this.deps.env().TRANSCRIPT_LAKE) return;
     const context = this.deps.chatContext();
     const threadId = context?.threadId ?? "";
