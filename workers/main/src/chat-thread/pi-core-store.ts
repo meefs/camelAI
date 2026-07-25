@@ -601,43 +601,6 @@ export class PiCoreMessageStore {
     this.markPiCoreChanged(this.getPiCoreRevision().count);
   }
 
-  /**
-   * Delete pi_core rows below `bound`, returning how many went.
-   *
-   * Compaction only ever moved a watermark: `loadPiCoreMessages` reads
-   * `WHERE idx >= firstKeptIndex`, so summarised rows stopped being *read* but
-   * were never *removed*. The table therefore grew without limit — measured on
-   * production threads at 19-22MB across ~2900 rows while the live context those
-   * threads actually replay was 5-7KB. That table lives in a Durable Object with
-   * a 128MB isolate budget, and DO isolate OOM is a real failure mode, so the
-   * dead weight is not free.
-   *
-   * The caller is responsible for choosing a bound that is safe to lose: this
-   * method does not know what has been archived. See prunePiCoreBelowCompaction
-   * in ChatThreadDO, which clamps the bound to the transcript-lake high-water
-   * mark so nothing is deleted before it has been exported — and which therefore
-   * prunes nothing at all in environments with no lake binding, because the mark
-   * never advances there.
-   */
-  prunePiCoreMessagesBelow(bound: number): number {
-    this.ensurePiCoreTables();
-    const safeBound = Math.max(0, Math.floor(Number(bound) || 0));
-    if (safeBound <= 0) return 0;
-    const pending = this.deps
-      .sql()
-      .exec<{ count: number }>(
-        "SELECT COUNT(*) AS count FROM pi_core_messages WHERE idx < ?",
-        safeBound,
-      )
-      .toArray()[0]?.count ?? 0;
-    if (pending <= 0) return 0;
-    this.deps.sql().exec("DELETE FROM pi_core_messages WHERE idx < ?", safeBound);
-    // Deliberately no markPiCoreChanged: pruning removes only rows no reader
-    // was reading, so the live transcript revision is unchanged and mirrors
-    // must not be invalidated by it.
-    return pending;
-  }
-
   clearPiCoreCompaction(): void {
     this.ensurePiCoreTables();
     const changed = this.loadPiCoreCompaction() !== null;

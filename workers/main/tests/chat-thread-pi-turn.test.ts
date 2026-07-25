@@ -3863,61 +3863,6 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
   });
 
-  // Compaction now reclaims space instead of only moving a watermark, but it
-  // must never delete a row the transcript lake has not archived yet.
-  describe('pi_core pruning after compaction', () => {
-    function pruneFake(lakeMark: number | undefined) {
-      const fake = Object.create(ChatThreadDO.prototype) as any;
-      fake.ctx = { storage: { kv: { get: vi.fn(() => lakeMark) } } };
-      // piCoreStore is a prototype getter, so shadow it on the instance.
-      Object.defineProperty(fake, 'piCoreStore', {
-        value: { prunePiCoreMessagesBelow: vi.fn(() => 5) },
-        writable: true,
-        configurable: true,
-      });
-      fake.recordChatThreadObservabilityEvent = vi.fn();
-      return fake;
-    }
-
-    it('clamps the prune bound to the transcript lake high-water mark', () => {
-      // Compaction cut at 500 but only 200 rows are archived: prune 200.
-      const fake = pruneFake(200);
-
-      ChatThreadDO.prototype['prunePiCoreBelowCompaction'].call(fake, 500);
-
-      expect(fake.piCoreStore.prunePiCoreMessagesBelow).toHaveBeenCalledWith(200);
-    });
-
-    it('never prunes past the compaction cut even when more is archived', () => {
-      const fake = pruneFake(900);
-
-      ChatThreadDO.prototype['prunePiCoreBelowCompaction'].call(fake, 500);
-
-      expect(fake.piCoreStore.prunePiCoreMessagesBelow).toHaveBeenCalledWith(500);
-    });
-
-    it('prunes nothing when there is no transcript lake archive', () => {
-      // Local dev and tests have no TRANSCRIPT_LAKE binding, so the mark never
-      // advances. Keeping everything is the safe default, not a special case.
-      for (const mark of [undefined, 0]) {
-        const fake = pruneFake(mark as number | undefined);
-        ChatThreadDO.prototype['prunePiCoreBelowCompaction'].call(fake, 500);
-        expect(fake.piCoreStore.prunePiCoreMessagesBelow).not.toHaveBeenCalled();
-      }
-    });
-
-    it('does not fail the turn when pruning throws', () => {
-      const fake = pruneFake(200);
-      fake.piCoreStore.prunePiCoreMessagesBelow = vi.fn(() => {
-        throw new Error('sql exploded');
-      });
-
-      expect(() =>
-        ChatThreadDO.prototype['prunePiCoreBelowCompaction'].call(fake, 500),
-      ).not.toThrow();
-    });
-  });
-
   it('caps the main Pi request output without mutating catalog metadata', () => {
     const catalogModel = { id: 'large-output', maxTokens: 262_144, contextWindow: 1_000_000 } as any;
 

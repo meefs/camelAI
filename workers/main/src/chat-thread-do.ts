@@ -99,7 +99,7 @@ import {
   sendToolCallRecords,
   toolBlocksOnHuman,
 } from "./lake-streams";
-import { TranscriptLakeMirror, TRANSCRIPT_LAKE_MARK_KEY } from "./chat-thread/transcript-lake";
+import { TranscriptLakeMirror } from "./chat-thread/transcript-lake";
 import {
   BrowserPromptCoordinator,
   type ConnectionSetupResponse,
@@ -3572,53 +3572,8 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     return this.piCoreStore.loadPiCoreCompaction();
   }
 
-  /**
-   * Make compaction reclaim space instead of only moving a watermark.
-   *
-   * Rows below `firstKeptIndex` are already invisible to every live reader —
-   * loadPiCoreMessages filters on it, and getPiCoreForkMessages goes through
-   * loadPiCoreMessages, so even forking cannot see them. They were still stored
-   * forever: production threads carried 19-22MB of pi_core rows to serve a live
-   * context of 5-7KB, inside a 128MB Durable Object isolate.
-   *
-   * The bound is clamped to the transcript-lake high-water mark so a row is only
-   * dropped once it has been exported to the lake, which is the durable archive
-   * the admin explorer and any historical analysis can still read. Two
-   * consequences worth knowing:
-   *
-   *  - With no TRANSCRIPT_LAKE binding (local dev, tests) the mark never
-   *    advances, so the clamp is 0 and this prunes nothing. Environments without
-   *    an archive keep everything, which is the safe default rather than a
-   *    special case.
-   *  - The admin raw-row reader and repair_pi_message_history see only the kept
-   *    range afterwards. That is correct for repair, whose job is the replay
-   *    validity of the live history; for admin debugging the full transcript
-   *    lives in the lake.
-   */
-  private prunePiCoreBelowCompaction(firstKeptIndex: number): void {
-    if (!(firstKeptIndex > 0)) return;
-    const lakeMark = this.ctx.storage.kv.get<number>(TRANSCRIPT_LAKE_MARK_KEY) ?? 0;
-    const bound = Math.min(Math.floor(firstKeptIndex), Math.floor(Number(lakeMark) || 0));
-    if (!(bound > 0)) return;
-    try {
-      const pruned = this.piCoreStore.prunePiCoreMessagesBelow(bound);
-      if (pruned > 0) {
-        this.recordChatThreadObservabilityEvent("pi_core_pruned", {
-          operation: "compaction_prune",
-          status: "ok",
-          count: pruned,
-        });
-      }
-    } catch (error) {
-      // Reclaiming space must never fail a turn: the rows are unreachable
-      // either way, so a failed prune costs storage, not correctness.
-      console.error("[ChatThreadDO] pi_core prune failed", error);
-    }
-  }
-
   private persistPiCoreCompaction(summary: string, firstKeptIndex: number): void {
     this.piCoreStore.persistPiCoreCompaction(summary, firstKeptIndex);
-    this.prunePiCoreBelowCompaction(firstKeptIndex);
   }
 
   private clearPiCoreCompaction(): void {
