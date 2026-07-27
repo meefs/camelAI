@@ -75,6 +75,18 @@ describe("BillingCreditNotice", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("omits the top-up action for payment issues", () => {
+    renderNotice("subscription_unavailable");
+
+    expect(screen.getByText("Payment issue")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Top up" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "View usage" }),
+    ).toBeInTheDocument();
+  });
+
   it("removes the monthly claim from generic exhausted-credit copy", () => {
     const { container } = renderNotice(null);
 

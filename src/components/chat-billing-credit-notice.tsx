@@ -245,7 +245,7 @@ export function BillingCreditNotice({
               >
                 View usage
               </Button>
-              {canTopUp ? (
+              {canTopUp && pauseReason !== "subscription_unavailable" ? (
                 <Button
                   type="button"
                   size="sm"
