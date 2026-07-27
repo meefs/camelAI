@@ -218,6 +218,18 @@ describe('new chat loader sales prompt handling', () => {
     consoleError.mockRestore();
   });
 
+  it('preserves billing overview failures instead of exposing unpaused models', async () => {
+    const billingError = new Error('billing overview unavailable');
+    getOrgBillingOverviewMock.mockRejectedValueOnce(billingError);
+
+    const result = await loader({
+      request: new Request('https://camelai.dev/chat'),
+      context: {},
+    } as never);
+
+    await expect(result.interactive).rejects.toBe(billingError);
+  });
+
   it('falls back to provider-visible models when picker state loading fails', async () => {
     getWorkspaceModelPickerStateMock.mockRejectedValue(new Error('picker down'));
     requireAuthContextMock.mockResolvedValue({

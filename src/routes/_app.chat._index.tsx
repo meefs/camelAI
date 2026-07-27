@@ -508,12 +508,11 @@ export async function loader({ request, context }: Route.LoaderArgs) {
         },
       )
     : Promise.resolve(null);
+  // Do not convert a failed hosted billing read to null: null bypasses the
+  // credit pause and would expose models the Worker may reject.
   const billingOverviewPromise =
     !isSelfhostRuntime(env) && authContext.currentOrg
-      ? getOrgBillingOverview(env, authContext.currentOrg).catch((error) => {
-          console.warn("Failed to load billing overview for chat:", error);
-          return null;
-        })
+      ? getOrgBillingOverview(env, authContext.currentOrg)
       : Promise.resolve(null);
   // Interactive bundle: model picker, billing, chat-group, and sales-prompt
   // data all depend on Durable Object RPC. Bundling them into one deferred

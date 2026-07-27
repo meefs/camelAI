@@ -11,6 +11,7 @@ const getThreadPreviewStateMock = vi.fn();
 const getTodoStateMock = vi.fn();
 const getUiMessagesMock = vi.fn();
 const getWorkspaceModelPickerStateMock = vi.fn();
+const getOrgBillingOverviewMock = vi.fn();
 const getOrgMock = vi.fn();
 const getWorkerScriptMock = vi.fn();
 const listWorkspaceIntegrationRecordsMock = vi.fn();
@@ -29,6 +30,10 @@ vi.mock('@/lib/auth.server', () => ({
 
 vi.mock('@/lib/cloudflare.server', () => ({
   getEnv: getEnvMock,
+}));
+
+vi.mock('@/lib/billing.server', () => ({
+  getOrgBillingOverview: getOrgBillingOverviewMock,
 }));
 
 vi.mock('@/lib/auth-do.server', () => ({
@@ -102,6 +107,7 @@ describe('chat loader admin readonly mode', () => {
       hasEffectivePickerDefault: true,
       defaultModel: 'sonnet',
     });
+    getOrgBillingOverviewMock.mockResolvedValue(null);
     getWorkerScriptMock.mockResolvedValue(null);
     listWorkspaceIntegrationRecordsMock.mockResolvedValue([]);
     readThreadMessagesMock.mockResolvedValue([]);
@@ -218,6 +224,7 @@ describe('chat loader workspace mismatch handling', () => {
       hasEffectivePickerDefault: true,
       defaultModel: 'sonnet',
     });
+    getOrgBillingOverviewMock.mockResolvedValue(null);
     requireSessionWorkspaceAccessMock.mockResolvedValue({
       orgId: 'org_active',
       workspaceId: 'ws_active',
@@ -280,6 +287,29 @@ describe('chat loader workspace mismatch handling', () => {
       previewTabs: [],
       activeTabId: null,
     });
+  });
+
+  it('preserves billing overview failures instead of exposing unpaused models', async () => {
+    const billingError = new Error('billing overview unavailable');
+    requireAuthContextMock.mockResolvedValue({
+      currentWorkspace: { id: 'ws_active' },
+      currentOrg: { id: 'org_active', slug: 'acme' },
+      orgs: [{ org_id: 'org_active', role: 'admin' }],
+    });
+    getThreadMock.mockResolvedValue({
+      id: 'thread_123',
+      workspace_id: 'ws_active',
+      title: 'Workspace Thread',
+    });
+    getOrgBillingOverviewMock.mockRejectedValueOnce(billingError);
+
+    await expect(
+      loader({
+        request: new Request('https://camelai.com/chat/thread_123'),
+        context: {},
+        params: { id: 'thread_123' },
+      } as never),
+    ).rejects.toBe(billingError);
   });
 
   it('seeds the normal transcript path from the thread record while durable history resolves', async () => {

@@ -4457,6 +4457,7 @@ export default function Chat({
                     onOpenUsage={() => navigate("/settings/organization/usage")}
                     onTopUp={openBillingTopUp}
                     canTopUp={Boolean(isAdmin)}
+                    pauseReason={effectiveHostedCreditsPaused?.reason ?? null}
                     userId={user?.id ?? null}
                     orgId={currentOrg?.id ?? null}
                     className="mb-2 shrink-0"

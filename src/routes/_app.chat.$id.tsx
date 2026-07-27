@@ -734,12 +734,11 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   }
 
   const selfhostRuntime = isSelfhostRuntime(env);
+  // Do not convert a failed hosted billing read to null: null bypasses the
+  // credit pause and would expose models the Worker may reject.
   const billingOverviewPromise = selfhostRuntime
     ? Promise.resolve(null)
-    : getOrgBillingOverview(env, authContext.currentOrg).catch((error) => {
-        console.warn("Failed to load billing overview for chat:", error);
-        return null;
-      });
+    : getOrgBillingOverview(env, authContext.currentOrg);
   const threadPromise = chatDO.getThread(context, params.id, workspaceId, {
     orgId: authContext.currentOrg.id,
   });
