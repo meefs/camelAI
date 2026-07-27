@@ -14,11 +14,11 @@ vi.mock("@/lib/cloudflare.server", () => ({
 
 const { action, loader } = await import("@/routes/api/orgs.$id.sso");
 
-describe("organization SSO owner authorization", () => {
+describe("organization SSO administrator authorization", () => {
   const orgStub = {
-    isOwner: vi.fn(async () => false),
     getInfo: vi.fn(),
     getSsoConfig: vi.fn(),
+    disableSsoConfig: vi.fn(),
     claimSsoProvisioning: vi.fn(),
     releaseSsoProvisioning: vi.fn(),
   };
@@ -38,21 +38,39 @@ describe("organization SSO owner authorization", () => {
     getEnvMock.mockReturnValue(env);
   });
 
-  it("does not expose configuration to a non-owner administrator", async () => {
+  it("exposes configuration to an administrator", async () => {
+    orgStub.getInfo.mockResolvedValueOnce({
+      id: "org-1",
+      slug: "acme",
+      billing_status: "enterprise",
+    });
+    orgStub.getSsoConfig.mockResolvedValueOnce(null);
+
     const response = await loader({
       request: new Request("https://camelai.test/api/orgs/org-1/sso"),
       context: {},
       params: { id: "org-1" },
     } as never);
 
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
-      error: "Only organization owners can configure SSO",
+      available: true,
+      configured: false,
+      config: null,
+      callback_url: "https://camelai.test/api/auth/enterprise-oidc/callback",
     });
-    expect(orgStub.getSsoConfig).not.toHaveBeenCalled();
   });
 
-  it("does not let a non-owner administrator mutate configuration", async () => {
+  it("lets an administrator disable SSO", async () => {
+    orgStub.getInfo.mockResolvedValueOnce({
+      id: "org-1",
+      slug: "acme",
+      billing_status: "enterprise",
+    });
+    orgStub.claimSsoProvisioning.mockResolvedValueOnce("lease-1");
+    orgStub.getSsoConfig.mockResolvedValueOnce(null);
+    orgStub.disableSsoConfig.mockResolvedValueOnce(null);
+
     const response = await action({
       request: new Request("https://camelai.test/api/orgs/org-1/sso", {
         method: "DELETE",
@@ -62,12 +80,33 @@ describe("organization SSO owner authorization", () => {
       params: { id: "org-1" },
     } as never);
 
-    expect(response.status).toBe(403);
-    expect(orgStub.claimSsoProvisioning).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      success: true,
+      config: null,
+    });
+    expect(orgStub.disableSsoConfig).toHaveBeenCalledWith("admin-1");
+    expect(orgStub.releaseSsoProvisioning).toHaveBeenCalledWith("lease-1");
+  });
+
+  it("does not touch SSO state when administrator authorization fails", async () => {
+    requireOrgAdminMock.mockRejectedValueOnce(
+      new Response(null, { status: 302 }),
+    );
+
+    await expect(
+      loader({
+        request: new Request("https://camelai.test/api/orgs/org-1/sso"),
+        context: {},
+        params: { id: "org-1" },
+      } as never),
+    ).rejects.toBeInstanceOf(Response);
+
+    expect(orgStub.getInfo).not.toHaveBeenCalled();
+    expect(orgStub.getSsoConfig).not.toHaveBeenCalled();
   });
 
   it("requires a new secret before testing a changed OIDC authority", async () => {
-    orgStub.isOwner.mockResolvedValueOnce(true);
     orgStub.getInfo.mockResolvedValueOnce({
       id: "org-1",
       slug: "acme",

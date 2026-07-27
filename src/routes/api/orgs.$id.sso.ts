@@ -46,16 +46,10 @@ function assertSameOrigin(
 }
 
 export async function loader({ request, context, params }: Route.LoaderArgs) {
-  const authContext = await requireOrgAdmin(request, context, params.id);
+  await requireOrgAdmin(request, context, params.id);
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
   const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(params.id));
-  if (!(await orgStub.isOwner(authContext.user.id))) {
-    return Response.json(
-      { error: "Only organization owners can configure SSO" },
-      { status: 403 },
-    );
-  }
   const [org, config] = await Promise.all([
     orgStub.getInfo(),
     orgStub.getSsoConfig(),
@@ -85,12 +79,6 @@ export async function action({ request, context, params }: Route.ActionArgs) {
   if (originError) return originError;
   const authEnv = getAuthEnv(env);
   const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(params.id));
-  if (!(await orgStub.isOwner(authContext.user.id))) {
-    return Response.json(
-      { error: "Only organization owners can configure SSO" },
-      { status: 403 },
-    );
-  }
   const org = await orgStub.getInfo();
   if (!org)
     return Response.json({ error: "Organization not found" }, { status: 404 });

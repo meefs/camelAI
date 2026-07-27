@@ -1,10 +1,5 @@
 import { useEffect, useState } from "react";
-import {
-  redirect,
-  useFetcher,
-  useLoaderData,
-  useRevalidator,
-} from "react-router";
+import { useFetcher, useLoaderData, useRevalidator } from "react-router";
 import type { Route } from "./+types/_app.settings.organization.sso";
 import { requireAuthContext, requireOrgAdmin } from "@/lib/auth.server";
 import { getEnv } from "@/lib/cloudflare.server";
@@ -53,9 +48,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const auth = await requireOrgAdmin(request, context, current.currentOrg.id);
   const env = getEnv(context);
   const orgStub = env.ORG.get(env.ORG.idFromName(auth.currentOrg.id));
-  if (!(await orgStub.isOwner(auth.user.id))) {
-    throw redirect("/settings/organization/general");
-  }
   const testId = new URL(request.url).searchParams.get("sso_test");
   const [config, connectionTest] = await Promise.all([
     orgStub.getSsoConfig(),
