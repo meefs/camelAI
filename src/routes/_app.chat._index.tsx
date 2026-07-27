@@ -600,6 +600,9 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       canUnlockPremiumModels:
         pausedPickerState?.canUnlockPremiumModels ?? false,
       hostedCreditsPaused: pausedPickerState?.hostedCreditsPaused ?? null,
+      modelPickerSettingsHref:
+        pausedPickerState?.modelPickerSettingsHref ??
+        "/settings/organization/models",
       allowOpenAiSubscription,
       billingCreditStatus: applyDevBillingCreditStatusOverride(
         buildBillingCreditStatus(billingOverview, llmProvider, threadModel),
@@ -1086,6 +1089,7 @@ function ChatWelcomeContent({
     billingAccessMode,
     canUnlockPremiumModels,
     hostedCreditsPaused,
+    modelPickerSettingsHref,
     allowOpenAiSubscription,
     billingCreditStatus,
     salesPrompt,
@@ -1282,6 +1286,7 @@ function ChatWelcomeContent({
           billingAccessMode={billingAccessMode}
           canUnlockPremiumModels={canUnlockPremiumModels}
           hostedCreditsPaused={hostedCreditsPaused}
+          modelPickerSettingsHref={modelPickerSettingsHref}
           allowOpenAiSubscription={allowOpenAiSubscription}
           isOrgAdmin={isOrgAdmin}
           recentModelScope={recentModelScope}

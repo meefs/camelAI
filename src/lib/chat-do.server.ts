@@ -41,6 +41,7 @@ import {
 } from "./model-catalog";
 import {
   deriveHostedCreditPause,
+  findCheapestSelectableModel,
   type HostedCreditPauseBilling,
   type ModelPausedReason,
   type ModelPickerOption,
@@ -189,6 +190,7 @@ export interface WorkspaceModelPickerState {
   defaultModel: LlmModel | null;
   canUnlockPremiumModels: boolean;
   hostedCreditsPaused: { reason: ModelPausedReason } | null;
+  modelPickerSettingsHref: string;
 }
 
 const UNLOCKABLE_CATALOG_IDS = (
@@ -237,20 +239,18 @@ export function applyHostedCreditPause(
   const lockedIds = new Set(
     modelOptions.filter((entry) => entry.locked).map((entry) => entry.id),
   );
+  const fallbackModel = findCheapestSelectableModel(modelOptions)?.id ?? null;
+  const replaceLockedDefault = (model: LlmModel | null): LlmModel | null =>
+    model && lockedIds.has(model) ? fallbackModel ?? model : model;
 
   return {
     ...pickerState,
     modelOptions,
     allowedThreadModels,
-    effectivePickerDefaultModel:
-      pickerState.effectivePickerDefaultModel &&
-      lockedIds.has(pickerState.effectivePickerDefaultModel)
-        ? CAMEL_CODE_LLM_MODEL
-        : pickerState.effectivePickerDefaultModel,
-    defaultModel:
-      pickerState.defaultModel && lockedIds.has(pickerState.defaultModel)
-        ? CAMEL_CODE_LLM_MODEL
-        : pickerState.defaultModel,
+    effectivePickerDefaultModel: replaceLockedDefault(
+      pickerState.effectivePickerDefaultModel,
+    ),
+    defaultModel: replaceLockedDefault(pickerState.defaultModel),
     hostedCreditsPaused: pause.hostedCreditsPaused,
   };
 }
@@ -362,8 +362,10 @@ async function getWorkspaceModelPickerStateForOrg(
     awsRegion,
     allowOpenAiSubscription,
   });
+  const isCustomPicker = effectiveConfig.use_platform_defaults === false;
   const visibleCatalog =
     isFreeMode &&
+    !isCustomPicker &&
     !resolvedCatalog.some((entry) => entry.id === CAMEL_CODE_LLM_MODEL)
       ? [MODEL_CATALOG[CAMEL_CODE_LLM_MODEL], ...resolvedCatalog]
       : resolvedCatalog;
@@ -409,8 +411,9 @@ async function getWorkspaceModelPickerStateForOrg(
   const configuredDefaultIsLocked = modelOptions.some(
     (entry) => entry.id === configuredDefault && entry.locked,
   );
+  const fallbackModel = findCheapestSelectableModel(modelOptions)?.id ?? null;
   const effectivePickerDefaultModel = configuredDefaultIsLocked
-    ? CAMEL_CODE_LLM_MODEL
+    ? fallbackModel ?? configuredDefault
     : configuredDefault;
   const defaultModel = resolveDefaultModelForChat({
     effectiveDefaultModel: effectivePickerDefaultModel,
@@ -439,6 +442,10 @@ async function getWorkspaceModelPickerStateForOrg(
     defaultModel,
     canUnlockPremiumModels,
     hostedCreditsPaused: null,
+    modelPickerSettingsHref:
+      effectiveConfig.source === "workspace"
+        ? `/settings/organization/models?scope=ws&workspaceId=${encodeURIComponent(workspaceId)}`
+        : "/settings/organization/models",
   };
 }
 

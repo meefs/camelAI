@@ -7,7 +7,7 @@ import {
   resolveDisplayedBillingCreditStatus,
   resolveRefreshedThreadModel,
   shouldShowLowCreditAlert,
-  shouldSwitchExhaustedThreadToCamelCode,
+  shouldSwitchExhaustedThreadModel,
 } from '@/lib/chat-credit-status';
 import type { OrgBillingOverview } from '@/lib/billing.server';
 
@@ -57,9 +57,9 @@ describe('chat credit status', () => {
     ).toBeNull();
   });
 
-  it('reconciles an exhausted premium thread to camelCode', () => {
+  it('reconciles an exhausted premium thread to a selectable fallback', () => {
     expect(
-      shouldSwitchExhaustedThreadToCamelCode(
+      shouldSwitchExhaustedThreadModel(
         {
           availableCreditsCents: 0,
           totalCreditLimitCents: 500,
@@ -70,7 +70,7 @@ describe('chat credit status', () => {
       ),
     ).toBe(true);
     expect(
-      shouldSwitchExhaustedThreadToCamelCode(
+      shouldSwitchExhaustedThreadModel(
         {
           availableCreditsCents: 0,
           totalCreditLimitCents: 0,
@@ -82,7 +82,7 @@ describe('chat credit status', () => {
     ).toBe(false);
   });
 
-  it('does not reconcile exhausted credential-covered threads to camelCode', () => {
+  it('does not reconcile exhausted credential-covered threads', () => {
     const status = {
       availableCreditsCents: 0,
       totalCreditLimitCents: 500,
@@ -91,14 +91,14 @@ describe('chat credit status', () => {
     };
 
     expect(
-      shouldSwitchExhaustedThreadToCamelCode(
+      shouldSwitchExhaustedThreadModel(
         status,
         'sonnet',
         'anthropic',
       ),
     ).toBe(false);
     expect(
-      shouldSwitchExhaustedThreadToCamelCode(
+      shouldSwitchExhaustedThreadModel(
         status,
         'gpt-5.6-sol',
         'anthropic',

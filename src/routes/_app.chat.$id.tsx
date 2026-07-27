@@ -620,6 +620,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       billingAccessMode: null,
       canUnlockPremiumModels: false,
       hostedCreditsPaused: null,
+      modelPickerSettingsHref: "/settings/organization/models",
       allowOpenAiSubscription: false,
       experimentalSettings: DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
       billingCreditStatus: null,
@@ -655,6 +656,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       billingAccessMode: null,
       canUnlockPremiumModels: false,
       hostedCreditsPaused: null,
+      modelPickerSettingsHref: "/settings/organization/models",
       allowOpenAiSubscription: false,
       experimentalSettings: DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
       billingCreditStatus: null,
@@ -932,6 +934,9 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     canUnlockPremiumModels:
       pausedPickerState?.canUnlockPremiumModels ?? false,
     hostedCreditsPaused: pausedPickerState?.hostedCreditsPaused ?? null,
+    modelPickerSettingsHref:
+      pausedPickerState?.modelPickerSettingsHref ??
+      "/settings/organization/models",
     allowOpenAiSubscription:
       pausedPickerState?.allowOpenAiSubscription ?? false,
     experimentalSettings:
@@ -976,6 +981,7 @@ export default function ChatPage() {
     billingAccessMode,
     canUnlockPremiumModels,
     hostedCreditsPaused,
+    modelPickerSettingsHref,
     allowOpenAiSubscription,
     experimentalSettings,
     billingCreditStatus,
@@ -1335,6 +1341,7 @@ export default function ChatPage() {
             billingAccessMode={billingAccessMode}
             canUnlockPremiumModels={canUnlockPremiumModels}
             hostedCreditsPaused={hostedCreditsPaused}
+            modelPickerSettingsHref={modelPickerSettingsHref}
             allowOpenAiSubscription={allowOpenAiSubscription}
             experimentalSettings={experimentalSettings}
             billingCreditStatus={billingCreditStatus}

@@ -1,6 +1,7 @@
 'use client';
 
 import { Suspense, useCallback, useMemo, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { Await, useNavigate } from 'react-router';
 import { ChevronUp, Plus } from 'lucide-react';
 import type {
@@ -79,6 +80,7 @@ interface WelcomeScreenProps {
   pausedSection?: { reason: ModelPausedReason } | null;
   recentModelScope?: RecentModelScope | null;
   noModelsMessage?: string | null;
+  noModelsNotice?: ReactNode;
 }
 
 const EMPTY_INTEGRATIONS: Integration[] = [];
@@ -215,6 +217,7 @@ export function WelcomeScreen({
   pausedSection = null,
   recentModelScope,
   noModelsMessage,
+  noModelsNotice,
 }: WelcomeScreenProps) {
   const navigate = useNavigate();
   const [referenceTime] = useState(() => renderedAt ?? Date.now());
@@ -343,11 +346,13 @@ export function WelcomeScreen({
         <div>
           {promptComposer}
 
-          {noModelsMessage && (
+          {noModelsNotice ? (
+            <div className="mt-2">{noModelsNotice}</div>
+          ) : noModelsMessage ? (
             <p className="mt-2 text-sm text-muted-foreground">
               {noModelsMessage}
             </p>
-          )}
+          ) : null}
         </div>
 
         <RecentlyUsedInGroup
@@ -372,11 +377,13 @@ export function WelcomeScreen({
 
       {promptComposer}
 
-      {noModelsMessage && (
+      {noModelsNotice ? (
+        <div className="-mt-8">{noModelsNotice}</div>
+      ) : noModelsMessage ? (
         <p className="-mt-8 text-sm text-muted-foreground">
           {noModelsMessage}
         </p>
-      )}
+      ) : null}
 
       <Suspense fallback={<RecentChatsFallback />}>
         <Await resolve={recentThreads}>

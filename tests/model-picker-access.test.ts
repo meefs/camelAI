@@ -3,6 +3,8 @@ import { CAMEL_CODE_LLM_MODEL } from "@/lib/llm-provider-config";
 import { MODEL_CATALOG } from "@/lib/model-catalog";
 import {
   deriveHostedCreditPause,
+  findCheapestSelectableModel,
+  shouldPromptToAddCamelCode,
   type ModelPickerOption,
 } from "@/lib/model-picker-access";
 
@@ -69,7 +71,7 @@ describe("deriveHostedCreditPause", () => {
     });
   });
 
-  it("injects camelCode when a pause locks every custom picker model", () => {
+  it("preserves a custom picker when every configured model pauses", () => {
     const result = deriveHostedCreditPause({
       modelOptions: [
         MODEL_CATALOG.sonnet,
@@ -85,7 +87,6 @@ describe("deriveHostedCreditPause", () => {
     });
 
     expect(result.modelOptions.map((entry) => entry.id)).toEqual([
-      CAMEL_CODE_LLM_MODEL,
       "sonnet",
       "gpt-5.6-sol",
     ]);
@@ -93,7 +94,45 @@ describe("deriveHostedCreditPause", () => {
       result.modelOptions
         .filter((entry) => !entry.locked)
         .map((entry) => entry.id),
-    ).toEqual([CAMEL_CODE_LLM_MODEL]);
+    ).toEqual([]);
+    expect(
+      shouldPromptToAddCamelCode(
+        result.modelOptions,
+        result.hostedCreditsPaused,
+      ),
+    ).toBe(true);
+  });
+
+  it("chooses the cheapest selectable model and preserves picker order for ties", () => {
+    expect(
+      findCheapestSelectableModel([
+        MODEL_CATALOG["gpt-5.6-sol"],
+        MODEL_CATALOG["gpt-5.6-terra"],
+        MODEL_CATALOG["gpt-5.6-luna"],
+      ])?.id,
+    ).toBe("gpt-5.6-luna");
+    expect(
+      findCheapestSelectableModel([
+        MODEL_CATALOG["gpt-5.6-luna"],
+        MODEL_CATALOG.haiku,
+      ])?.id,
+    ).toBe("gpt-5.6-luna");
+  });
+
+  it("prompts for camelCode when free-mode billing locks every custom model", () => {
+    expect(
+      shouldPromptToAddCamelCode(
+        [
+          {
+            ...MODEL_CATALOG.sonnet,
+            locked: true,
+            unlockHint: "generic",
+          },
+        ],
+        null,
+      ),
+    ).toBe(true);
+    expect(shouldPromptToAddCamelCode([], null)).toBe(false);
   });
 
   it("does not report a pause for a camelCode-only custom picker", () => {

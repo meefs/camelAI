@@ -84,7 +84,7 @@ export function resolveDisplayedBillingCreditStatus(
   return status ?? null;
 }
 
-export function shouldSwitchExhaustedThreadToCamelCode(
+export function shouldSwitchExhaustedThreadModel(
   status: BillingCreditStatus | null | undefined,
   threadModel: LlmModel | null | undefined,
   byokProvider?: string | null,

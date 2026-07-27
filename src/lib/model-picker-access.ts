@@ -4,10 +4,7 @@ import {
   isLlmModelCoveredByByokProvider,
   isLlmModelCoveredByOpenAiSubscription,
 } from "@/lib/llm-provider-config";
-import {
-  MODEL_CATALOG,
-  type ModelCatalogEntry,
-} from "@/lib/model-catalog";
+import type { ModelCatalogEntry } from "@/lib/model-catalog";
 import type { BillingStatus, LlmProvider } from "@/types";
 
 export type ModelPausedReason =
@@ -50,6 +47,34 @@ function clearHostedCreditPause(
     ...unpausedEntry
   } = entry;
   return unpausedEntry;
+}
+
+function modelCostRank(entry: ModelPickerOption): number {
+  return entry.cost === "Free" ? 0 : entry.cost.length;
+}
+
+export function findCheapestSelectableModel(
+  modelOptions: ReadonlyArray<ModelPickerOption>,
+): ModelPickerOption | null {
+  return modelOptions.reduce<ModelPickerOption | null>((cheapest, entry) => {
+    if (entry.locked) return cheapest;
+    if (!cheapest || modelCostRank(entry) < modelCostRank(cheapest)) {
+      return entry;
+    }
+    return cheapest;
+  }, null);
+}
+
+export function shouldPromptToAddCamelCode(
+  modelOptions: ReadonlyArray<ModelPickerOption>,
+  hostedCreditsPaused: { reason: ModelPausedReason } | null,
+): boolean {
+  const hasBillingLockedModel = modelOptions.some((entry) => entry.locked);
+  return Boolean(
+    (hostedCreditsPaused || hasBillingLockedModel) &&
+    !modelOptions.some((entry) => !entry.locked) &&
+    !modelOptions.some((entry) => entry.id === CAMEL_CODE_LLM_MODEL),
+  );
 }
 
 /**
@@ -134,19 +159,9 @@ export function deriveHostedCreditPause(args: {
       hostedCreditsPaused: null,
     };
   }
-  const selectableModelOptions = pausedModelOptions.some(
-    (entry) => !entry.locked,
-  )
-    ? pausedModelOptions
-    : [
-        MODEL_CATALOG[CAMEL_CODE_LLM_MODEL],
-        ...pausedModelOptions.filter(
-          (entry) => entry.id !== CAMEL_CODE_LLM_MODEL,
-        ),
-      ];
 
   return {
-    modelOptions: selectableModelOptions,
+    modelOptions: pausedModelOptions,
     hostedCreditsPaused: { reason },
   };
 }

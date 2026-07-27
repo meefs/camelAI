@@ -129,6 +129,53 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     expect(workspaceStub.getModelPickerConfig).toHaveBeenCalledTimes(2);
   });
 
+  it('links workspace pickers to their scoped model settings', async () => {
+    const workspaceStub = {
+      getInfo: vi.fn().mockResolvedValue({ org_id: 'org_123' }),
+      getModelPickerConfig: vi.fn().mockResolvedValue({
+        use_org_defaults: false,
+        use_platform_defaults: false,
+        models: [{ id: 'sonnet', added_at: 1 }],
+        default_model: 'sonnet',
+      }),
+    };
+    const orgStub = {
+      getInfo: vi.fn().mockResolvedValue({
+        billing_status: 'inactive',
+        billing_credit_purchase_total_cents: 0,
+        billing_credit_grant_total_cents: 0,
+      }),
+      getLlmProviderConfig: vi.fn().mockResolvedValue(null),
+      getExperimentalSettings: vi
+        .fn()
+        .mockResolvedValue({ claude_proxy_models: false }),
+      getModelPickerConfig: vi.fn().mockResolvedValue({
+        use_platform_defaults: true,
+        models: [],
+        default_model: null,
+      }),
+    };
+
+    getEnvMock.mockReturnValue({
+      WORKSPACE: {
+        idFromName: (id: string) => id,
+        get: () => workspaceStub,
+      },
+      ORG: {
+        idFromName: (id: string) => id,
+        get: () => orgStub,
+      },
+    });
+
+    const state = await getWorkspaceModelPickerState({}, 'ws_123');
+
+    expect(state?.modelPickerSettingsHref).toBe(
+      '/settings/organization/models?scope=ws&workspaceId=ws_123',
+    );
+    expect(state?.modelOptions.map((option) => option.id)).toEqual(['sonnet']);
+    expect(state?.allowedThreadModels).toEqual([]);
+  });
+
   it('defaults an inactive zero-credit hosted organization to camelCode', async () => {
     const workspaceStub = {
       getInfo: vi.fn().mockResolvedValue({ org_id: 'org_123' }),
@@ -303,11 +350,14 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     const freeState = await loadState({ billingStatus: 'inactive' });
     expect(freeState).toMatchObject({
       billingAccessMode: 'camel_free',
-      defaultModel: 'deepseek-v4-auto',
-      effectivePickerDefaultModel: 'deepseek-v4-auto',
+      defaultModel: null,
+      effectivePickerDefaultModel: 'sonnet',
       canUnlockPremiumModels: true,
     });
-    expect(freeState?.allowedThreadModels).toEqual(['deepseek-v4-auto']);
+    expect(freeState?.allowedThreadModels).toEqual([]);
+    expect(freeState?.modelOptions.map((option) => option.id)).not.toContain(
+      'deepseek-v4-auto',
+    );
     expect(
       freeState?.modelOptions.find((option) => option.id === 'sonnet'),
     ).toMatchObject({ locked: true, unlockHint: 'generic' });
@@ -327,6 +377,8 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     });
     expect(openAiState?.billingAccessMode).toBe('camel_free');
     expect(openAiState?.canUnlockPremiumModels).toBe(true);
+    expect(openAiState?.defaultModel).toBe('gpt-5.6-sol');
+    expect(openAiState?.effectivePickerDefaultModel).toBe('gpt-5.6-sol');
     expect(openAiState?.allowedThreadModels).toContain('gpt-5.6-sol');
     expect(
       openAiState?.modelOptions.find(
@@ -339,6 +391,9 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     );
     expect(openAiState?.modelOptions.map((option) => option.id)).not.toContain(
       'grok-4.5',
+    );
+    expect(openAiState?.modelOptions.map((option) => option.id)).not.toContain(
+      'deepseek-v4-auto',
     );
 
     const platformFreeState = await loadState({
@@ -392,6 +447,7 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
       defaultModel: 'sonnet',
       canUnlockPremiumModels: false,
       hostedCreditsPaused: null,
+      modelPickerSettingsHref: '/settings/organization/models',
       ...overrides,
     };
   }
@@ -448,7 +504,7 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     });
   });
 
-  it('adds camelCode when a hosted pause locks every custom picker model', () => {
+  it('keeps an all-paused custom picker unchanged and preserves its configured default', () => {
     const result = applyHostedCreditPause(
       pickerState({
         modelOptions: [MODEL_CATALOG.sonnet],
@@ -458,14 +514,42 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     );
 
     expect(result.modelOptions.map((option) => option.id)).toEqual([
-      CAMEL_CODE_LLM_MODEL,
       'sonnet',
     ]);
-    expect(result.allowedThreadModels).toEqual([CAMEL_CODE_LLM_MODEL]);
-    expect(result.defaultModel).toBe(CAMEL_CODE_LLM_MODEL);
-    expect(result.effectivePickerDefaultModel).toBe(
-      CAMEL_CODE_LLM_MODEL,
+    expect(result.allowedThreadModels).toEqual([]);
+    expect(result.defaultModel).toBe('sonnet');
+    expect(result.effectivePickerDefaultModel).toBe('sonnet');
+  });
+
+  it('uses the cheapest credential-covered model when the configured default pauses', () => {
+    const result = applyHostedCreditPause(
+      pickerState({
+        allowOpenAiSubscription: true,
+        modelOptions: [
+          MODEL_CATALOG.sonnet,
+          MODEL_CATALOG['gpt-5.6-sol'],
+          MODEL_CATALOG['gpt-5.6-luna'],
+        ],
+        allowedThreadModels: [
+          'sonnet',
+          'gpt-5.6-sol',
+          'gpt-5.6-luna',
+        ],
+      }),
+      { billingStatus: 'active', availableCreditsCents: 0 },
     );
+
+    expect(result.modelOptions.map((option) => option.id)).toEqual([
+      'sonnet',
+      'gpt-5.6-sol',
+      'gpt-5.6-luna',
+    ]);
+    expect(result.allowedThreadModels).toEqual([
+      'gpt-5.6-sol',
+      'gpt-5.6-luna',
+    ]);
+    expect(result.defaultModel).toBe('gpt-5.6-luna');
+    expect(result.effectivePickerDefaultModel).toBe('gpt-5.6-luna');
   });
 
   it.each(['enterprise', 'byok', 'camel_free'] as const)(
