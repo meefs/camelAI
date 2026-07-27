@@ -162,6 +162,10 @@ export default [
     "routes/api/marketing-attribution.ts",
   ),
   route(
+    "api/marketing-attribution/activate",
+    "routes/api/marketing-attribution.activate.ts",
+  ),
+  route(
     "api/billing/start-subscription",
     "routes/api/billing.start-subscription.ts",
   ),

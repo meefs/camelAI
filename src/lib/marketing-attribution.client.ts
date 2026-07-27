@@ -29,6 +29,7 @@ declare global {
 let attributionRequest: Promise<AttributionEnvelope> | null = null;
 let attributionEnvelope: AttributionEnvelope = { id: null, attribution: {} };
 const trackedEvents = new Set<string>();
+let activationRequest: Promise<void> | null = null;
 
 export function initializeMarketingAttribution(
   search = window.location.search,
@@ -85,4 +86,33 @@ export async function trackMarketingEventOnce(
   if (await trackMarketingEvent(event, { event_id: key, ...properties })) {
     trackedEvents.add(key);
   }
+}
+
+export function trackNewCamelActivationAfterAcceptedMessage(): Promise<void> {
+  activationRequest ??= fetch("/api/marketing-attribution/activate", {
+    method: "POST",
+  })
+    .then(async (response) => {
+      if (!response.ok) {
+        throw new Error("Failed to record new camel activation");
+      }
+      return response.json() as Promise<{
+        activated: boolean;
+        eventId: string;
+        completionBasis: "first_message_accepted";
+      }>;
+    })
+    .then(async (result) => {
+      if (!result.activated) return;
+      await trackMarketingEventOnce(
+        "new_camel_activation",
+        result.eventId,
+        { completion_basis: result.completionBasis },
+      );
+    })
+    .catch((error) => {
+      activationRequest = null;
+      console.error("Failed to track new camel activation", error);
+    });
+  return activationRequest;
 }
