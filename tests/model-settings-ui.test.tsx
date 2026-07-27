@@ -76,6 +76,7 @@ function loaderData(overrides: Record<string, unknown> = {}) {
     useOrgDefaults: false,
     allowOpenAiSubscription: false,
     billingAccessMode: 'subscription',
+    billingStatus: 'active',
     showLockedModels: true,
     billingLockedModelIds: [],
     hiddenLockedModels: [],
@@ -377,6 +378,7 @@ describe('organization model settings UI', () => {
   it('advertises and marks billing-locked models for free orgs', () => {
     loaderDataMock.mockReturnValue(loaderData({
       billingAccessMode: 'camel_free',
+      billingStatus: 'inactive',
       billingLockedModelIds: [
         'sonnet',
         'gpt-5.6-sol',
@@ -408,6 +410,43 @@ describe('organization model settings UI', () => {
       );
     }
     expect(screen.getByLabelText('Locked')).toBeInTheDocument();
+  });
+
+  it('routes past-due orgs to fix payment', () => {
+    loaderDataMock.mockReturnValue(loaderData({
+      billingAccessMode: 'camel_free',
+      billingStatus: 'past_due',
+      billingLockedModelIds: ['sonnet'],
+    }));
+
+    render(<OrganizationModelsPage />);
+
+    expect(screen.getByText('Payment is past due')).toBeInTheDocument();
+    expect(
+      screen.getByText('Fix payment in Billing to restore premium models.'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('link', { name: 'Fix payment' }),
+    ).toHaveAttribute('href', '/settings/organization/billing');
+    expect(
+      screen.queryByText(/Your org is on the free camelCode model/),
+    ).not.toBeInTheDocument();
+  });
+
+  it('shows canceled orgs as free-tier orgs', () => {
+    loaderDataMock.mockReturnValue(loaderData({
+      billingAccessMode: 'camel_free',
+      billingStatus: 'canceled',
+      billingLockedModelIds: ['sonnet'],
+    }));
+
+    render(<OrganizationModelsPage />);
+
+    expect(screen.getByText('Premium models are locked')).toBeInTheDocument();
+    expect(
+      screen.getByText(/Your org is on the free camelCode model/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Payment is past due')).not.toBeInTheDocument();
   });
 
   it('shows provider-hidden models as a read-only BYOK catalog section', () => {

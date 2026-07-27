@@ -456,8 +456,7 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     ['active', 'subscription', 'included_credits_exhausted'],
     ['trialing', 'subscription', 'trial_credits_exhausted'],
     ['inactive', 'credits', 'payg_credits_exhausted'],
-    ['past_due', 'credits', 'subscription_unavailable'],
-    ['canceled', 'credits', 'subscription_unavailable'],
+    ['past_due', 'camel_free', 'subscription_unavailable'],
   ] as const)(
     'maps %s billing to %s hosted-model pauses',
     (billingStatus, billingAccessMode, reason) => {
@@ -480,6 +479,17 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
       expect(result.defaultModel).toBe(CAMEL_CODE_LLM_MODEL);
     },
   );
+
+  it('does not label a canceled subscription as a payment issue', () => {
+    const state = pickerState({ billingAccessMode: 'camel_free' });
+    const result = applyHostedCreditPause(state, {
+      billingStatus: 'canceled',
+      availableCreditsCents: 0,
+    });
+
+    expect(result.modelOptions).toEqual(state.modelOptions);
+    expect(result.hostedCreditsPaused).toBeNull();
+  });
 
   it('leaves BYOK- and OpenAI-covered models available during a hosted credit pause', () => {
     const result = applyHostedCreditPause(

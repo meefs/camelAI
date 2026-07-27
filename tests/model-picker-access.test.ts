@@ -16,6 +16,50 @@ const BASE_OPTIONS: ModelPickerOption[] = [
 ];
 
 describe("deriveHostedCreditPause", () => {
+  it("surfaces a past-due subscription even when access resolves to free mode", () => {
+    const result = deriveHostedCreditPause({
+      modelOptions: BASE_OPTIONS,
+      billingAccessMode: "camel_free",
+      llmProvider: null,
+      allowOpenAiSubscription: false,
+      billing: {
+        billingStatus: "past_due",
+        availableCreditsCents: 0,
+      },
+    });
+
+    expect(result.hostedCreditsPaused).toEqual({
+      reason: "subscription_unavailable",
+    });
+    expect(
+      result.modelOptions.find((option) => option.id === "sonnet"),
+    ).toMatchObject({
+      locked: true,
+      pausedReason: "subscription_unavailable",
+    });
+    expect(
+      result.modelOptions.find(
+        (option) => option.id === CAMEL_CODE_LLM_MODEL,
+      )?.locked,
+    ).not.toBe(true);
+  });
+
+  it("treats a canceled subscription as free-tier access", () => {
+    const result = deriveHostedCreditPause({
+      modelOptions: BASE_OPTIONS,
+      billingAccessMode: "camel_free",
+      llmProvider: null,
+      allowOpenAiSubscription: false,
+      billing: {
+        billingStatus: "canceled",
+        availableCreditsCents: 0,
+      },
+    });
+
+    expect(result.hostedCreditsPaused).toBeNull();
+    expect(result.modelOptions).toEqual(BASE_OPTIONS);
+  });
+
   it("locks hosted premium rows as soon as a refreshed balance is exhausted", () => {
     const result = deriveHostedCreditPause({
       modelOptions: BASE_OPTIONS,

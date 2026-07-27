@@ -36,6 +36,7 @@ import { getByokProviderLabel } from "@/lib/byok-providers";
 import { getEffectiveLlmProviderConfig } from "@/lib/selfhost-ai-provider";
 import { isSelfhostRuntime } from "@/lib/selfhost-runtime";
 import type { BillingPlan, Organization } from "@/types";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { SettingsHeader } from "@/components/settings/settings-header";
@@ -53,6 +54,11 @@ import {
   formatInteger,
   useHydratedTimeZone,
 } from "@/lib/hydration-safe-datetime";
+import {
+  billingStatusBadgeVariant,
+  billingStatusLabel,
+  getBillingStatusDescription,
+} from "@/lib/billing";
 
 const EXISTING_STRIPE_SUBSCRIPTION_STATUSES = new Set([
   "active",
@@ -569,6 +575,7 @@ export default function BillingPage() {
   const timeZone = useHydratedTimeZone();
 
   const isEnterprise = overview.billing_status === "enterprise";
+  const isPastDue = overview.billing_status === "past_due";
   const plan: BillingPlan = normalizeBillingPlan(
     overview.billing_plan,
     overview.billing_status,
@@ -602,8 +609,12 @@ export default function BillingPage() {
         isCanceling && cancellationLabel
           ? `Cancels ${cancellationLabel}`
           : null,
+        isPastDue ? getBillingStatusDescription(overview) : null,
         planSubtitle(plan),
-        !isCanceling && hasActiveSubscription && renewalLabel
+        !isPastDue &&
+        !isCanceling &&
+        hasActiveSubscription &&
+        renewalLabel
           ? `Renews ${renewalLabel}.`
           : null,
       ].filter((line): line is string => Boolean(line));
@@ -667,7 +678,18 @@ export default function BillingPage() {
       <section className="space-y-3">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="space-y-1">
-            <h2 className="text-lg font-semibold">{planHeading}</h2>
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-lg font-semibold">{planHeading}</h2>
+              {isPastDue ? (
+                <Badge
+                  variant={billingStatusBadgeVariant(
+                    overview.billing_status,
+                  )}
+                >
+                  {billingStatusLabel(overview.billing_status)}
+                </Badge>
+              ) : null}
+            </div>
             <div className="space-y-0.5 text-sm text-muted-foreground">
               {planSummaryLines.map((line) => (
                 <p key={line}>{line}</p>
@@ -676,7 +698,11 @@ export default function BillingPage() {
           </div>
           {isEnterprise ? null : (
             <Button variant="outline" onClick={() => setView("manage")}>
-              {plan === "free" ? "Choose a plan" : "Manage plan"}
+              {isPastDue
+                ? "Fix payment"
+                : plan === "free"
+                  ? "Choose a plan"
+                  : "Manage plan"}
             </Button>
           )}
         </div>

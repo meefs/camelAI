@@ -324,6 +324,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     useOrgDefaults,
     allowOpenAiSubscription,
     billingAccessMode,
+    billingStatus: authContext.currentOrg.billing_status,
     showLockedModels,
     billingLockedModelIds,
     hiddenLockedModels,
@@ -877,6 +878,7 @@ export default function OrganizationModelsPage() {
   const billingLockedModelIds = new Set(
     data.showLockedModels ? (data.billingLockedModelIds ?? []) : [],
   );
+  const isPastDue = data.billingStatus === "past_due";
   const lockedBannerEntries = (() => {
     const entries = data.billingLockedModelIds
       .map((id) => MODEL_CATALOG[id])
@@ -965,15 +967,20 @@ export default function OrganizationModelsPage() {
                 </span>
               ))}
             </div>
-            <p className="text-sm font-medium">Premium models are locked</p>
+            <p className="text-sm font-medium">
+              {isPastDue ? "Payment is past due" : "Premium models are locked"}
+            </p>
           </div>
           <p className="text-sm text-muted-foreground">
-            Your org is on the free camelCode model. Unlock premium models with a
-            plan, credits, or an API key.
+            {isPastDue
+              ? "Fix payment in Billing to restore premium models."
+              : "Your org is on the free camelCode model. Unlock premium models with a plan, credits, or an API key."}
           </p>
           <div className="flex flex-wrap gap-2">
             <Button size="sm" asChild>
-              <Link to="/settings/organization/billing">View plans</Link>
+              <Link to="/settings/organization/billing">
+                {isPastDue ? "Fix payment" : "View plans"}
+              </Link>
             </Button>
             <Button size="sm" variant="outline" asChild>
               <Link to="/settings/organization/ai-provider">Add API key</Link>

@@ -89,9 +89,13 @@ export function deriveHostedCreditPause(args: {
   allowOpenAiSubscription: boolean;
   billing: HostedCreditPauseBilling | null;
 }): HostedCreditPauseResult {
+  const subscriptionUnavailable =
+    args.billing?.billingStatus === "past_due" &&
+    args.billingAccessMode !== "selfhost";
   if (
     !args.billing ||
-    (args.billingAccessMode !== "subscription" &&
+    (!subscriptionUnavailable &&
+      args.billingAccessMode !== "subscription" &&
       args.billingAccessMode !== "credits")
   ) {
     return {
@@ -104,10 +108,7 @@ export function deriveHostedCreditPause(args: {
   // data that predates the live credit refresh.
   const modelOptions = args.modelOptions.map(clearHostedCreditPause);
   let reason: ModelPausedReason | null = null;
-  if (
-    args.billing.billingStatus === "past_due" ||
-    args.billing.billingStatus === "canceled"
-  ) {
+  if (subscriptionUnavailable) {
     reason = "subscription_unavailable";
   } else if (
     args.billing.availableCreditsCents !== null &&
