@@ -49,6 +49,7 @@ export interface SignedEnterpriseSsoStateData {
   transaction_id: string;
   connection_id: string;
   config_version: number;
+  purpose?: "login" | "test";
   created_at: number;
 }
 

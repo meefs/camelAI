@@ -92,6 +92,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     transaction_id: transactionId,
     connection_id: config.connection_id,
     config_version: config.config_version,
+    purpose: "login",
     created_at: now,
   });
   const callbackUrl = new URL("/api/auth/enterprise-oidc/callback", env.WORKER_BASE_URL).toString();

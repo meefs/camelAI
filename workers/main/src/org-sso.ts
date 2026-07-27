@@ -53,6 +53,35 @@ export interface OrgSsoTransaction {
   expires_at: number;
 }
 
+export interface OrgSsoConnectionTestChecks {
+  discovery_document_found: boolean;
+  authorization_endpoint_found: boolean;
+  token_endpoint_found: boolean;
+  jwks_loaded: boolean;
+  token_exchange_succeeded: boolean;
+}
+
+export interface OrgSsoConnectionTestIdentity {
+  email: string;
+  domain: string;
+  email_verified: boolean | null;
+  hosted_domain: string | null;
+}
+
+export interface OrgSsoConnectionTest {
+  id: string;
+  actor_user_id: string;
+  base_config_version: number;
+  config: OrgSsoConfig;
+  status: "pending" | "succeeded" | "failed";
+  checks: OrgSsoConnectionTestChecks;
+  identity: OrgSsoConnectionTestIdentity | null;
+  error: string | null;
+  created_at: number;
+  expires_at: number;
+  completed_at: number | null;
+}
+
 export function normalizeSsoIssuer(value: unknown): string {
   const raw = typeof value === "string" ? value.trim() : "";
   let url: URL;

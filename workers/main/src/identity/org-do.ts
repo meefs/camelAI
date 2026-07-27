@@ -87,6 +87,7 @@ import {
 import { ORG_SLUG_KV_PREFIX, generateUniqueOrgSlug, hashOrgSlug, registerOrgSlug } from "./org-slugs";
 import {
   ORG_SSO_CONFIG_KEY,
+  type OrgSsoConnectionTest,
   type OrgSsoConfig,
   type OrgSsoTransaction,
 } from "../org-sso.js";
@@ -2746,6 +2747,48 @@ export class OrgDO extends DurableObject<DOEnv> {
     this.ctx.storage.kv.put(key, state);
     this.ctx.storage.kv.delete(`sso_login_rate:${bucket - 2}`);
     return true;
+  }
+
+  createSsoConnectionTest(test: OrgSsoConnectionTest): void {
+    for (const [key, existing] of this.ctx.storage.kv.list<OrgSsoConnectionTest>({
+      prefix: "sso_connection_test:",
+    })) {
+      if (existing.expires_at <= Date.now()) this.ctx.storage.kv.delete(key);
+    }
+    this.ctx.storage.kv.put(`sso_connection_test:${test.id}`, test);
+  }
+
+  getSsoConnectionTest(id: string, actorUserId: string): OrgSsoConnectionTest | null {
+    const key = `sso_connection_test:${id}`;
+    const test = this.ctx.storage.kv.get<OrgSsoConnectionTest>(key);
+    if (!test) return null;
+    if (test.expires_at <= Date.now()) {
+      this.ctx.storage.kv.delete(key);
+      return null;
+    }
+    return test.actor_user_id === actorUserId ? test : null;
+  }
+
+  completeSsoConnectionTest(
+    id: string,
+    actorUserId: string,
+    completion: Pick<OrgSsoConnectionTest, "status" | "checks" | "identity" | "error" | "completed_at">,
+  ): OrgSsoConnectionTest | null {
+    const test = this.getSsoConnectionTest(id, actorUserId);
+    if (!test || test.status !== "pending") return null;
+    const completed = { ...test, ...completion };
+    this.ctx.storage.kv.put(`sso_connection_test:${id}`, completed);
+    return completed;
+  }
+
+  consumeSuccessfulSsoConnectionTest(
+    id: string,
+    actorUserId: string,
+  ): OrgSsoConnectionTest | null {
+    const test = this.getSsoConnectionTest(id, actorUserId);
+    if (!test || test.status !== "succeeded") return null;
+    this.ctx.storage.kv.delete(`sso_connection_test:${id}`);
+    return test;
   }
 
   createSsoTransaction(transaction: OrgSsoTransaction): void {

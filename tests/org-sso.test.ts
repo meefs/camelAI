@@ -113,12 +113,14 @@ describe("organization OIDC SSO", () => {
       transaction_id: "tx-a",
       connection_id: "connection-a",
       config_version: 3,
+      purpose: "test",
       created_at: Date.now(),
     });
     await expect(parseSignedEnterpriseSsoState("secret", state)).resolves.toMatchObject({
       org_id: "org-a",
       transaction_id: "tx-a",
       config_version: 3,
+      purpose: "test",
     });
     await expect(parseSignedEnterpriseSsoState("wrong", state)).resolves.toBeNull();
   });
