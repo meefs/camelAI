@@ -820,7 +820,7 @@ describe('organization model settings loader', () => {
     expect(result.config.capacity.used).toBe(4);
   });
 
-  it('shows camelCode plus Claude-family models for Anthropic BYOK orgs', async () => {
+  it('shows all provider-compatible Claude-family models for Anthropic BYOK orgs', async () => {
     mockAuthContext({
       currentOrgLlmProviderConfig: providerRecord('anthropic'),
     });
@@ -844,10 +844,11 @@ describe('organization model settings loader', () => {
     expect(result.config.inPicker.map((row) => row.entry.id)).toEqual([
       'deepseek-v4-auto',
       'opus-4.8',
+      'fable-5',
       'sonnet',
       'haiku',
     ]);
     expect(result.config.additional).toEqual([]);
-    expect(result.config.capacity.used).toBe(4);
+    expect(result.config.capacity.used).toBe(5);
   });
 });

@@ -188,7 +188,7 @@ describe('model picker config parsing', () => {
     expect(parsed).toEqual(defaultOrgModelPickerConfig());
   });
 
-  it('drops old customized picker configs that omitted Fable', () => {
+  it('drops legacy picker configs without an explicit platform-default flag', () => {
     const parsed = parseOrgModelPickerConfig({
       models: [
         { id: 'opus-4.8', added_at: 2 },
