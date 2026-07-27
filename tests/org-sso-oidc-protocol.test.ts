@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   discoverOidcConfiguration,
   exchangeOidcCode,
+  getOidcDiscoveryErrorDiagnostic,
+  getOidcDiscoveryErrorMessage,
 } from "../src/lib/org-sso.server";
 
 function base64url(bytes: Uint8Array): string {
@@ -56,6 +58,7 @@ describe("enterprise OIDC protocol", () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = String(input);
       if (url === `${issuer}/.well-known/openid-configuration`) {
+        expect(init?.redirect).toBe("manual");
         return Response.json({
           issuer,
           authorization_endpoint: `${issuer}/authorize`,
@@ -126,5 +129,41 @@ describe("enterprise OIDC protocol", () => {
       expectedNonce: "nonce-1",
       oidcConfig: config,
     })).rejects.toThrow();
+  });
+
+  it("rejects provider redirects using Worker-compatible manual redirect handling", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      expect(init?.redirect).toBe("manual");
+      return Response.redirect("https://redirected.example.com/.well-known/openid-configuration", 302);
+    });
+
+    const discovery = discoverOidcConfiguration({
+      issuer: "https://idp.example.com",
+      client_id: "client-1",
+      client_auth_method: "client_secret_post",
+    }, "client-secret");
+    await expect(discovery).rejects.toSatisfy(
+      (error: unknown) => getOidcDiscoveryErrorMessage(error) === "OIDC provider redirects are not allowed",
+    );
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("returns actionable discovery errors without exposing arbitrary provider details", () => {
+    expect(getOidcDiscoveryErrorMessage(new DOMException("Timed out", "TimeoutError")))
+      .toBe("The OIDC discovery request timed out");
+    expect(getOidcDiscoveryErrorMessage(new TypeError("Invalid redirect value")))
+      .toBe("Could not reach the OIDC issuer; verify that its discovery endpoint is publicly reachable");
+    expect(getOidcDiscoveryErrorMessage(new Error("provider response containing unsafe details")))
+      .toBe("The issuer did not return a valid OpenID Connect discovery document");
+
+    const wrapped = new Error("something went wrong", {
+      cause: new TypeError("fetch failed"),
+    });
+    expect(getOidcDiscoveryErrorDiagnostic(wrapped)).toEqual({
+      errorName: "Error",
+      errorMessage: "something went wrong",
+      causeName: "TypeError",
+      causeMessage: "fetch failed",
+    });
   });
 });

@@ -15,6 +15,10 @@ import { ENTERPRISE_OIDC_AUTH_SOURCE } from "../../workers/main/src/signed-sessi
 const OIDC_HTTP_TIMEOUT_MS = 10_000;
 const MAX_OIDC_RESPONSE_BYTES = 1_000_000;
 
+class OidcProviderValidationError extends Error {
+  override name = "OidcProviderValidationError";
+}
+
 export interface OrgSsoSessionResult {
   session: SessionData;
   signedToken: string;
@@ -31,13 +35,20 @@ const boundedOidcFetch: oidc.CustomFetch = async (url, options) => {
     method: options.method,
     headers: options.headers,
     body: options.body as BodyInit,
-    redirect: "error",
+    // Cloudflare Workers does not implement redirect: "error". Manual mode
+    // lets us preserve the same deny-redirect policy without failing every
+    // provider request before it reaches the network.
+    redirect: "manual",
     signal: AbortSignal.timeout(OIDC_HTTP_TIMEOUT_MS),
   });
+  if (response.status >= 300 && response.status < 400) {
+    await response.body?.cancel();
+    throw new OidcProviderValidationError("OIDC provider redirects are not allowed");
+  }
   const length = Number(response.headers.get("Content-Length") ?? "0");
   if (Number.isFinite(length) && length > MAX_OIDC_RESPONSE_BYTES) {
     await response.body?.cancel();
-    throw new Error("OIDC provider response is too large");
+    throw new OidcProviderValidationError("OIDC provider response is too large");
   }
   if (!response.body) return response;
   const reader = response.body.getReader();
@@ -52,7 +63,7 @@ const boundedOidcFetch: oidc.CustomFetch = async (url, options) => {
       received += chunk.value.byteLength;
       if (received > MAX_OIDC_RESPONSE_BYTES) {
         await reader.cancel();
-        controller.error(new Error("OIDC provider response is too large"));
+        controller.error(new OidcProviderValidationError("OIDC provider response is too large"));
         return;
       }
       controller.enqueue(chunk.value);
@@ -69,8 +80,64 @@ const boundedOidcFetch: oidc.CustomFetch = async (url, options) => {
 };
 
 function validateProviderEndpoint(value: unknown, label: string): void {
-  if (typeof value !== "string") throw new Error(`OIDC provider is missing ${label}`);
+  if (typeof value !== "string") {
+    throw new OidcProviderValidationError(`OIDC provider is missing ${label}`);
+  }
   normalizeSsoIssuer(value);
+}
+
+interface OidcErrorDetail {
+  name: string;
+  message: string;
+}
+
+function getOidcErrorChain(error: unknown): OidcErrorDetail[] {
+  const details: OidcErrorDetail[] = [];
+  const seen = new Set<unknown>();
+  let current = error;
+  while (current && typeof current === "object" && !seen.has(current) && details.length < 5) {
+    seen.add(current);
+    const record = current as { name?: unknown; message?: unknown; cause?: unknown };
+    details.push({
+      name: typeof record.name === "string" ? record.name : "UnknownError",
+      message: typeof record.message === "string" ? record.message : "Unknown OIDC discovery error",
+    });
+    current = record.cause;
+  }
+  return details;
+}
+
+export function getOidcDiscoveryErrorDiagnostic(error: unknown): {
+  errorName: string;
+  errorMessage: string;
+  causeName?: string;
+  causeMessage?: string;
+} {
+  const chain = getOidcErrorChain(error);
+  const top = chain[0] ?? { name: "UnknownError", message: "Unknown OIDC discovery error" };
+  const cause = chain.at(-1);
+  return {
+    errorName: top.name,
+    errorMessage: top.message.slice(0, 500),
+    ...(cause && cause !== top
+      ? { causeName: cause.name, causeMessage: cause.message.slice(0, 500) }
+      : {}),
+  };
+}
+
+export function getOidcDiscoveryErrorMessage(error: unknown): string {
+  const chain = getOidcErrorChain(error);
+  const providerError = chain.find(({ name }) => name === "OidcProviderValidationError");
+  if (providerError) return providerError.message;
+  if (chain.some(({ name, message }) => name === "TimeoutError" || /timed?\s*out/i.test(message))) {
+    return "The OIDC discovery request timed out";
+  }
+  if (chain.some(({ name, message }) => (
+    name === "TypeError" || /fetch failed|network error/i.test(message)
+  ))) {
+    return "Could not reach the OIDC issuer; verify that its discovery endpoint is publicly reachable";
+  }
+  return "The issuer did not return a valid OpenID Connect discovery document";
 }
 
 export async function discoverOidcConfiguration(
@@ -91,23 +158,27 @@ export async function discoverOidcConfiguration(
   oidc.enableNonRepudiationChecks(resolved);
   const metadata = resolved.serverMetadata();
   if (normalizeSsoIssuer(metadata.issuer) !== issuer) {
-    throw new Error("OIDC discovery issuer does not match the configured issuer");
+    throw new OidcProviderValidationError("OIDC discovery issuer does not match the configured issuer");
   }
   validateProviderEndpoint(metadata.authorization_endpoint, "authorization_endpoint");
   validateProviderEndpoint(metadata.token_endpoint, "token_endpoint");
   validateProviderEndpoint(metadata.jwks_uri, "jwks_uri");
   if (!metadata.response_types_supported?.includes("code")) {
-    throw new Error("OIDC provider does not support the authorization code flow");
+    throw new OidcProviderValidationError("OIDC provider does not support the authorization code flow");
   }
   if (!metadata.code_challenge_methods_supported?.includes("S256")) {
-    throw new Error("OIDC provider does not advertise PKCE S256 support");
+    throw new OidcProviderValidationError("OIDC provider does not advertise PKCE S256 support");
   }
   if (!metadata.token_endpoint_auth_methods_supported?.includes(config.client_auth_method)) {
-    throw new Error("OIDC provider does not support the selected client authentication method");
+    throw new OidcProviderValidationError(
+      "OIDC provider does not support the selected client authentication method",
+    );
   }
   const signingAlgorithms = metadata.id_token_signing_alg_values_supported ?? [];
   if (!signingAlgorithms.some((algorithm) => /^(?:RS|PS|ES)\d+$|^EdDSA$/.test(algorithm))) {
-    throw new Error("OIDC provider does not advertise an asymmetric ID-token signing algorithm");
+    throw new OidcProviderValidationError(
+      "OIDC provider does not advertise an asymmetric ID-token signing algorithm",
+    );
   }
   return resolved;
 }

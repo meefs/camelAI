@@ -2,7 +2,11 @@ import type { Route } from "./+types/orgs.$id.sso";
 import { requireOrgAdmin, getAuthEnv } from "@/lib/auth.server";
 import { getEnv } from "@/lib/cloudflare.server";
 import { encryptCredentials, decryptCredentials } from "@/lib/integration-crypto";
-import { discoverOidcConfiguration } from "@/lib/org-sso.server";
+import {
+  discoverOidcConfiguration,
+  getOidcDiscoveryErrorDiagnostic,
+  getOidcDiscoveryErrorMessage,
+} from "@/lib/org-sso.server";
 import {
   buildOrgSsoPublicConfig,
   normalizeSsoEmailDomains,
@@ -141,11 +145,12 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     try {
       await discoverOidcConfiguration(candidate, clientSecret);
     } catch (error) {
+      const diagnostic = getOidcDiscoveryErrorDiagnostic(error);
       console.warn("[enterprise-oidc] discovery validation failed", {
         orgId: org.id,
-        errorName: error instanceof Error ? error.name : "UnknownError",
+        ...diagnostic,
       });
-      return Response.json({ error: "Could not validate the OIDC issuer and discovery document" }, { status: 400 });
+      return Response.json({ error: getOidcDiscoveryErrorMessage(error) }, { status: 400 });
     }
     await orgStub.setSsoConfig(candidate, authContext.user.id);
     return Response.json({
