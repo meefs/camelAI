@@ -7,6 +7,7 @@ import {
 } from "@/lib/connection-contract";
 
 export const CHANNEL_INTEGRATION_TYPES = ["slack", "telegram", "discord_channel"] as const;
+export const DISCORD_BOT_MENTION = "@Camel";
 
 export type ChannelIntegrationType = (typeof CHANNEL_INTEGRATION_TYPES)[number];
 export type ConnectionSort = "updated" | "name" | "created";

@@ -52,6 +52,7 @@ import { generateDefaultAvatar, getContrastTextColor } from "@/lib/avatar";
 import { HYDRATION_SAFE_LOCALE } from "@/lib/hydration-safe-datetime";
 import { buildTelegramDeepLink, TELEGRAM_SETUP_TTL_SECONDS } from "@/lib/telegram-channel";
 import {
+  DISCORD_BOT_MENTION,
   TYPE_COPY,
   DISCORD_STATUS_LABELS,
   connectionRequiresOutboundIpAllowlist,
@@ -211,12 +212,14 @@ function PanelLogo({ item }: { item: PanelItem }) {
 function UseInChatBlock({
   mentionSlug,
   onOpen,
+  title = "Use in chat",
 }: {
   mentionSlug: string;
   onOpen: () => void;
+  title?: string;
 }) {
   return (
-    <Section title="Use in chat">
+    <Section title={title}>
       <div className="space-y-3">
         <dl className="space-y-2">
           <DetailRow label="Mention">
@@ -240,6 +243,52 @@ function UseInChatBlock({
           <MessageSquare />
           Open in chat
         </Button>
+      </div>
+    </Section>
+  );
+}
+
+function DiscordUsage({ connection }: { connection: ConnectionListItem }) {
+  const metadata = getDiscordChannelMetadata(connection);
+  const channelName = formatValue(metadata.parent_channel_name);
+  const mentionOnly = metadata.message_content_mode === "mention_only";
+
+  return (
+    <Section title="Use in Discord">
+      <div className="space-y-3">
+        <dl className="space-y-2">
+          <DetailRow label="Mention">
+            <span className="flex min-w-0 items-center justify-end gap-1.5">
+              <code className="min-w-0 truncate rounded bg-muted px-1.5 py-0.5 text-xs">
+                {DISCORD_BOT_MENTION}
+              </code>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-xs"
+                aria-label="Copy Discord mention"
+                onClick={() => copyText(DISCORD_BOT_MENTION, "Mention")}
+              >
+                <Copy />
+              </Button>
+            </span>
+          </DetailRow>
+        </dl>
+        <p className="text-sm text-muted-foreground">
+          {mentionOnly ? (
+            <>
+              Mention {DISCORD_BOT_MENTION} in #{channelName} to start a thread.
+              Mention-only mode is on, so every follow-up must also mention{" "}
+              {DISCORD_BOT_MENTION}.
+            </>
+          ) : (
+            <>
+              Mention {DISCORD_BOT_MENTION} in #{channelName} to start a thread.
+              Camel replies in a thread and follows it — no mention needed on
+              follow-ups.
+            </>
+          )}
+        </p>
       </div>
     </Section>
   );
@@ -627,11 +676,13 @@ function DiscordDestination({
     ? DISCORD_STATUS_LABELS[metadata.status] ?? metadata.status
     : "Not available";
   const setupSubtitle =
-    metadata.status === "disconnected"
-      ? "Camel is installed but not connected to a channel. Pick a channel to reconnect."
-      : metadata.status === "setup_error"
-        ? "Setup didn't finish. Pick a channel to try again."
-        : "Camel joined this server. Pick a channel to finish setup.";
+    metadata.error_code === "guild_removed"
+      ? "Camel is no longer in this server. Reinstall the bot to reconnect."
+      : metadata.status === "disconnected"
+        ? "Camel is installed but not connected to a channel. Pick a channel to reconnect."
+        : metadata.status === "setup_error"
+          ? "Setup didn't finish. Pick a channel to try again."
+          : "Camel joined this server. Pick a channel to finish setup.";
   const blockedChannelCount = channels.filter(
     (channel) => getDiscordChannelBlockReason(channel) !== null,
   ).length;
@@ -807,7 +858,15 @@ function DiscordDestination({
         />
 
         <div className="flex items-center justify-between gap-2">
-          <Label htmlFor={`discord-channel-filter-${connection.id}`}>Channel</Label>
+          <Label
+            htmlFor={
+              channels.length > 7
+                ? `discord-channel-filter-${connection.id}`
+                : undefined
+            }
+          >
+            Channel
+          </Label>
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
@@ -866,13 +925,14 @@ function DiscordDestination({
                       return (
                         <CommandItem
                           key={channel.id}
-                          value={channel.name}
+                          value={`${channel.name} ${channel.id}`}
+                          keywords={[channel.categoryName ?? ""]}
                           disabled={Boolean(blockReason)}
-                          aria-selected={selected}
                           onSelect={() => setSelectedChannelId(channel.id)}
-                          className="[&>svg:last-child]:hidden"
+                          className="data-[disabled=true]:opacity-100 [&>svg:last-child]:hidden"
                         >
                           <span
+                            data-checked={selected}
                             className={cn(
                               "size-3.5 shrink-0 rounded-full border",
                               selected && "border-4 border-primary",
@@ -881,7 +941,12 @@ function DiscordDestination({
                           <ExposureIcon className="size-3.5 text-muted-foreground" />
                           <div className="flex min-w-0 flex-1 flex-col">
                             <div className="flex min-w-0 items-center gap-2">
-                              <span className="min-w-0 flex-1 truncate">
+                              <span
+                                className={cn(
+                                  "min-w-0 flex-1 truncate",
+                                  blockReason && "text-muted-foreground",
+                                )}
+                              >
                                 {channel.name}
                               </span>
                               {channel.exposure === "visible_to_everyone" ? (
@@ -1141,6 +1206,7 @@ function ChannelBody({
           <UseInChatBlock
             mentionSlug={mentionSlug}
             onOpen={() => onNewChat(item, mentionSlug)}
+            title="Use in camelAI chat"
           />
         ) : null}
         <EmailHousekeeping item={item} onManageEmailSettings={onManageEmailSettings} />
@@ -1158,10 +1224,15 @@ function ChannelBody({
       ) : (
         <TelegramDestination connection={connection} />
       )}
+      {item.channel === "discord_channel" &&
+      getDiscordChannelMetadata(connection).status === "active" ? (
+        <DiscordUsage connection={connection} />
+      ) : null}
       {mentionSlug ? (
         <UseInChatBlock
           mentionSlug={mentionSlug}
           onOpen={() => onNewChat(item, mentionSlug)}
+          title="Use in camelAI chat"
         />
       ) : null}
       <StatusAndHousekeeping

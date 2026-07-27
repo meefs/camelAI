@@ -111,21 +111,17 @@ const actionHandlers = {
   onManageEmailSettings: vi.fn(),
 };
 
-function renderDiscordPanel({
-  connection,
+function renderPanel({
+  item,
   action,
   isAdmin = true,
+  mentionSlug = null,
 }: {
-  connection: ConnectionListItem;
+  item: PanelItem;
   action: (args: ActionFunctionArgs) => unknown;
   isAdmin?: boolean;
+  mentionSlug?: string | null;
 }) {
-  const item: PanelItem = {
-    kind: "channel",
-    channel: "discord_channel",
-    id: connection.id,
-    connection,
-  };
   const router = createMemoryRouter(
     [
       {
@@ -137,7 +133,7 @@ function renderDiscordPanel({
               item={item}
               isAdmin={isAdmin}
               otherWorkspacesCount={0}
-              mentionSlug={null}
+              mentionSlug={mentionSlug}
               renaming={null}
               renameSubmitting={false}
               onRenameValueChange={vi.fn()}
@@ -155,6 +151,30 @@ function renderDiscordPanel({
   );
 
   return render(<RouterProvider router={router} />);
+}
+
+function renderDiscordPanel({
+  connection,
+  action,
+  isAdmin = true,
+  mentionSlug = null,
+}: {
+  connection: ConnectionListItem;
+  action: (args: ActionFunctionArgs) => unknown;
+  isAdmin?: boolean;
+  mentionSlug?: string | null;
+}) {
+  return renderPanel({
+    item: {
+      kind: "channel",
+      channel: "discord_channel",
+      id: connection.id,
+      connection,
+    },
+    action,
+    isAdmin,
+    mentionSlug,
+  });
 }
 
 describe("DiscordDestination setup state", () => {
@@ -203,6 +223,10 @@ describe("DiscordDestination setup state", () => {
     expect(
       screen.getByText("Camel can't see this channel").closest("[data-slot='command-item']"),
     ).toHaveAttribute("data-disabled", "true");
+    expect(
+      screen.getByText("Camel can't see this channel").closest("[data-slot='command-item']"),
+    ).toHaveClass("data-[disabled=true]:opacity-100");
+    expect(screen.queryByText("Use in Discord")).not.toBeInTheDocument();
 
     const connectButton = screen.getByRole("button", {
       name: "Connect channel",
@@ -262,6 +286,11 @@ describe("DiscordDestination setup state", () => {
     expect(
       screen.getByText("Camel was removed from this server"),
     ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Camel is no longer in this server. Reinstall the bot to reconnect.",
+      ),
+    ).toBeInTheDocument();
     const reinstall = screen.getByRole("link", {
       name: "Reinstall Camel bot",
     });
@@ -270,9 +299,109 @@ describe("DiscordDestination setup state", () => {
       "/api/integrations/discord/oauth?integration_id=discord_1&redirect=%2Fconnections",
     );
   });
+
+  it("keeps duplicate channel names independently selectable", async () => {
+    const user = userEvent.setup();
+    const action = vi.fn(async () => ({
+      discordSetup: {
+        integrationId: "discord_1",
+        guild: { id: "guild_1", name: "Camel HQ" },
+        channels: [
+          {
+            id: "general_one",
+            name: "general",
+            categoryId: "category_1",
+            categoryName: "Team One",
+            missingPermissions: [],
+            canActivate: true,
+            exposure: "restricted" as const,
+          },
+          {
+            id: "general_two",
+            name: "general",
+            categoryId: "category_2",
+            categoryName: "Team Two",
+            missingPermissions: [],
+            canActivate: true,
+            exposure: "restricted" as const,
+          },
+        ],
+      },
+    }));
+    const { container } = renderDiscordPanel({
+      connection: discordConnection({
+        guild_name: "Camel HQ",
+        status: "pending_channel",
+      }),
+      action,
+    });
+
+    const names = await screen.findAllByText("general");
+    expect(names).toHaveLength(2);
+    await user.click(names[1]!);
+
+    const firstItem = names[0]!.closest("[data-slot='command-item']");
+    const secondItem = names[1]!.closest("[data-slot='command-item']");
+    expect(firstItem?.querySelector("[data-checked='true']")).toBeNull();
+    expect(secondItem?.querySelector("[data-checked='true']")).not.toBeNull();
+    expect(
+      container.querySelector<HTMLInputElement>(
+        "input[name='parentChannelId']",
+      ),
+    ).toHaveValue("general_two");
+  });
 });
 
 describe("DiscordDestination active state", () => {
+  it("separates Discord usage from the camelAI-chat mention and copies @Camel", async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    renderDiscordPanel({
+      connection: discordConnection({
+        guild_name: "Camel HQ",
+        parent_channel_name: "general",
+        parent_channel_id: "general",
+        status: "active",
+        message_content_mode: "all_messages",
+        security_acknowledged_at: 1,
+      }),
+      action: vi.fn(async () => ({ success: true })),
+      mentionSlug: "camel-hq-general",
+    });
+
+    const discordUsage = screen.getByText("Use in Discord").closest("section");
+    expect(discordUsage).not.toBeNull();
+    expect(within(discordUsage!).getByText("@Camel")).toBeInTheDocument();
+    expect(
+      within(discordUsage!).getByText(
+        "Mention @Camel in #general to start a thread. Camel replies in a thread and follows it — no mention needed on follow-ups.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Use in camelAI chat")).toBeInTheDocument();
+    expect(screen.queryByText("Use in chat")).not.toBeInTheDocument();
+    expect(
+      screen
+        .getAllByRole("heading", { level: 3 })
+        .map((heading) => heading.textContent),
+    ).toEqual([
+      "Destination & identity",
+      "Use in Discord",
+      "Use in camelAI chat",
+      "Status & housekeeping",
+    ]);
+
+    await user.click(
+      within(discordUsage!).getByRole("button", {
+        name: "Copy Discord mention",
+      }),
+    );
+    expect(writeText).toHaveBeenCalledWith("@Camel");
+  });
+
   it("uses the compact security note and confirms before disconnecting", async () => {
     const user = userEvent.setup();
     let submittedIntent: FormDataEntryValue | null = null;
@@ -304,6 +433,11 @@ describe("DiscordDestination active state", () => {
     expect(
       screen.getByText("Messages from this Discord channel start threads here."),
     ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Mention @Camel in #general to start a thread. Mention-only mode is on, so every follow-up must also mention @Camel.",
+      ),
+    ).toBeInTheDocument();
 
     const reinstall = screen.getByRole("link", { name: "Reinstall bot" });
     await user.hover(reinstall);
@@ -321,5 +455,58 @@ describe("DiscordDestination active state", () => {
 
     await waitFor(() => expect(action).toHaveBeenCalledTimes(1));
     expect(submittedIntent).toBe("discordDisconnect");
+  });
+});
+
+describe("connection mention section title", () => {
+  it("titles the native Email channel mention for camelAI chat", () => {
+    renderPanel({
+      item: {
+        kind: "channel",
+        channel: "email",
+        id: "email",
+        email: {
+          address: "workspace@example.com",
+          handle: "workspace",
+          mentionSlug: "workspace-email",
+          inboxEnabled: true,
+          workspaceCreatedBy: "user_1",
+          workspaceCreatedAt: 1,
+        },
+      },
+      action: vi.fn(async () => ({ success: true })),
+      mentionSlug: "workspace-email",
+    });
+
+    expect(screen.getByText("Use in camelAI chat")).toBeInTheDocument();
+    expect(screen.queryByText("Use in chat")).not.toBeInTheDocument();
+  });
+
+  it("keeps regular connections titled Use in chat", () => {
+    const connection: ConnectionListItem = {
+      id: "postgres_1",
+      integration_type: "postgres",
+      name: "Production database",
+      category: "databases",
+      auth_method: "api_key",
+      config: {},
+      created_by: "user_1",
+      created_at: 1,
+      updated_at: 1,
+      has_credentials: true,
+    };
+
+    renderPanel({
+      item: {
+        kind: "connection",
+        id: connection.id,
+        connection,
+      },
+      action: vi.fn(async () => ({ success: true })),
+      mentionSlug: "production-database",
+    });
+
+    expect(screen.getByText("Use in chat")).toBeInTheDocument();
+    expect(screen.queryByText("Use in camelAI chat")).not.toBeInTheDocument();
   });
 });

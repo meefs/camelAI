@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  DISCORD_BOT_MENTION,
   buildConnectionGroups,
   deriveCapabilities,
   filterAndSortConnectionGroups,
@@ -239,6 +240,10 @@ describe("deriveCapabilities", () => {
 });
 
 describe("Discord channel presentation helpers", () => {
+  it("uses the product Discord bot mention consistently", () => {
+    expect(DISCORD_BOT_MENTION).toBe("@Camel");
+  });
+
   it("formats Discord permission names and preserves unknown permissions", () => {
     expect(
       formatDiscordPermissionList([
