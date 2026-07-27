@@ -410,7 +410,7 @@ export function validateOrgSsoIdentityClaims(
     emailVerified,
     hostedDomain,
     eligibleForAutoLink:
-      emailVerified === true && (!isGoogle || hostedDomain === domain),
+      isGoogle && emailVerified === true && hostedDomain === domain,
   };
 }
 

@@ -192,6 +192,27 @@ describe("enterprise OIDC protocol", () => {
     });
   });
 
+  it("does not auto-link identities from a generic self-asserted provider", () => {
+    expect(
+      validateOrgSsoIdentityClaims(
+        {
+          sub: "generic-subject",
+          email: "alice@example.com",
+          email_verified: true,
+        },
+        {
+          issuer: "https://idp.example.com",
+          email_claim: "email",
+          email_domains: ["example.com"],
+        },
+      ),
+    ).toMatchObject({
+      email: "alice@example.com",
+      emailVerified: true,
+      eligibleForAutoLink: false,
+    });
+  });
+
   it("rejects Google identities without a matching verified hosted domain", () => {
     expect(() =>
       validateOrgSsoIdentityClaims(

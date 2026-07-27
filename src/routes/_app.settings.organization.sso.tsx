@@ -359,9 +359,9 @@ export default function OrganizationSsoSettings() {
               />
               <p className="text-xs text-muted-foreground">
                 The signed identity claim must match one of these exact domains.
-                Verified existing organization members are linked automatically
-                on first sign-in; manual linking remains available as a
-                fallback.
+                Google Workspace members are linked automatically from Google's
+                verified hosted-domain claim. Other providers require explicit
+                account linking.
               </p>
             </div>
             {connectionTest && (
