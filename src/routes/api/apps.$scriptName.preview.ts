@@ -3,6 +3,7 @@ import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
 import { type AuthEnv } from '@/lib/auth-helpers';
 import { getSession } from '@/lib/auth.server';
 import { isOrgMember, getWorkerAccessInfo } from '@/lib/auth-do';
+import { ENTERPRISE_OIDC_AUTH_SOURCE } from '../../../workers/main/src/signed-session';
 
 interface R2Env extends AuthEnv {
   R2_BUCKET: R2Bucket;
@@ -41,6 +42,12 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     const accessInfo = await getWorkerAccessInfo(env, normalized, normalized);
     if (!accessInfo) {
       return Response.json({ error: 'App not found' }, { status: 404 });
+    }
+    if (
+      session.auth_source === ENTERPRISE_OIDC_AUTH_SOURCE &&
+      session.org_id !== accessInfo.org_id
+    ) {
+      return Response.json({ error: 'Forbidden' }, { status: 403 });
     }
 
     const isMember = await isOrgMember(env, session.user_id, accessInfo.org_id);

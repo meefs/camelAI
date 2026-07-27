@@ -5,6 +5,7 @@ function authEnvWithWorkspaces(
   workspaces: Array<{ id: string; archived: boolean }>,
 ) {
   const setOrgLastWorkspace = vi.fn(async () => undefined);
+  const setMemberAccess = vi.fn(async () => undefined);
   const orgStub = {
     getMember: vi.fn(async () => ({
       user_id: "user-1",
@@ -31,14 +32,13 @@ function authEnvWithWorkspaces(
       USER: namespace(userStub),
       WORKSPACE: {
         idFromName: (id: string) => id,
-        get: () => {
-          throw new Error("SSO login must not mutate workspace permissions");
-        },
+        get: () => ({ setMemberAccess }),
       },
     } as never,
     orgStub,
     userStub,
     setOrgLastWorkspace,
+    setMemberAccess,
   };
 }
 
@@ -52,7 +52,7 @@ describe("enterprise SSO membership reconciliation", () => {
     expect(fixture.setOrgLastWorkspace).not.toHaveBeenCalled();
   });
 
-  it("selects an authorized workspace without changing its access level", async () => {
+  it("selects an authorized workspace and heals its WorkspaceDO access mirror", async () => {
     const fixture = authEnvWithWorkspaces([{ id: "allowed", archived: false }]);
     await expect(
       ensureOrgMembership(fixture.env, { id: "org-1" } as never, "user-1"),
@@ -60,6 +60,11 @@ describe("enterprise SSO membership reconciliation", () => {
     expect(fixture.setOrgLastWorkspace).toHaveBeenCalledWith(
       "org-1",
       "allowed",
+    );
+    expect(fixture.setMemberAccess).toHaveBeenCalledWith(
+      "user-1",
+      "full",
+      "enterprise-sso-jit",
     );
   });
 
@@ -108,14 +113,13 @@ describe("enterprise SSO membership reconciliation", () => {
       "user-1",
       "member",
       "enterprise-sso-jit",
+      {
+        workspaceAccessDefault: "none",
+        initialWorkspaceId: "default",
+      },
     );
     expect(userStub.addOrg).toHaveBeenCalledWith("org-1", "member", "default");
-    expect(setWorkspaceAccess).toHaveBeenCalledWith(
-      "default",
-      "user-1",
-      "full",
-      "enterprise-sso-jit",
-    );
+    expect(setWorkspaceAccess).not.toHaveBeenCalled();
     expect(workspaceStub.setMemberAccess).toHaveBeenCalledWith(
       "user-1",
       "full",

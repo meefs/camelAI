@@ -72,4 +72,32 @@ describe('hardDeleteAdminUser', () => {
 
     await waitForAdminIndexUserPresence(userId, false);
   });
+
+  it('does not delete another global account email mapping for a tenant SSO user', async () => {
+    const email = `tenant-delete-${Date.now()}-${Math.random().toString(36).slice(2)}@example.com`;
+    const { userId: globalUserId } = await createUser(
+      testEnv,
+      email,
+      'password123',
+      'Global User',
+    );
+    const tenantUserId = crypto.randomUUID();
+    await testEnv.USER.get(
+      testEnv.USER.idFromName(tenantUserId),
+    ).createUserFromEnterpriseSso(tenantUserId, email, 'Tenant User');
+    // The legacy worker-test helper stores the unprefixed compatibility key;
+    // production auth uses the namespaced email key.
+    await testEnv.EMAIL_TO_USER.put(`email:${email}`, globalUserId);
+
+    expect(await testEnv.EMAIL_TO_USER.get(`email:${email}`)).toBe(globalUserId);
+
+    await hardDeleteAdminUser(makeContext(), tenantUserId, 'system-admin');
+
+    expect(await testEnv.EMAIL_TO_USER.get(`email:${email}`)).toBe(globalUserId);
+    expect(
+      await testEnv.USER.get(
+        testEnv.USER.idFromName(globalUserId),
+      ).getProfile(),
+    ).not.toBeNull();
+  });
 });

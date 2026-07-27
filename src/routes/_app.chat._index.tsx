@@ -60,6 +60,7 @@ import {
   saveChatGroupRename,
   type ChatGroupRenameInput,
 } from "@/lib/chat-group-rename.client";
+import { ENTERPRISE_OIDC_AUTH_SOURCE } from "../../workers/main/src/signed-session";
 import { saveChatGroupPinned } from "@/lib/chat-group-pin.client";
 import { extractGroupNewChatRecentItems } from "@/lib/group-new-chat-recent-items";
 import Chat from "@/components/Chat";
@@ -370,7 +371,8 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     if (
       authContext.onboarding?.completed_at &&
       !salesPrompt &&
-      authContext.user?.id
+      authContext.user?.id &&
+      authContext.session.auth_source !== ENTERPRISE_OIDC_AUTH_SOURCE
     ) {
       try {
         const pendingPrompt = await authEnv.USER.get(

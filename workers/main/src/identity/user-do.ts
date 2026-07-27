@@ -2130,6 +2130,7 @@ export class UserDO extends DurableObject<DOEnv> {
       orphaned_at: null,
     };
     await this.setProfile(profile);
+    await this.updateOnboarding({ completed_at: now });
     return profile;
   }
 

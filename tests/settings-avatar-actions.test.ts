@@ -45,6 +45,7 @@ describe("settings avatar action intents", () => {
     getAuthEnvMock.mockReturnValue(authEnv);
     requireAuthContextMock.mockResolvedValue({
       user: { id: "user_1", is_superuser: false },
+      session: { auth_source: null, org_id: "org_1" },
       currentWorkspace: { id: "workspace_1" },
     });
     updateUserMock.mockResolvedValue({});
@@ -100,6 +101,28 @@ describe("settings avatar action intents", () => {
         params: {},
       } as never),
     ).rejects.toThrow("Auth required");
+    expect(updateUserMock).not.toHaveBeenCalled();
+  });
+
+  it("does not mutate a global profile through an enterprise session", async () => {
+    requireAuthContextMock.mockResolvedValueOnce({
+      user: { id: "user_1", is_superuser: false },
+      session: { auth_source: "enterprise_oidc", org_id: "org_1" },
+      currentWorkspace: { id: "workspace_1" },
+    });
+
+    const response = await profileRoute.action({
+      request: postForm({
+        intent: "updateAvatar",
+        avatarColor: "#7C3AED",
+        avatarContent: "AB",
+      }),
+      context: {},
+      params: {},
+    } as never);
+
+    expect(response).toBeInstanceOf(Response);
+    expect((response as Response).status).toBe(403);
     expect(updateUserMock).not.toHaveBeenCalled();
   });
 

@@ -7,6 +7,7 @@ import { normalizeBillingPlan } from "@/lib/billing-plans";
 import { Separator } from "@/components/ui/separator";
 import { SettingsHeader } from "@/components/settings/settings-header";
 import { OrgMembershipsList } from "@/components/settings/org-memberships-list";
+import { ENTERPRISE_OIDC_AUTH_SOURCE } from "../../workers/main/src/signed-session";
 
 export function meta() {
   return [
@@ -22,8 +23,13 @@ export async function action({ request, context }: Route.ActionArgs) {
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
   const actorId = authContext.user!.id;
+  const isEnterpriseSession =
+    authContext.session.auth_source === ENTERPRISE_OIDC_AUTH_SOURCE;
 
   if (intent === "createOrg") {
+    if (isEnterpriseSession) {
+      return Response.json({ error: "Forbidden" }, { status: 403 });
+    }
     const name = formData.get("name") as string;
     if (!name?.trim()) {
       return { error: "Organization name is required" };
@@ -36,6 +42,9 @@ export async function action({ request, context }: Route.ActionArgs) {
     const orgId = formData.get("orgId") as string;
     if (!orgId) {
       return { error: "Organization ID is required" };
+    }
+    if (isEnterpriseSession && authContext.session.org_id !== orgId) {
+      return Response.json({ error: "Forbidden" }, { status: 403 });
     }
     await authDO.removeOrgMember(authEnv, orgId, actorId, actorId);
     return { success: true };

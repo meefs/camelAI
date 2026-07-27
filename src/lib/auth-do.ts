@@ -481,8 +481,16 @@ export async function createUserFromOAuth(
   }
 }
 
-export async function createUserFromEnterpriseSso(
+/**
+ * Creates an enterprise-SSO-only user at an identity claimed by OrgDO.
+ *
+ * Deliberately does not write EMAIL_TO_USER. The email claim is authoritative
+ * only inside the organization that owns the SSO connection, so a tenant must
+ * never be able to reserve or overwrite a global camelAI email identity.
+ */
+export async function createTenantScopedUserFromEnterpriseSso(
   env: AuthEnv,
+  userId: string,
   email: string,
   name: string | null,
 ): Promise<{ userId: string; user: User }> {
@@ -490,29 +498,10 @@ export async function createUserFromEnterpriseSso(
   assertEmailDomainAllowed(email, blocklist);
 
   const normalizedEmail = email.toLowerCase();
-  const emailKvKey = `email:${normalizedEmail}`;
-  const existingUserId = await env.EMAIL_TO_USER.get(emailKvKey);
-  if (existingUserId) {
-    throw new Error("An account with this email already exists");
-  }
-
-  const userId = crypto.randomUUID();
-  await env.EMAIL_TO_USER.put(emailKvKey, userId);
-  if ((await env.EMAIL_TO_USER.get(emailKvKey)) !== userId) {
-    throw new Error("An account with this email already exists");
-  }
-
-  try {
-    const user = await env.USER.get(
-      env.USER.idFromName(userId),
-    ).createUserFromEnterpriseSso(userId, normalizedEmail, name);
-    return { userId, user };
-  } catch (error) {
-    if ((await env.EMAIL_TO_USER.get(emailKvKey)) === userId) {
-      await env.EMAIL_TO_USER.delete(emailKvKey);
-    }
-    throw error;
-  }
+  const user = await env.USER.get(
+    env.USER.idFromName(userId),
+  ).createUserFromEnterpriseSso(userId, normalizedEmail, name);
+  return { userId, user };
 }
 
 export async function linkOAuthProvider(
@@ -1062,10 +1051,12 @@ export async function createWorkspace(
     }
   ).createWorkspaceRecord(workspaceId, name, createdBy, description ?? null);
 
-  // Grant full access to all existing org members
+  // Preserve each member's durable default. Tenant-scoped JIT members default
+  // to no access, including for workspaces created after they joined.
   const members = await orgStub.getMembers();
   await Promise.all(
     members.map(async (member) => {
+      if (member.workspace_access_default === "none") return;
       await (
         orgStub as unknown as {
           setWorkspaceAccess(

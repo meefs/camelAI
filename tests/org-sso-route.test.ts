@@ -20,6 +20,7 @@ describe("organization SSO owner authorization", () => {
     getInfo: vi.fn(),
     getSsoConfig: vi.fn(),
     claimSsoProvisioning: vi.fn(),
+    releaseSsoProvisioning: vi.fn(),
   };
   const env = {
     WORKER_BASE_URL: "https://camelai.test",
@@ -63,5 +64,61 @@ describe("organization SSO owner authorization", () => {
 
     expect(response.status).toBe(403);
     expect(orgStub.claimSsoProvisioning).not.toHaveBeenCalled();
+  });
+
+  it("requires a new secret before testing a changed OIDC authority", async () => {
+    orgStub.isOwner.mockResolvedValueOnce(true);
+    orgStub.getInfo.mockResolvedValueOnce({
+      id: "org-1",
+      slug: "acme",
+      billing_status: "enterprise",
+    });
+    orgStub.claimSsoProvisioning.mockResolvedValueOnce("lease-1");
+    orgStub.getSsoConfig.mockResolvedValueOnce({
+      enabled: true,
+      connection_id: "connection-1",
+      protocol: "oidc",
+      issuer: "https://accounts.google.com",
+      client_id: "old-client",
+      client_secret_encrypted: "encrypted-old-secret",
+      client_auth_method: "client_secret_post",
+      email_claim: "email",
+      email_domains: [],
+      jit_provisioning_enabled: true,
+      config_version: 1,
+      session_ttl_seconds: 8 * 60 * 60,
+      updated_at: 1,
+      updated_by: "owner-1",
+    });
+
+    const response = await action({
+      request: new Request("https://camelai.test/api/orgs/org-1/sso", {
+        method: "POST",
+        headers: {
+          Origin: "https://camelai.test",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          intent: "test",
+          issuer: "https://attacker.example",
+          client_id: "old-client",
+          client_secret: "",
+          client_auth_method: "client_secret_post",
+          email_claim: "email",
+          email_domains: [],
+          jit_provisioning_enabled: true,
+          session_ttl_hours: 8,
+        }),
+      }),
+      context: {},
+      params: { id: "org-1" },
+    } as never);
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error:
+        "Enter the OIDC client secret when changing the issuer, client ID, or authentication method",
+    });
+    expect(orgStub.releaseSsoProvisioning).toHaveBeenCalledWith("lease-1");
   });
 });

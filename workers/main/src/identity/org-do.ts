@@ -318,6 +318,7 @@ export interface OrgMember {
   user_id: string;
   role: OrgRole;
   joined_at: number;
+  workspace_access_default: WorkspaceAccessLevel;
 }
 
 export interface OrgAuthContextBootstrap {
@@ -795,6 +796,13 @@ export interface ApplyManualCreditGrantResult {
   source: string | null;
 }
 
+export interface OrgSsoIdentityRecord {
+  userId: string;
+  email: string;
+  tenantScoped: boolean;
+  membershipRevoked: boolean;
+}
+
 /**
  * Migration Pattern for Durable Objects
  * ======================================
@@ -970,7 +978,8 @@ export class OrgDO extends DurableObject<DOEnv> {
         CREATE TABLE members (
           user_id TEXT PRIMARY KEY,
           role TEXT NOT NULL,
-          joined_at INTEGER NOT NULL
+          joined_at INTEGER NOT NULL,
+          workspace_access_default TEXT NOT NULL DEFAULT 'full'
         )
       `);
       this.sql.exec(`
@@ -1235,7 +1244,8 @@ export class OrgDO extends DurableObject<DOEnv> {
         CREATE TABLE IF NOT EXISTS members (
           user_id TEXT PRIMARY KEY,
           role TEXT NOT NULL,
-          joined_at INTEGER NOT NULL
+          joined_at INTEGER NOT NULL,
+          workspace_access_default TEXT NOT NULL DEFAULT 'full'
         )
       `);
       this.sql.exec(`
@@ -1961,6 +1971,8 @@ export class OrgDO extends DurableObject<DOEnv> {
           subject TEXT NOT NULL,
           user_id TEXT NOT NULL,
           email TEXT NOT NULL,
+          tenant_scoped INTEGER NOT NULL DEFAULT 0,
+          membership_revoked INTEGER NOT NULL DEFAULT 0,
           linked_at INTEGER NOT NULL,
           PRIMARY KEY (connection_id, issuer, subject)
         )
@@ -1970,7 +1982,35 @@ export class OrgDO extends DurableObject<DOEnv> {
       );
     }
 
-    const CURRENT_SCHEMA_VERSION = 47;
+    if (version < 48) {
+      this.ensureColumn(
+        "enterprise_sso_identities",
+        "tenant_scoped",
+        "INTEGER NOT NULL DEFAULT 0",
+      );
+      this.sql.exec(
+        `CREATE INDEX IF NOT EXISTS idx_enterprise_sso_identities_email
+           ON enterprise_sso_identities(connection_id, issuer, email)`,
+      );
+    }
+
+    if (version < 49) {
+      this.ensureColumn(
+        "enterprise_sso_identities",
+        "membership_revoked",
+        "INTEGER NOT NULL DEFAULT 0",
+      );
+    }
+
+    if (version < 50) {
+      this.ensureColumn(
+        "members",
+        "workspace_access_default",
+        "TEXT NOT NULL DEFAULT 'full'",
+      );
+    }
+
+    const CURRENT_SCHEMA_VERSION = 50;
     if (version < CURRENT_SCHEMA_VERSION) {
       this.ctx.storage.kv.put("schemaVersion", CURRENT_SCHEMA_VERSION);
     }
@@ -2853,15 +2893,115 @@ export class OrgDO extends DurableObject<DOEnv> {
     issuer: string,
     subject: string,
   ): string | null {
-    return this.sql
-      .exec<{ user_id: string }>(
-        `SELECT user_id FROM enterprise_sso_identities
+    return this.getSsoIdentity(connectionId, issuer, subject)?.userId ?? null;
+  }
+
+  getSsoIdentity(
+    connectionId: string,
+    issuer: string,
+    subject: string,
+  ): OrgSsoIdentityRecord | null {
+    const row = this.sql
+      .exec<{
+        user_id: string;
+        email: string;
+        tenant_scoped: number;
+        membership_revoked: number;
+      }>(
+        `SELECT user_id, email, tenant_scoped, membership_revoked
+           FROM enterprise_sso_identities
           WHERE connection_id = ? AND issuer = ? AND subject = ?`,
         connectionId,
         issuer,
         subject,
       )
-      .next().value?.user_id ?? null;
+      .next().value;
+    return row
+      ? {
+          userId: row.user_id,
+          email: row.email,
+          tenantScoped: row.tenant_scoped === 1,
+          membershipRevoked: row.membership_revoked === 1,
+        }
+      : null;
+  }
+
+  getSsoIdentityByEmail(
+    connectionId: string,
+    issuer: string,
+    email: string,
+  ): OrgSsoIdentityRecord | null {
+    const row = this.sql
+      .exec<{
+        user_id: string;
+        email: string;
+        tenant_scoped: number;
+        membership_revoked: number;
+      }>(
+        `SELECT user_id, email, tenant_scoped, membership_revoked
+           FROM enterprise_sso_identities
+          WHERE connection_id = ? AND issuer = ? AND email = ?
+          ORDER BY linked_at ASC LIMIT 1`,
+        connectionId,
+        issuer,
+        email.trim().toLowerCase(),
+      )
+      .next().value;
+    return row
+      ? {
+          userId: row.user_id,
+          email: row.email,
+          tenantScoped: row.tenant_scoped === 1,
+          membershipRevoked: row.membership_revoked === 1,
+        }
+      : null;
+  }
+
+  claimSsoJitIdentity(
+    connectionId: string,
+    issuer: string,
+    subject: string,
+    email: string,
+  ): OrgSsoIdentityRecord | null {
+    const normalizedEmail = email.trim().toLowerCase();
+    return this.ctx.storage.transactionSync(() => {
+      const bySubject = this.getSsoIdentity(connectionId, issuer, subject);
+      if (bySubject) return bySubject;
+      // Do not silently create a second tenant principal when a connection is
+      // rotated, and do not let a new connection bypass a removal tombstone.
+      // Rebinding an existing email across connection generations requires an
+      // explicit owner/user linking flow.
+      const priorEmailIdentity = this.sql
+        .exec<{ user_id: string }>(
+          `SELECT user_id FROM enterprise_sso_identities
+            WHERE email = ?
+            LIMIT 1`,
+          normalizedEmail,
+        )
+        .next().value;
+      if (priorEmailIdentity) {
+        return null;
+      }
+      const userId = crypto.randomUUID();
+      this.sql.exec(
+        `INSERT INTO enterprise_sso_identities
+          (connection_id, issuer, subject, user_id, email, tenant_scoped,
+           membership_revoked, linked_at)
+         VALUES (?, ?, ?, ?, ?, 1, 0, ?)`,
+        connectionId,
+        issuer,
+        subject,
+        userId,
+        normalizedEmail,
+        Date.now(),
+      );
+      return {
+        userId,
+        email: normalizedEmail,
+        tenantScoped: true,
+        membershipRevoked: false,
+      };
+    });
   }
 
   bindSsoIdentity(
@@ -2870,21 +3010,33 @@ export class OrgDO extends DurableObject<DOEnv> {
     subject: string,
     userId: string,
     email: string,
-  ): string {
-    const existing = this.getSsoIdentityUserId(connectionId, issuer, subject);
-    if (existing && existing !== userId) throw new Error("sso_identity_conflict");
-    this.sql.exec(
-      `INSERT OR IGNORE INTO enterprise_sso_identities
-        (connection_id, issuer, subject, user_id, email, linked_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      connectionId,
-      issuer,
-      subject,
-      userId,
-      email,
-      Date.now(),
-    );
-    return existing ?? userId;
+  ): string | null {
+    const normalizedEmail = email.trim().toLowerCase();
+    return this.ctx.storage.transactionSync(() => {
+      const existing = this.getSsoIdentity(connectionId, issuer, subject);
+      if (existing) {
+        return existing.userId === userId &&
+          existing.email === normalizedEmail
+          ? userId
+          : null;
+      }
+      if (this.getSsoIdentityByEmail(connectionId, issuer, normalizedEmail)) {
+        return null;
+      }
+      this.sql.exec(
+        `INSERT INTO enterprise_sso_identities
+          (connection_id, issuer, subject, user_id, email, tenant_scoped,
+           membership_revoked, linked_at)
+         VALUES (?, ?, ?, ?, ?, 0, 0, ?)`,
+        connectionId,
+        issuer,
+        subject,
+        userId,
+        normalizedEmail,
+        Date.now(),
+      );
+      return userId;
+    });
   }
 
   setExperimentalSettings(
@@ -3616,7 +3768,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     this.ensureOwnerExists("system");
     return this.sql
       .exec(
-        "SELECT user_id, role, joined_at FROM members ORDER BY joined_at ASC",
+        "SELECT user_id, role, joined_at, workspace_access_default FROM members ORDER BY joined_at ASC",
       )
       .toArray() as unknown as OrgMember[];
   }
@@ -3624,7 +3776,7 @@ export class OrgDO extends DurableObject<DOEnv> {
   async getMember(userId: string): Promise<OrgMember | null> {
     const rows = this.sql
       .exec(
-        "SELECT user_id, role, joined_at FROM members WHERE user_id = ?",
+        "SELECT user_id, role, joined_at, workspace_access_default FROM members WHERE user_id = ?",
         userId,
       )
       .toArray() as unknown as OrgMember[];
@@ -3667,25 +3819,84 @@ export class OrgDO extends DurableObject<DOEnv> {
     userId: string,
     role: OrgRole,
     actorId: string,
+    options: {
+      workspaceAccessDefault?: WorkspaceAccessLevel;
+      initialWorkspaceId?: string | null;
+      workspaceAccessRows?: Array<{
+        workspaceId: string;
+        accessLevel: WorkspaceAccessLevel;
+      }>;
+    } = {},
   ): Promise<void> {
     const now = Date.now();
+    const workspaceAccessDefault =
+      options.workspaceAccessDefault === "none" ? "none" : "full";
     let existing: OrgMember | null = null;
     this.ctx.storage.transactionSync(() => {
       existing =
         (this.sql
           .exec<OrgMember & Record<string, SqlStorageValue>>(
-            "SELECT user_id, role, joined_at FROM members WHERE user_id = ?",
+            "SELECT user_id, role, joined_at, workspace_access_default FROM members WHERE user_id = ?",
             userId,
           )
           .next().value as OrgMember | undefined) ?? null;
       if (!existing) {
         this.assertSeatCapacityForNewMember();
       }
+      if (options.initialWorkspaceId) {
+        const workspace = this.sql
+          .exec<{ archived: number }>(
+            "SELECT archived FROM workspaces WHERE id = ?",
+            options.initialWorkspaceId,
+          )
+          .next().value;
+        if (!workspace || workspace.archived === 1) {
+          throw new Error("Initial workspace is unavailable");
+        }
+      }
       this.sql.exec(
-        "INSERT OR REPLACE INTO members (user_id, role, joined_at) VALUES (?, ?, ?)",
+        "INSERT OR REPLACE INTO members (user_id, role, joined_at, workspace_access_default) VALUES (?, ?, ?, ?)",
         userId,
         role,
         now,
+        existing?.workspace_access_default ?? workspaceAccessDefault,
+      );
+      if (options.initialWorkspaceId) {
+        this.sql.exec(
+          `INSERT INTO workspace_memberships (
+            workspace_id, user_id, access_level, granted_by, granted_at
+          ) VALUES (?, ?, 'full', ?, ?)
+          ON CONFLICT(workspace_id, user_id) DO UPDATE SET
+            access_level = 'full',
+            granted_by = excluded.granted_by,
+            granted_at = excluded.granted_at`,
+          options.initialWorkspaceId,
+          userId,
+          actorId,
+          now,
+        );
+      }
+      if (options.workspaceAccessRows) {
+        this.sql.exec(
+          "DELETE FROM workspace_memberships WHERE user_id = ?",
+          userId,
+        );
+        for (const access of options.workspaceAccessRows) {
+          this.sql.exec(
+            `INSERT INTO workspace_memberships (
+              workspace_id, user_id, access_level, granted_by, granted_at
+            ) VALUES (?, ?, ?, ?, ?)`,
+            access.workspaceId,
+            userId,
+            this.normalizeWorkspaceAccess(access.accessLevel),
+            actorId,
+            now,
+          );
+        }
+      }
+      this.sql.exec(
+        "UPDATE enterprise_sso_identities SET membership_revoked = 0 WHERE user_id = ?",
+        userId,
       );
     });
     if (!existing) {
@@ -3772,9 +3983,14 @@ export class OrgDO extends DurableObject<DOEnv> {
         "Cannot remove the organization owner. Transfer ownership first.",
       );
     }
-    this.sql.exec("DELETE FROM members WHERE user_id = ?", userId);
-    this.sql.exec("DELETE FROM workspace_memberships WHERE user_id = ?", userId);
-    this.sql.exec("DELETE FROM enterprise_sso_identities WHERE user_id = ?", userId);
+    this.ctx.storage.transactionSync(() => {
+      this.sql.exec("DELETE FROM members WHERE user_id = ?", userId);
+      this.sql.exec("DELETE FROM workspace_memberships WHERE user_id = ?", userId);
+      this.sql.exec(
+        "UPDATE enterprise_sso_identities SET membership_revoked = 1 WHERE user_id = ?",
+        userId,
+      );
+    });
     if (existing) {
       this.log("member_removed", actorId, userId, { role: existing.role });
       const info = await this.getInfo();
@@ -4097,7 +4313,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       existingMember =
         (this.sql
           .exec<OrgMember & Record<string, SqlStorageValue>>(
-            "SELECT user_id, role, joined_at FROM members WHERE user_id = ?",
+            "SELECT user_id, role, joined_at, workspace_access_default FROM members WHERE user_id = ?",
             userId,
           )
           .next().value as OrgMember | undefined) ?? null;
@@ -4116,10 +4332,15 @@ export class OrgDO extends DurableObject<DOEnv> {
       }
 
       this.sql.exec(
-        "INSERT OR REPLACE INTO members (user_id, role, joined_at) VALUES (?, ?, ?)",
+        "INSERT OR REPLACE INTO members (user_id, role, joined_at, workspace_access_default) VALUES (?, ?, ?, ?)",
         userId,
         row.role,
         now,
+        existingMember?.workspace_access_default ?? "full",
+      );
+      this.sql.exec(
+        "UPDATE enterprise_sso_identities SET membership_revoked = 0 WHERE user_id = ?",
+        userId,
       );
       this.sql.exec("DELETE FROM invitations WHERE id = ?", invitationId);
     });
@@ -6369,6 +6590,12 @@ export class OrgDO extends DurableObject<DOEnv> {
     return accessLevel === "none" ? "none" : "full";
   }
 
+  private getMemberWorkspaceAccessDefault(
+    member: Pick<OrgMember, "workspace_access_default">,
+  ): WorkspaceAccessLevel {
+    return member.workspace_access_default === "none" ? "none" : "full";
+  }
+
   private getStoredWorkspaceAccess(
     workspaceId: string,
     userId: string,
@@ -6465,7 +6692,10 @@ export class OrgDO extends DurableObject<DOEnv> {
     if (storedAccess) return storedAccess;
 
     await this.ensureWorkspaceAccessMigrated(workspaceId);
-    return this.getStoredWorkspaceAccess(workspaceId, userId) ?? "full";
+    return (
+      this.getStoredWorkspaceAccess(workspaceId, userId) ??
+      this.getMemberWorkspaceAccessDefault(member)
+    );
   }
 
   async setWorkspaceAccess(
@@ -6483,7 +6713,11 @@ export class OrgDO extends DurableObject<DOEnv> {
     if (normalizedAccess === "full") {
       await this.ensureWorkspaceAccessMigrated(workspaceId);
       const storedAccess = this.getStoredWorkspaceAccess(workspaceId, userId);
-      const shouldStoreFullOverride = storedAccess !== null;
+      const member = await this.getMember(userId);
+      const shouldStoreFullOverride =
+        storedAccess !== null ||
+        (member !== null &&
+          this.getMemberWorkspaceAccessDefault(member) === "none");
       if (!shouldStoreFullOverride) {
         this.sql.exec(
           "DELETE FROM workspace_memberships WHERE workspace_id = ? AND user_id = ?",
@@ -6553,9 +6787,14 @@ export class OrgDO extends DurableObject<DOEnv> {
     await this.ensureWorkspaceAccessMigrated(workspaceId);
 
     const rows = this.sql
-      .exec<{ user_id: string; access_level: string | null }>(
+      .exec<{
+        user_id: string;
+        access_level: string | null;
+        workspace_access_default: string;
+      }>(
         `SELECT members.user_id,
-                workspace_memberships.access_level AS access_level
+                workspace_memberships.access_level AS access_level,
+                members.workspace_access_default AS workspace_access_default
            FROM members
            LEFT JOIN workspace_memberships
              ON workspace_memberships.user_id = members.user_id
@@ -6572,7 +6811,9 @@ export class OrgDO extends DurableObject<DOEnv> {
         : null;
       members.push({
         user_id: row.user_id,
-        access_level: storedAccess ?? "full",
+        access_level:
+          storedAccess ??
+          (row.workspace_access_default === "none" ? "none" : "full"),
       });
     }
     return members;
@@ -6624,7 +6865,8 @@ export class OrgDO extends DurableObject<DOEnv> {
     const result: WorkspaceWithAccess[] = [];
     for (const workspace of workspaces) {
       const accessLevel = accessByWorkspace.get(workspace.id) ?? null;
-      const effectiveAccess = accessLevel ?? "full";
+      const effectiveAccess =
+        accessLevel ?? this.getMemberWorkspaceAccessDefault(member);
       if (effectiveAccess === "none") continue;
       result.push({ ...workspace, access_level: effectiveAccess });
     }
@@ -6735,7 +6977,6 @@ export class OrgDO extends DurableObject<DOEnv> {
 
     const orgMembers = await this.getMembers();
     const orgMemberIds = new Set(orgMembers.map((member) => member.user_id));
-    const defaultMemberCount = orgMemberIds.size;
 
     await Promise.all(
       uniqueWorkspaceIds.map((workspaceId) =>
@@ -6752,25 +6993,33 @@ export class OrgDO extends DurableObject<DOEnv> {
       appRows.map((row) => [row.workspace_id, row.count]),
     );
 
-    const restrictedRows = this.sql
-      .exec<{ workspace_id: string; user_id: string }>(
-        "SELECT workspace_id, user_id FROM workspace_memberships WHERE access_level = 'none'",
+    const accessRows = this.sql
+      .exec<{
+        workspace_id: string;
+        user_id: string;
+        access_level: string;
+      }>(
+        "SELECT workspace_id, user_id, access_level FROM workspace_memberships",
       )
       .toArray()
       .filter((row) => orgMemberIds.has(row.user_id));
-    const restrictedCountByWorkspace = new Map(
-      uniqueWorkspaceIds.map((workspaceId) => [
-        workspaceId,
-        restrictedRows.filter((row) => row.workspace_id === workspaceId).length,
+    const accessByWorkspaceAndUser = new Map(
+      accessRows.map((row) => [
+        `${row.workspace_id}:${row.user_id}`,
+        this.normalizeWorkspaceAccess(row.access_level),
       ]),
     );
 
     return uniqueWorkspaceIds.map((workspaceId) => ({
       workspaceId,
-      memberCount: Math.max(
-        0,
-        defaultMemberCount - (restrictedCountByWorkspace.get(workspaceId) ?? 0),
-      ),
+      memberCount: orgMembers.filter((member) => {
+        const stored = accessByWorkspaceAndUser.get(
+          `${workspaceId}:${member.user_id}`,
+        );
+        return (
+          stored ?? this.getMemberWorkspaceAccessDefault(member)
+        ) !== "none";
+      }).length,
       publishedApps: appCountByWorkspace.get(workspaceId) ?? 0,
     }));
   }

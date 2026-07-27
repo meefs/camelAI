@@ -3,7 +3,7 @@ import type { Organization, User } from "@/types";
 import type { AuthEnv, SessionData } from "./auth-helpers";
 import {
   createSession,
-  createUserFromEnterpriseSso,
+  createTenantScopedUserFromEnterpriseSso,
   getUserByEmail,
 } from "./auth-do";
 import { decryptCredentials } from "./integration-crypto";
@@ -15,6 +15,7 @@ import {
   type OidcClientAuthMethod,
 } from "../../workers/main/src/org-sso";
 import { ENTERPRISE_OIDC_AUTH_SOURCE } from "../../workers/main/src/signed-session";
+import { isSuperuserEmail } from "../../workers/main/src/identity/superuser";
 
 const OIDC_HTTP_TIMEOUT_MS = 10_000;
 const MAX_OIDC_RESPONSE_BYTES = 1_000_000;
@@ -40,6 +41,19 @@ export interface ValidatedOrgSsoIdentity {
 
 interface OrgSsoIdentityLookup {
   getMember(userId: string): Promise<unknown>;
+  claimSsoJitIdentity?(
+    connectionId: string,
+    issuer: string,
+    subject: string,
+    email: string,
+  ): Promise<OrgSsoIdentityMapping | null>;
+}
+
+interface OrgSsoIdentityMapping {
+  userId: string;
+  email: string;
+  tenantScoped: boolean;
+  membershipRevoked: boolean;
 }
 
 function oidcClientAuthentication(
@@ -366,20 +380,62 @@ function booleanClaim(value: unknown): boolean | null {
   return null;
 }
 
+function hasControlCharacter(value: string): boolean {
+  return [...value].some((character) => {
+    const code = character.charCodeAt(0);
+    return code <= 31 || code === 127;
+  });
+}
+
+function isValidSsoSubject(value: string): boolean {
+  return (
+    value.length >= 1 &&
+    value.length <= 512 &&
+    !hasControlCharacter(value)
+  );
+}
+
+function parseSsoEmail(value: unknown): {
+  email: string;
+  domain: string;
+} | null {
+  if (typeof value !== "string" || value !== value.trim()) return null;
+  if (value.length > 254 || /\s/.test(value) || hasControlCharacter(value)) {
+    return null;
+  }
+  const parts = value.split("@");
+  if (parts.length !== 2) return null;
+  const [rawLocal, rawDomain] = parts;
+  if (!rawLocal || rawLocal.length > 64 || !rawDomain) return null;
+  const domain = rawDomain.toLowerCase();
+  if (
+    domain.length > 253 ||
+    !domain
+      .split(".")
+      .every(
+        (label) =>
+          label.length >= 1 &&
+          label.length <= 63 &&
+          /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i.test(label),
+      )
+  ) {
+    return null;
+  }
+  return { email: `${rawLocal.toLowerCase()}@${domain}`, domain };
+}
+
 export function validateOrgSsoIdentityClaims(
   claims: Record<string, unknown>,
   config: Pick<OrgSsoConfig, "issuer" | "email_claim" | "email_domains">,
 ): ValidatedOrgSsoIdentity {
   const subject = typeof claims.sub === "string" ? claims.sub : "";
   const claimValue = claims[config.email_claim];
-  const email =
-    typeof claimValue === "string" ? claimValue.trim().toLowerCase() : "";
-  const emailParts = email.split("@");
-  const domain = emailParts.length === 2 ? (emailParts[1] ?? "") : "";
+  const parsedEmail = parseSsoEmail(claimValue);
+  const email = parsedEmail?.email ?? "";
+  const domain = parsedEmail?.domain ?? "";
   if (
-    !subject ||
-    !emailParts[0] ||
-    !domain ||
+    !isValidSsoSubject(subject) ||
+    !parsedEmail ||
     !isEmailAllowedForOrgSso(email, config.email_domains)
   ) {
     throw new Response(
@@ -431,37 +487,107 @@ export async function resolveOrgSsoUser(input: {
   orgStub: OrgSsoIdentityLookup;
   identity: ValidatedOrgSsoIdentity;
   mappedUserId: string | null;
+  mappedTenantScoped?: boolean;
+  mappedMembershipRevoked?: boolean;
+  connectionId?: string;
+  issuer?: string;
   linkUserId: string | null;
   jitProvisioningEnabled?: boolean;
-}): Promise<{ userId: string; user: User } | null> {
+}): Promise<{ userId: string; user: User; tenantScoped: boolean } | null> {
   const { authEnv, identity } = input;
+  if (input.mappedMembershipRevoked) {
+    throw new Response(
+      "Enterprise SSO access was revoked for this organization",
+      { status: 403 },
+    );
+  }
   const directlyMappedUserId = input.mappedUserId ?? input.linkUserId;
   if (directlyMappedUserId) {
-    return getMappedUser(authEnv, directlyMappedUserId, identity.email);
+    if (input.mappedTenantScoped) {
+      const existingProfile = await authEnv.USER.get(
+        authEnv.USER.idFromName(directlyMappedUserId),
+      ).getProfile();
+      if (!existingProfile) {
+        if (!input.jitProvisioningEnabled) return null;
+        if (isSuperuserEmail(identity.email)) {
+          throw new Response("Superuser identities cannot use enterprise SSO", {
+            status: 403,
+          });
+        }
+        await createTenantScopedUserFromEnterpriseSso(
+          authEnv,
+          directlyMappedUserId,
+          identity.email,
+          identity.name,
+        );
+      }
+    }
+    const mapped = await getMappedUser(
+      authEnv,
+      directlyMappedUserId,
+      identity.email,
+    );
+    return { ...mapped, tenantScoped: input.mappedTenantScoped === true };
   }
   if (!identity.eligibleForAutoLink) return null;
 
   let account = await getUserByEmail(authEnv, identity.email);
   if (account) {
     const member = await input.orgStub.getMember(account.userId);
-    if (!member && !input.jitProvisioningEnabled) return null;
-    return getMappedUser(authEnv, account.userId, identity.email);
+    // A configured IdP may authenticate an existing org member, but it must
+    // not annex an unrelated global account that happens to use the asserted
+    // email. JIT creates a separate organization-scoped principal instead.
+    if (member) {
+      const mapped = await getMappedUser(
+        authEnv,
+        account.userId,
+        identity.email,
+      );
+      return { ...mapped, tenantScoped: false };
+    }
+    if (!input.jitProvisioningEnabled) return null;
+    account = null;
   }
   if (!input.jitProvisioningEnabled) return null;
 
-  try {
-    account = await createUserFromEnterpriseSso(
-      authEnv,
-      identity.email,
-      identity.name,
-    );
-  } catch (error) {
-    // A concurrent callback may have claimed the same email first. Converge
-    // on that account, while preserving the normal conflict error otherwise.
-    account = await getUserByEmail(authEnv, identity.email);
-    if (!account) throw error;
+  if (isSuperuserEmail(identity.email)) {
+    throw new Response("Superuser identities cannot use enterprise SSO", {
+      status: 403,
+    });
   }
-  return getMappedUser(authEnv, account.userId, identity.email);
+  if (
+    !input.connectionId ||
+    !input.issuer ||
+    !input.orgStub.claimSsoJitIdentity
+  ) {
+    throw new Error("Enterprise SSO tenant identity claiming is unavailable");
+  }
+  const claim = await input.orgStub.claimSsoJitIdentity(
+    input.connectionId,
+    input.issuer,
+    identity.subject,
+    identity.email,
+  );
+  if (!claim) {
+    throw new Response(
+      "This email is already bound to a different enterprise identity",
+      { status: 403 },
+    );
+  }
+  if (!claim.tenantScoped) {
+    // A non-tenant identity can only be reached through the existing-account
+    // resolution path above. Never turn a global identity into a JIT account.
+    const mapped = await getMappedUser(authEnv, claim.userId, identity.email);
+    return { ...mapped, tenantScoped: false };
+  }
+  account = await createTenantScopedUserFromEnterpriseSso(
+    authEnv,
+    claim.userId,
+    identity.email,
+    identity.name,
+  );
+  const mapped = await getMappedUser(authEnv, account.userId, identity.email);
+  return { ...mapped, tenantScoped: true };
 }
 
 export async function completeOrgSsoLogin(input: {
@@ -515,16 +641,44 @@ export async function completeOrgSsoLogin(input: {
   }
 
   const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(org.id));
-  const mappedUserId = await orgStub.getSsoIdentityUserId(
+  const subjectIdentity = await orgStub.getSsoIdentity(
     config.connection_id,
     config.issuer,
     subject,
   );
+  const mappedIdentity = subjectIdentity;
+  if (
+    !mappedIdentity &&
+    (await orgStub.getSsoIdentityByEmail(
+      config.connection_id,
+      config.issuer,
+      email,
+    ))
+  ) {
+    throw new Response(
+      "This email is already bound to a different enterprise identity",
+      { status: 403 },
+    );
+  }
+  if (
+    input.transaction.link_user_id &&
+    mappedIdentity &&
+    mappedIdentity.userId !== input.transaction.link_user_id
+  ) {
+    throw new Response(
+      "This enterprise identity is already linked to another account",
+      { status: 403 },
+    );
+  }
   const resolvedUser = await resolveOrgSsoUser({
     authEnv,
     orgStub,
     identity,
-    mappedUserId,
+    mappedUserId: mappedIdentity?.userId ?? null,
+    mappedTenantScoped: mappedIdentity?.tenantScoped ?? false,
+    mappedMembershipRevoked: mappedIdentity?.membershipRevoked ?? false,
+    connectionId: config.connection_id,
+    issuer: config.issuer,
     linkUserId: input.transaction.link_user_id,
     jitProvisioningEnabled: config.jit_provisioning_enabled,
   });
@@ -540,13 +694,19 @@ export async function completeOrgSsoLogin(input: {
   const workspaceId = await ensureOrgMembership(authEnv, org, userId, {
     jitProvisioningEnabled: config.jit_provisioning_enabled,
   });
-  await orgStub.bindSsoIdentity(
+  const boundUserId = await orgStub.bindSsoIdentity(
     config.connection_id,
     config.issuer,
     subject,
     userId,
     email,
   );
+  if (boundUserId !== userId) {
+    throw new Response(
+      "This email is already bound to a different enterprise identity",
+      { status: 403 },
+    );
+  }
   const expiresAt = Date.now() + config.session_ttl_seconds * 1000;
   const { signedToken, sessionData } = await createSession(
     authEnv,
@@ -605,7 +765,10 @@ export async function ensureOrgMembership(
       (workspace) => !workspace.archived,
     );
     const workspaceId = workspaces[0]?.id ?? null;
-    await orgStub.addMember(userId, "member", "enterprise-sso-jit");
+    await orgStub.addMember(userId, "member", "enterprise-sso-jit", {
+      workspaceAccessDefault: "none",
+      initialWorkspaceId: workspaceId,
+    });
     member = await orgStub.getMember(userId);
     if (!member) {
       throw new Error("Enterprise SSO membership provisioning failed");
@@ -619,12 +782,6 @@ export async function ensureOrgMembership(
     if (workspaceId) {
       const workspaceStub = authEnv.WORKSPACE.get(
         authEnv.WORKSPACE.idFromName(workspaceId),
-      );
-      await orgStub.setWorkspaceAccess(
-        workspaceId,
-        userId,
-        "full",
-        "enterprise-sso-jit",
       );
       await workspaceStub.setMemberAccess(userId, "full", "enterprise-sso-jit");
       await userStub.setOrgLastWorkspace(org.id, workspaceId);
@@ -649,6 +806,10 @@ export async function ensureOrgMembership(
     await userStub.addOrg(org.id, memberRole, workspaceId);
   }
   if (workspaceId) {
+    const workspaceStub = authEnv.WORKSPACE.get(
+      authEnv.WORKSPACE.idFromName(workspaceId),
+    );
+    await workspaceStub.setMemberAccess(userId, "full", "enterprise-sso-jit");
     await userStub.setOrgLastWorkspace(org.id, workspaceId);
   }
   return workspaceId;

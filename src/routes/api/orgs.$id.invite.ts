@@ -14,6 +14,7 @@ import {
   resolveAppBaseUrl,
   sendOrgInvitationEmail,
 } from '@/lib/email.server';
+import { requireAccessMappedOrg } from '@/lib/cloudflare-access-auth.server';
 
 const legacyInviteMemberFormSchema = z.object({
   email: inviteEmailSchema,
@@ -41,6 +42,13 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     return Response.json({ error: 'Not authenticated' }, { status: 401 });
   }
   const session = sessionContext.session;
+  const mappedOrgError = await requireAccessMappedOrg(
+    request,
+    env,
+    session,
+    orgId,
+  );
+  if (mappedOrgError) return mappedOrgError;
 
   if (request.method === 'POST') {
     try {

@@ -12,6 +12,7 @@ import { ProfileForm } from '@/components/settings/profile-form';
 import { ThemePreference } from '@/components/settings/theme-preference';
 import { profileSchema } from '@/lib/schemas';
 import { normalizeAvatarColor, validateAvatarContent } from '@/lib/avatar';
+import { ENTERPRISE_OIDC_AUTH_SOURCE } from '../../workers/main/src/signed-session';
 
 export function meta() {
   return [
@@ -22,6 +23,14 @@ export function meta() {
 
 export async function action({ request, context }: Route.ActionArgs) {
   const authContext = await requireAuthContext(request, context);
+  // The IdP owns enterprise-session profile claims. In particular, a legacy
+  // SSO mapping may point at a global account that is also used in other orgs.
+  if (authContext.session.auth_source === ENTERPRISE_OIDC_AUTH_SOURCE) {
+    return Response.json(
+      { error: 'Profile changes are unavailable in an enterprise SSO session' },
+      { status: 403 },
+    );
+  }
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
   const formData = await request.formData();

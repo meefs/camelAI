@@ -19,6 +19,7 @@ import type {
   Thread,
   Message,
   PreviewTarget,
+  WorkspaceAccessLevel,
 } from "@/types";
 import { getEnv, type CloudflareEnv } from "./cloudflare.server";
 import { getAuthEnv } from "./auth-helpers";
@@ -1531,7 +1532,16 @@ export async function hardDeleteAdminUserWithEnv(
     allProbeOrgIds.add(orgId);
   }
 
-  const orgMemberships: Array<{ org_id: string; role: OrgRole }> = [];
+  type OrgMembershipSnapshot = {
+    org_id: string;
+    role: OrgRole;
+    workspace_access_default: WorkspaceAccessLevel;
+    workspace_access_rows: Array<{
+      workspaceId: string;
+      accessLevel: WorkspaceAccessLevel;
+    }>;
+  };
+  const orgMemberships: OrgMembershipSnapshot[] = [];
   const orgMembershipProbeErrors: string[] = [];
   const orgProbeResults = await mapWithConcurrency(
     Array.from(allProbeOrgIds),
@@ -1539,13 +1549,23 @@ export async function hardDeleteAdminUserWithEnv(
     async (orgId) => {
       try {
         const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
-        const member = await orgStub.getMember(userId);
+        const [member, accessRows] = await Promise.all([
+          orgStub.getMember(userId),
+          orgStub.listWorkspaceAccessRows(),
+        ]);
         if (!member) {
           return null;
         }
-        return { org_id: orgId, role: member.role } as {
-          org_id: string;
-          role: OrgRole;
+        return {
+          org_id: orgId,
+          role: member.role,
+          workspace_access_default: member.workspace_access_default,
+          workspace_access_rows: accessRows
+            .filter((row) => row.user_id === userId)
+            .map((row) => ({
+              workspaceId: row.workspace_id,
+              accessLevel: row.access_level,
+            })),
         };
       } catch (error) {
         return `${orgId.slice(0, 8)}: ${toErrorMessage(error)}`;
@@ -1607,7 +1627,7 @@ export async function hardDeleteAdminUserWithEnv(
 
   // 5. Remove user from all orgs first. If any membership cleanup fails,
   // stop before wiping the user record to avoid orphaned org membership rows.
-  const removedOrgMemberships: Array<{ org_id: string; role: OrgRole }> = [];
+  const removedOrgMemberships: OrgMembershipSnapshot[] = [];
   const orgRemovalErrors: string[] = [];
   const removalResults = await mapWithConcurrency(
     orgMemberships,
@@ -1628,10 +1648,7 @@ export async function hardDeleteAdminUserWithEnv(
 
   for (const result of removalResults) {
     if (result.ok) {
-      removedOrgMemberships.push({
-        org_id: result.org.org_id,
-        role: result.org.role,
-      });
+      removedOrgMemberships.push(result.org);
       continue;
     }
     orgRemovalErrors.push(result.error);
@@ -1643,7 +1660,10 @@ export async function hardDeleteAdminUserWithEnv(
         const orgStub = authEnv.ORG.get(
           authEnv.ORG.idFromName(membership.org_id),
         );
-        await orgStub.addMember(userId, membership.role, actorId);
+        await orgStub.addMember(userId, membership.role, actorId, {
+          workspaceAccessDefault: membership.workspace_access_default,
+          workspaceAccessRows: membership.workspace_access_rows,
+        });
       } catch (rollbackError) {
         rollbackErrors.push(
           `${membership.org_id.slice(0, 8)}: ${toErrorMessage(rollbackError)}`,
@@ -1675,7 +1695,10 @@ export async function hardDeleteAdminUserWithEnv(
         const orgStub = authEnv.ORG.get(
           authEnv.ORG.idFromName(membership.org_id),
         );
-        await orgStub.addMember(userId, membership.role, actorId);
+        await orgStub.addMember(userId, membership.role, actorId, {
+          workspaceAccessDefault: membership.workspace_access_default,
+          workspaceAccessRows: membership.workspace_access_rows,
+        });
       } catch (rollbackError) {
         rollbackErrors.push(
           `${membership.org_id.slice(0, 8)}: ${toErrorMessage(rollbackError)}`,
@@ -1714,7 +1737,9 @@ export async function hardDeleteAdminUserWithEnv(
     );
   }
 
-  // 7. Delete EMAIL_TO_USER KV entries.
+  // 7. Delete EMAIL_TO_USER KV entries only when they still belong to this
+  // user. Tenant-scoped SSO principals are intentionally absent from this
+  // global index and may share an email with a different global account.
   const kvKeysToDelete: string[] = [`email:${profile.email.toLowerCase()}`];
   for (const provider of oauthProviders) {
     kvKeysToDelete.push(`oauth:${provider.provider}:${provider.provider_id}`);
@@ -1722,7 +1747,11 @@ export async function hardDeleteAdminUserWithEnv(
   await Promise.all(
     kvKeysToDelete.map(async (key) => {
       try {
-        await authEnv.EMAIL_TO_USER.delete(key);
+        const value = await authEnv.EMAIL_TO_USER.get(key);
+        const parsed = parseJsonSafely(value);
+        if (value === userId || parsed?.user_id === userId) {
+          await authEnv.EMAIL_TO_USER.delete(key);
+        }
       } catch (error) {
         warnings.push(
           `Failed to delete EMAIL_TO_USER key "${key}": ${toErrorMessage(error)}`,

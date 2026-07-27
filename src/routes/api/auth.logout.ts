@@ -4,6 +4,7 @@ import { getSignedSessionFromRequest, createDeleteSessionCookieHeader } from '@/
 import { providerForAuthSource } from '../../../workers/main/src/helpers/proxy-auth-providers';
 import type { ProxyAuthEnv } from '../../../workers/main/src/helpers/proxy-auth-core';
 import type { UserDO } from '../../../workers/main/src/auth';
+import { ENTERPRISE_OIDC_AUTH_SOURCE } from '../../../workers/main/src/signed-session';
 
 export async function action({ request, context }: Route.ActionArgs) {
   if (request.method !== 'POST') {
@@ -20,9 +21,11 @@ export async function action({ request, context }: Route.ActionArgs) {
     accessLogoutUrl =
       proxyProvider?.getLogoutUrl(request, env as unknown as ProxyAuthEnv) ?? null;
 
-    if (session) {
+    if (session && session.auth_source !== ENTERPRISE_OIDC_AUTH_SOURCE) {
       // Invalidate all outstanding signed sessions for this user so that
       // copied/stolen tokens created before this logout become unusable.
+      // Enterprise OIDC cookies are org-scoped. Invalidating the UserDO here
+      // would also log a linked global user out of unrelated organizations.
       const userNs = env.USER as DurableObjectNamespace<UserDO>;
       const userStub = userNs.get(userNs.idFromName(session.user_id));
       await userStub.invalidateSessions();

@@ -267,6 +267,37 @@ describe("enterprise OIDC protocol", () => {
     ).toThrow();
   });
 
+  it.each([
+    {
+      label: "an oversized subject",
+      claims: { sub: "s".repeat(513), email: "alice@example.com" },
+    },
+    {
+      label: "control characters in email",
+      claims: { sub: "subject", email: "alice\u0000@example.com" },
+    },
+    {
+      label: "whitespace in email",
+      claims: { sub: "subject", email: " alice@example.com" },
+    },
+    {
+      label: "more than one at-sign",
+      claims: { sub: "subject", email: "alice@example.com@evil.example" },
+    },
+    {
+      label: "a non-DNS domain",
+      claims: { sub: "subject", email: "alice@_invalid.example" },
+    },
+  ])("rejects $label before identity persistence", ({ claims }) => {
+    expect(() =>
+      validateOrgSsoIdentityClaims(claims, {
+        issuer: "https://idp.example.com",
+        email_claim: "email",
+        email_domains: [],
+      }),
+    ).toThrow();
+  });
+
   it("rejects a nonce mismatch", async () => {
     const { config } = await setup("different-nonce");
     await expect(

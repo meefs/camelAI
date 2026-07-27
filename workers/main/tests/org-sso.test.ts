@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { env } from "cloudflare:test";
-import { createOrg, createUser, type TestEnv } from "./test-helpers";
+import {
+  createOrg,
+  createUser,
+  createWorkspace,
+  type TestEnv,
+} from "./test-helpers";
 import type { OrgSsoConfig } from "../src/org-sso";
 import { canCreateEnterpriseSsoUser } from "../src/identity/user-do";
 
@@ -9,9 +14,15 @@ const testEnv = env as unknown as TestEnv;
 async function freshOrg() {
   const email = `sso-${crypto.randomUUID()}@example.com`;
   const { userId } = await createUser(testEnv, email, "password", "SSO Admin");
-  const { org } = await createOrg(testEnv, "SSO Org", userId);
+  const { org, defaultWorkspaceId } = await createOrg(
+    testEnv,
+    "SSO Org",
+    userId,
+  );
   return {
     userId,
+    org,
+    defaultWorkspaceId,
     orgStub: testEnv.ORG.get(testEnv.ORG.idFromName(org.id)),
   };
 }
@@ -232,5 +243,188 @@ describe("OrgDO enterprise SSO state", () => {
         "same-sub",
       ),
     ).resolves.toBe("user-b");
+  });
+
+  it("atomically converges concurrent JIT claims without using a global email identity", async () => {
+    const { orgStub } = await freshOrg();
+    const connectionId = crypto.randomUUID();
+    const claims = await Promise.all(
+      Array.from({ length: 4 }, () =>
+        orgStub.claimSsoJitIdentity(
+          connectionId,
+          "https://idp.example.com",
+          "subject-1",
+          "tenant-user@example.com",
+        ),
+      ),
+    );
+    expect(claims.every(Boolean)).toBe(true);
+    expect(new Set(claims.map((claim) => claim?.userId))).toHaveProperty(
+      "size",
+      1,
+    );
+    expect(claims.every((claim) => claim?.tenantScoped)).toBe(true);
+
+    await expect(
+      orgStub.claimSsoJitIdentity(
+        connectionId,
+        "https://idp.example.com",
+        "subject-2",
+        "tenant-user@example.com",
+      ),
+    ).resolves.toBeNull();
+  });
+
+  it("does not let a JIT claim silently acquire an existing global member identity", async () => {
+    const { orgStub } = await freshOrg();
+    const connectionId = crypto.randomUUID();
+    await orgStub.bindSsoIdentity(
+      connectionId,
+      "https://idp.example.com",
+      "linked-subject",
+      "global-user",
+      "member@example.com",
+    );
+    await expect(
+      orgStub.claimSsoJitIdentity(
+        connectionId,
+        "https://idp.example.com",
+        "rotated-subject",
+        "member@example.com",
+      ),
+    ).resolves.toBeNull();
+  });
+
+  it("keeps removed SSO identities revoked until explicit membership restoration", async () => {
+    const { orgStub, userId: ownerId } = await freshOrg();
+    const connectionId = crypto.randomUUID();
+    const identity = await orgStub.claimSsoJitIdentity(
+      connectionId,
+      "https://idp.example.com",
+      "subject-1",
+      "removed-user@example.com",
+    );
+    expect(identity).not.toBeNull();
+    const userId = identity!.userId;
+    await orgStub.addMember(userId, "member", ownerId, {
+      workspaceAccessDefault: "none",
+    });
+    await orgStub.removeMember(userId, ownerId);
+    await expect(
+      orgStub.getSsoIdentity(
+        connectionId,
+        "https://idp.example.com",
+        "subject-1",
+      ),
+    ).resolves.toMatchObject({ userId, membershipRevoked: true });
+    await expect(
+      orgStub.claimSsoJitIdentity(
+        crypto.randomUUID(),
+        "https://rotated-idp.example.com",
+        "replacement-subject",
+        "removed-user@example.com",
+      ),
+    ).resolves.toBeNull();
+
+    await orgStub.addMember(userId, "member", ownerId, {
+      workspaceAccessDefault: "none",
+    });
+    await expect(
+      orgStub.getSsoIdentity(
+        connectionId,
+        "https://idp.example.com",
+        "subject-1",
+      ),
+    ).resolves.toMatchObject({ userId, membershipRevoked: false });
+  });
+
+  it("defaults JIT members to no access across existing and future workspaces", async () => {
+    const {
+      org,
+      orgStub,
+      userId: ownerId,
+      defaultWorkspaceId,
+    } = await freshOrg();
+    const second = await createWorkspace(
+      testEnv,
+      org.id,
+      "Existing restricted workspace",
+      ownerId,
+    );
+    const jitUserId = crypto.randomUUID();
+    await orgStub.addMember(jitUserId, "member", "enterprise-sso-jit", {
+      workspaceAccessDefault: "none",
+    });
+    await orgStub.setWorkspaceAccess(
+      defaultWorkspaceId,
+      jitUserId,
+      "full",
+      "enterprise-sso-jit",
+    );
+
+    await expect(
+      orgStub.getWorkspaceAccess(defaultWorkspaceId, jitUserId),
+    ).resolves.toBe("full");
+    await expect(
+      orgStub.getWorkspaceAccess(second.id, jitUserId),
+    ).resolves.toBe("none");
+    await expect(orgStub.listUserWorkspaces(jitUserId)).resolves.toEqual([
+      expect.objectContaining({ id: defaultWorkspaceId }),
+    ]);
+    await expect(
+      orgStub.listWorkspaceMembers(second.id),
+    ).resolves.toContainEqual({ user_id: jitUserId, access_level: "none" });
+
+    const future = await createWorkspace(
+      testEnv,
+      org.id,
+      "Future restricted workspace",
+      ownerId,
+    );
+    await expect(
+      orgStub.getWorkspaceAccess(future.id, jitUserId),
+    ).resolves.toBe("none");
+  });
+
+  it("atomically restores a default-none member and exact workspace overrides", async () => {
+    const {
+      org,
+      orgStub,
+      userId: ownerId,
+      defaultWorkspaceId,
+    } = await freshOrg();
+    const restricted = await createWorkspace(
+      testEnv,
+      org.id,
+      "Restricted workspace",
+      ownerId,
+    );
+    const jitUserId = crypto.randomUUID();
+    await orgStub.addMember(jitUserId, "member", ownerId, {
+      workspaceAccessDefault: "none",
+      initialWorkspaceId: defaultWorkspaceId,
+    });
+    const accessRows = (await orgStub.listWorkspaceAccessRows())
+      .filter((row) => row.user_id === jitUserId)
+      .map((row) => ({
+        workspaceId: row.workspace_id,
+        accessLevel: row.access_level,
+      }));
+
+    await orgStub.removeMember(jitUserId, ownerId);
+    await orgStub.addMember(jitUserId, "member", ownerId, {
+      workspaceAccessDefault: "none",
+      workspaceAccessRows: accessRows,
+    });
+
+    await expect(
+      orgStub.getWorkspaceAccess(defaultWorkspaceId, jitUserId),
+    ).resolves.toBe("full");
+    await expect(
+      orgStub.getWorkspaceAccess(restricted.id, jitUserId),
+    ).resolves.toBe("none");
+    await expect(orgStub.getMember(jitUserId)).resolves.toMatchObject({
+      workspace_access_default: "none",
+    });
   });
 });

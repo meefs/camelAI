@@ -65,7 +65,11 @@ describe("enterprise SSO first-login linking", () => {
         mappedUserId: null,
         linkUserId: null,
       }),
-    ).resolves.toEqual({ userId: profile.id, user: profile });
+    ).resolves.toEqual({
+      userId: profile.id,
+      user: profile,
+      tenantScoped: false,
+    });
     expect(memberLookup.getMember).toHaveBeenCalledWith(profile.id);
   });
 
@@ -81,7 +85,7 @@ describe("enterprise SSO first-login linking", () => {
     ).resolves.toMatchObject({ userId: "user-1" });
   });
 
-  it("does not add a non-member unless JIT provisioning is enabled", async () => {
+  it("does not add a global non-member when JIT provisioning is disabled", async () => {
     await expect(
       resolveOrgSsoUser({
         authEnv: authEnv(user()),
@@ -91,16 +95,6 @@ describe("enterprise SSO first-login linking", () => {
         linkUserId: null,
       }),
     ).resolves.toBeNull();
-    await expect(
-      resolveOrgSsoUser({
-        authEnv: authEnv(user()),
-        orgStub: { getMember: vi.fn().mockResolvedValue(null) },
-        identity: googleIdentity,
-        mappedUserId: null,
-        linkUserId: null,
-        jitProvisioningEnabled: true,
-      }),
-    ).resolves.toMatchObject({ userId: "user-1" });
   });
 
   it("keeps superusers out of enterprise-authenticated sessions", async () => {
@@ -117,5 +111,123 @@ describe("enterprise SSO first-login linking", () => {
       expect(error).toBeInstanceOf(Response);
       expect((error as Response).status).toBe(403);
     }
+  });
+
+  it("creates and resumes a tenant-scoped JIT user without touching the global email index", async () => {
+    const tenantUser = user({ id: "tenant-user-1" });
+    let storedProfile: User | null = null;
+    const emailGet = vi.fn().mockResolvedValue("global-user");
+    const emailPut = vi.fn();
+    const emailDelete = vi.fn();
+    const createTenantUser = vi.fn(
+      async (id: string, email: string, name: string | null) => {
+        storedProfile = user({ id, email, name });
+        return storedProfile;
+      },
+    );
+    const userStub = {
+      getProfile: vi.fn(async () => storedProfile),
+      createUserFromEnterpriseSso: createTenantUser,
+    };
+    const globalUserStub = {
+      getProfile: vi.fn(async () =>
+        user({ id: "global-user", email: tenantUser.email }),
+      ),
+    };
+    const tenantEnv = {
+      EMAIL_TO_USER: {
+        get: emailGet,
+        put: emailPut,
+        delete: emailDelete,
+      },
+      USER: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn((id: string) =>
+          id === "global-user" ? globalUserStub : userStub,
+        ),
+      },
+      APP_KV: {
+        get: vi.fn().mockResolvedValue(null),
+      },
+    } as unknown as AuthEnv;
+    const claimSsoJitIdentity = vi.fn().mockResolvedValue({
+      userId: tenantUser.id,
+      email: tenantUser.email,
+      tenantScoped: true,
+    });
+    const orgStub = {
+      getMember: vi.fn().mockResolvedValue(null),
+      claimSsoJitIdentity,
+    };
+
+    await expect(
+      resolveOrgSsoUser({
+        authEnv: tenantEnv,
+        orgStub,
+        identity: googleIdentity,
+        mappedUserId: null,
+        connectionId: "connection-1",
+        issuer: "https://accounts.google.com",
+        linkUserId: null,
+        jitProvisioningEnabled: true,
+      }),
+    ).resolves.toMatchObject({ userId: tenantUser.id });
+
+    // Simulate a repeat callback after an interrupted first login. The OrgDO
+    // mapping is durable and account creation is idempotent at the same id.
+    storedProfile = null;
+    await expect(
+      resolveOrgSsoUser({
+        authEnv: tenantEnv,
+        orgStub,
+        identity: googleIdentity,
+        mappedUserId: tenantUser.id,
+        mappedTenantScoped: true,
+        connectionId: "connection-1",
+        issuer: "https://accounts.google.com",
+        linkUserId: null,
+        jitProvisioningEnabled: true,
+      }),
+    ).resolves.toMatchObject({ userId: tenantUser.id });
+
+    expect(claimSsoJitIdentity).toHaveBeenCalledTimes(1);
+    expect(orgStub.getMember).toHaveBeenCalledWith("global-user");
+    expect(createTenantUser).toHaveBeenCalledTimes(2);
+    expect(emailGet).toHaveBeenCalledWith("email:alice@example.com");
+    expect(emailPut).not.toHaveBeenCalled();
+    expect(emailDelete).not.toHaveBeenCalled();
+  });
+
+  it("rejects reserved superuser emails before claiming a tenant identity", async () => {
+    const claimSsoJitIdentity = vi.fn();
+    const superuserIdentity = {
+      ...googleIdentity,
+      email: "admin-one@example.com",
+    };
+    try {
+      await resolveOrgSsoUser({
+        authEnv: {
+          ...authEnv(user()),
+          EMAIL_TO_USER: {
+            get: vi.fn().mockResolvedValue(null),
+          },
+        } as unknown as AuthEnv,
+        orgStub: {
+          getMember: vi.fn().mockResolvedValue(null),
+          claimSsoJitIdentity,
+        },
+        identity: superuserIdentity,
+        mappedUserId: null,
+        connectionId: "connection-1",
+        issuer: "https://accounts.google.com",
+        linkUserId: null,
+        jitProvisioningEnabled: true,
+      });
+      throw new Error("Expected superuser JIT provisioning to fail");
+    } catch (error) {
+      expect(error).toBeInstanceOf(Response);
+      expect((error as Response).status).toBe(403);
+    }
+    expect(claimSsoJitIdentity).not.toHaveBeenCalled();
   });
 });

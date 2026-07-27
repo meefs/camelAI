@@ -243,7 +243,13 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     }
 
     let clientSecret = providedSecret;
-    if (!clientSecret && existing?.client_secret_encrypted) {
+    const canReuseExistingSecret = Boolean(
+      existing?.client_secret_encrypted &&
+        existing.issuer === issuer &&
+        existing.client_id === clientId &&
+        existing.client_auth_method === clientAuthMethod,
+    );
+    if (!clientSecret && canReuseExistingSecret && existing) {
       const credentials = await decryptCredentials<{ client_secret: string }>(
         existing.client_secret_encrypted,
         env.INTEGRATION_SECRET_KEY,
@@ -252,7 +258,11 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     }
     if (!clientSecret) {
       return Response.json(
-        { error: "OIDC client secret is required" },
+        {
+          error: canReuseExistingSecret
+            ? "OIDC client secret is required"
+            : "Enter the OIDC client secret when changing the issuer, client ID, or authentication method",
+        },
         { status: 400 },
       );
     }

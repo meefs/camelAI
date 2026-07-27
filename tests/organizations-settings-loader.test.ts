@@ -7,6 +7,8 @@ const getOrgSettingsSummaryMock = vi.fn();
 const getOrgMembersMock = vi.fn();
 const listOrgWorkspacesMock = vi.fn();
 const getOrgMock = vi.fn();
+const createOrgMock = vi.fn();
+const removeOrgMemberMock = vi.fn();
 
 vi.mock("@/lib/auth.server", () => ({
   requireAuthContext: requireAuthContextMock,
@@ -22,8 +24,8 @@ vi.mock("@/lib/auth-do", () => ({
   getOrgMembers: getOrgMembersMock,
   listOrgWorkspaces: listOrgWorkspacesMock,
   getOrg: getOrgMock,
-  createOrg: vi.fn(),
-  removeOrgMember: vi.fn(),
+  createOrg: createOrgMock,
+  removeOrgMember: removeOrgMemberMock,
 }));
 
 vi.mock("@/components/ui/separator", () => ({
@@ -38,7 +40,7 @@ vi.mock("@/components/settings/org-memberships-list", () => ({
   OrgMembershipsList: () => null,
 }));
 
-const { loader } = await import("@/routes/_app.settings.organizations");
+const { action, loader } = await import("@/routes/_app.settings.organizations");
 
 describe("organizations settings loader", () => {
   beforeEach(() => {
@@ -206,5 +208,57 @@ describe("organizations settings loader", () => {
 
     const orgIds = result.orgs.map((org) => org.org_id);
     expect(orgIds).toEqual(["org_1"]);
+  });
+
+  it("does not let an enterprise session create a global organization", async () => {
+    requireAuthContextMock.mockResolvedValueOnce({
+      user: { id: "user_1" },
+      session: {
+        auth_source: "enterprise_oidc",
+        org_id: "org_1",
+      },
+    });
+    const formData = new FormData();
+    formData.set("intent", "createOrg");
+    formData.set("name", "Escaped org");
+
+    const response = await action({
+      request: new Request("https://camelai.test/settings/organizations", {
+        method: "POST",
+        body: formData,
+      }),
+      context: {},
+      params: {},
+    } as never);
+
+    expect(response).toBeInstanceOf(Response);
+    expect((response as Response).status).toBe(403);
+    expect(createOrgMock).not.toHaveBeenCalled();
+  });
+
+  it("does not let an enterprise session leave a different organization", async () => {
+    requireAuthContextMock.mockResolvedValueOnce({
+      user: { id: "user_1" },
+      session: {
+        auth_source: "enterprise_oidc",
+        org_id: "org_1",
+      },
+    });
+    const formData = new FormData();
+    formData.set("intent", "leaveOrg");
+    formData.set("orgId", "org_2");
+
+    const response = await action({
+      request: new Request("https://camelai.test/settings/organizations", {
+        method: "POST",
+        body: formData,
+      }),
+      context: {},
+      params: {},
+    } as never);
+
+    expect(response).toBeInstanceOf(Response);
+    expect((response as Response).status).toBe(403);
+    expect(removeOrgMemberMock).not.toHaveBeenCalled();
   });
 });
