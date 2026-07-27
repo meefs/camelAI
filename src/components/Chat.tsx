@@ -169,6 +169,7 @@ import { isManualCompactCommand } from "@/lib/slash-commands";
 import { buildAppThreadFallbackTitle } from "@/lib/thread-title";
 import { buildAppWorkSystemMessage } from "@/lib/app-chat-context";
 import { normalizeThreadPreviewUserMessage } from "@/lib/thread-preview";
+import { trackNewCamelActivationAfterAcceptedMessage } from "@/lib/marketing-attribution.client";
 import {
   getDefaultLlmModel,
   getVisibleLlmModelOptions,
@@ -2707,6 +2708,7 @@ export default function Chat({
         .then((result) => {
           if (result.status === "accepted") {
             sendTracker.accepted();
+            void trackNewCamelActivationAfterAcceptedMessage();
           } else {
             sendTracker.rejected(result.status ?? "error");
           }

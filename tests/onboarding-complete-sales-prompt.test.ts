@@ -86,7 +86,12 @@ describe("onboarding complete flow", () => {
         get: () => userStub,
       },
     });
-    getEnvMock.mockReturnValue({});
+    getEnvMock.mockReturnValue({
+      APP_KV: {
+        get: vi.fn().mockResolvedValue(null),
+        put: vi.fn().mockResolvedValue(undefined),
+      },
+    });
   });
 
   it("requires POST", async () => {

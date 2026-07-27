@@ -144,6 +144,27 @@ describe('Auth flow (full-stack with DOs)', () => {
       expect(status.verified).toBe(true);
       expect(status.email_verified_at).toBeTypeOf('number');
     });
+
+    it('claims new-camel activation exactly once per user', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(
+        testEnv,
+        email,
+        'password123',
+        'Activation User',
+      );
+      const userStub = testEnv.USER.get(testEnv.USER.idFromName(userId));
+
+      const first = await userStub.claimNewCamelActivation(1_700_000_000_000);
+      const repeated = await userStub.claimNewCamelActivation(1_800_000_000_000);
+
+      expect(first).toMatchObject({
+        activatedAt: 1_700_000_000_000,
+        isFirst: true,
+      });
+      expect(first.eventId).toBeTypeOf('string');
+      expect(repeated).toEqual({ ...first, isFirst: false });
+    });
   });
 
   describe('Organization creation and membership', () => {

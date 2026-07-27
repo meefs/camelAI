@@ -174,11 +174,6 @@ export default function OnboardingRoute() {
         void trackMarketingEventOnce("sign_up", "onboarding-complete", {
           completion_basis: "onboarding_complete",
         });
-        void trackMarketingEventOnce(
-          "new_camel_activation",
-          "onboarding-complete",
-          { completion_basis: "onboarding_complete" },
-        );
         navigate(data.redirectTo || "/chat");
       })();
 

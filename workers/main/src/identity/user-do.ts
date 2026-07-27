@@ -38,6 +38,7 @@ export type { OrgRole, BillingStatus } from "../../../../src/types";
 
 const USER_ONBOARDING_KEY = "onboarding";
 const USER_SIGNUP_IP_KEY = "signup_ip";
+const USER_NEW_CAMEL_ACTIVATION_KEY = "new_camel_activation";
 const CHAT_GROUP_ICON_GENERATION_LEASE_MS = 2 * 60 * 1000;
 const CHAT_GROUP_ICON_MAX_CONCURRENCY = 3;
 
@@ -70,6 +71,12 @@ export interface UserAuthBootstrap {
   emailVerification: { required: boolean; verified: boolean };
   /** Timestamp when all sessions were invalidated (e.g. on logout). Null if never invalidated. */
   sessionInvalidatedAt: number | null;
+}
+
+export interface NewCamelActivationClaim {
+  eventId: string;
+  activatedAt: number;
+  isFirst: boolean;
 }
 
 export type OAuthProvider =
@@ -1065,6 +1072,25 @@ export class UserDO extends DurableObject<DOEnv> {
       JSON.stringify(next),
     );
     return next;
+  }
+
+  async claimNewCamelActivation(
+    activatedAt = Date.now(),
+  ): Promise<NewCamelActivationClaim> {
+    const existing =
+      this.ctx.storage.kv.get<Omit<NewCamelActivationClaim, "isFirst">>(
+        USER_NEW_CAMEL_ACTIVATION_KEY,
+      );
+    if (existing) {
+      return { ...existing, isFirst: false };
+    }
+
+    const activation = {
+      eventId: crypto.randomUUID(),
+      activatedAt,
+    };
+    this.ctx.storage.kv.put(USER_NEW_CAMEL_ACTIVATION_KEY, activation);
+    return { ...activation, isFirst: true };
   }
 
   // Org membership methods
