@@ -372,7 +372,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       authContext.onboarding?.completed_at &&
       !salesPrompt &&
       authContext.user?.id &&
-      authContext.session.auth_source !== ENTERPRISE_OIDC_AUTH_SOURCE
+      authContext.session?.auth_source !== ENTERPRISE_OIDC_AUTH_SOURCE
     ) {
       try {
         const pendingPrompt = await authEnv.USER.get(
