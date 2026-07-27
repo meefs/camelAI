@@ -183,6 +183,12 @@ export function AddConnectionDialog({
 
             {connectionType === 'discord_channel' ? (
               <>
+                <Alert>
+                  <AlertDescription>
+                    You&apos;ll choose a Discord server, then return here to select one text
+                    channel.
+                  </AlertDescription>
+                </Alert>
                 <Alert variant="destructive">
                   <ShieldAlert className="size-4" />
                   <AlertTitle>Discord members can instruct this workspace</AlertTitle>
@@ -334,12 +340,10 @@ export function AddConnectionDialog({
             )}
 
             {/* OAuth flow for supported integrations */}
-            {hasOAuthFlow && (
+            {hasOAuthFlow && connectionType !== 'discord_channel' && (
               <Alert>
                 <AlertDescription>
-                  {connectionType === 'discord_channel'
-                    ? 'You’ll choose a Discord server, then return here to select one text channel.'
-                    : `Click the button below to connect your ${typeDef.displayName} account. You’ll be redirected to authorize access.`}
+                  {`Click the button below to connect your ${typeDef.displayName} account. You’ll be redirected to authorize access.`}
                 </AlertDescription>
               </Alert>
             )}

@@ -1,19 +1,30 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useFetcher } from "react-router";
 import {
   Copy,
   ExternalLink,
+  Hash,
   Inbox,
+  Lock,
   Mail,
   MessageSquare,
   Plug,
   Settings,
   ShieldCheck,
   ShieldAlert,
+  TriangleAlert,
   RefreshCw,
   Unplug,
+  Wrench,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -25,13 +36,16 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { IntegrationIcon, hasIntegrationIcon, resolveLogoType } from "@/lib/integration-icons";
 import { generateDefaultAvatar, getContrastTextColor } from "@/lib/avatar";
@@ -39,8 +53,10 @@ import { HYDRATION_SAFE_LOCALE } from "@/lib/hydration-safe-datetime";
 import { buildTelegramDeepLink, TELEGRAM_SETUP_TTL_SECONDS } from "@/lib/telegram-channel";
 import {
   TYPE_COPY,
+  DISCORD_STATUS_LABELS,
   connectionRequiresOutboundIpAllowlist,
   getConnectionDetailRows,
+  getDiscordChannelBlockReason,
   getDiscordChannelMetadata,
   getSlackChannelMetadata,
   panelItemConnection,
@@ -48,6 +64,7 @@ import {
   type ConnectionListItem,
   type PanelItem,
 } from "@/lib/connections-shared";
+import { cn } from "@/lib/utils";
 import {
   SANDBOX_NETWORK_DOCS_URL,
   SANDBOX_OUTBOUND_IP,
@@ -550,6 +567,16 @@ function TelegramDestination({ connection }: { connection: ConnectionListItem })
   );
 }
 
+interface DiscordSetupChannel {
+  id: string;
+  name: string;
+  categoryId: string | null;
+  categoryName: string | null;
+  missingPermissions: string[];
+  canActivate: boolean;
+  exposure: "restricted" | "visible_to_everyone";
+}
+
 interface DiscordSetupActionData {
   success?: boolean;
   error?: string;
@@ -558,15 +585,7 @@ interface DiscordSetupActionData {
   discordSetup?: {
     integrationId: string;
     guild: { id: string; name: string };
-    channels: Array<{
-      id: string;
-      name: string;
-      categoryId: string | null;
-      categoryName: string | null;
-      missingPermissions: string[];
-      canActivate: boolean;
-      exposure: "restricted" | "visible_to_everyone";
-    }>;
+    channels: DiscordSetupChannel[];
   };
 }
 
@@ -581,6 +600,7 @@ function DiscordDestination({
   const metadata = getDiscordChannelMetadata(connection);
   const active = metadata.status === "active";
   const [selecting, setSelecting] = useState(false);
+  const [disconnectConfirmOpen, setDisconnectConfirmOpen] = useState(false);
   const [selectedChannelId, setSelectedChannelId] = useState(
     metadata.parent_channel_id || "",
   );
@@ -594,6 +614,58 @@ function DiscordDestination({
   const selectedChannel = channels.find((channel) => channel.id === selectedChannelId);
   const showSelector = canManage && (!active || selecting);
   const busy = fetcher.state !== "idle";
+  const activating =
+    busy && fetcher.formData?.get("intent") === "discordActivateChannel";
+  const autoLoadAttempted = useRef<string | null>(null);
+  const guildName = formatValue(metadata.guild_name);
+  const parentChannelName = formatValue(metadata.parent_channel_name);
+  const reinstallHref = `/api/integrations/discord/oauth?${new URLSearchParams({
+    integration_id: connection.id,
+    redirect: "/connections",
+  }).toString()}`;
+  const statusLabel = metadata.status
+    ? DISCORD_STATUS_LABELS[metadata.status] ?? metadata.status
+    : "Not available";
+  const setupSubtitle =
+    metadata.status === "disconnected"
+      ? "Camel is installed but not connected to a channel. Pick a channel to reconnect."
+      : metadata.status === "setup_error"
+        ? "Setup didn't finish. Pick a channel to try again."
+        : "Camel joined this server. Pick a channel to finish setup.";
+  const blockedChannelCount = channels.filter(
+    (channel) => getDiscordChannelBlockReason(channel) !== null,
+  ).length;
+  const channelGroups = useMemo(() => {
+    const uncategorized: DiscordSetupChannel[] = [];
+    const categorized = new Map<
+      string,
+      { heading: string; channels: DiscordSetupChannel[] }
+    >();
+
+    for (const channel of channels) {
+      if (!channel.categoryId && !channel.categoryName) {
+        uncategorized.push(channel);
+        continue;
+      }
+      const key = channel.categoryId ?? channel.categoryName ?? "";
+      const existing = categorized.get(key);
+      if (existing) {
+        existing.channels.push(channel);
+      } else {
+        categorized.set(key, {
+          heading: channel.categoryName ?? "Other",
+          channels: [channel],
+        });
+      }
+    }
+
+    return [
+      ...(uncategorized.length
+        ? [{ key: "uncategorized", heading: undefined, channels: uncategorized }]
+        : []),
+      ...Array.from(categorized, ([key, group]) => ({ key, ...group })),
+    ];
+  }, [channels]);
 
   useEffect(() => {
     if (
@@ -614,12 +686,46 @@ function DiscordDestination({
     }
   }, [fetcher.data, fetcher.state]);
 
-  const loadChannels = () => {
+  useEffect(() => {
+    autoLoadAttempted.current = null;
+    setSelecting(false);
+    setSelectedChannelId(metadata.parent_channel_id || "");
+    setAcknowledged(
+      typeof connection.config.security_acknowledged_at === "number",
+    );
+  }, [
+    connection.id,
+    connection.config.security_acknowledged_at,
+    metadata.parent_channel_id,
+  ]);
+
+  const loadChannels = useCallback(() => {
+    autoLoadAttempted.current = connection.id;
     fetcher.submit(
       { intent: "discordListChannels", integrationId: connection.id },
       { method: "post", action: "/connections" },
     );
-  };
+  }, [connection.id, fetcher]);
+
+  useEffect(() => {
+    if (
+      !showSelector ||
+      setup ||
+      fetcher.data?.error ||
+      fetcher.state !== "idle" ||
+      autoLoadAttempted.current === connection.id
+    ) {
+      return;
+    }
+    loadChannels();
+  }, [
+    connection.id,
+    fetcher.data?.error,
+    fetcher.state,
+    loadChannels,
+    setup,
+    showSelector,
+  ]);
 
   const disconnect = () => {
     fetcher.submit(
@@ -628,179 +734,362 @@ function DiscordDestination({
     );
   };
 
+  const heading = (
+    <div>
+      <p className="break-words text-lg font-semibold text-foreground">
+        {guildName}
+      </p>
+      {active ? (
+        <>
+          <p className="mt-1 text-sm text-muted-foreground">
+            #{parentChannelName}
+          </p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Messages from this Discord channel start threads here.
+          </p>
+        </>
+      ) : (
+        <p className="mt-1 text-sm text-muted-foreground">{setupSubtitle}</p>
+      )}
+    </div>
+  );
+
+  const lifecycleAlert = !active && metadata.error_code ? (
+    <Alert>
+      <TriangleAlert />
+      {metadata.error_code === "guild_removed" ? (
+        <>
+          <AlertTitle>Camel was removed from this server</AlertTitle>
+          <AlertDescription className="space-y-3">
+            <p>
+              Someone removed the Camel bot from {guildName}. Reinstall the bot,
+              then pick a channel to reconnect.
+            </p>
+            <Button variant="outline" size="sm" asChild>
+              <a href={reinstallHref}>Reinstall Camel bot</a>
+            </Button>
+          </AlertDescription>
+        </>
+      ) : metadata.error_code === "parent_channel_deleted" ? (
+        <>
+          <AlertTitle>The connected channel was deleted</AlertTitle>
+          <AlertDescription>
+            #{metadata.parent_channel_name ?? "The channel"} no longer exists in
+            Discord. Pick a new channel to reconnect.
+          </AlertDescription>
+        </>
+      ) : null}
+    </Alert>
+  ) : null;
+
+  const securityAlert = (
+    <Alert variant="destructive">
+      <ShieldAlert />
+      <AlertTitle>Discord members can instruct this workspace</AlertTitle>
+      <AlertDescription>
+        Anyone who can post in the selected channel can use this workspace&apos;s
+        files, connected services, credits, and deploy permissions. Use a private
+        or appropriately restricted channel.
+      </AlertDescription>
+    </Alert>
+  );
+
+  const channelPicker = showSelector ? (
+    <div className="rounded-md border bg-muted/20 p-3">
+      <fetcher.Form method="post" action="/connections" className="space-y-3">
+        <input type="hidden" name="intent" value="discordActivateChannel" />
+        <input type="hidden" name="integrationId" value={connection.id} />
+        <input type="hidden" name="parentChannelId" value={selectedChannelId} />
+        <input
+          type="hidden"
+          name="securityAcknowledged"
+          value={acknowledged ? "true" : "false"}
+        />
+
+        <div className="flex items-center justify-between gap-2">
+          <Label htmlFor={`discord-channel-filter-${connection.id}`}>Channel</Label>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                disabled={busy}
+                onClick={loadChannels}
+                aria-label="Reload channel list"
+              >
+                <RefreshCw className={busy ? "animate-spin" : undefined} />
+                Reload
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="max-w-72">
+              Fetch the channel list from Discord again — use this after creating a
+              channel or changing permissions there.
+            </TooltipContent>
+          </Tooltip>
+        </div>
+
+        {fetcher.data?.error ? (
+          <Alert variant="destructive">
+            <TriangleAlert />
+            <AlertDescription className="space-y-3">
+              <p>{fetcher.data.error}</p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={busy}
+                onClick={loadChannels}
+              >
+                Try again
+              </Button>
+            </AlertDescription>
+          </Alert>
+        ) : setup ? (
+          channels.length ? (
+            <Command className="rounded-md border bg-background">
+              {channels.length > 7 ? (
+                <CommandInput
+                  id={`discord-channel-filter-${connection.id}`}
+                  placeholder="Filter channels…"
+                />
+              ) : null}
+              <CommandList className="max-h-64">
+                <CommandEmpty>No channels match.</CommandEmpty>
+                {channelGroups.map((group) => (
+                  <CommandGroup key={group.key} heading={group.heading}>
+                    {group.channels.map((channel) => {
+                      const selected = channel.id === selectedChannelId;
+                      const blockReason = getDiscordChannelBlockReason(channel);
+                      const ExposureIcon =
+                        channel.exposure === "restricted" ? Lock : Hash;
+                      return (
+                        <CommandItem
+                          key={channel.id}
+                          value={channel.name}
+                          disabled={Boolean(blockReason)}
+                          aria-selected={selected}
+                          onSelect={() => setSelectedChannelId(channel.id)}
+                          className="[&>svg:last-child]:hidden"
+                        >
+                          <span
+                            className={cn(
+                              "size-3.5 shrink-0 rounded-full border",
+                              selected && "border-4 border-primary",
+                            )}
+                          />
+                          <ExposureIcon className="size-3.5 text-muted-foreground" />
+                          <div className="flex min-w-0 flex-1 flex-col">
+                            <div className="flex min-w-0 items-center gap-2">
+                              <span className="min-w-0 flex-1 truncate">
+                                {channel.name}
+                              </span>
+                              {channel.exposure === "visible_to_everyone" ? (
+                                <Badge
+                                  variant="outline"
+                                  className="shrink-0 border-amber-500/50 font-normal text-amber-700 dark:text-amber-300"
+                                >
+                                  @everyone can post
+                                </Badge>
+                              ) : null}
+                            </div>
+                            {blockReason ? (
+                              <span className="text-xs text-muted-foreground">
+                                {blockReason.kind === "no_access"
+                                  ? "Camel can't see this channel"
+                                  : `Camel is missing: ${blockReason.label}`}
+                              </span>
+                            ) : null}
+                          </div>
+                        </CommandItem>
+                      );
+                    })}
+                  </CommandGroup>
+                ))}
+              </CommandList>
+            </Command>
+          ) : (
+            <p className="py-6 text-center text-sm text-muted-foreground">
+              No standard text channels found in this server.
+            </p>
+          )
+        ) : (
+          <div className="space-y-2">
+            {Array.from({ length: 4 }, (_, index) => (
+              <Skeleton key={index} className="h-9 w-full" />
+            ))}
+          </div>
+        )}
+
+        {fetcher.data?.warning ? (
+          <p className="text-sm text-amber-700 dark:text-amber-300">
+            {fetcher.data.warning}
+          </p>
+        ) : null}
+
+        {setup && blockedChannelCount > 0 ? (
+          <p className="text-xs text-muted-foreground">
+            Grayed-out channels need access granted in Discord: open the
+            channel&apos;s settings → Permissions → add the Camel bot (or its role),
+            then reload the list. Only standard text channels can be connected.
+          </p>
+        ) : null}
+
+        {setup ? (
+          <>
+            {selectedChannel?.exposure === "visible_to_everyone" ? (
+              <p className="text-xs font-medium text-amber-700 dark:text-amber-300">
+                This channel is visible and writable by @everyone. Restrict Discord
+                roles before connecting if that is not intentional.
+              </p>
+            ) : null}
+            <div className="flex items-start gap-2">
+              <Checkbox
+                id={`discord-security-${connection.id}`}
+                checked={acknowledged}
+                onCheckedChange={(checked) => setAcknowledged(checked === true)}
+              />
+              <Label
+                htmlFor={`discord-security-${connection.id}`}
+                className="text-xs font-normal leading-5"
+              >
+                I understand that people who can post here can instruct Camel with
+                this workspace&apos;s authority.
+              </Label>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="submit"
+                disabled={
+                  busy || !selectedChannel?.canActivate || !acknowledged
+                }
+              >
+                {activating
+                  ? "Connecting…"
+                  : active
+                    ? "Change channel"
+                    : "Connect channel"}
+              </Button>
+              {active ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => setSelecting(false)}
+                >
+                  Cancel
+                </Button>
+              ) : null}
+            </div>
+          </>
+        ) : null}
+      </fetcher.Form>
+    </div>
+  ) : null;
+
+  const detailRows = (
+    <dl className="space-y-2">
+      <DetailRow label="Status">
+        <Badge variant={active ? "default" : "secondary"} className="font-normal">
+          {statusLabel}
+        </Badge>
+      </DetailRow>
+      <DetailRow label="Content mode">
+        {metadata.message_content_mode === "mention_only"
+          ? "Mention every message"
+          : "Mention once"}
+      </DetailRow>
+    </dl>
+  );
+
   return (
     <Section title="Destination & identity">
       <div className="space-y-4">
-        <div>
-          <p className="break-words text-lg font-semibold text-foreground">
-            {formatValue(metadata.guild_name)}
+        {heading}
+
+        {!active ? lifecycleAlert : null}
+
+        {!active && !canManage ? (
+          <p className="text-sm text-muted-foreground">
+            An organization admin needs to finish this setup.
           </p>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {metadata.parent_channel_name
-              ? `#${metadata.parent_channel_name}`
-              : "Choose one server text channel to finish setup."}
-          </p>
-        </div>
-
-        <Alert variant="destructive">
-          <ShieldAlert />
-          <AlertTitle>Discord members can instruct this workspace</AlertTitle>
-          <AlertDescription>
-            Anyone who can post in the selected channel can use this workspace&apos;s files,
-            connected services, credits, and deploy permissions. Use a private or
-            appropriately restricted channel.
-          </AlertDescription>
-        </Alert>
-
-        {metadata.message_content_mode === "mention_only" ? (
-          <Alert>
-            <AlertTitle>Mention-only mode</AlertTitle>
-            <AlertDescription>
-              Every message, including follow-ups in Camel-created threads, must mention @Camel.
-            </AlertDescription>
-          </Alert>
         ) : null}
 
-        {fetcher.data?.error ? (
-          <p className="text-sm text-destructive">{fetcher.data.error}</p>
-        ) : null}
-        {fetcher.data?.warning ? (
-          <p className="text-sm text-amber-700 dark:text-amber-300">{fetcher.data.warning}</p>
-        ) : null}
+        {showSelector ? securityAlert : null}
+        {showSelector ? channelPicker : null}
 
-        {showSelector ? (
-          <div className="space-y-3 rounded-md border bg-muted/20 p-3">
-            {setup ? (
-              <fetcher.Form
-                method="post"
-                action="/connections"
-                className="space-y-3"
-              >
-                <input type="hidden" name="intent" value="discordActivateChannel" />
-                <input type="hidden" name="integrationId" value={connection.id} />
-                <input type="hidden" name="parentChannelId" value={selectedChannelId} />
-                <input
-                  type="hidden"
-                  name="securityAcknowledged"
-                  value={acknowledged ? "true" : "false"}
-                />
-                <div className="space-y-1.5">
-                  <Label htmlFor={`discord-channel-${connection.id}`}>Server channel</Label>
-                  <Select value={selectedChannelId} onValueChange={setSelectedChannelId}>
-                    <SelectTrigger id={`discord-channel-${connection.id}`} className="w-full">
-                      <SelectValue placeholder="Select a text channel" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {channels.map((channel) => (
-                        <SelectItem
-                          key={channel.id}
-                          value={channel.id}
-                          disabled={!channel.canActivate}
-                        >
-                          <span className="flex min-w-0 items-center gap-2">
-                            <span className="truncate">
-                              {channel.categoryName ? `${channel.categoryName} / ` : ""}#{channel.name}
-                            </span>
-                            <Badge variant="secondary" className="font-normal">
-                              {channel.exposure === "visible_to_everyone"
-                                ? "visible to @everyone"
-                                : "restricted"}
-                            </Badge>
-                          </span>
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                {selectedChannel?.missingPermissions.length ? (
-                  <p className="text-xs text-destructive">
-                    Missing: {selectedChannel.missingPermissions.join(", ")}
-                  </p>
-                ) : null}
-                {selectedChannel?.exposure === "visible_to_everyone" ? (
-                  <p className="text-xs font-medium text-amber-700 dark:text-amber-300">
-                    This channel is visible and writable by @everyone. Restrict Discord roles
-                    before connecting if that is not intentional.
-                  </p>
-                ) : null}
-                <div className="flex items-start gap-2">
-                  <Checkbox
-                    id={`discord-security-${connection.id}`}
-                    checked={acknowledged}
-                    onCheckedChange={(checked) => setAcknowledged(checked === true)}
-                  />
-                  <Label
-                    htmlFor={`discord-security-${connection.id}`}
-                    className="text-xs font-normal leading-5"
-                  >
-                    I understand that people who can post here can instruct Camel with this
-                    workspace&apos;s authority.
-                  </Label>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    type="submit"
-                    disabled={busy || !selectedChannel?.canActivate || !acknowledged}
-                  >
-                    {active ? "Change channel" : "Connect channel"}
-                  </Button>
-                  {active ? (
-                    <Button type="button" variant="ghost" onClick={() => setSelecting(false)}>
-                      Cancel
+        {active && !selecting ? (
+          <>
+            <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
+              <ShieldAlert className="mt-0.5 size-3.5 shrink-0" />
+              Anyone who can post in #{parentChannelName} can instruct Camel with
+              this workspace&apos;s authority.
+            </p>
+
+            {metadata.message_content_mode === "mention_only" ? (
+              <Alert>
+                <AlertTitle>Mention-only mode</AlertTitle>
+                <AlertDescription>
+                  Every message, including follow-ups in Camel-created threads, must
+                  mention @Camel.
+                </AlertDescription>
+              </Alert>
+            ) : null}
+
+            {canManage ? (
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    setSelecting(true);
+                    loadChannels();
+                  }}
+                >
+                  <RefreshCw />
+                  Change channel
+                </Button>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button type="button" variant="outline" asChild>
+                      <a href={reinstallHref}>
+                        <Wrench />
+                        Reinstall bot
+                      </a>
                     </Button>
-                  ) : null}
-                </div>
-              </fetcher.Form>
-            ) : (
-              <Button type="button" variant="outline" disabled={busy} onClick={loadChannels}>
-                <RefreshCw />
-                {busy ? "Loading channels…" : "Load server channels"}
-              </Button>
-            )}
-          </div>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" className="max-w-72">
+                    Runs the Discord authorization again to restore Camel&apos;s bot
+                    role and permissions in {guildName}. Use it if Camel was removed
+                    from the server, stopped responding, or channels won&apos;t load.
+                    You&apos;ll pick the channel again afterward.
+                  </TooltipContent>
+                </Tooltip>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  disabled={busy}
+                  onClick={() => setDisconnectConfirmOpen(true)}
+                >
+                  <Unplug />
+                  Disconnect
+                </Button>
+              </div>
+            ) : null}
+          </>
         ) : null}
 
-        {active && canManage && !selecting ? (
-          <div className="flex flex-wrap gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => {
-                setSelecting(true);
-                loadChannels();
-              }}
-            >
-              <RefreshCw />
-              Change channel
-            </Button>
-            <Button type="button" variant="outline" asChild>
-              <a
-                href={`/api/integrations/discord/oauth?${new URLSearchParams({
-                  integration_id: connection.id,
-                  redirect: "/connections",
-                }).toString()}`}
-              >
-                Reinstall permissions
-              </a>
-            </Button>
-            <Button type="button" variant="ghost" disabled={busy} onClick={disconnect}>
-              <Unplug />
-              Disconnect
-            </Button>
-          </div>
-        ) : null}
-
-        <dl className="space-y-2">
-          <DetailRow label="Status">
-            <Badge variant={active ? "default" : "secondary"} className="font-normal">
-              {active ? "Active" : formatValue(metadata.status)}
-            </Badge>
-          </DetailRow>
-          <DetailRow label="Content mode">
-            {metadata.message_content_mode === "mention_only" ? "Mention every message" : "Mention once"}
-          </DetailRow>
-        </dl>
+        {detailRows}
       </div>
+
+      <ConfirmDialog
+        open={disconnectConfirmOpen}
+        onOpenChange={setDisconnectConfirmOpen}
+        title="Disconnect Discord channel?"
+        description={`Camel will stop responding in #${parentChannelName}. The bot stays in ${guildName}, and you can connect a channel again anytime.`}
+        confirmLabel="Disconnect"
+        variant="destructive"
+        onConfirm={disconnect}
+      />
     </Section>
   );
 }

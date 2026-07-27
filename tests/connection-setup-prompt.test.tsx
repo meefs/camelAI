@@ -21,8 +21,12 @@ describe("ConnectionSetupPrompt", () => {
     );
 
     expect(screen.getByText(/channel participants can instruct Camel/i)).toBeInTheDocument();
+    expect(
+      screen.getByText("Discord members can instruct this workspace"),
+    ).toBeInTheDocument();
     expect(screen.getByText(/workspace's files, connected services, credits, and deploy/i))
       .toBeInTheDocument();
+    expect(screen.queryByLabelText(/^Name/)).not.toBeInTheDocument();
     const connect = screen.getByRole("button", { name: /connect discord/i });
     expect(connect).toBeDisabled();
 

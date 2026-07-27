@@ -27,7 +27,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Checkbox } from '@/components/ui/checkbox';
 import { AlertCircle, ExternalLink, Plug, ShieldAlert } from 'lucide-react';
 import { MarkdownRenderer } from '@/components/markdown-renderer';
@@ -377,22 +377,24 @@ export function ConnectionSetupPrompt({
               )}
 
               {/* Name field */}
-              <div className="grid gap-1.5">
-                <Label htmlFor="name">
-                  Name
-                  <span className="ml-1 text-red-400">*</span>
-                </Label>
-                <Input
-                  id="name"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder={displayName}
-                  required
-                />
-                <p className="text-xs text-muted-foreground">
-                  A unique name to identify this connection
-                </p>
-              </div>
+              {!isDiscordChannel ? (
+                <div className="grid gap-1.5">
+                  <Label htmlFor="name">
+                    Name
+                    <span className="ml-1 text-red-400">*</span>
+                  </Label>
+                  <Input
+                    id="name"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder={displayName}
+                    required
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    A unique name to identify this connection
+                  </p>
+                </div>
+              ) : null}
 
               {/* Dynamic fields for "other" integrations with custom schema */}
               {isDynamic && dynamicSchema && (
@@ -530,6 +532,7 @@ export function ConnectionSetupPrompt({
                   {isDiscordChannel ? (
                     <Alert variant="destructive">
                       <ShieldAlert className="size-4" />
+                      <AlertTitle>Discord members can instruct this workspace</AlertTitle>
                       <AlertDescription>
                         People who can post in the selected Discord channel can instruct Camel
                         with this workspace&apos;s files, connected services, credits, and deploy

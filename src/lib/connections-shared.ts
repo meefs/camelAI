@@ -31,6 +31,7 @@ export interface ConnectionListItem extends Integration {
     parent_channel_name?: string | null;
     message_content_mode?: string | null;
     status?: string | null;
+    error_code?: string | null;
   };
   definitionMetadata?: {
     source: string;
@@ -290,6 +291,7 @@ export function getDiscordChannelMetadata(connection: ConnectionListItem): {
   parent_channel_name: string | null;
   message_content_mode: string | null;
   status: string | null;
+  error_code: string | null;
 } {
   return {
     guild_id:
@@ -310,7 +312,90 @@ export function getDiscordChannelMetadata(connection: ConnectionListItem): {
     status:
       connection.channelMetadata?.status ??
       stringConfigValue(connection.config, "status"),
+    error_code:
+      connection.channelMetadata?.error_code ??
+      stringConfigValue(connection.config, "error_code"),
   };
+}
+
+export const DISCORD_PERMISSION_LABELS: Record<string, string> = {
+  VIEW_CHANNEL: "View Channel",
+  SEND_MESSAGES: "Send Messages",
+  EMBED_LINKS: "Embed Links",
+  ATTACH_FILES: "Attach Files",
+  READ_MESSAGE_HISTORY: "Read Message History",
+  CREATE_PUBLIC_THREADS: "Create Public Threads",
+  SEND_MESSAGES_IN_THREADS: "Send Messages in Threads",
+};
+
+export function formatDiscordPermissionList(names: string[]): string {
+  return names
+    .map((name) => DISCORD_PERMISSION_LABELS[name] ?? name)
+    .join(", ");
+}
+
+export type DiscordChannelBlockReason =
+  | { kind: "no_access" }
+  | { kind: "missing_permissions"; label: string };
+
+export function getDiscordChannelBlockReason(channel: {
+  canActivate: boolean;
+  missingPermissions: string[];
+}): DiscordChannelBlockReason | null {
+  if (channel.canActivate) return null;
+  if (channel.missingPermissions.includes("VIEW_CHANNEL")) {
+    return { kind: "no_access" };
+  }
+  return {
+    kind: "missing_permissions",
+    label: formatDiscordPermissionList(channel.missingPermissions),
+  };
+}
+
+export const DISCORD_STATUS_LABELS: Record<string, string> = {
+  pending_channel: "Waiting for channel selection",
+  active: "Active",
+  disconnected: "Disconnected",
+  setup_error: "Setup error",
+};
+
+export function getChannelAttentionBadge(
+  connection: ConnectionListItem,
+): { label: string; tooltip: string } | null {
+  if (connection.integration_type === "discord_channel") {
+    const metadata = getDiscordChannelMetadata(connection);
+    if (metadata.status === "pending_channel") {
+      return {
+        label: "Finish setup",
+        tooltip: `Camel is installed in ${metadata.guild_name ?? "your server"} but no channel is selected yet.`,
+      };
+    }
+    if (metadata.status === "disconnected") {
+      return {
+        label: "Disconnected",
+        tooltip: "Camel is not connected to a channel. Open to reconnect.",
+      };
+    }
+    if (metadata.status === "setup_error") {
+      return {
+        label: "Setup error",
+        tooltip: "Something went wrong during setup. Open to retry.",
+      };
+    }
+    return null;
+  }
+
+  if (
+    connection.integration_type === "telegram" &&
+    stringConfigValue(connection.config, "status") === "pending"
+  ) {
+    return {
+      label: "Finish setup",
+      tooltip: "Open to finish linking your Telegram chat.",
+    };
+  }
+
+  return null;
 }
 
 export function getSlackChannelMetadata(connection: ConnectionListItem): {

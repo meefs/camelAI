@@ -26,6 +26,7 @@ import { IntegrationIcon, hasIntegrationIcon, resolveLogoType } from "@/lib/inte
 import { cn } from "@/lib/utils";
 import {
   canReconnectConnection,
+  getChannelAttentionBadge,
   panelItemConnection,
   panelItemName,
   type ConnectionListItem,
@@ -195,7 +196,9 @@ export function ConnectionActionsMenu({
                 <MenuItemIcon>
                   <RefreshCw />
                 </MenuItemIcon>
-                Reconnect
+                {connection.integration_type === "discord_channel"
+                  ? "Reinstall bot"
+                  : "Reconnect"}
               </DropdownMenuItem>
             ) : null}
             {showClone ? (
@@ -284,6 +287,10 @@ export function ConnectionRow({
   onManageEmailSettings,
 }: ConnectionRowProps) {
   const displayName = panelItemName(item);
+  const connection = panelItemConnection(item);
+  const attentionBadge = connection
+    ? getChannelAttentionBadge(connection)
+    : null;
 
   return (
     <div
@@ -318,6 +325,19 @@ export function ConnectionRow({
             <TooltipContent side="top">
               Your plan does not enable email. Upgrade for access
             </TooltipContent>
+          </Tooltip>
+        ) : null}
+        {attentionBadge ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Badge
+                variant="secondary"
+                className="shrink-0 cursor-default font-normal"
+              >
+                {attentionBadge.label}
+              </Badge>
+            </TooltipTrigger>
+            <TooltipContent side="top">{attentionBadge.tooltip}</TooltipContent>
           </Tooltip>
         ) : null}
       </div>

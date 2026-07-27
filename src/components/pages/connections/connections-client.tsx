@@ -7,7 +7,7 @@ import {
   useRevalidator,
   useSearchParams,
 } from "react-router";
-import { Copy, Plus, Search, Settings, X } from "lucide-react";
+import { Copy, Mail, Plus, Search, Settings, X } from "lucide-react";
 import { toast } from "sonner";
 import { useAuthData } from "@/hooks/use-auth-data";
 import {
@@ -26,7 +26,9 @@ import { writeDraft } from "@/hooks/use-draft-persistence";
 import {
   buildConnectionGroups,
   filterAndSortConnectionGroups,
+  isChannelIntegrationType,
   panelItemConnection,
+  TYPE_COPY,
   type ConnectionListItem,
   type ConnectionSort,
   type EmailChannel,
@@ -40,6 +42,7 @@ import { EditConnectionDialog } from "./EditConnectionDialog";
 import { ConnectionGroupList } from "./connection-group-list";
 import { ConnectionPanel } from "./connection-panel";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import type { AtMentionConnection, AtMentionEntity } from "@/types";
@@ -486,6 +489,14 @@ export default function ConnectionsClient({
     [setSelectedParam],
   );
 
+  const handleSelectEmailFromPicker = useCallback(() => {
+    const emailItem = allItems.find((item) => item.id === "email");
+    if (!emailItem) return;
+    setPickerOpen(false);
+    setPickerSearch("");
+    handleSelect(emailItem);
+  }, [allItems, handleSelect]);
+
   const handleClosePanel = useCallback(() => {
     setActiveSelectedId(null);
     clearSelectedParam();
@@ -754,15 +765,24 @@ export default function ConnectionsClient({
                   <ConnectionGroupList
                     channelItems={filteredGroups.channels}
                     connectionItems={filteredGroups.connections}
+                    connectedIntegrationTypes={connections.map(
+                      (connection) => connection.integration_type,
+                    )}
+                    availableIntegrationTypes={connectionTypes.map(
+                      (type) => type.type,
+                    )}
                     totalConnectionCount={connections.length}
                     selectedId={activeSelectedId}
                     isAdmin={isAdmin}
+                    mounted={mounted}
+                    workspaceId={workspaceId}
                     otherWorkspacesCount={otherWorkspaces.length}
                     searchQuery={search.trim()}
                     getMentionSlug={getItemMentionSlug}
                     onSelect={handleSelect}
                     onNewChat={handleNewChat}
                     onAddConnection={() => setPickerOpen(true)}
+                    onAddChannel={handleAddClick}
                     {...actions}
                   />
                 )}
@@ -894,6 +914,9 @@ export default function ConnectionsClient({
                     <TabsTrigger value="all" className="flex-none">
                       All
                     </TabsTrigger>
+                    <TabsTrigger value="channels" className="flex-none">
+                      Channels
+                    </TabsTrigger>
                     {categories.map((category) => (
                       <TabsTrigger key={category} value={category} className="flex-none">
                         {categoryLabels[category] || category}
@@ -906,6 +929,22 @@ export default function ConnectionsClient({
                     <TabsContent value="all" className="mt-0">
                       <ConnectionTypeGrid
                         connectionTypes={filteredConnectionTypes}
+                        onAddClick={handleAddClick}
+                      />
+                    </TabsContent>
+                    <TabsContent value="channels" className="mt-0">
+                      <p className="mb-3 text-sm text-muted-foreground">
+                        {TYPE_COPY.channel}
+                      </p>
+                      <ConnectionTypeGrid
+                        connectionTypes={filteredConnectionTypes.filter((type) =>
+                          isChannelIntegrationType(type.type),
+                        )}
+                        includeEmail={
+                          !pickerSearch.trim() ||
+                          "email".includes(pickerSearch.trim().toLowerCase())
+                        }
+                        onSelectEmail={handleSelectEmailFromPicker}
                         onAddClick={handleAddClick}
                       />
                     </TabsContent>
@@ -1015,12 +1054,16 @@ export default function ConnectionsClient({
 
 function ConnectionTypeGrid({
   connectionTypes,
+  includeEmail = false,
+  onSelectEmail,
   onAddClick,
 }: {
   connectionTypes: IntegrationDefinition[];
+  includeEmail?: boolean;
+  onSelectEmail?: () => void;
   onAddClick: (type: string) => void;
 }) {
-  if (connectionTypes.length === 0) {
+  if (connectionTypes.length === 0 && !includeEmail) {
     return (
       <div className="py-6 text-center text-sm text-muted-foreground">
         No integrations found
@@ -1047,7 +1090,19 @@ function ConnectionTypeGrid({
               )}
             </div>
             <div className="min-w-0 flex-1">
-              <div className="truncate text-sm font-medium">{type.displayName}</div>
+              <div className="flex min-w-0 items-center gap-2">
+                <div className="min-w-0 truncate text-sm font-medium">
+                  {type.displayName}
+                </div>
+                {isChannelIntegrationType(type.type) ? (
+                  <Badge
+                    variant="secondary"
+                    className="shrink-0 font-normal"
+                  >
+                    Channel
+                  </Badge>
+                ) : null}
+              </div>
               <div className="text-xs text-muted-foreground">
                 {connectionAuthLabel(type)}
               </div>
@@ -1056,6 +1111,26 @@ function ConnectionTypeGrid({
           </button>
         );
       })}
+      {includeEmail ? (
+        <button
+          type="button"
+          onClick={onSelectEmail}
+          className="flex items-center gap-3 rounded-lg border bg-card p-3 text-left transition-colors hover:bg-accent"
+        >
+          <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-muted">
+            <Mail className="size-5" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-sm font-medium">Email</div>
+            <div className="text-xs text-muted-foreground">
+              Included with every workspace
+            </div>
+          </div>
+          <Badge variant="secondary" className="shrink-0 font-normal">
+            Included
+          </Badge>
+        </button>
+      ) : null}
     </div>
   );
 }
