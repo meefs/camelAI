@@ -1,4 +1,5 @@
 import type { LlmModel } from "@/types";
+import type { ModelPausedReason } from "@/lib/model-picker-access";
 
 export type BillingDialogState =
   | { kind: "none" }
@@ -54,4 +55,11 @@ export function hasActiveBillingDialog(
   isExternalDialogOpen: boolean,
 ): boolean {
   return current.kind !== "none" || isExternalDialogOpen;
+}
+
+export function shouldNavigateToBillingForPausedModel(
+  reason: ModelPausedReason | null | undefined,
+  isOrgAdmin: boolean,
+): boolean {
+  return isOrgAdmin && reason === "subscription_unavailable";
 }

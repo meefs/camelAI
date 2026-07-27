@@ -13,6 +13,12 @@ import { MODEL_CATALOG } from "@/lib/model-catalog";
 import { isLlmModelCoveredByOpenAiSubscription } from "@/lib/llm-provider-config";
 import type { LlmModel } from "@/types";
 
+export type UnlockPremiumModalVariant =
+  | "unlock"
+  | "payg_credits_exhausted"
+  | "included_credits_exhausted"
+  | "trial_credits_exhausted";
+
 export interface UnlockPremiumModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -23,6 +29,7 @@ export interface UnlockPremiumModalProps {
   onTopUp: () => void;
   onAddKey: () => void;
   onOpenAiSignIn: () => void;
+  variant?: UnlockPremiumModalVariant;
 }
 
 function AdminAction({
@@ -62,6 +69,7 @@ export function UnlockPremiumModal({
   onTopUp,
   onAddKey,
   onOpenAiSignIn,
+  variant = "unlock",
 }: UnlockPremiumModalProps) {
   const isOpenAiSubscriptionTrigger = Boolean(
     triggerModel && isLlmModelCoveredByOpenAiSubscription(triggerModel),
@@ -69,15 +77,83 @@ export function UnlockPremiumModal({
   const triggerLabel = triggerModel
     ? (MODEL_CATALOG[triggerModel]?.label ?? triggerModel)
     : "Claude and GPT";
+  const dialogCopy = {
+    unlock: {
+      title: "Unlock premium models",
+      description: (
+        <>
+          camelCode is always included. Premium models like {triggerLabel} need
+          one of these:
+        </>
+      ),
+    },
+    payg_credits_exhausted: {
+      title: "Out of credits",
+      description: (
+        <>
+          You&apos;ve used all your camelAI credits. Add more to keep using
+          premium models like {triggerLabel}.
+        </>
+      ),
+    },
+    included_credits_exhausted: {
+      title: "Monthly credits used",
+      description: (
+        <>
+          You&apos;ve used this month&apos;s included credits. They reset when
+          your plan renews. Add credits to keep using {triggerLabel} now.
+        </>
+      ),
+    },
+    trial_credits_exhausted: {
+      title: "Trial credits used",
+      description: (
+        <>
+          You&apos;ve used your trial credits. Subscribe or add credits to keep
+          using premium models like {triggerLabel}.
+        </>
+      ),
+    },
+  }[variant];
+  const subscribeMethod = {
+    testId: "unlock-method-subscribe",
+    title:
+      variant === "included_credits_exhausted" ? "Upgrade plan" : "Subscribe",
+    meta:
+      variant === "included_credits_exhausted" ? null : "from $10/mo",
+    description:
+      variant === "included_credits_exhausted"
+        ? "Higher plans include more monthly credits."
+        : "Monthly model credits matching your plan price, plus more apps, automations, and storage.",
+    label: "See plans",
+    onClick: onSeePlans,
+  };
+  const creditsMethod = {
+    testId: "unlock-method-credits",
+    title: "Buy credits",
+    meta: null,
+    description:
+      variant === "included_credits_exhausted"
+        ? "Extra credits on top of your plan. Available immediately."
+        : "Prepaid, pay as you go. No subscription.",
+    label: "Top up",
+    onClick: onTopUp,
+  };
+  const creditsRecommended =
+    variant === "payg_credits_exhausted" ||
+    variant === "included_credits_exhausted";
+  const recommendedMethod = creditsRecommended
+    ? creditsMethod
+    : subscribeMethod;
+  const otherMethod = creditsRecommended ? subscribeMethod : creditsMethod;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[calc(100svh-2rem)] overflow-y-auto sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>Unlock premium models</DialogTitle>
+          <DialogTitle>{dialogCopy.title}</DialogTitle>
           <DialogDescription>
-            camelCode is always included. Premium models like {triggerLabel} need
-            one of these:
+            {dialogCopy.description}
           </DialogDescription>
         </DialogHeader>
 
@@ -95,25 +171,28 @@ export function UnlockPremiumModal({
               </Badge>
               <Card
                 className="py-0 ring-2 ring-primary"
-                data-testid="unlock-method-subscribe"
+                data-testid={recommendedMethod.testId}
               >
                 <CardContent className="flex items-start gap-3 p-4">
                   <div className="min-w-0 flex-1 space-y-1">
                     <div className="flex flex-wrap items-center gap-2">
-                      <p className="text-sm font-medium">Subscribe</p>
-                      <span className="text-xs text-muted-foreground">
-                        from $10/mo
-                      </span>
+                      <p className="text-sm font-medium">
+                        {recommendedMethod.title}
+                      </p>
+                      {recommendedMethod.meta ? (
+                        <span className="text-xs text-muted-foreground">
+                          {recommendedMethod.meta}
+                        </span>
+                      ) : null}
                     </div>
                     <p className="text-sm text-muted-foreground">
-                      Monthly model credits matching your plan price, plus more
-                      apps, automations, and storage.
+                      {recommendedMethod.description}
                     </p>
                   </div>
                   <AdminAction
                     isOrgAdmin={isOrgAdmin}
-                    label="See plans"
-                    onClick={onSeePlans}
+                    label={recommendedMethod.label}
+                    onClick={recommendedMethod.onClick}
                     recommended
                   />
                 </CardContent>
@@ -122,18 +201,25 @@ export function UnlockPremiumModal({
 
             <div
               className="flex items-start justify-between gap-3 px-1"
-              data-testid="unlock-method-credits"
+              data-testid={otherMethod.testId}
             >
               <div className="min-w-0 space-y-1">
-                <p className="text-sm font-medium">Buy credits</p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="text-sm font-medium">{otherMethod.title}</p>
+                  {otherMethod.meta ? (
+                    <span className="text-xs text-muted-foreground">
+                      {otherMethod.meta}
+                    </span>
+                  ) : null}
+                </div>
                 <p className="text-sm text-muted-foreground">
-                  Prepaid, pay as you go. No subscription.
+                  {otherMethod.description}
                 </p>
               </div>
               <AdminAction
                 isOrgAdmin={isOrgAdmin}
-                label="Top up"
-                onClick={onTopUp}
+                label={otherMethod.label}
+                onClick={otherMethod.onClick}
               />
             </div>
           </div>

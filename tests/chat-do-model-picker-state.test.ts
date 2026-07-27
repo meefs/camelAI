@@ -11,6 +11,7 @@ vi.mock('@/lib/thread-title-generation.server', () => ({
 }));
 
 const {
+  applyHostedCreditPause,
   createThread,
   createThreadWithValidatedAccess,
   deleteThread,
@@ -21,6 +22,10 @@ const {
   updateThread,
   updateThreadModel,
 } = await import('@/lib/chat-do.server');
+const { MODEL_CATALOG } = await import('@/lib/model-catalog');
+const { CAMEL_CODE_LLM_MODEL } = await import('@/lib/llm-provider-config');
+type WorkspaceModelPickerState =
+  import('@/lib/chat-do.server').WorkspaceModelPickerState;
 const { generateThreadTitleWithOpenAI } = await import('@/lib/thread-title-generation.server');
 
 describe('getWorkspaceModelPickerState rollout compatibility', () => {
@@ -122,6 +127,53 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     expect(state?.allowedThreadModels).toContain('gpt-5.6-terra');
     expect(orgStub.getModelPickerConfig).toHaveBeenCalledTimes(2);
     expect(workspaceStub.getModelPickerConfig).toHaveBeenCalledTimes(2);
+  });
+
+  it('links workspace pickers to their scoped model settings', async () => {
+    const workspaceStub = {
+      getInfo: vi.fn().mockResolvedValue({ org_id: 'org_123' }),
+      getModelPickerConfig: vi.fn().mockResolvedValue({
+        use_org_defaults: false,
+        use_platform_defaults: false,
+        models: [{ id: 'sonnet', added_at: 1 }],
+        default_model: 'sonnet',
+      }),
+    };
+    const orgStub = {
+      getInfo: vi.fn().mockResolvedValue({
+        billing_status: 'inactive',
+        billing_credit_purchase_total_cents: 0,
+        billing_credit_grant_total_cents: 0,
+      }),
+      getLlmProviderConfig: vi.fn().mockResolvedValue(null),
+      getExperimentalSettings: vi
+        .fn()
+        .mockResolvedValue({ claude_proxy_models: false }),
+      getModelPickerConfig: vi.fn().mockResolvedValue({
+        use_platform_defaults: true,
+        models: [],
+        default_model: null,
+      }),
+    };
+
+    getEnvMock.mockReturnValue({
+      WORKSPACE: {
+        idFromName: (id: string) => id,
+        get: () => workspaceStub,
+      },
+      ORG: {
+        idFromName: (id: string) => id,
+        get: () => orgStub,
+      },
+    });
+
+    const state = await getWorkspaceModelPickerState({}, 'ws_123');
+
+    expect(state?.modelPickerSettingsHref).toBe(
+      '/settings/organization/models?scope=ws&workspaceId=ws_123',
+    );
+    expect(state?.modelOptions.map((option) => option.id)).toEqual(['sonnet']);
+    expect(state?.allowedThreadModels).toEqual([]);
   });
 
   it('defaults an inactive zero-credit hosted organization to camelCode', async () => {
@@ -298,10 +350,14 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     const freeState = await loadState({ billingStatus: 'inactive' });
     expect(freeState).toMatchObject({
       billingAccessMode: 'camel_free',
-      defaultModel: 'deepseek-v4-auto',
-      effectivePickerDefaultModel: 'deepseek-v4-auto',
+      defaultModel: null,
+      effectivePickerDefaultModel: 'sonnet',
+      canUnlockPremiumModels: true,
     });
-    expect(freeState?.allowedThreadModels).toEqual(['deepseek-v4-auto']);
+    expect(freeState?.allowedThreadModels).toEqual([]);
+    expect(freeState?.modelOptions.map((option) => option.id)).not.toContain(
+      'deepseek-v4-auto',
+    );
     expect(
       freeState?.modelOptions.find((option) => option.id === 'sonnet'),
     ).toMatchObject({ locked: true, unlockHint: 'generic' });
@@ -320,18 +376,25 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
       openAiSubscription: { account_id: 'acct_123' },
     });
     expect(openAiState?.billingAccessMode).toBe('camel_free');
+    expect(openAiState?.canUnlockPremiumModels).toBe(true);
+    expect(openAiState?.defaultModel).toBe('gpt-5.6-sol');
+    expect(openAiState?.effectivePickerDefaultModel).toBe('gpt-5.6-sol');
     expect(openAiState?.allowedThreadModels).toContain('gpt-5.6-sol');
     expect(
       openAiState?.modelOptions.find(
         (option) => option.id === 'gpt-5.6-sol',
       )?.locked,
     ).not.toBe(true);
-    expect(
-      openAiState?.modelOptions.find((option) => option.id === 'sonnet'),
-    ).toMatchObject({ locked: true, unlockHint: 'generic' });
-    expect(
-      openAiState?.modelOptions.find((option) => option.id === 'grok-4.5'),
-    ).toMatchObject({ locked: true, unlockHint: 'generic' });
+    expect(openAiState?.modelOptions.some((option) => option.locked)).toBe(false);
+    expect(openAiState?.modelOptions.map((option) => option.id)).not.toContain(
+      'sonnet',
+    );
+    expect(openAiState?.modelOptions.map((option) => option.id)).not.toContain(
+      'grok-4.5',
+    );
+    expect(openAiState?.modelOptions.map((option) => option.id)).not.toContain(
+      'deepseek-v4-auto',
+    );
 
     const platformFreeState = await loadState({
       billingStatus: 'inactive',
@@ -351,7 +414,264 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     expect(
       paidState?.modelOptions.find((option) => option.id === 'fable-5'),
     ).toMatchObject({ id: 'fable-5' });
+    expect(paidState?.canUnlockPremiumModels).toBe(false);
     expect(paidState?.modelOptions.some((option) => option.locked)).toBe(false);
+  });
+
+  function pickerState(
+    overrides: Partial<WorkspaceModelPickerState> = {},
+  ): WorkspaceModelPickerState {
+    return {
+      orgId: 'org_123',
+      llmProvider: null,
+      customApi: null,
+      customModelId: null,
+      awsRegion: null,
+      allowOpenAiSubscription: false,
+      billingAccessMode: 'subscription',
+      experimentalSettings: { claude_proxy_models: false },
+      modelOptions: [
+        MODEL_CATALOG[CAMEL_CODE_LLM_MODEL],
+        MODEL_CATALOG.sonnet,
+        MODEL_CATALOG['gpt-5.6-sol'],
+        MODEL_CATALOG['grok-4.5'],
+      ],
+      allowedThreadModels: [
+        CAMEL_CODE_LLM_MODEL,
+        'sonnet',
+        'gpt-5.6-sol',
+        'grok-4.5',
+      ],
+      effectivePickerDefaultModel: 'sonnet',
+      hasEffectivePickerDefault: true,
+      defaultModel: 'sonnet',
+      canUnlockPremiumModels: false,
+      hostedCreditsPaused: null,
+      modelPickerSettingsHref: '/settings/organization/models',
+      ...overrides,
+    };
+  }
+
+  it.each([
+    ['active', 'subscription', 'included_credits_exhausted'],
+    ['trialing', 'subscription', 'trial_credits_exhausted'],
+    ['inactive', 'credits', 'payg_credits_exhausted'],
+    ['past_due', 'camel_free', 'subscription_unavailable'],
+  ] as const)(
+    'maps %s billing to %s hosted-model pauses',
+    (billingStatus, billingAccessMode, reason) => {
+      const result = applyHostedCreditPause(
+        pickerState({ billingAccessMode }),
+        { billingStatus, availableCreditsCents: 0 },
+      );
+
+      expect(result.hostedCreditsPaused).toEqual({ reason });
+      expect(
+        result.modelOptions.find(
+          (option) => option.id === CAMEL_CODE_LLM_MODEL,
+        )?.pausedReason,
+      ).toBeUndefined();
+      expect(
+        result.modelOptions.find((option) => option.id === 'sonnet'),
+      ).toMatchObject({ locked: true, pausedReason: reason });
+      expect(result.allowedThreadModels).toEqual([CAMEL_CODE_LLM_MODEL]);
+      expect(result.effectivePickerDefaultModel).toBe(CAMEL_CODE_LLM_MODEL);
+      expect(result.defaultModel).toBe(CAMEL_CODE_LLM_MODEL);
+    },
+  );
+
+  it('does not label a canceled subscription as a payment issue', () => {
+    const state = pickerState({ billingAccessMode: 'camel_free' });
+    const result = applyHostedCreditPause(state, {
+      billingStatus: 'canceled',
+      availableCreditsCents: 0,
+    });
+
+    expect(result.modelOptions).toEqual(state.modelOptions);
+    expect(result.hostedCreditsPaused).toBeNull();
+  });
+
+  it('leaves BYOK- and OpenAI-covered models available during a hosted credit pause', () => {
+    const result = applyHostedCreditPause(
+      pickerState({
+        llmProvider: 'anthropic',
+        allowOpenAiSubscription: true,
+      }),
+      { billingStatus: 'active', availableCreditsCents: 0 },
+    );
+
+    expect(
+      result.modelOptions.find((option) => option.id === 'sonnet')?.locked,
+    ).not.toBe(true);
+    expect(
+      result.modelOptions.find((option) => option.id === 'gpt-5.6-sol')?.locked,
+    ).not.toBe(true);
+    expect(
+      result.modelOptions.find((option) => option.id === 'grok-4.5'),
+    ).toMatchObject({
+      locked: true,
+      pausedReason: 'included_credits_exhausted',
+    });
+  });
+
+  it('keeps an all-paused custom picker unchanged and preserves its configured default', () => {
+    const result = applyHostedCreditPause(
+      pickerState({
+        modelOptions: [MODEL_CATALOG.sonnet],
+        allowedThreadModels: ['sonnet'],
+      }),
+      { billingStatus: 'active', availableCreditsCents: 0 },
+    );
+
+    expect(result.modelOptions.map((option) => option.id)).toEqual([
+      'sonnet',
+    ]);
+    expect(result.allowedThreadModels).toEqual([]);
+    expect(result.defaultModel).toBe('sonnet');
+    expect(result.effectivePickerDefaultModel).toBe('sonnet');
+  });
+
+  it('uses the cheapest credential-covered model when the configured default pauses', () => {
+    const result = applyHostedCreditPause(
+      pickerState({
+        allowOpenAiSubscription: true,
+        modelOptions: [
+          MODEL_CATALOG.sonnet,
+          MODEL_CATALOG['gpt-5.6-sol'],
+          MODEL_CATALOG['gpt-5.6-luna'],
+        ],
+        allowedThreadModels: [
+          'sonnet',
+          'gpt-5.6-sol',
+          'gpt-5.6-luna',
+        ],
+      }),
+      { billingStatus: 'active', availableCreditsCents: 0 },
+    );
+
+    expect(result.modelOptions.map((option) => option.id)).toEqual([
+      'sonnet',
+      'gpt-5.6-sol',
+      'gpt-5.6-luna',
+    ]);
+    expect(result.allowedThreadModels).toEqual([
+      'gpt-5.6-sol',
+      'gpt-5.6-luna',
+    ]);
+    expect(result.defaultModel).toBe('gpt-5.6-luna');
+    expect(result.effectivePickerDefaultModel).toBe('gpt-5.6-luna');
+  });
+
+  it.each(['enterprise', 'byok', 'camel_free'] as const)(
+    'does not pause hosted models in %s mode',
+    (billingAccessMode) => {
+      const state = pickerState({ billingAccessMode });
+      const result = applyHostedCreditPause(state, {
+        billingStatus: 'active',
+        availableCreditsCents: 0,
+      });
+
+      expect(result.modelOptions).toEqual(state.modelOptions);
+      expect(result.hostedCreditsPaused).toBeNull();
+    },
+  );
+
+  it('does not pause hosted models while credits remain', () => {
+    const state = pickerState();
+    const result = applyHostedCreditPause(state, {
+      billingStatus: 'active',
+      availableCreditsCents: 1,
+    });
+
+    expect(result.modelOptions).toEqual(state.modelOptions);
+    expect(result.hostedCreditsPaused).toBeNull();
+  });
+
+  it('only offers More models when the org setup leaves unlockable catalog gaps', async () => {
+    async function loadState(args: {
+      provider?: 'anthropic' | 'openrouter' | 'custom';
+      billingStatus?: 'inactive' | 'active' | 'enterprise';
+      purchasedCredits?: number;
+    }) {
+      const workspaceStub = {
+        getModelPickerConfig: vi.fn().mockResolvedValue({
+          use_org_defaults: true,
+          models: [],
+          default_model: null,
+        }),
+      };
+      const orgStub = {
+        getOpenAiSubscription: vi.fn().mockResolvedValue(null),
+        getModelPickerConfig: vi.fn().mockResolvedValue({
+          use_platform_defaults: true,
+          models: [],
+          default_model: null,
+        }),
+      };
+      getEnvMock.mockReturnValue({
+        WORKSPACE: {
+          idFromName: (id: string) => id,
+          get: () => workspaceStub,
+        },
+        ORG: {
+          idFromName: (id: string) => id,
+          get: () => orgStub,
+        },
+      });
+      const llmProviderConfig = args.provider
+        ? {
+            provider: args.provider,
+            credentials_encrypted: 'encrypted',
+            config:
+              args.provider === 'custom'
+                ? JSON.stringify({ custom_model_id: 'custom-model' })
+                : '{}',
+            created_by: 'user_123',
+            created_at: 1,
+            updated_at: 1,
+          }
+        : null;
+
+      return getWorkspaceModelPickerState({}, 'ws_123', {
+        orgId: 'org_123',
+        llmProviderConfig,
+        experimentalSettings: { claude_proxy_models: false },
+        orgBillingState: {
+          billing_status: args.billingStatus ?? 'inactive',
+          billing_credit_purchase_total_cents: args.purchasedCredits ?? 0,
+          billing_credit_grant_total_cents: 0,
+        },
+      });
+    }
+
+    await expect(loadState({ provider: 'anthropic' })).resolves.toMatchObject({
+      billingAccessMode: 'byok',
+      canUnlockPremiumModels: true,
+    });
+    await expect(loadState({ provider: 'openrouter' })).resolves.toMatchObject({
+      billingAccessMode: 'byok',
+      canUnlockPremiumModels: false,
+    });
+    await expect(loadState({ provider: 'custom' })).resolves.toMatchObject({
+      billingAccessMode: 'byok',
+      canUnlockPremiumModels: false,
+    });
+    await expect(loadState({ billingStatus: 'active' })).resolves.toMatchObject({
+      billingAccessMode: 'subscription',
+      canUnlockPremiumModels: false,
+    });
+    await expect(
+      loadState({ purchasedCredits: 100 }),
+    ).resolves.toMatchObject({
+      billingAccessMode: 'credits',
+      canUnlockPremiumModels: false,
+    });
+    await expect(
+      loadState({ billingStatus: 'enterprise' }),
+    ).resolves.toMatchObject({
+      billingAccessMode: 'enterprise',
+      canUnlockPremiumModels: false,
+    });
   });
 
   it('rethrows picker config errors other than missing RPC rollout errors', async () => {

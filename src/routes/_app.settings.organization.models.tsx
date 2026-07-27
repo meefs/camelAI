@@ -1,12 +1,13 @@
 import { useEffect } from "react";
 import {
   redirect,
+  Link,
   useFetcher,
   useLoaderData,
   useLocation,
   useNavigate,
 } from "react-router";
-import { Star } from "lucide-react";
+import { Lock, Star } from "lucide-react";
 import { toast } from "sonner";
 import type { Route } from "./+types/_app.settings.organization.models";
 import { ModelLogo } from "@/components/model-logo";
@@ -19,6 +20,11 @@ import {
   ToggleGroup,
   ToggleGroupItem,
 } from "@/components/ui/toggle-group";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { getContrastTextColor } from "@/lib/avatar";
 import {
   getAuthEnv,
@@ -30,12 +36,15 @@ import { getEnv } from "@/lib/cloudflare.server";
 import {
   ALL_LLM_MODELS,
   MODEL_CATALOG,
+  compareModelCatalogEntries,
   resolveModelPickerCatalog,
   sortAdditionalModelCatalogEntries,
   type ModelCatalogEntry,
 } from "@/lib/model-catalog";
 import { resolveEffectivePickerConfig } from "@/lib/model-picker-config";
 import {
+  CAMEL_CODE_LLM_MODEL,
+  CUSTOM_LLM_MODEL,
   getStoredCustomLlmProviderApi,
   getStoredCustomLlmProviderModelId,
   getStoredBedrockAwsRegion,
@@ -43,6 +52,11 @@ import {
   isLlmModel,
   type CustomLlmProviderApi,
 } from "@/lib/llm-provider-config";
+import {
+  isOrgBillingAccessReady,
+  resolveOrgBillingAccess,
+} from "@/lib/billing.server";
+import { isBillingLockedModel } from "@/lib/chat-do.server";
 import { getEffectiveLlmProviderConfig } from "@/lib/selfhost-ai-provider";
 import { cn } from "@/lib/utils";
 import type {
@@ -139,6 +153,7 @@ function buildPickerRows(
     customApi?: CustomLlmProviderApi | null;
     customModelId?: string | null;
     awsRegion?: string | null;
+    allowOpenAiSubscription?: boolean;
   },
 ): PickerModelRow[] {
   return resolveModelPickerCatalog({
@@ -148,6 +163,7 @@ function buildPickerRows(
     customApi: options.customApi,
     customModelId: options.customModelId,
     awsRegion: options.awsRegion,
+    allowOpenAiSubscription: options.allowOpenAiSubscription,
   })
     .filter((entry) => visibleModelIds.has(entry.id))
     .map((entry) => ({
@@ -213,10 +229,12 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const selectedWorkspaceId = url.searchParams.get("workspaceId");
 
   const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
-  const [orgConfig, workspaces] = await Promise.all([
+  const [orgConfig, workspaces, openAiSubscription] = await Promise.all([
     orgStub.getModelPickerConfig(),
     listOrgWorkspaces(authEnv, orgId),
+    orgStub.getOpenAiSubscription(),
   ]);
+  const allowOpenAiSubscription = openAiSubscription !== null;
   const effectiveLlmProviderConfig = getEffectiveLlmProviderConfig(
     env,
     authContext.currentOrgLlmProviderConfig,
@@ -233,7 +251,38 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     customApi,
     customModelId,
     awsRegion,
+    allowOpenAiSubscription,
   );
+  const billingAccess = resolveOrgBillingAccess({
+    env,
+    org: authContext.currentOrg,
+    llmProviderConfig: effectiveLlmProviderConfig,
+  });
+  const billingAccessMode = isOrgBillingAccessReady(billingAccess)
+    ? billingAccess.mode
+    : null;
+  const showLockedModels =
+    billingAccessMode !== "enterprise" && billingAccessMode !== "selfhost";
+  const billingLockedModelIds =
+    showLockedModels && billingAccessMode === "camel_free"
+      ? [...visibleModelIds].filter((id) =>
+          isBillingLockedModel(id, {
+            isFreeMode: true,
+            allowOpenAiSubscription,
+          }),
+        )
+      : [];
+  const hiddenLockedModels =
+    showLockedModels && billingAccessMode === "byok"
+      ? (Object.values(MODEL_CATALOG) as ModelCatalogEntry[])
+          .filter(
+            (entry) =>
+              !visibleModelIds.has(entry.id) &&
+              entry.id !== CUSTOM_LLM_MODEL &&
+              entry.id !== CAMEL_CODE_LLM_MODEL,
+          )
+          .sort(compareModelCatalogEntries)
+      : [];
   const workspaceConfigs = await loadWorkspaceConfigs(authEnv, workspaces);
   const selectedWorkspace =
     scope === "ws"
@@ -256,6 +305,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     customApi,
     customModelId,
     awsRegion,
+    allowOpenAiSubscription,
   });
   const useOrgDefaults =
     scope === "ws" ? (workspaceConfig?.use_org_defaults ?? true) : false;
@@ -272,6 +322,12 @@ export async function loader({ request, context }: Route.LoaderArgs) {
         workspaceConfigs.get(workspace.id)?.use_org_defaults === false,
     })),
     useOrgDefaults,
+    allowOpenAiSubscription,
+    billingAccessMode,
+    billingStatus: authContext.currentOrg.billing_status,
+    showLockedModels,
+    billingLockedModelIds,
+    hiddenLockedModels,
     config: {
       usePlatformDefaults: displayConfig.use_platform_defaults !== false,
       inPicker: pickerRows,
@@ -301,12 +357,15 @@ async function loadActionTarget(args: {
     authContext.currentOrgLlmProviderConfig,
   );
   const experimentalSettings = authContext.currentOrgExperimentalSettings;
+  const allowOpenAiSubscription =
+    (await orgStub.getOpenAiSubscription()) !== null;
   const visibleModelIds = getVisibleModelIdsForSettings(
     effectiveLlmProviderConfig?.provider,
     experimentalSettings,
     getStoredCustomLlmProviderApi(effectiveLlmProviderConfig),
     getStoredCustomLlmProviderModelId(effectiveLlmProviderConfig),
     getStoredBedrockAwsRegion(effectiveLlmProviderConfig),
+    allowOpenAiSubscription,
   );
 
   if (scope === "org") {
@@ -405,6 +464,7 @@ function getVisibleModelIdsForSettings(
   customApi?: CustomLlmProviderApi | null,
   customModelId?: string | null,
   awsRegion?: string | null,
+  allowOpenAiSubscription?: boolean,
 ): Set<LlmModel> {
   return new Set(
     getVisibleLlmModelOptions(experimentalSettings, null, {
@@ -412,6 +472,7 @@ function getVisibleModelIdsForSettings(
       customApi,
       customModelId,
       awsRegion,
+      allowOpenAiSubscription,
     }).map((option) => option.value),
   );
 }
@@ -668,6 +729,7 @@ function ModelSettingsRow({
   editable,
   actionDisabled,
   defaultDisabled,
+  billingLocked = false,
 }: {
   row: PickerModelRow | { entry: ModelCatalogEntry };
   actionLabel: "add" | "remove";
@@ -676,6 +738,7 @@ function ModelSettingsRow({
   editable: boolean;
   actionDisabled?: boolean;
   defaultDisabled?: boolean;
+  billingLocked?: boolean;
 }) {
   const entry = row.entry;
   const isDefault = "isDefault" in row ? row.isDefault : false;
@@ -691,6 +754,19 @@ function ModelSettingsRow({
         <span className="text-sm font-medium text-muted-foreground">
           {entry.label}
         </span>
+        {billingLocked ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Lock
+                className="size-3.5 shrink-0 text-muted-foreground"
+                aria-label="Locked"
+              />
+            </TooltipTrigger>
+            <TooltipContent>
+              Needs a plan, credits, or an API key.
+            </TooltipContent>
+          </Tooltip>
+        ) : null}
         {isDefault && (
           <span className="ml-auto text-xs text-muted-foreground">
             default
@@ -704,6 +780,19 @@ function ModelSettingsRow({
     <div className="flex min-h-10 items-center gap-2 py-2.5">
       <ModelLogo model={entry.id} size={16} className="size-4 shrink-0" />
       <span className="text-sm font-medium">{entry.label}</span>
+      {billingLocked ? (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Lock
+              className="size-3.5 shrink-0 text-muted-foreground"
+              aria-label="Locked"
+            />
+          </TooltipTrigger>
+          <TooltipContent>
+            Needs a plan, credits, or an API key.
+          </TooltipContent>
+        </Tooltip>
+      ) : null}
       <div className="ml-auto flex items-center gap-1.5">
         {onDefault && (
           <Button
@@ -786,6 +875,29 @@ export default function OrganizationModelsPage() {
   const workspaceSelectorVisible = data.workspaces.length > 1;
   const workspaceControlsVisible =
     workspaceSelectorVisible || data.scope === "ws";
+  const billingLockedModelIds = new Set(
+    data.showLockedModels ? (data.billingLockedModelIds ?? []) : [],
+  );
+  const isPastDue = data.billingStatus === "past_due";
+  const lockedBannerEntries = (() => {
+    const entries = data.billingLockedModelIds
+      .map((id) => MODEL_CATALOG[id])
+      .filter((entry): entry is ModelCatalogEntry => Boolean(entry))
+      .sort(compareModelCatalogEntries);
+    const picks: ModelCatalogEntry[] = [];
+    const seenLogos = new Set<string>();
+    for (const entry of entries) {
+      if (seenLogos.has(entry.providerLogo)) continue;
+      seenLogos.add(entry.providerLogo);
+      picks.push(entry);
+      if (picks.length === 3) break;
+    }
+    for (const entry of entries) {
+      if (picks.length === 3) break;
+      if (!picks.includes(entry)) picks.push(entry);
+    }
+    return picks;
+  })();
 
   useEffect(() => {
     if (fetcher.state !== "idle" || !fetcher.data) return;
@@ -839,6 +951,43 @@ export default function OrganizationModelsPage() {
         title="Models"
         description="Choose which models appear in your team's picker."
       />
+
+      {data.showLockedModels && data.billingLockedModelIds.length > 0 ? (
+        <div className="space-y-2 rounded-lg border p-4">
+          <div className="flex items-center gap-2">
+            <div className="flex shrink-0 -space-x-1.5">
+              {lockedBannerEntries.map((entry) => (
+                <span
+                  key={entry.id}
+                  className="flex rounded-md bg-background ring-2 ring-background"
+                >
+                  <span className="flex size-6 items-center justify-center rounded-md bg-muted/50">
+                    <ModelLogo model={entry.id} size={14} className="size-3.5" />
+                  </span>
+                </span>
+              ))}
+            </div>
+            <p className="text-sm font-medium">
+              {isPastDue ? "Payment is past due" : "Premium models are locked"}
+            </p>
+          </div>
+          <p className="text-sm text-muted-foreground">
+            {isPastDue
+              ? "Fix payment in Billing to restore premium models."
+              : "Your org is on the free camelCode model. Unlock premium models with a plan, credits, or an API key."}
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" asChild>
+              <Link to="/settings/organization/billing">
+                {isPastDue ? "Fix payment" : "View plans"}
+              </Link>
+            </Button>
+            <Button size="sm" variant="outline" asChild>
+              <Link to="/settings/organization/ai-provider">Add API key</Link>
+            </Button>
+          </div>
+        </div>
+      ) : null}
 
       {workspaceControlsVisible && (
         <div className="space-y-4">
@@ -936,6 +1085,7 @@ export default function OrganizationModelsPage() {
                 onAction={(model) => submit("removeModel", model)}
                 onDefault={(model) => submit("setDefault", model)}
                 editable={editable}
+                billingLocked={billingLockedModelIds.has(row.entry.id)}
                 actionDisabled={isSubmitting}
                 defaultDisabled={isSubmitting || !editingCustomList}
               />
@@ -973,6 +1123,7 @@ export default function OrganizationModelsPage() {
                     actionLabel="add"
                     onAction={(model) => submit("addModel", model)}
                     editable
+                    billingLocked={billingLockedModelIds.has(entry.id)}
                     actionDisabled={isSubmitting}
                   />
                 ))}
@@ -981,6 +1132,46 @@ export default function OrganizationModelsPage() {
           </section>
         </>
       )}
+
+      {data.showLockedModels && data.hiddenLockedModels.length > 0 ? (
+        <>
+          <Separator />
+
+          <section className="space-y-2">
+            <div className="flex items-center justify-between gap-4">
+              <h2 className="text-sm font-medium">Locked models</h2>
+              <Button size="sm" variant="outline" asChild>
+                <Link to="/settings/organization/billing">View plans</Link>
+              </Button>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              Not available with your current setup. Unlock with a camelAI
+              plan, credits, or a different API key.
+            </p>
+            <div className="divide-y divide-border/60">
+              {data.hiddenLockedModels.map((entry) => (
+                <div
+                  key={entry.id}
+                  className="flex min-h-10 items-center gap-2 py-2.5"
+                >
+                  <ModelLogo
+                    model={entry.id}
+                    size={16}
+                    className="size-4 shrink-0 opacity-60"
+                  />
+                  <span className="text-sm font-medium text-muted-foreground">
+                    {entry.label}
+                  </span>
+                  <Lock
+                    className="ml-auto size-3.5 text-muted-foreground"
+                    aria-label="Locked"
+                  />
+                </div>
+              ))}
+            </div>
+          </section>
+        </>
+      ) : null}
     </div>
   );
 }

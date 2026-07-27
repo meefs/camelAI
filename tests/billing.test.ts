@@ -7,6 +7,7 @@ import {
   formatCreditBalance,
   formatCreditsFromUsd,
   formatUsdFromCents,
+  getBillingStatusDescription,
 } from "@/lib/billing";
 import {
   BILLING_PLAN_LIMITS,
@@ -196,6 +197,11 @@ describe("billing helpers", () => {
     expect(billingStatusBadgeVariant("active")).toBe("default");
     expect(billingStatusBadgeVariant("enterprise")).toBe("default");
     expect(billingStatusBadgeVariant("past_due")).toBe("destructive");
+    expect(
+      getBillingStatusDescription({
+        billing_status: "past_due",
+      } as Organization),
+    ).toBe("Your payment is past due. Fix it to restore premium models.");
   });
 
   it("formats credits and usd values from cents", () => {

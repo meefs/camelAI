@@ -99,7 +99,60 @@ describe("billing chat credit status route", () => {
     expect(getLlmProviderConfig).not.toHaveBeenCalled();
     expect(result).toMatchObject({
       ok: true,
-      billingCreditStatus: null,
+      billingCreditStatus: {
+        availableCreditsCents: 0,
+        isExhausted: true,
+        hasByokProvider: true,
+      },
+    });
+  });
+
+  it("preserves exhausted hosted-credit state after a BYOK-covered turn", async () => {
+    getEnvMock.mockReturnValue({});
+    requireAuthContextMock.mockResolvedValue({
+      currentOrg: {
+        id: "org_123",
+        name: "Org",
+        billing_status: "active",
+        billing_plan: "starter",
+      },
+      currentOrgLlmProviderConfig: {
+        provider: "anthropic",
+        credentials_encrypted: "encrypted",
+        config: "{}",
+        created_by: "user_123",
+        created_at: 1,
+        updated_at: 1,
+      },
+    });
+    getOrgBillingOverviewMock.mockResolvedValue(makeOverview());
+
+    const hostedTurn = await loader({
+      request: new Request(
+        "https://camelai.test/api/billing/chat-credit-status?model=gpt-5.6-sol",
+      ),
+      context: {},
+      params: {},
+    } as never);
+    const byokTurn = await loader({
+      request: new Request(
+        "https://camelai.test/api/billing/chat-credit-status?model=sonnet",
+      ),
+      context: {},
+      params: {},
+    } as never);
+
+    expect(hostedTurn).toMatchObject({
+      ok: true,
+      billingCreditStatus: { isExhausted: true },
+    });
+    expect(byokTurn).toMatchObject({
+      ok: true,
+      requestedModel: "sonnet",
+      billingCreditStatus: {
+        isExhausted: true,
+        hasByokProvider: true,
+      },
     });
   });
 

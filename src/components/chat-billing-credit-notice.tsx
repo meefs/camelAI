@@ -8,6 +8,7 @@ import {
   shouldShowLowCreditAlert,
   type BillingCreditStatus,
 } from "@/lib/chat-credit-status";
+import type { ModelPausedReason } from "@/lib/model-picker-access";
 import { cn } from "@/lib/utils";
 
 const DISMISSED_TIER_KEY_PREFIX = "low_credits_alert_dismissed_tier:";
@@ -27,6 +28,36 @@ function formatCreditLabel(cents: number): string {
 function storageKey(userId: string, orgId: string): string {
   return `${DISMISSED_TIER_KEY_PREFIX}${userId}:${orgId}`;
 }
+
+const hostedCreditPauseCopy = {
+  payg_credits_exhausted: {
+    title: "Out of hosted credits",
+    admin: "camelCode is still available. Add credits to restore premium models.",
+    member: "camelCode is still available. Ask an admin to add credits.",
+  },
+  included_credits_exhausted: {
+    title: "Plan credits used",
+    admin:
+      "camelCode is still available. Premium models return at renewal or after adding credits.",
+    member:
+      "camelCode is still available. Premium models return at renewal or after an admin adds credits.",
+  },
+  trial_credits_exhausted: {
+    title: "Trial credits used",
+    admin:
+      "camelCode is still available. Upgrade or add credits to restore premium models.",
+    member:
+      "camelCode is still available. Ask an admin to upgrade or add credits.",
+  },
+  subscription_unavailable: {
+    title: "Payment issue",
+    admin: "camelCode is still available. Fix payment to restore premium models.",
+    member: "camelCode is still available. Ask an admin to fix payment.",
+  },
+} satisfies Record<
+  ModelPausedReason,
+  { title: string; admin: string; member: string }
+>;
 
 function parseStoredDismissedTier(value: string | null): number | null {
   if (!value) return null;
@@ -76,6 +107,7 @@ export function BillingCreditNotice({
   onOpenUsage,
   onTopUp,
   canTopUp = true,
+  pauseReason = null,
   userId = null,
   orgId = null,
   className,
@@ -84,6 +116,7 @@ export function BillingCreditNotice({
   onOpenUsage: () => void;
   onTopUp: () => void;
   canTopUp?: boolean;
+  pauseReason?: ModelPausedReason | null;
   userId?: string | null;
   orgId?: string | null;
   className?: string;
@@ -168,13 +201,22 @@ export function BillingCreditNotice({
   );
 
   if (status.isExhausted) {
-    const description = status.hasByokProvider
+    const pauseCopy = pauseReason ? hostedCreditPauseCopy[pauseReason] : null;
+    const title = pauseCopy?.title ?? "You're out of hosted credits";
+    const pauseDescription = pauseCopy
       ? canTopUp
-        ? "This thread uses a hosted model that isn't covered by your API key. Top up to keep going, or switch to a model your key supports."
-        : "This thread uses a hosted model that isn't covered by your API key. Ask an organization admin to top up credits, or switch to a model your key supports."
-      : canTopUp
-        ? "Top up to keep going, or use your own API key."
-        : "Ask an organization admin to top up credits, or use your own API key.";
+        ? pauseCopy.admin
+        : pauseCopy.member
+      : null;
+    const description =
+      pauseDescription ??
+      (status.hasByokProvider
+        ? canTopUp
+          ? "This thread uses a hosted model that isn't covered by your API key. Top up to keep going, or switch to a model your key supports."
+          : "This thread uses a hosted model that isn't covered by your API key. Ask an organization admin to top up credits, or switch to a model your key supports."
+        : canTopUp
+          ? "Top up to keep going, or use your own API key."
+          : "Ask an organization admin to top up credits, or use your own API key.");
 
     return (
       <div
@@ -187,7 +229,7 @@ export function BillingCreditNotice({
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0">
               <p className="text-sm font-semibold">
-                You&apos;re out of hosted credits this month
+                {title}
               </p>
               <p className="mt-0.5 text-xs text-background/80">
                 {description}
@@ -203,7 +245,7 @@ export function BillingCreditNotice({
               >
                 View usage
               </Button>
-              {canTopUp ? (
+              {canTopUp && pauseReason !== "subscription_unavailable" ? (
                 <Button
                   type="button"
                   size="sm"

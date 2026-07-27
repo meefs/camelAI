@@ -101,7 +101,7 @@ export function getBillingStatusDescription(
     case "enterprise":
       return "Your organization is billed outside Stripe and does not need a subscription or credits.";
     case "past_due":
-      return "Your subscription needs attention before chat can continue.";
+      return "Your payment is past due. Fix it to restore premium models.";
     case "canceled":
       return "Your subscription was canceled.";
     case "inactive":

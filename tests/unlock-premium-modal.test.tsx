@@ -1,14 +1,17 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { UnlockPremiumModal } from "@/components/billing/unlock-premium-modal";
+import type { UnlockPremiumModalVariant } from "@/components/billing/unlock-premium-modal";
 import type { LlmModel } from "@/types";
 
 function renderModal({
   triggerModel = "sonnet",
   isOrgAdmin = true,
+  variant = "unlock",
 }: {
   triggerModel?: LlmModel;
   isOrgAdmin?: boolean;
+  variant?: UnlockPremiumModalVariant;
 } = {}) {
   render(
     <UnlockPremiumModal
@@ -21,6 +24,7 @@ function renderModal({
       onTopUp={vi.fn()}
       onAddKey={vi.fn()}
       onOpenAiSignIn={vi.fn()}
+      variant={variant}
     />,
   );
 }
@@ -104,5 +108,63 @@ describe("UnlockPremiumModal", () => {
     expect(
       screen.queryByRole("button", { name: "Add key" }),
     ).not.toBeInTheDocument();
+  });
+
+  it.each([
+    [
+      "payg_credits_exhausted",
+      "Out of credits",
+      "used all your camelAI credits",
+      "unlock-method-credits",
+      "Buy credits",
+    ],
+    [
+      "included_credits_exhausted",
+      "Monthly credits used",
+      "used this month's included credits",
+      "unlock-method-credits",
+      "Buy credits",
+    ],
+    [
+      "trial_credits_exhausted",
+      "Trial credits used",
+      "used your trial credits",
+      "unlock-method-subscribe",
+      "Subscribe",
+    ],
+  ] satisfies Array<
+    [
+      UnlockPremiumModalVariant,
+      string,
+      string,
+      string,
+      string,
+    ]
+  >)(
+    "renders the %s recovery variant",
+    (variant, title, description, recommendedTestId, recommendedTitle) => {
+      renderModal({ variant });
+
+      expect(screen.getByRole("heading", { name: title })).toBeInTheDocument();
+      expect(screen.getByText(new RegExp(description))).toBeInTheDocument();
+      const recommended = screen.getByTestId(recommendedTestId);
+      expect(recommended).toHaveClass("ring-2", "ring-primary");
+      expect(recommended).toHaveTextContent(recommendedTitle);
+      expect(screen.getAllByText("Recommended")).toHaveLength(1);
+    },
+  );
+
+  it("offers an upgrade-plan row after included credits are used", () => {
+    renderModal({ variant: "included_credits_exhausted" });
+
+    expect(screen.getByText("Upgrade plan")).toBeInTheDocument();
+    expect(
+      screen.getByText("Higher plans include more monthly credits."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Extra credits on top of your plan. Available immediately.",
+      ),
+    ).toBeInTheDocument();
   });
 });

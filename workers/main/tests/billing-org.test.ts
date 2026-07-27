@@ -86,6 +86,44 @@ describe("OrgDO billing grant idempotency", () => {
     };
   }
 
+  it("normalizes a completed cancellation to the free tier", async () => {
+    const { userId: ownerId } = await createUser(
+      testEnv,
+      testEmail(),
+      "password",
+      "Owner",
+    );
+    const { org } = await createOrg(
+      testEnv,
+      "Canceled Subscription Org",
+      ownerId,
+      { billingPlan: "pro" },
+    );
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+
+    await expect(
+      orgStub.updateBillingState({
+        billing_status: "canceled",
+        billing_plan: "pro",
+        billing_seat_count: 1,
+        billing_subscription_id: "sub_canceled",
+        billing_subscription_status: "canceled",
+      }),
+    ).resolves.toMatchObject({
+      billing_status: "inactive",
+      billing_plan: "payg",
+      billing_seat_count: 1,
+      billing_subscription_id: null,
+      billing_subscription_status: null,
+    });
+    await expect(orgStub.getInfo()).resolves.toMatchObject({
+      billing_status: "inactive",
+      billing_plan: "payg",
+      billing_subscription_id: null,
+      billing_subscription_status: null,
+    });
+  });
+
   it("uses paid Team capacity locally without mutating billing", async () => {
     const { userId: ownerId } = await createUser(
       testEnv,

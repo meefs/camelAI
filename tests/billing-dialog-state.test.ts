@@ -3,6 +3,7 @@ import {
   getBillingDialogIdentityKey,
   getWelcomeAutoOpenState,
   hasActiveBillingDialog,
+  shouldNavigateToBillingForPausedModel,
   transitionBillingDialogState,
   type BillingDialogState,
 } from "@/lib/billing-dialog-state";
@@ -38,6 +39,27 @@ describe("billing dialog state", () => {
   it("includes billing dialogs owned outside Chat in the active-dialog guard", () => {
     expect(hasActiveBillingDialog({ kind: "none" }, true)).toBe(true);
     expect(hasActiveBillingDialog({ kind: "none" }, false)).toBe(false);
+  });
+
+  it("navigates payment-paused models to billing only for org admins", () => {
+    expect(
+      shouldNavigateToBillingForPausedModel(
+        "subscription_unavailable",
+        true,
+      ),
+    ).toBe(true);
+    expect(
+      shouldNavigateToBillingForPausedModel(
+        "subscription_unavailable",
+        false,
+      ),
+    ).toBe(false);
+    expect(
+      shouldNavigateToBillingForPausedModel(
+        "included_credits_exhausted",
+        true,
+      ),
+    ).toBe(false);
   });
 
   it("auto-opens once per user and org when dismissal persistence fails", () => {

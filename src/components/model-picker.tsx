@@ -1,7 +1,7 @@
 'use client';
 
 import { Fragment, useEffect, useRef, useState } from 'react';
-import { Check, Lock, LockOpen } from 'lucide-react';
+import { Check, Hourglass, Lock, LockOpen } from 'lucide-react';
 import { Link } from 'react-router';
 import { ModelLogo } from '@/components/model-logo';
 import {
@@ -29,7 +29,10 @@ import {
 } from '@/lib/recent-model';
 import { cn } from '@/lib/utils';
 import type { LlmModel } from '@/types';
-import type { ModelPickerOption } from '@/lib/chat-do.server';
+import type {
+  ModelPausedReason,
+  ModelPickerOption,
+} from '@/lib/model-picker-access';
 
 interface ModelPickerProps {
   value: LlmModel;
@@ -41,6 +44,8 @@ interface ModelPickerProps {
   recentModelScope?: RecentModelScope | null;
   disabled?: boolean;
   manageModelsHref?: string;
+  showMoreModelsCta?: boolean;
+  pausedSection?: { reason: ModelPausedReason } | null;
 }
 
 const RATING_MAX = 5;
@@ -144,13 +149,27 @@ function RatingRow({
 }
 
 function ModelMetadataCard({ entry }: { entry: ModelPickerOption }) {
-  const unlockCopy = entry.locked
-    ? entry.unlockHint === 'openai'
-      ? 'Unlock with a plan, credits, an API key — or your OpenAI account.'
-      : 'Unlock with a plan, credits, or an API key.'
-    : entry.id === CAMEL_CODE_LLM_MODEL
-      ? "Free and always included. Text-only."
-      : null;
+  const pausedCopy = entry.pausedReason
+    ? {
+        payg_credits_exhausted:
+          'Add credits to use this model.',
+        included_credits_exhausted:
+          'Available again when your plan renews, or add credits now.',
+        trial_credits_exhausted:
+          'Upgrade or add credits to use this model.',
+        subscription_unavailable:
+          'Fix your payment to use this model.',
+      }[entry.pausedReason]
+    : null;
+  const unlockCopy =
+    pausedCopy ??
+    (entry.locked
+      ? entry.unlockHint === 'openai'
+        ? 'Unlock with a plan, credits, an API key — or your OpenAI account.'
+        : 'Unlock with a plan, credits, or an API key.'
+      : entry.id === CAMEL_CODE_LLM_MODEL
+        ? "Free and always included. Text-only."
+        : null);
 
   return (
     <HoverCardContent side="right" align="start" sideOffset={8} className="w-64">
@@ -190,6 +209,8 @@ export function ModelPicker({
   recentModelScope,
   disabled = false,
   manageModelsHref = '/settings/organization/models',
+  showMoreModelsCta = false,
+  pausedSection = null,
 }: ModelPickerProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [openModelId, setOpenModelId] = useState<LlmModel | null>(null);
@@ -197,10 +218,45 @@ export function ModelPicker({
   const selectedEntry =
     options.find((option) => option.id === value) ?? MODEL_CATALOG[value];
   const unlockedOptions = options.filter((option) => !option.locked);
-  const lockedOptions = options.filter((option) => option.locked);
-  const orderedOptions = [...unlockedOptions, ...lockedOptions];
-  const firstLockedIndex = unlockedOptions.length;
-  const hasLockedOptions = lockedOptions.length > 0;
+  const pausedOptions = options.filter((option) => option.pausedReason);
+  const upsellLockedOptions = options.filter(
+    (option) => option.locked && !option.pausedReason,
+  );
+  const orderedOptions = [
+    ...unlockedOptions,
+    ...pausedOptions,
+    ...upsellLockedOptions,
+  ];
+  const firstPausedIndex =
+    pausedOptions.length > 0 ? unlockedOptions.length : -1;
+  const firstUpsellLockedIndex =
+    upsellLockedOptions.length > 0
+      ? unlockedOptions.length + pausedOptions.length
+      : -1;
+  const hasUpsellLockedOptions = upsellLockedOptions.length > 0;
+  const pausedReason = pausedSection?.reason ?? pausedOptions[0]?.pausedReason;
+  const pausedSectionCopy = pausedReason
+    ? {
+        payg_credits_exhausted: {
+          header: 'Out of credits',
+          description: 'Add credits to keep using these models.',
+        },
+        included_credits_exhausted: {
+          header: 'Monthly credits used',
+          description:
+            'Resets when your plan renews. Add credits to keep going now.',
+        },
+        trial_credits_exhausted: {
+          header: 'Trial credits used',
+          description:
+            'Upgrade or add credits to keep using these models.',
+        },
+        subscription_unavailable: {
+          header: 'Payment issue',
+          description: 'Fix payment to restore these models.',
+        },
+      }[pausedReason]
+    : null;
 
   function clearPendingOpen() {
     if (openTimerRef.current === null) return;
@@ -270,7 +326,18 @@ export function ModelPicker({
           const isSelected = entry.id === value;
           return (
             <Fragment key={entry.id}>
-              {index === firstLockedIndex ? (
+              {index === firstPausedIndex && pausedSectionCopy ? (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuLabel className="py-1 text-[0.65rem] font-medium uppercase tracking-wider">
+                    <span className="block">{pausedSectionCopy.header}</span>
+                    <span className="block normal-case font-normal text-muted-foreground">
+                      {pausedSectionCopy.description}
+                    </span>
+                  </DropdownMenuLabel>
+                </>
+              ) : null}
+              {index === firstUpsellLockedIndex ? (
                 <>
                   <DropdownMenuSeparator />
                   <DropdownMenuLabel className="py-1 text-[0.65rem] font-medium uppercase tracking-wider">
@@ -313,7 +380,12 @@ export function ModelPicker({
                     <span className="min-w-0 flex-1 truncate">
                       {entry.label}
                     </span>
-                    {entry.locked ? (
+                    {entry.pausedReason === 'included_credits_exhausted' ? (
+                      <Hourglass
+                        className="ml-auto size-3.5"
+                        aria-label="Out of credits"
+                      />
+                    ) : entry.locked ? (
                       <Lock className="ml-auto size-3.5" aria-label="Locked" />
                     ) : isSelected ? (
                       <Check className="ml-auto size-3.5" />
@@ -325,7 +397,7 @@ export function ModelPicker({
             </Fragment>
           );
         })}
-        {hasLockedOptions ? (
+        {hasUpsellLockedOptions || showMoreModelsCta ? (
           <>
             <DropdownMenuSeparator />
             <DropdownMenuItem
@@ -336,12 +408,16 @@ export function ModelPicker({
               }}
             >
               <LockOpen className="size-3.5" />
-              <span className="flex-1">Unlock premium models</span>
+              <span className="flex-1">
+                {hasUpsellLockedOptions
+                  ? 'Unlock premium models'
+                  : 'More models'}
+              </span>
               <span aria-hidden="true">→</span>
             </DropdownMenuItem>
           </>
         ) : null}
-        {isOrgAdmin && (
+        {isOrgAdmin && !hasUpsellLockedOptions && !showMoreModelsCta && (
           <>
             <DropdownMenuSeparator />
             <DropdownMenuItem asChild className="text-xs text-muted-foreground">

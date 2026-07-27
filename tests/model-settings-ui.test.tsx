@@ -1,4 +1,5 @@
 import { render, screen } from '@testing-library/react';
+import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MODEL_CATALOG } from '@/lib/model-catalog';
 import OrganizationModelsPage from '@/routes/_app.settings.organization.models';
@@ -27,6 +28,9 @@ vi.mock('react-router', () => ({
     search: '?scope=ws&workspaceId=ws_123',
   }),
   useNavigate: () => navigateMock,
+  Link: ({ to, children }: { to: string; children: ReactNode }) => (
+    <a href={to}>{children}</a>
+  ),
 }));
 
 vi.mock('@/lib/auth.server', () => ({
@@ -70,6 +74,12 @@ function loaderData(overrides: Record<string, unknown> = {}) {
       },
     ],
     useOrgDefaults: false,
+    allowOpenAiSubscription: false,
+    billingAccessMode: 'subscription',
+    billingStatus: 'active',
+    showLockedModels: true,
+    billingLockedModelIds: [],
+    hiddenLockedModels: [],
     config: {
       usePlatformDefaults: true,
       inPicker: [
@@ -363,5 +373,116 @@ describe('organization model settings UI', () => {
     expect(
       screen.queryByText('Switch to a custom list to edit which models appear.'),
     ).not.toBeInTheDocument();
+  });
+
+  it('advertises and marks billing-locked models for free orgs', () => {
+    loaderDataMock.mockReturnValue(loaderData({
+      billingAccessMode: 'camel_free',
+      billingStatus: 'inactive',
+      billingLockedModelIds: [
+        'sonnet',
+        'gpt-5.6-sol',
+        'gemini-3.5-flash',
+      ],
+    }));
+
+    const { container } = render(<OrganizationModelsPage />);
+
+    expect(screen.getByText('Premium models are locked')).toBeInTheDocument();
+    expect(
+      screen.getByText(/Your org is on the free camelCode model/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('link', { name: 'View plans' }),
+    ).toHaveAttribute('href', '/settings/organization/billing');
+    expect(
+      screen.getByRole('link', { name: 'Add API key' }),
+    ).toHaveAttribute('href', '/settings/organization/ai-provider');
+    const stackedChips = container.querySelectorAll(
+      'span.rounded-md.bg-background.ring-2.ring-background',
+    );
+    expect(stackedChips).toHaveLength(3);
+    for (const chip of stackedChips) {
+      expect(chip.firstElementChild).toHaveClass(
+        'size-6',
+        'rounded-md',
+        'bg-muted/50',
+      );
+    }
+    expect(screen.getByLabelText('Locked')).toBeInTheDocument();
+  });
+
+  it('routes past-due orgs to fix payment', () => {
+    loaderDataMock.mockReturnValue(loaderData({
+      billingAccessMode: 'camel_free',
+      billingStatus: 'past_due',
+      billingLockedModelIds: ['sonnet'],
+    }));
+
+    render(<OrganizationModelsPage />);
+
+    expect(screen.getByText('Payment is past due')).toBeInTheDocument();
+    expect(
+      screen.getByText('Fix payment in Billing to restore premium models.'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('link', { name: 'Fix payment' }),
+    ).toHaveAttribute('href', '/settings/organization/billing');
+    expect(
+      screen.queryByText(/Your org is on the free camelCode model/),
+    ).not.toBeInTheDocument();
+  });
+
+  it('shows canceled orgs as free-tier orgs', () => {
+    loaderDataMock.mockReturnValue(loaderData({
+      billingAccessMode: 'camel_free',
+      billingStatus: 'canceled',
+      billingLockedModelIds: ['sonnet'],
+    }));
+
+    render(<OrganizationModelsPage />);
+
+    expect(screen.getByText('Premium models are locked')).toBeInTheDocument();
+    expect(
+      screen.getByText(/Your org is on the free camelCode model/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Payment is past due')).not.toBeInTheDocument();
+  });
+
+  it('shows provider-hidden models as a read-only BYOK catalog section', () => {
+    loaderDataMock.mockReturnValue(loaderData({
+      billingAccessMode: 'byok',
+      hiddenLockedModels: [
+        MODEL_CATALOG['gpt-5.6-sol'],
+        MODEL_CATALOG['gemini-3.5-flash'],
+      ],
+    }));
+
+    render(<OrganizationModelsPage />);
+
+    expect(screen.getByText('Locked models')).toBeInTheDocument();
+    expect(screen.getByText('GPT-5.6 Sol')).toBeInTheDocument();
+    expect(screen.getByText('Gemini 3.5 Flash')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'add' })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'remove' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('suppresses every locked-model treatment for enterprise orgs', () => {
+    loaderDataMock.mockReturnValue(loaderData({
+      billingAccessMode: 'enterprise',
+      showLockedModels: false,
+      billingLockedModelIds: ['sonnet'],
+      hiddenLockedModels: [MODEL_CATALOG['gpt-5.6-sol']],
+    }));
+
+    render(<OrganizationModelsPage />);
+
+    expect(
+      screen.queryByText('Premium models are locked'),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText('Locked models')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Locked')).not.toBeInTheDocument();
   });
 });

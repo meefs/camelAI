@@ -175,6 +175,51 @@ describe("BillingPage overview", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows a past-due warning and payment recovery action", () => {
+    testState.loaderData.current = {
+      ...makeLoaderData(),
+      org: {
+        ...makeLoaderData().org,
+        billing_status: "past_due",
+        billing_plan: "pro",
+        billing_seat_count: 1,
+        billing_subscription_status: "past_due",
+      },
+      overview: {
+        ...makeLoaderData().overview,
+        billing_status: "past_due",
+        billing_plan: "pro",
+        billing_seat_count: 1,
+        billing_subscription_status: "past_due",
+      },
+      subscription: {
+        id: "sub_team",
+        status: "past_due",
+        current_period_end_ms: Date.UTC(2026, 5, 8, 12),
+        cancel_at_ms: null,
+        cancellation_date_ms: null,
+        cancel_at_period_end: false,
+        is_canceling: false,
+        trial_end_ms: null,
+      },
+    };
+
+    render(<BillingPage />);
+
+    expect(screen.getByText("Past due")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Your payment is past due. Fix it to restore premium models.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Renews Jun 8, 2026.")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Fix payment" }));
+    expect(
+      screen.getByRole("button", { name: "Manage in Stripe" }),
+    ).toBeEnabled();
+  });
+
   it("does not render local payment-method details", () => {
     testState.loaderData.current = makeLoaderData();
 

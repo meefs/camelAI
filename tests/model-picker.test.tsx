@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import type { HTMLAttributes, ReactNode } from 'react';
+import { MemoryRouter } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ModelPicker } from '@/components/model-picker';
 import { MODEL_CATALOG } from '@/lib/model-catalog';
@@ -266,5 +267,172 @@ describe('ModelPicker metadata card state', () => {
     expect(screen.getByRole('tooltip')).not.toHaveTextContent(
       'your OpenAI account',
     );
+  });
+
+  it.each([
+    [
+      'payg_credits_exhausted',
+      'Out of credits',
+      'Add credits to keep using these models.',
+      'Locked',
+    ],
+    [
+      'included_credits_exhausted',
+      'Monthly credits used',
+      'Resets when your plan renews. Add credits to keep going now.',
+      'Out of credits',
+    ],
+    [
+      'trial_credits_exhausted',
+      'Trial credits used',
+      'Upgrade or add credits to keep using these models.',
+      'Locked',
+    ],
+    [
+      'subscription_unavailable',
+      'Payment issue',
+      'Fix payment to restore these models.',
+      'Locked',
+    ],
+  ] as const)(
+    'renders the %s paused section',
+    (reason, header, description, iconLabel) => {
+      render(
+        <ModelPicker
+          value={CAMEL_CODE_LLM_MODEL}
+          onValueChange={vi.fn()}
+          options={[
+            MODEL_CATALOG[CAMEL_CODE_LLM_MODEL],
+            {
+              ...MODEL_CATALOG.sonnet,
+              locked: true,
+              pausedReason: reason,
+            },
+          ]}
+          isOrgAdmin={false}
+          pausedSection={{ reason }}
+        />,
+      );
+
+      expect(screen.getByText(header)).toBeInTheDocument();
+      expect(screen.getByText(description)).toBeInTheDocument();
+      expect(screen.getByLabelText(iconLabel)).toBeInTheDocument();
+    },
+  );
+
+  it('treats paused rows as locked actions without changing the model', () => {
+    const onValueChange = vi.fn();
+    const onLockedModelSelect = vi.fn();
+    render(
+      <ModelPicker
+        value={CAMEL_CODE_LLM_MODEL}
+        onValueChange={onValueChange}
+        options={[
+          MODEL_CATALOG[CAMEL_CODE_LLM_MODEL],
+          {
+            ...MODEL_CATALOG.sonnet,
+            locked: true,
+            pausedReason: 'payg_credits_exhausted',
+          },
+        ]}
+        isOrgAdmin={false}
+        onLockedModelSelect={onLockedModelSelect}
+      />,
+    );
+
+    fireEvent.click(getModelItem('Sonnet 5'));
+    expect(onLockedModelSelect).toHaveBeenCalledWith('sonnet');
+    expect(onValueChange).not.toHaveBeenCalled();
+  });
+
+  it('explains the paused reason in model metadata', () => {
+    render(
+      <ModelPicker
+        value={CAMEL_CODE_LLM_MODEL}
+        onValueChange={vi.fn()}
+        options={[
+          MODEL_CATALOG[CAMEL_CODE_LLM_MODEL],
+          {
+            ...MODEL_CATALOG.sonnet,
+            locked: true,
+            pausedReason: 'included_credits_exhausted',
+          },
+        ]}
+        isOrgAdmin={false}
+      />,
+    );
+
+    fireEvent.focus(getModelItem('Sonnet 5'));
+    expect(screen.getByRole('tooltip')).toHaveTextContent(
+      'Available again when your plan renews, or add credits now.',
+    );
+  });
+
+  it('renders More models when additional catalog access can be unlocked', () => {
+    const onUnlockRequest = vi.fn();
+    render(
+      <ModelPicker
+        value={CAMEL_CODE_LLM_MODEL}
+        onValueChange={vi.fn()}
+        options={[MODEL_CATALOG[CAMEL_CODE_LLM_MODEL]]}
+        isOrgAdmin={false}
+        showMoreModelsCta
+        onUnlockRequest={onUnlockRequest}
+      />,
+    );
+
+    fireEvent.click(screen.getByText('More models'));
+    expect(onUnlockRequest).toHaveBeenCalledTimes(1);
+    expect(
+      screen.queryByText('Unlock premium models'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('shows at most one model-related footer row', () => {
+    const lockedRender = render(
+      <MemoryRouter>
+        <ModelPicker
+          value={CAMEL_CODE_LLM_MODEL}
+          onValueChange={vi.fn()}
+          options={[
+            MODEL_CATALOG[CAMEL_CODE_LLM_MODEL],
+            { ...MODEL_CATALOG.sonnet, locked: true },
+          ]}
+          isOrgAdmin
+          showMoreModelsCta
+        />
+      </MemoryRouter>,
+    );
+    expect(screen.getByText('Unlock premium models')).toBeInTheDocument();
+    expect(screen.queryByText('More models')).not.toBeInTheDocument();
+    expect(screen.queryByText('Manage models')).not.toBeInTheDocument();
+    lockedRender.unmount();
+
+    const moreRender = render(
+      <MemoryRouter>
+        <ModelPicker
+          value={CAMEL_CODE_LLM_MODEL}
+          onValueChange={vi.fn()}
+          options={[MODEL_CATALOG[CAMEL_CODE_LLM_MODEL]]}
+          isOrgAdmin
+          showMoreModelsCta
+        />
+      </MemoryRouter>,
+    );
+    expect(screen.getByText('More models')).toBeInTheDocument();
+    expect(screen.queryByText('Manage models')).not.toBeInTheDocument();
+    moreRender.unmount();
+
+    render(
+      <MemoryRouter>
+        <ModelPicker
+          value={CAMEL_CODE_LLM_MODEL}
+          onValueChange={vi.fn()}
+          options={[MODEL_CATALOG[CAMEL_CODE_LLM_MODEL]]}
+          isOrgAdmin
+        />
+      </MemoryRouter>,
+    );
+    expect(screen.getByText('Manage models')).toBeInTheDocument();
   });
 });

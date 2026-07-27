@@ -9,6 +9,7 @@ const orgGetModelPickerConfigMock = vi.fn();
 const orgSetModelPickerConfigMock = vi.fn();
 const orgGetLlmProviderConfigMock = vi.fn();
 const orgGetExperimentalSettingsMock = vi.fn();
+const orgGetOpenAiSubscriptionMock = vi.fn();
 const workspaceGetModelPickerConfigMock = vi.fn();
 const workspaceSetModelPickerConfigMock = vi.fn();
 
@@ -88,6 +89,7 @@ describe('organization model settings actions', () => {
           setModelPickerConfig: orgSetModelPickerConfigMock,
           getLlmProviderConfig: orgGetLlmProviderConfigMock,
           getExperimentalSettings: orgGetExperimentalSettingsMock,
+          getOpenAiSubscription: orgGetOpenAiSubscriptionMock,
         }),
       },
       WORKSPACE: {
@@ -117,6 +119,7 @@ describe('organization model settings actions', () => {
     orgGetExperimentalSettingsMock.mockRejectedValue(
       new Error('unexpected experimental settings read'),
     );
+    orgGetOpenAiSubscriptionMock.mockResolvedValue(null);
     workspaceGetModelPickerConfigMock.mockResolvedValue({
       use_org_defaults: true,
       use_platform_defaults: true,
@@ -500,6 +503,51 @@ describe('organization model settings actions', () => {
     expect(workspaceSetModelPickerConfigMock).not.toHaveBeenCalled();
   });
 
+  it('allows OpenAI-login models alongside Anthropic BYOK credentials', async () => {
+    mockAuthContext({
+      currentOrgLlmProviderConfig: providerRecord('anthropic'),
+    });
+    orgGetOpenAiSubscriptionMock.mockResolvedValue({
+      account_id: 'acct_123',
+    });
+    orgGetModelPickerConfigMock.mockResolvedValue({
+      use_platform_defaults: false,
+      models: [{ id: 'sonnet', added_at: 10 }],
+      default_model: 'sonnet',
+    });
+
+    const response = await action({
+      request: formRequest({
+        intent: 'addModel',
+        model: 'gpt-5.6-sol',
+      }, ''),
+      context: {},
+      params: {},
+    } as never);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      success: true,
+    });
+    expect(orgSetModelPickerConfigMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        use_platform_defaults: false,
+        models: [
+          { id: 'gpt-5.6-sol', added_at: expect.any(Number) },
+          { id: 'sonnet', added_at: 10 },
+        ],
+        default_model: 'sonnet',
+      }),
+      expect.objectContaining({
+        actorId: 'user_123',
+        details: {
+          intent: 'addModel',
+          model: 'gpt-5.6-sol',
+        },
+      }),
+    );
+  });
+
   it('rejects adding retired Gemini 3.1 Pro Preview as a new picker model', async () => {
     workspaceGetModelPickerConfigMock.mockResolvedValue({
       use_org_defaults: false,
@@ -688,6 +736,7 @@ describe('organization model settings loader', () => {
           getModelPickerConfig: orgGetModelPickerConfigMock,
           getLlmProviderConfig: orgGetLlmProviderConfigMock,
           getExperimentalSettings: orgGetExperimentalSettingsMock,
+          getOpenAiSubscription: orgGetOpenAiSubscriptionMock,
         }),
       },
       WORKSPACE: {
@@ -711,6 +760,7 @@ describe('organization model settings loader', () => {
     orgGetExperimentalSettingsMock.mockRejectedValue(
       new Error('unexpected experimental settings read'),
     );
+    orgGetOpenAiSubscriptionMock.mockResolvedValue(null);
     workspaceGetModelPickerConfigMock.mockResolvedValue({
       use_org_defaults: true,
       models: [],
@@ -744,6 +794,12 @@ describe('organization model settings loader', () => {
     ]);
     expect(result.config.additional).toEqual([]);
     expect(result.config.capacity.used).toBe(4);
+    expect(result.billingAccessMode).toBe('byok');
+    expect(result.showLockedModels).toBe(true);
+    expect(result.billingLockedModelIds).toEqual([]);
+    expect(result.hiddenLockedModels.map((entry) => entry.id)).toContain(
+      'sonnet',
+    );
   });
 
   it('does not mark retained defaults as active in platform-default settings', async () => {
@@ -850,5 +906,90 @@ describe('organization model settings loader', () => {
     ]);
     expect(result.config.additional).toEqual([]);
     expect(result.config.capacity.used).toBe(5);
+  });
+
+  it('shows OpenAI-login models as usable with Anthropic BYOK credentials', async () => {
+    mockAuthContext({
+      currentOrgLlmProviderConfig: providerRecord('anthropic'),
+    });
+    orgGetOpenAiSubscriptionMock.mockResolvedValue({
+      account_id: 'acct_123',
+    });
+    orgGetModelPickerConfigMock.mockResolvedValue({
+      use_platform_defaults: true,
+      models: [],
+      default_model: null,
+    });
+
+    const result = await loader({
+      request: loaderRequest(),
+      context: {},
+      params: {},
+    } as never);
+
+    expect(result.config.inPicker.map((row) => row.entry.id)).toContain(
+      'gpt-5.6-sol',
+    );
+    expect(result.config.additional.map((entry) => entry.id)).not.toContain(
+      'gpt-5.6-sol',
+    );
+    expect(result.hiddenLockedModels.map((entry) => entry.id)).not.toContain(
+      'gpt-5.6-sol',
+    );
+  });
+
+  it('returns billing lock metadata for free orgs with OpenAI login', async () => {
+    mockAuthContext({
+      currentOrg: {
+        id: 'org_123',
+        billing_status: 'inactive',
+        billing_credit_purchase_total_cents: 0,
+        billing_credit_grant_total_cents: 0,
+      },
+      currentOrgLlmProviderConfig: null,
+    });
+    orgGetOpenAiSubscriptionMock.mockResolvedValue({
+      account_id: 'acct_123',
+    });
+    orgGetModelPickerConfigMock.mockResolvedValue({
+      use_platform_defaults: true,
+      models: [],
+      default_model: null,
+    });
+
+    const result = await loader({
+      request: loaderRequest(),
+      context: {},
+      params: {},
+    } as never);
+
+    expect(result.billingAccessMode).toBe('camel_free');
+    expect(result.allowOpenAiSubscription).toBe(true);
+    expect(result.showLockedModels).toBe(true);
+    expect(result.billingLockedModelIds).toContain('sonnet');
+    expect(result.billingLockedModelIds).not.toContain('gpt-5.6-sol');
+    expect(result.hiddenLockedModels).toEqual([]);
+  });
+
+  it('suppresses locked catalog metadata for enterprise orgs', async () => {
+    mockAuthContext({
+      currentOrg: {
+        id: 'org_123',
+        billing_status: 'enterprise',
+        billing_credit_purchase_total_cents: 0,
+        billing_credit_grant_total_cents: 0,
+      },
+    });
+
+    const result = await loader({
+      request: loaderRequest(),
+      context: {},
+      params: {},
+    } as never);
+
+    expect(result.billingAccessMode).toBe('enterprise');
+    expect(result.showLockedModels).toBe(false);
+    expect(result.billingLockedModelIds).toEqual([]);
+    expect(result.hiddenLockedModels).toEqual([]);
   });
 });
