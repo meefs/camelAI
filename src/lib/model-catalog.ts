@@ -278,7 +278,6 @@ export interface ResolvedModelCatalogEntry extends ModelCatalogEntry {
   addedAt: number;
 }
 
-const EXPLICIT_OPT_IN_MODELS = new Set<LlmModel>(["fable-5"]);
 const PINNED_MODEL_IDS = new Set<LlmModel>(["deepseek-v4-auto"]);
 
 export function compareModelCatalogEntries(
@@ -311,14 +310,11 @@ export function resolveModelPickerCatalog(args: {
       allowOpenAiSubscription: args.allowOpenAiSubscription,
     }).map((option) => option.value),
   );
-  const platformDefaultModelIds = new Set(
-    [...visibleModelIds].filter((id) => !EXPLICIT_OPT_IN_MODELS.has(id)),
-  );
 
   const sourceModels =
     args.effectiveConfig.use_platform_defaults === false
       ? args.effectiveConfig.models
-      : [...platformDefaultModelIds].map((id) => ({ id, added_at: Date.now() }));
+      : [...visibleModelIds].map((id) => ({ id, added_at: Date.now() }));
 
   const entries = sourceModels
     .filter((model) => visibleModelIds.has(model.id))

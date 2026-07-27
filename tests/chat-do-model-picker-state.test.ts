@@ -236,9 +236,11 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     async function loadState({
       billingStatus,
       openAiSubscription = null,
+      usePlatformDefaults = false,
     }: {
       billingStatus: 'inactive' | 'active';
       openAiSubscription?: object | null;
+      usePlatformDefaults?: boolean;
     }) {
       const workspaceStub = {
         getInfo: vi.fn().mockResolvedValue({ org_id: 'org_123' }),
@@ -259,15 +261,24 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
           .fn()
           .mockResolvedValue({ claude_proxy_models: false }),
         getOpenAiSubscription: vi.fn().mockResolvedValue(openAiSubscription),
-        getModelPickerConfig: vi.fn().mockResolvedValue({
-          use_platform_defaults: false,
-          models: [
-            { id: 'sonnet', added_at: 3 },
-            { id: 'gpt-5.6-sol', added_at: 2 },
-            { id: 'grok-4.5', added_at: 1 },
-          ],
-          default_model: 'sonnet',
-        }),
+        getModelPickerConfig: vi.fn().mockResolvedValue(
+          usePlatformDefaults
+            ? {
+                use_platform_defaults: true,
+                models: [],
+                default_model: null,
+              }
+            : {
+                use_platform_defaults: false,
+                models: [
+                  { id: 'fable-5', added_at: 4 },
+                  { id: 'sonnet', added_at: 3 },
+                  { id: 'gpt-5.6-sol', added_at: 2 },
+                  { id: 'grok-4.5', added_at: 1 },
+                ],
+                default_model: 'sonnet',
+              },
+        ),
       };
 
       getEnvMock.mockReturnValue({
@@ -295,6 +306,9 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
       freeState?.modelOptions.find((option) => option.id === 'sonnet'),
     ).toMatchObject({ locked: true, unlockHint: 'generic' });
     expect(
+      freeState?.modelOptions.find((option) => option.id === 'fable-5'),
+    ).toMatchObject({ locked: true, unlockHint: 'generic' });
+    expect(
       freeState?.modelOptions.find((option) => option.id === 'gpt-5.6-sol'),
     ).toMatchObject({ locked: true, unlockHint: 'openai' });
     expect(
@@ -319,8 +333,24 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
       openAiState?.modelOptions.find((option) => option.id === 'grok-4.5'),
     ).toMatchObject({ locked: true, unlockHint: 'generic' });
 
-    const paidState = await loadState({ billingStatus: 'active' });
+    const platformFreeState = await loadState({
+      billingStatus: 'inactive',
+      usePlatformDefaults: true,
+    });
+    expect(
+      platformFreeState?.modelOptions.find(
+        (option) => option.id === 'fable-5',
+      ),
+    ).toMatchObject({ locked: true, unlockHint: 'generic' });
+
+    const paidState = await loadState({
+      billingStatus: 'active',
+      usePlatformDefaults: true,
+    });
     expect(paidState?.billingAccessMode).toBe('subscription');
+    expect(
+      paidState?.modelOptions.find((option) => option.id === 'fable-5'),
+    ).toMatchObject({ id: 'fable-5' });
     expect(paidState?.modelOptions.some((option) => option.locked)).toBe(false);
   });
 
@@ -570,7 +600,7 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     expect(orgStub.createThread).not.toHaveBeenCalled();
   });
 
-  it('keeps Fable 5 out of platform-default new threads', async () => {
+  it('allows Fable 5 in platform-default new threads', async () => {
     const workspaceStub = {
       getInfo: vi.fn().mockResolvedValue({ org_id: 'org_123' }),
       getModelPickerConfig: vi.fn().mockResolvedValue({
@@ -600,7 +630,17 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
         ],
         default_model: null,
       }),
-      createThread: vi.fn(),
+      createThread: vi.fn().mockResolvedValue({
+        id: 'thread_123',
+        workspace_id: 'ws_123',
+        title: 'New Chat',
+        created_by: 'user_123',
+        model: 'fable-5',
+        created_at: 1,
+        updated_at: 2,
+        user_message_count: 0,
+        first_user_message: null,
+      }),
     };
 
     getEnvMock.mockReturnValue({
@@ -615,17 +655,31 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     });
 
     const state = await getWorkspaceModelPickerState({}, 'ws_123');
-    expect(state?.allowedThreadModels).not.toContain('fable-5');
+    const modelIds = state?.modelOptions.map((option) => option.id) ?? [];
+    expect(modelIds).toContain('fable-5');
+    expect(state?.allowedThreadModels).toContain('fable-5');
     expect(state?.allowedThreadModels[0]).toBe('deepseek-v4-auto');
     expect(state?.allowedThreadModels).toContain('opus-4.8');
+    expect(modelIds.indexOf('opus-4.8')).toBeLessThan(
+      modelIds.indexOf('fable-5'),
+    );
+    expect(modelIds.indexOf('fable-5')).toBeLessThan(
+      modelIds.indexOf('sonnet'),
+    );
 
     await expect(
       createThread({}, 'ws_123', 'New Chat', 'user_123', undefined, 'fable-5'),
-    ).rejects.toThrow('Invalid thread model');
-    expect(orgStub.createThread).not.toHaveBeenCalled();
+    ).resolves.toMatchObject({ id: 'thread_123', model: 'fable-5' });
+    expect(orgStub.createThread).toHaveBeenCalledWith(
+      'ws_123',
+      'New Chat',
+      'user_123',
+      undefined,
+      'fable-5',
+    );
   });
 
-  it('allows Fable 5 for new threads when explicitly enabled', async () => {
+  it('allows Fable 5 when a custom list includes it', async () => {
     const workspaceStub = {
       getInfo: vi.fn().mockResolvedValue({ org_id: 'org_123' }),
       getModelPickerConfig: vi.fn().mockResolvedValue({
