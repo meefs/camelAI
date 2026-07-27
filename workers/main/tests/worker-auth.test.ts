@@ -120,6 +120,7 @@ describe("private-app constrained sessions", () => {
       client_auth_method: "client_secret_post",
       email_claim: "email",
       email_domains: ["example.com"],
+      jit_provisioning_enabled: false,
       config_version: 3,
       session_ttl_seconds: 28_800,
       updated_at: Date.now(),

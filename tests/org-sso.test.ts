@@ -34,6 +34,8 @@ describe("organization OIDC SSO", () => {
     ]);
     expect(isEmailAllowedForOrgSso("PERSON@EXAMPLE.COM", ["example.com"])).toBe(true);
     expect(isEmailAllowedForOrgSso("person@notexample.com", ["example.com"])).toBe(false);
+    expect(normalizeSsoEmailDomains("")).toEqual([]);
+    expect(isEmailAllowedForOrgSso("person@anywhere.example", [])).toBe(true);
     expect(() => normalizeSsoEmailDomains("localhost")).toThrow("Invalid email domain");
   });
 
@@ -69,6 +71,7 @@ describe("organization OIDC SSO", () => {
       client_auth_method: "client_secret_post",
       email_claim: "email",
       email_domains: ["example.com"],
+      jit_provisioning_enabled: false,
       config_version: 2,
       session_ttl_seconds: 28_800,
       updated_at: 1,

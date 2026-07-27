@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { env } from "cloudflare:test";
 import { createOrg, createUser, type TestEnv } from "./test-helpers";
 import type { OrgSsoConfig } from "../src/org-sso";
+import { canCreateEnterpriseSsoUser } from "../src/identity/user-do";
 
 const testEnv = env as unknown as TestEnv;
 
@@ -26,6 +27,7 @@ function config(actor: string): OrgSsoConfig {
     client_auth_method: "client_secret_post",
     email_claim: "email",
     email_domains: ["example.com"],
+    jit_provisioning_enabled: false,
     config_version: 1,
     session_ttl_seconds: 28_800,
     updated_at: Date.now(),
@@ -34,6 +36,27 @@ function config(actor: string): OrgSsoConfig {
 }
 
 describe("OrgDO enterprise SSO state", () => {
+  it("creates enterprise SSO users as verified non-superusers", async () => {
+    const userId = crypto.randomUUID();
+    const user = await testEnv.USER.get(
+      testEnv.USER.idFromName(userId),
+    ).createUserFromEnterpriseSso(
+      userId,
+      `enterprise-${userId}@example.com`,
+      "Enterprise User",
+    );
+    expect(user).toMatchObject({
+      id: userId,
+      is_superuser: false,
+    });
+    expect(user.email_verified_at).toBeTypeOf("number");
+  });
+
+  it("refuses to create a superuser identity through enterprise SSO", () => {
+    expect(canCreateEnterpriseSsoUser("admin-one@example.com")).toBe(false);
+    expect(canCreateEnterpriseSsoUser("member@example.com")).toBe(true);
+  });
+
   it("atomically consumes a login transaction once", async () => {
     const { orgStub } = await freshOrg();
     const transaction = {

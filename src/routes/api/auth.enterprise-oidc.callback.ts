@@ -15,6 +15,7 @@ import {
   getSsoBrowserBindingCookie,
   hashSsoBrowserBinding,
 } from "@/lib/org-sso-browser.server";
+import { normalizeSsoIssuer } from "../../../workers/main/src/org-sso";
 import { parseSignedEnterpriseSsoState } from "../../../workers/main/src/signed-session";
 
 function failure(message: string, status: number): Response {
@@ -88,7 +89,17 @@ export async function loader({ request, context }: Route.LoaderArgs) {
         oidcConfig,
       });
       const identity = validateOrgSsoIdentityClaims(claims, test.config);
+      const discoveredConfig =
+        test.config.email_domains.length === 0 &&
+        identity.hostedDomain &&
+        normalizeSsoIssuer(test.config.issuer) === "https://accounts.google.com"
+          ? {
+              ...test.config,
+              email_domains: [identity.hostedDomain],
+            }
+          : test.config;
       await orgStub.completeSsoConnectionTest(test.id, actorUserId, {
+        config: discoveredConfig,
         status: "succeeded",
         checks: {
           ...test.checks,

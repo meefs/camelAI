@@ -1,5 +1,10 @@
 import { useEffect, useState } from "react";
-import { Form, useFetcher, useLoaderData, useRevalidator } from "react-router";
+import {
+  redirect,
+  useFetcher,
+  useLoaderData,
+  useRevalidator,
+} from "react-router";
 import type { Route } from "./+types/_app.settings.organization.sso";
 import { requireAuthContext, requireOrgAdmin } from "@/lib/auth.server";
 import { getEnv } from "@/lib/cloudflare.server";
@@ -36,6 +41,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
+import { Switch } from "@/components/ui/switch";
 import { Check, CheckCircle2, Copy, Loader2, XCircle } from "lucide-react";
 
 export function meta() {
@@ -47,6 +53,9 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const auth = await requireOrgAdmin(request, context, current.currentOrg.id);
   const env = getEnv(context);
   const orgStub = env.ORG.get(env.ORG.idFromName(auth.currentOrg.id));
+  if (!(await orgStub.isOwner(auth.user.id))) {
+    throw redirect("/settings/organization/general");
+  }
   const testId = new URL(request.url).searchParams.get("sso_test");
   const [config, connectionTest] = await Promise.all([
     orgStub.getSsoConfig(),
@@ -54,7 +63,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   ]);
   return {
     org: auth.currentOrg,
-    canLink: !auth.user.is_superuser,
     config: config
       ? buildOrgSsoPublicConfig(
           config,
@@ -84,7 +92,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 }
 
 export default function OrganizationSsoSettings() {
-  const { org, config, connectionTest, callbackUrl, canLink } =
+  const { org, config, connectionTest, callbackUrl } =
     useLoaderData<typeof loader>();
   const testFetcher = useFetcher<{
     success?: boolean;
@@ -104,6 +112,9 @@ export default function OrganizationSsoSettings() {
     initial?.client_auth_method ?? "client_secret_post",
   );
   const [emailClaim, setEmailClaim] = useState(initial?.email_claim ?? "email");
+  const [jitProvisioningEnabled, setJitProvisioningEnabled] = useState(
+    initial?.jit_provisioning_enabled ?? false,
+  );
   const [copied, setCopied] = useState<"callback" | "login" | null>(null);
   const busy = testFetcher.state !== "idle" || mutationFetcher.state !== "idle";
 
@@ -130,6 +141,7 @@ export default function OrganizationSsoSettings() {
         email_domains: domains,
         client_auth_method: authMethod,
         email_claim: emailClaim,
+        jit_provisioning_enabled: jitProvisioningEnabled,
         session_ttl_hours: 8,
       }),
       {
@@ -167,6 +179,8 @@ export default function OrganizationSsoSettings() {
         email_domains: connectionTest.candidate.email_domains.join(","),
         client_auth_method: connectionTest.candidate.client_auth_method,
         email_claim: connectionTest.candidate.email_claim,
+        jit_provisioning_enabled:
+          connectionTest.candidate.jit_provisioning_enabled,
       })
     : null;
   const currentFingerprint = JSON.stringify({
@@ -179,6 +193,7 @@ export default function OrganizationSsoSettings() {
       .join(","),
     client_auth_method: authMethod,
     email_claim: emailClaim,
+    jit_provisioning_enabled: jitProvisioningEnabled,
   });
   const testMatchesForm = Boolean(
     connectionTest?.status === "succeeded" &&
@@ -349,7 +364,9 @@ export default function OrganizationSsoSettings() {
               </div>
             </div>
             <div className="grid gap-2">
-              <Label htmlFor="sso-domains">Allowed email domains</Label>
+              <Label htmlFor="sso-domains">
+                Allowed email domains (optional)
+              </Label>
               <Input
                 id="sso-domains"
                 value={domains}
@@ -358,11 +375,28 @@ export default function OrganizationSsoSettings() {
                 disabled={busy}
               />
               <p className="text-xs text-muted-foreground">
-                The signed identity claim must match one of these exact domains.
-                Google Workspace members are linked automatically from Google's
-                verified hosted-domain claim. Other providers require explicit
-                account linking.
+                Leave blank to trust every identity assigned to this application
+                by your IdP. Add domains only as an additional filter. Google
+                Workspace automatically detects and verifies its signed hosted
+                domain during the connection test.
               </p>
+            </div>
+            <div className="flex items-start justify-between gap-6 rounded-lg border p-4">
+              <div className="space-y-1">
+                <Label htmlFor="sso-jit">Just-in-time user provisioning</Label>
+                <p className="text-xs text-muted-foreground">
+                  Create a regular member when an IdP user signs in for the
+                  first time. New members receive full access to the first
+                  active workspace and can never be created as superusers.
+                </p>
+              </div>
+              <Switch
+                id="sso-jit"
+                checked={jitProvisioningEnabled}
+                onCheckedChange={setJitProvisioningEnabled}
+                disabled={busy}
+                aria-label="Enable just-in-time user provisioning"
+              />
             </div>
             {connectionTest && (
               <Alert
@@ -425,50 +459,27 @@ export default function OrganizationSsoSettings() {
               </Alert>
             )}
             {config?.login_url && (
-              <div className="space-y-4">
-                <div className="grid gap-2">
-                  <Label>Organization sign-in URL</Label>
-                  <div className="flex gap-2">
-                    <Input
-                      readOnly
-                      value={config.login_url}
-                      className="font-mono text-xs"
-                    />
-                    <Button
-                      variant="outline"
-                      size="icon"
-                      onClick={() => copy("login", config.login_url)}
-                    >
-                      {copied === "login" ? (
-                        <Check className="size-4" />
-                      ) : (
-                        <Copy className="size-4" />
-                      )}
-                      <span className="sr-only">Copy sign-in URL</span>
-                    </Button>
-                  </div>
+              <div className="grid gap-2">
+                <Label>Organization sign-in URL</Label>
+                <div className="flex gap-2">
+                  <Input
+                    readOnly
+                    value={config.login_url}
+                    className="font-mono text-xs"
+                  />
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    onClick={() => copy("login", config.login_url)}
+                  >
+                    {copied === "login" ? (
+                      <Check className="size-4" />
+                    ) : (
+                      <Copy className="size-4" />
+                    )}
+                    <span className="sr-only">Copy sign-in URL</span>
+                  </Button>
                 </div>
-                {canLink ? (
-                  <div className="grid gap-2">
-                    <Label>Link this account</Label>
-                    <Form method="post" action="/api/auth/enterprise-oidc/link">
-                      <input type="hidden" name="org_id" value={org.id} />
-                      <Button type="submit" variant="outline">
-                        Link my account with SSO
-                      </Button>
-                    </Form>
-                    <p className="text-xs text-muted-foreground">
-                      You will confirm your identity with the configured IdP.
-                      Linking cannot be initiated from an external URL.
-                    </p>
-                  </div>
-                ) : (
-                  <p className="text-xs text-muted-foreground">
-                    Superusers can test this connection, but enterprise SSO
-                    cannot mint a global superuser session. Use a regular
-                    organization member to verify the live sign-in URL.
-                  </p>
-                )}
               </div>
             )}
             <div className="flex justify-between gap-3">
@@ -511,8 +522,7 @@ export default function OrganizationSsoSettings() {
                     busy ||
                     !issuer.trim() ||
                     !clientId.trim() ||
-                    (!clientSecret && !config?.has_client_secret) ||
-                    !domains.trim()
+                    (!clientSecret && !config?.has_client_secret)
                   }
                 >
                   {testFetcher.state !== "idle" && (

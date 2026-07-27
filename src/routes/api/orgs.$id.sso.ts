@@ -46,10 +46,16 @@ function assertSameOrigin(
 }
 
 export async function loader({ request, context, params }: Route.LoaderArgs) {
-  await requireOrgAdmin(request, context, params.id);
+  const authContext = await requireOrgAdmin(request, context, params.id);
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
   const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(params.id));
+  if (!(await orgStub.isOwner(authContext.user.id))) {
+    return Response.json(
+      { error: "Only organization owners can configure SSO" },
+      { status: 403 },
+    );
+  }
   const [org, config] = await Promise.all([
     orgStub.getInfo(),
     orgStub.getSsoConfig(),
@@ -79,6 +85,12 @@ export async function action({ request, context, params }: Route.ActionArgs) {
   if (originError) return originError;
   const authEnv = getAuthEnv(env);
   const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(params.id));
+  if (!(await orgStub.isOwner(authContext.user.id))) {
+    return Response.json(
+      { error: "Only organization owners can configure SSO" },
+      { status: 403 },
+    );
+  }
   const org = await orgStub.getInfo();
   if (!org)
     return Response.json({ error: "Organization not found" }, { status: 404 });
@@ -261,6 +273,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
       client_auth_method: clientAuthMethod,
       email_claim: emailClaim,
       email_domains: emailDomains,
+      jit_provisioning_enabled: body.jit_provisioning_enabled === true,
       config_version: (existing?.config_version ?? 0) + 1,
       session_ttl_seconds: sessionHours * 60 * 60,
       updated_at: Date.now(),

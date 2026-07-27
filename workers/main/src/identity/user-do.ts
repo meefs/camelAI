@@ -84,6 +84,10 @@ export interface UserOAuthProvider {
   linked_at: number;
 }
 
+export function canCreateEnterpriseSsoUser(email: string): boolean {
+  return !isSuperuserEmail(email);
+}
+
 export interface OrgMember {
   user_id: string;
   role: OrgRole;
@@ -2063,6 +2067,44 @@ export class UserDO extends DurableObject<DOEnv> {
       .exec("SELECT 1 FROM oauth_providers WHERE provider = ?", provider)
       .toArray();
     return rows.length > 0;
+  }
+
+  /** Create a non-superuser account owned by an enterprise SSO connection. */
+  async createUserFromEnterpriseSso(
+    id: string,
+    email: string,
+    name: string | null,
+  ): Promise<User> {
+    if (!canCreateEnterpriseSsoUser(email)) {
+      throw new Error("enterprise_sso_superuser_forbidden");
+    }
+    const existing = await this.getProfile();
+    if (existing) {
+      if (existing.id !== id || existing.email !== email) {
+        throw new Error("enterprise_sso_user_conflict");
+      }
+      if (existing.is_superuser) {
+        throw new Error("enterprise_sso_superuser_forbidden");
+      }
+      return existing;
+    }
+
+    const now = Date.now();
+    const profile: User = {
+      id,
+      email,
+      email_verified_at: now,
+      name,
+      created_at: now,
+      // An enterprise IdP can create an organization member, never a global
+      // camelAI superuser.
+      is_superuser: false,
+      avatar: generateDefaultAvatar(name || email),
+      is_orphaned: false,
+      orphaned_at: null,
+    };
+    await this.setProfile(profile);
+    return profile;
   }
 
   /**

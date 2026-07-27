@@ -481,6 +481,40 @@ export async function createUserFromOAuth(
   }
 }
 
+export async function createUserFromEnterpriseSso(
+  env: AuthEnv,
+  email: string,
+  name: string | null,
+): Promise<{ userId: string; user: User }> {
+  const blocklist = await getBlocklistFromKV(env.APP_KV);
+  assertEmailDomainAllowed(email, blocklist);
+
+  const normalizedEmail = email.toLowerCase();
+  const emailKvKey = `email:${normalizedEmail}`;
+  const existingUserId = await env.EMAIL_TO_USER.get(emailKvKey);
+  if (existingUserId) {
+    throw new Error("An account with this email already exists");
+  }
+
+  const userId = crypto.randomUUID();
+  await env.EMAIL_TO_USER.put(emailKvKey, userId);
+  if ((await env.EMAIL_TO_USER.get(emailKvKey)) !== userId) {
+    throw new Error("An account with this email already exists");
+  }
+
+  try {
+    const user = await env.USER.get(
+      env.USER.idFromName(userId),
+    ).createUserFromEnterpriseSso(userId, normalizedEmail, name);
+    return { userId, user };
+  } catch (error) {
+    if ((await env.EMAIL_TO_USER.get(emailKvKey)) === userId) {
+      await env.EMAIL_TO_USER.delete(emailKvKey);
+    }
+    throw error;
+  }
+}
+
 export async function linkOAuthProvider(
   env: AuthEnv,
   userId: string,

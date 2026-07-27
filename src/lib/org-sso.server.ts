@@ -1,7 +1,11 @@
 import * as oidc from "openid-client";
 import type { Organization, User } from "@/types";
 import type { AuthEnv, SessionData } from "./auth-helpers";
-import { createSession, getUserByEmail } from "./auth-do";
+import {
+  createSession,
+  createUserFromEnterpriseSso,
+  getUserByEmail,
+} from "./auth-do";
 import { decryptCredentials } from "./integration-crypto";
 import { isOrgBanned, isUserBanned } from "../../workers/main/src/ban-list";
 import {
@@ -27,6 +31,7 @@ export interface OrgSsoSessionResult {
 export interface ValidatedOrgSsoIdentity {
   subject: string;
   email: string;
+  name: string | null;
   domain: string;
   emailVerified: boolean | null;
   hostedDomain: string | null;
@@ -384,6 +389,10 @@ export function validateOrgSsoIdentityClaims(
   }
 
   const emailVerified = booleanClaim(claims.email_verified);
+  const name =
+    typeof claims.name === "string" && claims.name.trim()
+      ? claims.name.trim().slice(0, 200)
+      : null;
   const hostedDomain =
     typeof claims.hd === "string" && claims.hd.trim()
       ? claims.hd.trim().toLowerCase()
@@ -395,7 +404,8 @@ export function validateOrgSsoIdentityClaims(
     (emailVerified !== true ||
       !hostedDomain ||
       hostedDomain !== domain ||
-      !config.email_domains.includes(hostedDomain))
+      (config.email_domains.length > 0 &&
+        !config.email_domains.includes(hostedDomain)))
   ) {
     throw new Response(
       "Google Workspace did not verify this email and hosted domain for the organization",
@@ -406,11 +416,13 @@ export function validateOrgSsoIdentityClaims(
   return {
     subject,
     email,
+    name,
     domain,
     emailVerified,
     hostedDomain,
-    eligibleForAutoLink:
-      isGoogle && emailVerified === true && hostedDomain === domain,
+    // The organization owner explicitly selected and tested this issuer, so a
+    // signed identity from it is authoritative within this organization.
+    eligibleForAutoLink: true,
   };
 }
 
@@ -420,6 +432,7 @@ export async function resolveOrgSsoUser(input: {
   identity: ValidatedOrgSsoIdentity;
   mappedUserId: string | null;
   linkUserId: string | null;
+  jitProvisioningEnabled?: boolean;
 }): Promise<{ userId: string; user: User } | null> {
   const { authEnv, identity } = input;
   const directlyMappedUserId = input.mappedUserId ?? input.linkUserId;
@@ -428,13 +441,25 @@ export async function resolveOrgSsoUser(input: {
   }
   if (!identity.eligibleForAutoLink) return null;
 
-  const account = await getUserByEmail(authEnv, identity.email);
-  if (
-    !account ||
-    account.user.email_verified_at === null ||
-    !(await input.orgStub.getMember(account.userId))
-  ) {
-    return null;
+  let account = await getUserByEmail(authEnv, identity.email);
+  if (account) {
+    const member = await input.orgStub.getMember(account.userId);
+    if (!member && !input.jitProvisioningEnabled) return null;
+    return getMappedUser(authEnv, account.userId, identity.email);
+  }
+  if (!input.jitProvisioningEnabled) return null;
+
+  try {
+    account = await createUserFromEnterpriseSso(
+      authEnv,
+      identity.email,
+      identity.name,
+    );
+  } catch (error) {
+    // A concurrent callback may have claimed the same email first. Converge
+    // on that account, while preserving the normal conflict error otherwise.
+    account = await getUserByEmail(authEnv, identity.email);
+    if (!account) throw error;
   }
   return getMappedUser(authEnv, account.userId, identity.email);
 }
@@ -501,15 +526,20 @@ export async function completeOrgSsoLogin(input: {
     identity,
     mappedUserId,
     linkUserId: input.transaction.link_user_id,
+    jitProvisioningEnabled: config.jit_provisioning_enabled,
   });
   if (!resolvedUser) {
     throw new Response(
-      "No eligible existing organization member matches this verified enterprise identity",
+      config.jit_provisioning_enabled
+        ? "Enterprise SSO could not provision this account"
+        : "No organization member matches this enterprise identity. Ask the organization owner to invite the user or enable just-in-time provisioning.",
       { status: 403 },
     );
   }
   const { userId, user } = resolvedUser;
-  const workspaceId = await ensureOrgMembership(authEnv, org, userId);
+  const workspaceId = await ensureOrgMembership(authEnv, org, userId, {
+    jitProvisioningEnabled: config.jit_provisioning_enabled,
+  });
   await orgStub.bindSsoIdentity(
     config.connection_id,
     config.issuer,
@@ -561,12 +591,45 @@ export async function ensureOrgMembership(
   authEnv: AuthEnv,
   org: Organization,
   userId: string,
+  options: { jitProvisioningEnabled?: boolean } = {},
 ): Promise<string | null> {
   const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(org.id));
   const userStub = authEnv.USER.get(authEnv.USER.idFromName(userId));
-  const member = await orgStub.getMember(userId);
+  let member = await orgStub.getMember(userId);
   if (!member) {
-    throw new Response("SSO membership has been removed", { status: 403 });
+    if (!options.jitProvisioningEnabled) {
+      throw new Response("SSO membership has been removed", { status: 403 });
+    }
+
+    const workspaces = (await orgStub.getWorkspaces()).filter(
+      (workspace) => !workspace.archived,
+    );
+    const workspaceId = workspaces[0]?.id ?? null;
+    await orgStub.addMember(userId, "member", "enterprise-sso-jit");
+    member = await orgStub.getMember(userId);
+    if (!member) {
+      throw new Error("Enterprise SSO membership provisioning failed");
+    }
+    if (!(await userStub.hasOrg(org.id))) {
+      await userStub.addOrg(org.id, "member", workspaceId);
+    } else {
+      await userStub.updateOrgRole(org.id, "member");
+    }
+    await userStub.setOrphaned(false);
+    if (workspaceId) {
+      const workspaceStub = authEnv.WORKSPACE.get(
+        authEnv.WORKSPACE.idFromName(workspaceId),
+      );
+      await orgStub.setWorkspaceAccess(
+        workspaceId,
+        userId,
+        "full",
+        "enterprise-sso-jit",
+      );
+      await workspaceStub.setMemberAccess(userId, "full", "enterprise-sso-jit");
+      await userStub.setOrgLastWorkspace(org.id, workspaceId);
+    }
+    return workspaceId;
   }
   const memberRole = member.role;
   const [activeWorkspaces, userOrgs] = await Promise.all([

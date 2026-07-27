@@ -192,7 +192,7 @@ describe("enterprise OIDC protocol", () => {
     });
   });
 
-  it("does not auto-link identities from a generic self-asserted provider", () => {
+  it("accepts exact signed email identities from an owner-configured provider", () => {
     expect(
       validateOrgSsoIdentityClaims(
         {
@@ -209,7 +209,28 @@ describe("enterprise OIDC protocol", () => {
     ).toMatchObject({
       email: "alice@example.com",
       emailVerified: true,
-      eligibleForAutoLink: false,
+      eligibleForAutoLink: true,
+    });
+  });
+
+  it("allows an empty domain policy while preserving Google's hosted-domain checks", () => {
+    expect(
+      validateOrgSsoIdentityClaims(
+        {
+          sub: "google-subject",
+          email: "alice@example.com",
+          email_verified: true,
+          hd: "example.com",
+        },
+        {
+          issuer: "https://accounts.google.com",
+          email_claim: "email",
+          email_domains: [],
+        },
+      ),
+    ).toMatchObject({
+      domain: "example.com",
+      hostedDomain: "example.com",
     });
   });
 
@@ -337,7 +358,10 @@ describe("enterprise OIDC protocol", () => {
 
   it("returns actionable connection-test errors without exposing provider details", () => {
     const invalidClient = new oidc.ResponseBodyError("provider details", {
-      cause: { error: "invalid_client", error_description: "sensitive details" },
+      cause: {
+        error: "invalid_client",
+        error_description: "sensitive details",
+      },
       response: Response.json({}, { status: 401 }),
     });
     expect(getOidcConnectionTestErrorMessage(invalidClient)).toBe(

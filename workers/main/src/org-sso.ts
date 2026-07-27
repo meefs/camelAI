@@ -17,6 +17,7 @@ export interface OrgSsoConfig {
   client_auth_method: OidcClientAuthMethod;
   email_claim: OidcEmailClaim;
   email_domains: string[];
+  jit_provisioning_enabled: boolean;
   config_version: number;
   session_ttl_seconds: number;
   updated_at: number;
@@ -33,6 +34,7 @@ export interface OrgSsoPublicConfig {
   client_auth_method: OidcClientAuthMethod;
   email_claim: OidcEmailClaim;
   email_domains: string[];
+  jit_provisioning_enabled: boolean;
   config_version: number;
   session_ttl_seconds: number;
   login_url: string;
@@ -108,7 +110,6 @@ export function normalizeSsoEmailDomains(values: unknown): string[] {
   const raw = Array.isArray(values) ? values : typeof values === "string" ? values.split(",") : [];
   const domains = raw.map((value) => String(value).trim().toLowerCase().replace(/^@/, "")).filter(Boolean);
   const unique = [...new Set(domains)];
-  if (unique.length === 0) throw new Error("At least one allowed email domain is required");
   if (unique.length > 20) throw new Error("At most 20 email domains are allowed");
   for (const domain of unique) {
     if (
@@ -123,7 +124,8 @@ export function normalizeSsoEmailDomains(values: unknown): string[] {
 
 export function isEmailAllowedForOrgSso(email: string, domains: string[]): boolean {
   const normalized = email.trim().toLowerCase();
-  return domains.some((domain) => normalized.endsWith(`@${domain}`));
+  return domains.length === 0 ||
+    domains.some((domain) => normalized.endsWith(`@${domain}`));
 }
 
 export function getSafeSsoRedirect(value: string | null): string {
@@ -173,6 +175,7 @@ export function buildOrgSsoPublicConfig(
     client_auth_method: config.client_auth_method,
     email_claim: config.email_claim,
     email_domains: [...config.email_domains],
+    jit_provisioning_enabled: config.jit_provisioning_enabled ?? false,
     config_version: config.config_version,
     session_ttl_seconds: config.session_ttl_seconds,
     login_url: `${origin}/sso/${encodeURIComponent(orgSlug)}`,

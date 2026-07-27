@@ -17,11 +17,12 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const env = getEnv(context);
   const currentUserOrg = authContext.orgs.find((o) => o.org_id === authContext.currentOrg.id);
   const isOrgAdmin = currentUserOrg?.role === 'owner' || currentUserOrg?.role === 'admin';
-  return { isOrgAdmin, selfhostRuntime: isSelfhostRuntime(env) };
+  const isOrgOwner = currentUserOrg?.role === 'owner';
+  return { isOrgAdmin, isOrgOwner, selfhostRuntime: isSelfhostRuntime(env) };
 }
 
 export default function SettingsLayout() {
-  const { isOrgAdmin, selfhostRuntime } = useLoaderData<typeof loader>();
+  const { isOrgAdmin, isOrgOwner, selfhostRuntime } = useLoaderData<typeof loader>();
   return (
     <div className="flex h-full flex-col overflow-hidden">
       <PageHeader breadcrumbs={[{ label: 'Settings' }]} />
@@ -30,6 +31,7 @@ export default function SettingsLayout() {
           <Suspense fallback={<SettingsNavSkeleton />}>
             <SettingsNav
               isOrgAdmin={isOrgAdmin}
+              isOrgOwner={isOrgOwner}
               selfhostRuntime={selfhostRuntime}
             />
           </Suspense>

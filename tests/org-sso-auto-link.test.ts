@@ -54,7 +54,9 @@ const googleIdentity = validateOrgSsoIdentityClaims(
 describe("enterprise SSO first-login linking", () => {
   it("auto-links a verified existing organization member", async () => {
     const profile = user();
-    const memberLookup = { getMember: vi.fn().mockResolvedValue({ role: "member" }) };
+    const memberLookup = {
+      getMember: vi.fn().mockResolvedValue({ role: "member" }),
+    };
     await expect(
       resolveOrgSsoUser({
         authEnv: authEnv(profile),
@@ -67,11 +69,23 @@ describe("enterprise SSO first-login linking", () => {
     expect(memberLookup.getMember).toHaveBeenCalledWith(profile.id);
   });
 
-  it("does not auto-link an unverified local account or a non-member", async () => {
+  it("trusts the signed IdP email for an existing member", async () => {
     await expect(
       resolveOrgSsoUser({
         authEnv: authEnv(user({ email_verified_at: null })),
         orgStub: { getMember: vi.fn().mockResolvedValue({ role: "member" }) },
+        identity: googleIdentity,
+        mappedUserId: null,
+        linkUserId: null,
+      }),
+    ).resolves.toMatchObject({ userId: "user-1" });
+  });
+
+  it("does not add a non-member unless JIT provisioning is enabled", async () => {
+    await expect(
+      resolveOrgSsoUser({
+        authEnv: authEnv(user()),
+        orgStub: { getMember: vi.fn().mockResolvedValue(null) },
         identity: googleIdentity,
         mappedUserId: null,
         linkUserId: null,
@@ -84,8 +98,9 @@ describe("enterprise SSO first-login linking", () => {
         identity: googleIdentity,
         mappedUserId: null,
         linkUserId: null,
+        jitProvisioningEnabled: true,
       }),
-    ).resolves.toBeNull();
+    ).resolves.toMatchObject({ userId: "user-1" });
   });
 
   it("keeps superusers out of enterprise-authenticated sessions", async () => {

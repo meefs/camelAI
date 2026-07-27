@@ -2691,7 +2691,14 @@ export class OrgDO extends DurableObject<DOEnv> {
     try {
       const config = JSON.parse(row.value) as OrgSsoConfig;
       return config.protocol === "oidc" && config.connection_id && config.issuer
-        ? config
+        ? {
+            ...config,
+            email_domains: Array.isArray(config.email_domains)
+              ? config.email_domains
+              : [],
+            jit_provisioning_enabled:
+              config.jit_provisioning_enabled === true,
+          }
         : null;
     } catch {
       return null;
@@ -2708,6 +2715,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       connection_id: config.connection_id,
       issuer: config.issuer,
       email_domains: config.email_domains,
+      jit_provisioning_enabled: config.jit_provisioning_enabled,
       config_version: config.config_version,
       enabled: config.enabled,
     });
@@ -2772,7 +2780,8 @@ export class OrgDO extends DurableObject<DOEnv> {
   completeSsoConnectionTest(
     id: string,
     actorUserId: string,
-    completion: Pick<OrgSsoConnectionTest, "status" | "checks" | "identity" | "error" | "completed_at">,
+    completion: Pick<OrgSsoConnectionTest, "status" | "checks" | "identity" | "error" | "completed_at"> &
+      Partial<Pick<OrgSsoConnectionTest, "config">>,
   ): OrgSsoConnectionTest | null {
     const test = this.getSsoConnectionTest(id, actorUserId);
     if (!test || test.status !== "pending") return null;
