@@ -90,7 +90,15 @@ describe("defaultProjectScaffoldFiles", () => {
     const integrations = defaultProjectScaffoldFiles("Connected App", "integration-dashboard", "connected-app");
     expect(scaffoldFile(integrations, "/workers/app.ts")).toContain("CAMELAI: CamelAiBinding");
     expect(scaffoldFile(integrations, "/workers/app.ts")).toContain("CONNECTIONS: ConnectionsBinding");
+    expect(scaffoldFile(integrations, "/workers/app.ts")).toContain(
+      'import type { ConnectionsBinding } from "../app/lib/connections"',
+    );
     expect(scaffoldFile(integrations, "/app/routes/home.tsx")).toContain("env.CONNECTIONS.methods()");
+    const connectionsHelper = scaffoldFile(integrations, "/app/lib/connections.ts");
+    expect(connectionsHelper).toContain("export function createConnections");
+    expect(connectionsHelper).toContain("return invoker.invoke(request)");
+    expect(connectionsHelper).toContain('return methodName === "fetch" ? responseFromFetchPayload(result) : result');
+    expect(connectionsHelper).not.toContain("env.CONNECTIONS[");
 
     const dashboard = defaultProjectScaffoldFiles("Metrics", "data-dashboard", "metrics");
     expect(JSON.parse(scaffoldFile(dashboard, "/package.json")).dependencies.recharts).toBeDefined();
@@ -109,6 +117,7 @@ describe("defaultProjectScaffoldFiles", () => {
       "/react-router.config.ts",
       "/components.json",
       "/app/app.css",
+      "/app/lib/connections.ts",
       "/app/lib/utils.ts",
       "/app/components/ui/button.tsx",
       "/app/components/ui/card.tsx",

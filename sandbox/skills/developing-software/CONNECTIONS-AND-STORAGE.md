@@ -6,19 +6,42 @@ Read this reference when an app uses workspace connections, databases, external 
 
 Use the virtual `CONNECTIONS` binding. Credentials remain behind the platform binding and must never be copied into app source or environment variables.
 
-Resolve one connection with `find`; use `methods` when the app needs the full catalog or schemas:
+The deployed binding is an RPC service with fixed methods such as `find`,
+`methods`, and `invoke`. For method-style calls, wrap it with the scaffolded
+`createConnections()` helper. Do not access `context.cloudflare.env.CONNECTIONS[alias]`
+directly: Cloudflare RPC interprets the alias as an RPC method name.
+
+Resolve one connection with `find`; use `methods` when the app needs the full
+catalog or schemas:
 
 ```ts
-const stripe = await context.cloudflare.env.CONNECTIONS.find("stripe");
-const result = await context.cloudflare.env.CONNECTIONS[stripe.alias]
+import { createConnections } from "~/lib/connections";
+
+const binding = context.cloudflare.env.CONNECTIONS;
+const connections = createConnections(context.cloudflare.env);
+const stripe = await binding.find("stripe");
+const result = await connections[stripe.alias]
   .listCustomers({ limit: 10 });
 ```
 
-Database-style connections expose `query({ query })`. Custom `other` connections expose authenticated `fetch(input, init)`. Prefer an id or alias when several connections can share a provider type; ambiguous name/type lookup should fail instead of silently choosing one.
+Database-style connections expose `query({ query })`. Custom `other`
+connections expose authenticated `fetch(input, init)` through the same helper:
+
+```ts
+const custom = await binding.find({ type: "other" });
+const response = await connections[custom.alias].fetch("/v1/items", {
+  method: "GET",
+});
+```
+
+Prefer an id or alias when several connections can share a provider type;
+ambiguous name/type lookup should fail instead of silently choosing one.
 
 When a connection or method comes from user input, validate it against `CONNECTIONS.methods()` before invocation.
 
-Use `js_exec` to inspect and smoke-test workspace connections while developing:
+`js_exec` already provides a proxied `env.CONNECTIONS`, so its call shape is
+deliberately different from a deployed Worker's raw RPC binding. Use it to
+inspect and smoke-test workspace connections while developing:
 
 ```ts
 const entry = await env.CONNECTIONS.find("clickhouse");
