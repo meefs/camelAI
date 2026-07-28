@@ -4,7 +4,7 @@ Keep this file concise and durable. Add details here only when they help future 
 
 ## What This Is
 
-camelAI is an AI coding assistant platform on Cloudflare Workers + Durable Objects with Cloudflare sandbox containers for builds/analysis. Users chat with persistent coding workspaces, run either Claude SDK or Codex app-server backed threads, and publish generated apps to `*.camelai.app` / environment-specific app hosts.
+camelAI is an AI coding assistant platform on Cloudflare Workers + Durable Objects with Cloudflare sandbox containers for builds/analysis. Users chat with persistent coding workspaces; each thread runs camelAI's pi-based coding harness in `ChatThreadDO`, and generated apps publish to `*.camelai.app` / environment-specific app hosts.
 
 ## High-Level Architecture
 
@@ -259,9 +259,10 @@ curl "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/analytics_eng
 
 ### Adding a new chat model
 
-When adding a new model (Claude, OpenAI, OpenRouter), follow the checklist at
-the top of `src/lib/model-catalog.ts`. The picker, pricing, and harness routing
-live in separate files, and the catalog tests fail if any of them drift apart.
+When adding a model from Anthropic, OpenAI, OpenRouter, or another provider,
+follow the checklist at the top of `src/lib/model-catalog.ts`. The picker,
+pricing, and harness routing live in separate files, and the catalog tests fail
+if any of them drift apart.
 
 ## Uploads, Files, And Safety
 
