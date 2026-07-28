@@ -68,6 +68,8 @@ import {
   getDiscordChannelAvailability,
   parseDiscordChannelConfig,
   type DiscordBridgeBindingRecord,
+  type DiscordChannelConfigV1,
+  type DiscordPendingSetupContext,
   type DiscordSelectableChannel,
 } from '../../workers/main/src/discord-types';
 import { completeConnectionSetupPromptContext } from '../../workers/main/src/connection-setup-completion';
@@ -90,6 +92,62 @@ interface DiscordBindingTransaction {
   previousBinding: DiscordBridgeBindingRecord | null;
   state: string;
   confirmationMessageIds: string[];
+}
+
+interface DiscordActivationTarget {
+  activationAttemptId: string | undefined;
+  applicationId: string;
+  guildId: string;
+  guildName: string;
+  botUserId: string | undefined;
+  messageContentMode: DiscordChannelConfigV1['message_content_mode'];
+}
+
+function getDiscordActivationTarget(
+  config: DiscordChannelConfigV1,
+): DiscordActivationTarget {
+  const pending = config.pending_reauthorization;
+  return {
+    activationAttemptId:
+      pending?.activation_attempt_id ?? config.activation_attempt_id,
+    applicationId: pending?.application_id ?? config.application_id,
+    guildId: pending?.guild_id ?? config.guild_id,
+    guildName: pending?.guild_name ?? config.guild_name,
+    botUserId: pending?.bot_user_id ?? config.bot_user_id,
+    messageContentMode:
+      pending?.message_content_mode ?? config.message_content_mode,
+  };
+}
+
+function discordBindingActivationTransactionId(input: {
+  integrationId: string;
+  activationAttemptId: string;
+  guildId: string;
+  parentChannelId: string;
+  expectedVersion: number | undefined;
+}): string {
+  return [
+    'discord-binding-activation',
+    input.integrationId,
+    input.activationAttemptId,
+    input.guildId,
+    input.parentChannelId,
+    input.expectedVersion ?? 'none',
+  ].join(':');
+}
+
+function getDiscordPendingSetup(
+  config: DiscordChannelConfigV1,
+): DiscordPendingSetupContext | null {
+  const pending = config.pending_setup;
+  return pending &&
+    typeof pending.request_id === 'string' &&
+    typeof pending.thread_id === 'string' &&
+    typeof pending.return_path === 'string' &&
+    pending.return_path.startsWith('/') &&
+    !pending.return_path.startsWith('//')
+    ? pending
+    : null;
 }
 
 export function shouldRevalidate(
@@ -316,6 +374,7 @@ export async function action({ request, context }: Route.ActionArgs) {
       ? parseDiscordChannelConfig(record.config || '{}')
       : null;
     if (!record || !config) return { error: 'Discord integration not found' };
+    const target = getDiscordActivationTarget(config);
     try {
       const result = await discordBridgeRequest<{
         ok: true;
@@ -323,7 +382,7 @@ export async function action({ request, context }: Route.ActionArgs) {
         channels: DiscordSelectableChannel[];
       }>(
         env.DISCORD_BRIDGE,
-        `/internal/v1/guilds/${encodeURIComponent(config.guild_id)}/channels`,
+        `/internal/v1/guilds/${encodeURIComponent(target.guildId)}/channels`,
       );
       return {
         success: true,
@@ -358,6 +417,7 @@ export async function action({ request, context }: Route.ActionArgs) {
       ? parseDiscordChannelConfig(record.config || '{}')
       : null;
     if (!record || !priorConfig) return { error: 'Discord integration not found' };
+    const activationTarget = getDiscordActivationTarget(priorConfig);
     let authoritativeBinding: DiscordBridgeBindingRecord | null = null;
     try {
       const live = await discordBridgeRequest<{
@@ -382,25 +442,21 @@ export async function action({ request, context }: Route.ActionArgs) {
         };
       }
     }
-    const pendingSetup = priorConfig.pending_setup &&
-      typeof priorConfig.pending_setup.request_id === 'string' &&
-      typeof priorConfig.pending_setup.thread_id === 'string' &&
-      typeof priorConfig.pending_setup.return_path === 'string' &&
-      priorConfig.pending_setup.return_path.startsWith('/') &&
-      !priorConfig.pending_setup.return_path.startsWith('//')
-      ? priorConfig.pending_setup
-      : null;
+    const pendingSetup = getDiscordPendingSetup(priorConfig);
     const liveMatchesProduct = Boolean(
       authoritativeBinding &&
       priorConfig.status === 'active' &&
       priorConfig.binding_version === authoritativeBinding.version &&
       priorConfig.guild_id === authoritativeBinding.guildId &&
       priorConfig.parent_channel_id === authoritativeBinding.parentChannelId &&
+      activationTarget.guildId === authoritativeBinding.guildId &&
       parentChannelId === authoritativeBinding.parentChannelId,
     );
 
     if (liveMatchesProduct && authoritativeBinding) {
       try {
+        const integrationName =
+          `${activationTarget.guildName} #${authoritativeBinding.parentChannelName}`;
         if (priorConfig.binding_transaction_id) {
           await discordBridgeRequest(
             env.DISCORD_BRIDGE,
@@ -417,7 +473,7 @@ export async function action({ request, context }: Route.ActionArgs) {
             },
             integrationId,
             'discord_channel',
-            record.name,
+            integrationName,
           );
           if (!completed) {
             return {
@@ -425,18 +481,34 @@ export async function action({ request, context }: Route.ActionArgs) {
             };
           }
         }
-        if (priorConfig.binding_transaction_id || pendingSetup) {
+        if (
+          priorConfig.binding_transaction_id ||
+          priorConfig.activation_attempt_id ||
+          priorConfig.pending_reauthorization ||
+          pendingSetup
+        ) {
           const settledConfig = {
             ...priorConfig,
+            application_id: activationTarget.applicationId,
+            guild_id: activationTarget.guildId,
+            guild_name: activationTarget.guildName,
+            bot_user_id: activationTarget.botUserId,
+            message_content_mode: activationTarget.messageContentMode,
             binding_transaction_id: undefined,
+            activation_attempt_id: undefined,
+            pending_reauthorization: undefined,
             pending_setup: undefined,
+            security_acknowledged_at: Date.now(),
             last_verified_at: Date.now(),
           };
           await updateWorkspaceIntegrationRecord(
             authEnv,
             workspaceId,
             integrationId,
-            { config: JSON.stringify(settledConfig) },
+            {
+              name: integrationName,
+              config: JSON.stringify(settledConfig),
+            },
             authContext.user.id,
           );
         }
@@ -453,14 +525,39 @@ export async function action({ request, context }: Route.ActionArgs) {
       }
     }
 
+    let activationConfig = priorConfig;
+    let activationAttemptId = activationTarget.activationAttemptId;
+    if (!activationAttemptId) {
+      activationAttemptId = crypto.randomUUID();
+      activationConfig = {
+        ...priorConfig,
+        activation_attempt_id: activationAttemptId,
+      };
+      try {
+        await updateWorkspaceIntegrationRecord(
+          authEnv,
+          workspaceId,
+          integrationId,
+          { config: JSON.stringify(activationConfig) },
+          authContext.user.id,
+        );
+      } catch (error) {
+        return {
+          error: error instanceof Error
+            ? `Failed to begin Discord channel activation: ${error.message}`
+            : 'Failed to begin Discord channel activation',
+        };
+      }
+    }
+
     const expectedVersion = authoritativeBinding?.version;
-    const transactionId = [
-      'discord-binding-activation',
+    const transactionId = discordBindingActivationTransactionId({
       integrationId,
-      expectedVersion ?? 'none',
-      priorConfig.guild_id,
+      activationAttemptId,
+      guildId: activationTarget.guildId,
       parentChannelId,
-    ].join(':');
+      expectedVersion,
+    });
     let transaction: DiscordBindingTransaction | null = null;
     try {
       const prepared = await discordBridgeRequest<{
@@ -473,7 +570,7 @@ export async function action({ request, context }: Route.ActionArgs) {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            guildId: priorConfig.guild_id,
+            guildId: activationTarget.guildId,
             parentChannelId,
             integrationId,
             orgId: authContext.currentOrg.id,
@@ -515,14 +612,18 @@ export async function action({ request, context }: Route.ActionArgs) {
 
     const binding = transaction.binding;
     const nextConfig = {
-      ...priorConfig,
+      ...activationConfig,
       status: 'active' as const,
+      application_id: activationTarget.applicationId,
       guild_id: binding.guildId,
       guild_name: binding.guildName,
       parent_channel_id: binding.parentChannelId,
       parent_channel_name: binding.parentChannelName,
+      bot_user_id: activationTarget.botUserId,
       binding_version: binding.version,
       binding_transaction_id: transactionId,
+      pending_reauthorization: undefined,
+      message_content_mode: activationTarget.messageContentMode,
       security_acknowledged_at: Date.now(),
       last_verified_at: Date.now(),
       error_code: undefined,
@@ -593,6 +694,7 @@ export async function action({ request, context }: Route.ActionArgs) {
       const settledConfig = {
         ...nextConfig,
         binding_transaction_id: undefined,
+        activation_attempt_id: undefined,
         pending_setup: undefined,
         last_verified_at: Date.now(),
       };
@@ -644,12 +746,21 @@ export async function action({ request, context }: Route.ActionArgs) {
     } else if (config.binding_version) {
       return { error: 'Discord bridge is unavailable; the channel was not disconnected' };
     }
+    const activationTarget = getDiscordActivationTarget(config);
     const disconnectedConfig = {
       ...config,
       status: 'disconnected' as const,
+      application_id: activationTarget.applicationId,
+      guild_id: activationTarget.guildId,
+      guild_name: activationTarget.guildName,
+      bot_user_id: activationTarget.botUserId,
+      message_content_mode: activationTarget.messageContentMode,
       parent_channel_id: undefined,
       parent_channel_name: undefined,
       binding_version: undefined,
+      binding_transaction_id: undefined,
+      pending_reauthorization: undefined,
+      activation_attempt_id: activationTarget.activationAttemptId,
       error_code: undefined,
       last_verified_at: Date.now(),
     };
@@ -1067,24 +1178,31 @@ export async function action({ request, context }: Route.ActionArgs) {
         workspaceId,
         integrationId,
       );
+      if (existing?.integration_type === 'discord_channel') {
+        const config = parseDiscordChannelConfig(existing.config || '{}');
+        const version = Number.isInteger(config?.binding_version)
+          ? `?version=${config?.binding_version}`
+          : '';
+        try {
+          await discordBridgeRequest(
+            env.DISCORD_BRIDGE,
+            `/internal/v1/bindings/${encodeURIComponent(integrationId)}${version}`,
+            { method: 'DELETE' },
+          );
+        } catch (error) {
+          return {
+            error: error instanceof Error
+              ? `Failed to release Discord channel: ${error.message}`
+              : 'Failed to release Discord channel',
+          };
+        }
+      }
       await deleteWorkspaceIntegrationRecord(
         authEnv,
         workspaceId,
         integrationId,
         authContext.user.id,
       );
-      if (existing?.integration_type === 'discord_channel' && env.DISCORD_BRIDGE) {
-        await discordBridgeRequest(
-          env.DISCORD_BRIDGE,
-          `/internal/v1/bindings/${encodeURIComponent(integrationId)}`,
-          { method: 'DELETE' },
-        ).catch((error) => {
-          console.warn('Discord binding release failed after integration deletion', {
-            integrationId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        });
-      }
       return { success: true };
     } catch (err) {
       return { error: err instanceof Error ? err.message : 'Failed to delete integration' };

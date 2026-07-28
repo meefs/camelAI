@@ -407,6 +407,7 @@ describe("connections action admin guard", () => {
         guild_name: "Example Guild",
         bot_user_id: "bot_1",
         message_content_mode: "full",
+        activation_attempt_id: "attempt-initial",
       }),
     }));
     const bridgeFetch = vi.fn(async (request: Request) => {
@@ -434,6 +435,10 @@ describe("connections action admin guard", () => {
         );
       }
       if (path === "/internal/v1/binding-transactions/prepare") {
+        const body = await request.json() as { idempotencyKey: string };
+        expect(body.idempotencyKey).toBe(
+          "discord-binding-activation:int_1:attempt-initial:guild_1:channel_1:none",
+        );
         return Response.json({
           ok: true,
           transaction: {
@@ -528,6 +533,150 @@ describe("connections action admin guard", () => {
     ]);
   });
 
+  it("lists channels from the staged reauthorization guild", async () => {
+    isOrgAdminMock.mockResolvedValue(true);
+    getIntegrationMock.mockResolvedValue(makeRecord({
+      integration_type: "discord_channel",
+      name: "Existing Guild #general",
+      category: "communication",
+      auth_method: "oauth2",
+      config: JSON.stringify({
+        schema_version: 1,
+        status: "active",
+        application_id: "123456789012345678",
+        guild_id: "guild_old",
+        guild_name: "Existing Guild",
+        parent_channel_id: "channel_old",
+        parent_channel_name: "general",
+        bot_user_id: "123456789012345678",
+        binding_version: 7,
+        message_content_mode: "full",
+        pending_reauthorization: {
+          activation_attempt_id: "reauthorization-attempt",
+          application_id: "123456789012345678",
+          guild_id: "guild_new",
+          guild_name: "Replacement Guild",
+          bot_user_id: "123456789012345678",
+          message_content_mode: "full",
+        },
+      }),
+    }));
+    const bridgeFetch = vi.fn(async (request: Request) => {
+      expect(new URL(request.url).pathname).toBe(
+        "/internal/v1/guilds/guild_new/channels",
+      );
+      return Response.json({
+        ok: true,
+        guild: { id: "guild_new", name: "Replacement Guild" },
+        channels: [],
+      });
+    });
+    setEnv({
+      DISCORD_CHANNEL_ENABLED: "true",
+      DISCORD_BRIDGE: { fetch: bridgeFetch },
+    });
+
+    await expect(action({
+      request: postForm({
+        intent: "discordListChannels",
+        integrationId: "int_1",
+      }),
+      context: {},
+      params: {},
+    } as never)).resolves.toMatchObject({
+      success: true,
+      discordSetup: {
+        integrationId: "int_1",
+        guild: { id: "guild_new", name: "Replacement Guild" },
+      },
+    });
+    expect(bridgeFetch).toHaveBeenCalledOnce();
+  });
+
+  it("completes same-channel reauthorization without replaying a finalized activation", async () => {
+    isOrgAdminMock.mockResolvedValue(true);
+    let record = makeRecord({
+      integration_type: "discord_channel",
+      name: "Example Guild #camel",
+      category: "communication",
+      auth_method: "oauth2",
+      config: JSON.stringify({
+        schema_version: 1,
+        status: "active",
+        application_id: "123456789012345678",
+        guild_id: "guild_1",
+        guild_name: "Example Guild",
+        parent_channel_id: "channel_1",
+        parent_channel_name: "camel",
+        bot_user_id: "123456789012345678",
+        binding_version: 7,
+        message_content_mode: "full",
+        pending_reauthorization: {
+          activation_attempt_id: "fresh-reauthorization-attempt",
+          application_id: "123456789012345678",
+          guild_id: "guild_1",
+          guild_name: "Renamed Guild",
+          bot_user_id: "123456789012345678",
+          message_content_mode: "mention_only",
+        },
+      }),
+    });
+    getIntegrationMock.mockImplementation(async () => record);
+    updateIntegrationMock.mockImplementation(async (_id, updates) => {
+      record = {
+        ...record,
+        ...(updates.name ? { name: updates.name } : {}),
+        ...(updates.config ? { config: updates.config } : {}),
+      };
+    });
+    const binding = {
+      guildId: "guild_1",
+      parentChannelId: "channel_1",
+      integrationId: "int_1",
+      orgId: "org_1",
+      workspaceId: "ws_1",
+      guildName: "Example Guild",
+      parentChannelName: "camel",
+      status: "active",
+      version: 7,
+    };
+    const bridgeFetch = vi.fn(async (request: Request) => {
+      expect(request.method).toBe("GET");
+      expect(new URL(request.url).pathname).toBe("/internal/v1/bindings/int_1");
+      return Response.json({ ok: true, binding });
+    });
+    setEnv({
+      DISCORD_CHANNEL_ENABLED: "true",
+      DISCORD_BRIDGE: { fetch: bridgeFetch },
+    });
+
+    await expect(action({
+      request: postForm({
+        intent: "discordActivateChannel",
+        integrationId: "int_1",
+        parentChannelId: "channel_1",
+        securityAcknowledged: "true",
+      }),
+      context: {},
+      params: {},
+    } as never)).resolves.toEqual({ success: true });
+
+    expect(bridgeFetch).toHaveBeenCalledOnce();
+    expect(updateIntegrationMock).toHaveBeenCalledOnce();
+    expect(record.name).toBe("Renamed Guild #camel");
+    const config = JSON.parse(record.config);
+    expect(config).toMatchObject({
+      status: "active",
+      guild_id: "guild_1",
+      guild_name: "Renamed Guild",
+      parent_channel_id: "channel_1",
+      binding_version: 7,
+      message_content_mode: "mention_only",
+    });
+    expect(config).not.toHaveProperty("pending_reauthorization");
+    expect(config).not.toHaveProperty("activation_attempt_id");
+  });
+
   it("completes a pending chat setup exactly once after confirmation and exact binding persistence", async () => {
     isOrgAdminMock.mockResolvedValue(true);
     let record = makeRecord({
@@ -543,6 +692,7 @@ describe("connections action admin guard", () => {
         guild_name: "Example Guild",
         bot_user_id: "123456789012345678",
         message_content_mode: "full",
+        activation_attempt_id: "attempt-chat-setup",
         pending_setup: {
           request_id: "request-1",
           thread_id: "thread-1",
@@ -650,6 +800,160 @@ describe("connections action admin guard", () => {
     expect(mutationPaths.filter((path) => path.endsWith("/confirm"))).toHaveLength(1);
   });
 
+  it("retries setup cleanup after the chat response was already accepted", async () => {
+    isOrgAdminMock.mockResolvedValue(true);
+    let record = makeRecord({
+      integration_type: "discord_channel",
+      name: "Example Guild #camel",
+      category: "communication",
+      auth_method: "oauth2",
+      config: JSON.stringify({
+        schema_version: 1,
+        status: "active",
+        application_id: "123456789012345678",
+        guild_id: "guild_1",
+        guild_name: "Example Guild",
+        parent_channel_id: "channel_1",
+        parent_channel_name: "camel",
+        bot_user_id: "123456789012345678",
+        binding_version: 7,
+        message_content_mode: "full",
+        pending_setup: {
+          request_id: "request-1",
+          thread_id: "thread-1",
+          return_path: "/chat/thread-1",
+          created_at: 123,
+        },
+      }),
+    });
+    getIntegrationMock.mockImplementation(async () => record);
+    updateIntegrationMock
+      .mockRejectedValueOnce(new Error("transient config write failure"))
+      .mockImplementationOnce(async (_id, updates) => {
+        record = {
+          ...record,
+          ...(updates.config ? { config: updates.config } : {}),
+        };
+      });
+    const receiveConnectionSetupResponse = vi.fn(
+      async () => ({ accepted: true }),
+    );
+    const binding = {
+      guildId: "guild_1",
+      parentChannelId: "channel_1",
+      integrationId: "int_1",
+      orgId: "org_1",
+      workspaceId: "ws_1",
+      guildName: "Example Guild",
+      parentChannelName: "camel",
+      status: "active",
+      version: 7,
+    };
+    setEnv({
+      DISCORD_CHANNEL_ENABLED: "true",
+      DISCORD_BRIDGE: {
+        fetch: vi.fn(async () => Response.json({ ok: true, binding })),
+      },
+      CHAT_THREAD: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({ receiveConnectionSetupResponse })),
+      },
+    });
+    const activate = () => action({
+      request: postForm({
+        intent: "discordActivateChannel",
+        integrationId: "int_1",
+        parentChannelId: "channel_1",
+        securityAcknowledged: "true",
+      }),
+      context: {},
+      params: {},
+    } as never);
+
+    await expect(activate()).resolves.toEqual({
+      error: "transient config write failure",
+    });
+    expect(JSON.parse(record.config)).toHaveProperty("pending_setup");
+
+    await expect(activate()).resolves.toEqual({
+      success: true,
+      returnTo: "/chat/thread-1",
+    });
+    expect(receiveConnectionSetupResponse).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(record.config)).not.toHaveProperty("pending_setup");
+  });
+
+  it("retains pending chat setup when the original chat turn cannot be resumed", async () => {
+    isOrgAdminMock.mockResolvedValue(true);
+    const record = makeRecord({
+      integration_type: "discord_channel",
+      name: "Example Guild #camel",
+      category: "communication",
+      auth_method: "oauth2",
+      config: JSON.stringify({
+        schema_version: 1,
+        status: "active",
+        application_id: "123456789012345678",
+        guild_id: "guild_1",
+        guild_name: "Example Guild",
+        parent_channel_id: "channel_1",
+        parent_channel_name: "camel",
+        bot_user_id: "123456789012345678",
+        binding_version: 7,
+        message_content_mode: "full",
+        pending_setup: {
+          request_id: "request-1",
+          thread_id: "thread-1",
+          return_path: "/chat/thread-1",
+          created_at: 123,
+        },
+      }),
+    });
+    getIntegrationMock.mockResolvedValue(record);
+    const binding = {
+      guildId: "guild_1",
+      parentChannelId: "channel_1",
+      integrationId: "int_1",
+      orgId: "org_1",
+      workspaceId: "ws_1",
+      guildName: "Example Guild",
+      parentChannelName: "camel",
+      status: "active",
+      version: 7,
+    };
+    const receiveConnectionSetupResponse = vi.fn(async () => ({ accepted: false }));
+    const bridgeFetch = vi.fn(async (request: Request) => {
+      expect(request.method).toBe("GET");
+      expect(new URL(request.url).pathname).toBe("/internal/v1/bindings/int_1");
+      return Response.json({ ok: true, binding });
+    });
+    setEnv({
+      DISCORD_CHANNEL_ENABLED: "true",
+      DISCORD_BRIDGE: { fetch: bridgeFetch },
+      CHAT_THREAD: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({ receiveConnectionSetupResponse })),
+      },
+    });
+
+    await expect(action({
+      request: postForm({
+        intent: "discordActivateChannel",
+        integrationId: "int_1",
+        parentChannelId: "channel_1",
+        securityAcknowledged: "true",
+      }),
+      context: {},
+      params: {},
+    } as never)).resolves.toEqual({
+      error: "Discord is connected, but the original chat setup request could not be resumed. Retry Connect channel.",
+    });
+
+    expect(receiveConnectionSetupResponse).toHaveBeenCalledOnce();
+    expect(updateIntegrationMock).not.toHaveBeenCalled();
+    expect(JSON.parse(record.config)).toHaveProperty("pending_setup");
+  });
+
   it("releases a claimed Discord binding when product persistence fails", async () => {
     isOrgAdminMock.mockResolvedValue(true);
     getIntegrationMock.mockResolvedValue(makeRecord({
@@ -663,6 +967,7 @@ describe("connections action admin guard", () => {
         guild_id: "guild_1",
         guild_name: "Example Guild",
         message_content_mode: "full",
+        activation_attempt_id: "attempt-persistence-failure",
       }),
     }));
     updateIntegrationMock.mockRejectedValueOnce(new Error("product persistence failed"));
@@ -762,6 +1067,13 @@ describe("connections action admin guard", () => {
         parent_channel_name: "old-camel",
         binding_version: 4,
         message_content_mode: "full",
+        pending_reauthorization: {
+          activation_attempt_id: "attempt-replacement",
+          application_id: "app_1",
+          guild_id: "guild_1",
+          guild_name: "Example Guild",
+          message_content_mode: "full",
+        },
         pending_setup: {
           request_id: "request-1",
           thread_id: "thread-1",
@@ -791,6 +1103,10 @@ describe("connections action admin guard", () => {
       }
       if (path === "/internal/v1/binding-transactions/prepare") {
         transactionPaths.push(path);
+        const body = await request.json() as { idempotencyKey: string };
+        expect(body.idempotencyKey).toBe(
+          "discord-binding-activation:int_1:attempt-replacement:guild_1:channel_new:4",
+        );
         return Response.json({
           ok: true,
           transaction: {
@@ -860,6 +1176,172 @@ describe("connections action admin guard", () => {
       expect.stringMatching(/\/abort$/),
     ]);
     expect(updateIntegrationMock).not.toHaveBeenCalled();
+  });
+
+  it("uses a new target-scoped transaction when activation retries another channel", async () => {
+    isOrgAdminMock.mockResolvedValue(true);
+    let record = makeRecord({
+      integration_type: "discord_channel",
+      name: "Example Guild #old-camel",
+      category: "communication",
+      auth_method: "oauth2",
+      config: JSON.stringify({
+        schema_version: 1,
+        status: "active",
+        application_id: "app_1",
+        guild_id: "guild_1",
+        guild_name: "Example Guild",
+        parent_channel_id: "channel_old",
+        parent_channel_name: "old-camel",
+        binding_version: 4,
+        message_content_mode: "full",
+        pending_reauthorization: {
+          activation_attempt_id: "attempt-target-retry",
+          application_id: "app_1",
+          guild_id: "guild_1",
+          guild_name: "Example Guild",
+          message_content_mode: "full",
+        },
+      }),
+    });
+    getIntegrationMock.mockImplementation(async () => record);
+    updateIntegrationMock.mockImplementation(async (_id, updates) => {
+      record = {
+        ...record,
+        ...(updates.name ? { name: updates.name } : {}),
+        ...(updates.config ? { config: updates.config } : {}),
+      };
+    });
+    const previousBinding = {
+      guildId: "guild_1",
+      parentChannelId: "channel_old",
+      integrationId: "int_1",
+      orgId: "org_1",
+      workspaceId: "ws_1",
+      guildName: "Example Guild",
+      parentChannelName: "old-camel",
+      status: "active",
+      version: 4,
+    };
+    const preparedIds: string[] = [];
+    const confirmedIds: string[] = [];
+    const abortedIds: string[] = [];
+    const transaction = (
+      transactionId: string,
+      parentChannelId: string,
+      state: string,
+    ) => ({
+      transactionId,
+      binding: {
+        ...previousBinding,
+        parentChannelId,
+        parentChannelName:
+          parentChannelId === "channel_a" ? "channel-a" : "channel-b",
+        version: 5,
+      },
+      previousBinding,
+      state,
+      confirmationMessageIds:
+        state === "committed" ? ["confirmation-1"] : [],
+    });
+    const bridgeFetch = vi.fn(async (request: Request) => {
+      const path = new URL(request.url).pathname;
+      if (request.method === "GET" && path === "/internal/v1/bindings/int_1") {
+        return Response.json({ ok: true, binding: previousBinding });
+      }
+      if (path === "/internal/v1/binding-transactions/prepare") {
+        const body = await request.json() as {
+          guildId: string;
+          parentChannelId: string;
+          idempotencyKey: string;
+          expectedVersion: number;
+        };
+        expect(body).toMatchObject({
+          guildId: "guild_1",
+          expectedVersion: 4,
+        });
+        preparedIds.push(body.idempotencyKey);
+        return Response.json({
+          ok: true,
+          transaction: transaction(
+            body.idempotencyKey,
+            body.parentChannelId,
+            "prepared",
+          ),
+        });
+      }
+      const transactionRoute = path.match(
+        /^\/internal\/v1\/binding-transactions\/([^/]+)\/(confirm|commit|finalize|abort)$/,
+      );
+      if (transactionRoute) {
+        const transactionId = decodeURIComponent(transactionRoute[1]);
+        const action = transactionRoute[2];
+        if (action === "confirm") {
+          confirmedIds.push(transactionId);
+          if (transactionId.includes(":channel_a:")) {
+            return Response.json({
+              ok: false,
+              error: "missing_permissions",
+              message: "Send Messages in Threads is missing",
+            }, { status: 403 });
+          }
+          return Response.json({ ok: true });
+        }
+        if (action === "abort") {
+          abortedIds.push(transactionId);
+          return Response.json({ ok: true });
+        }
+        if (action === "commit") {
+          return Response.json({
+            ok: true,
+            transaction: transaction(transactionId, "channel_b", "committed"),
+          });
+        }
+        return Response.json({ ok: true });
+      }
+      return Response.json({ ok: false, error: "not_found" }, { status: 404 });
+    });
+    setEnv({
+      DISCORD_CHANNEL_ENABLED: "true",
+      DISCORD_BRIDGE: { fetch: bridgeFetch },
+    });
+    const activate = (parentChannelId: string) => action({
+      request: postForm({
+        intent: "discordActivateChannel",
+        integrationId: "int_1",
+        parentChannelId,
+        securityAcknowledged: "true",
+      }),
+      context: {},
+      params: {},
+    } as never);
+
+    await expect(activate("channel_a")).resolves.toEqual({
+      error:
+        "Discord could not confirm and activate the channel: Send Messages in Threads is missing",
+    });
+    await expect(activate("channel_b")).resolves.toEqual({ success: true });
+
+    const transactionA =
+      "discord-binding-activation:int_1:attempt-target-retry:guild_1:channel_a:4";
+    const transactionB =
+      "discord-binding-activation:int_1:attempt-target-retry:guild_1:channel_b:4";
+    expect(preparedIds).toEqual([transactionA, transactionB]);
+    expect(confirmedIds).toEqual([transactionA, transactionB]);
+    expect(abortedIds).toEqual([transactionA]);
+    expect(transactionA).not.toBe(transactionB);
+    expect(transactionA).toContain(":attempt-target-retry:");
+    expect(transactionB).toContain(":attempt-target-retry:");
+    const config = JSON.parse(record.config);
+    expect(config).toMatchObject({
+      status: "active",
+      guild_id: "guild_1",
+      parent_channel_id: "channel_b",
+      parent_channel_name: "channel-b",
+      binding_version: 5,
+    });
+    expect(config).not.toHaveProperty("activation_attempt_id");
+    expect(config).not.toHaveProperty("pending_reauthorization");
   });
 
   it("requires the Discord delegated-access acknowledgement before claiming a channel", async () => {
@@ -934,6 +1416,88 @@ describe("connections action admin guard", () => {
     expect(persistedConfig).not.toHaveProperty("binding_version");
   });
 
+  it("releases a Discord binding before deleting its integration record", async () => {
+    isOrgAdminMock.mockResolvedValue(true);
+    getIntegrationMock.mockResolvedValue(makeRecord({
+      integration_type: "discord_channel",
+      category: "communication",
+      auth_method: "oauth2",
+      config: JSON.stringify({
+        schema_version: 1,
+        status: "active",
+        application_id: "123456789012345678",
+        guild_id: "guild_1",
+        guild_name: "Example Guild",
+        parent_channel_id: "channel_1",
+        parent_channel_name: "camel",
+        binding_version: 7,
+        message_content_mode: "full",
+      }),
+    }));
+    const events: string[] = [];
+    deleteIntegrationMock.mockImplementationOnce(async () => {
+      events.push("delete-integration");
+    });
+    const bridgeFetch = vi.fn(async (request: Request) => {
+      events.push("release-binding");
+      expect(request.method).toBe("DELETE");
+      expect(new URL(request.url).pathname).toBe("/internal/v1/bindings/int_1");
+      expect(new URL(request.url).searchParams.get("version")).toBe("7");
+      return Response.json({ ok: true, released: true });
+    });
+    setEnv({ DISCORD_BRIDGE: { fetch: bridgeFetch } });
+
+    await expect(action({
+      request: postForm({ intent: "deleteIntegration", integrationId: "int_1" }),
+      context: {},
+      params: {},
+    } as never)).resolves.toEqual({ success: true });
+
+    expect(events).toEqual(["release-binding", "delete-integration"]);
+  });
+
+  it("preserves a Discord integration when binding release is not confirmed", async () => {
+    isOrgAdminMock.mockResolvedValue(true);
+    getIntegrationMock.mockResolvedValue(makeRecord({
+      integration_type: "discord_channel",
+      category: "communication",
+      auth_method: "oauth2",
+      config: JSON.stringify({
+        schema_version: 1,
+        status: "active",
+        application_id: "123456789012345678",
+        guild_id: "guild_1",
+        guild_name: "Example Guild",
+        parent_channel_id: "channel_1",
+        parent_channel_name: "camel",
+        binding_version: 7,
+        message_content_mode: "full",
+      }),
+    }));
+    const bridgeFetch = vi.fn(async () =>
+      Response.json(
+        {
+          ok: false,
+          error: "provider_unavailable",
+          message: "Discord bridge is temporarily unavailable",
+        },
+        { status: 503 },
+      )
+    );
+    setEnv({ DISCORD_BRIDGE: { fetch: bridgeFetch } });
+
+    await expect(action({
+      request: postForm({ intent: "deleteIntegration", integrationId: "int_1" }),
+      context: {},
+      params: {},
+    } as never)).resolves.toEqual({
+      error: "Failed to release Discord channel: Discord bridge is temporarily unavailable",
+    });
+
+    expect(bridgeFetch).toHaveBeenCalledOnce();
+    expect(deleteIntegrationMock).not.toHaveBeenCalled();
+  });
+
   it("claims instead of replacing when a stale product record has no live bridge binding", async () => {
     isOrgAdminMock.mockResolvedValue(true);
     getIntegrationMock.mockResolvedValue(makeRecord({
@@ -951,6 +1515,7 @@ describe("connections action admin guard", () => {
         bot_user_id: "123456789012345678",
         binding_version: 7,
         message_content_mode: "full",
+        activation_attempt_id: "attempt-stale-record",
       }),
     }));
     const paths: string[] = [];

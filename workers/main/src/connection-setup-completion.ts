@@ -31,8 +31,8 @@ export async function completeConnectionSetupPromptContext(
         credentials: { _oauth_completed: true, integration_id: integrationId },
       },
     };
-    await chatThreadStub.receiveConnectionSetupResponse(response);
-    return true;
+    const result = await chatThreadStub.receiveConnectionSetupResponse(response);
+    return result.accepted;
   } catch (error) {
     console.error(
       "[Integration OAuth] Failed to complete chat connection setup request:",

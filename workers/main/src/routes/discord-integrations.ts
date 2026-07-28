@@ -347,36 +347,62 @@ export async function handleDiscordOAuthCallback({
       });
     }
     const integrationId = requestedId || crypto.randomUUID();
-    const previousConfig: Partial<DiscordChannelConfigV1> = existing
-      ? parseDiscordChannelConfig(existing.config || "{}") ?? {}
-      : {};
+    const previousConfig = existing
+      ? parseDiscordChannelConfig(existing.config || "{}")
+      : null;
     const stateAcknowledgedAt = Number(
       stateData.extra_config?.security_acknowledged_at,
     );
-    const config: DiscordChannelConfigV1 = {
-      schema_version: 1,
-      status: "pending_channel",
+    const securityAcknowledgedAt =
+      Number.isFinite(stateAcknowledgedAt) && stateAcknowledgedAt > 0
+        ? stateAcknowledgedAt
+        : typeof previousConfig?.security_acknowledged_at === "number"
+          ? previousConfig.security_acknowledged_at
+          : undefined;
+    const pendingSetup = hasConnectionSetupPromptContext(stateData)
+      ? {
+          request_id: stateString(stateData.extra_config?.chat_request_id)!,
+          thread_id: stateString(stateData.extra_config?.chat_thread_id)!,
+          return_path: sanitizeRedirectPath(stateData.redirect_url),
+          created_at: Date.now(),
+        }
+      : undefined;
+    const activationAttemptId = crypto.randomUUID();
+    const pendingReauthorization = {
+      activation_attempt_id: activationAttemptId,
       application_id: env.DISCORD_CLIENT_ID,
       guild_id: guildId,
       guild_name: guildName,
       bot_user_id: observed.botUserId,
       message_content_mode: observed.contentMode,
-      ...(Number.isFinite(stateAcknowledgedAt) && stateAcknowledgedAt > 0
-        ? { security_acknowledged_at: stateAcknowledgedAt }
-        : typeof previousConfig.security_acknowledged_at === "number"
-          ? { security_acknowledged_at: previousConfig.security_acknowledged_at }
-          : {}),
-      ...(hasConnectionSetupPromptContext(stateData)
-        ? {
-            pending_setup: {
-              request_id: stateString(stateData.extra_config?.chat_request_id)!,
-              thread_id: stateString(stateData.extra_config?.chat_thread_id)!,
-              return_path: sanitizeRedirectPath(stateData.redirect_url),
-              created_at: Date.now(),
-            },
-          }
-        : {}),
     };
+    // Ingress validates the top-level active binding. Stage OAuth's replacement
+    // beside it so abandoning channel selection cannot make live messages fail
+    // closed while the bridge still owns the old channel.
+    const config: DiscordChannelConfigV1 = previousConfig?.status === "active"
+      ? {
+          ...previousConfig,
+          pending_reauthorization: pendingReauthorization,
+          activation_attempt_id: undefined,
+          ...(securityAcknowledgedAt
+            ? { security_acknowledged_at: securityAcknowledgedAt }
+            : {}),
+          ...(pendingSetup ? { pending_setup: pendingSetup } : {}),
+        }
+      : {
+          schema_version: 1,
+          status: "pending_channel",
+          application_id: env.DISCORD_CLIENT_ID,
+          guild_id: guildId,
+          guild_name: guildName,
+          bot_user_id: observed.botUserId,
+          message_content_mode: observed.contentMode,
+          activation_attempt_id: activationAttemptId,
+          ...(securityAcknowledgedAt
+            ? { security_acknowledged_at: securityAcknowledgedAt }
+            : {}),
+          ...(pendingSetup ? { pending_setup: pendingSetup } : {}),
+        };
     const encryptedEmptyCredentials = await encryptCredentials(
       {},
       env.INTEGRATION_SECRET_KEY,
@@ -386,7 +412,7 @@ export async function handleDiscordOAuthCallback({
         stateData.workspace_id,
         integrationId,
         {
-          name: guildName,
+          name: previousConfig?.status === "active" ? existing.name : guildName,
           config: JSON.stringify(config),
           credentialsEncrypted: encryptedEmptyCredentials,
         },

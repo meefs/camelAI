@@ -293,7 +293,9 @@ export function getDiscordChannelMetadata(connection: ConnectionListItem): {
   message_content_mode: string | null;
   status: string | null;
   error_code: string | null;
+  reauthorization_pending: boolean;
 } {
+  const pendingReauthorization = connection.config.pending_reauthorization;
   return {
     guild_id:
       connection.channelMetadata?.guild_id ??
@@ -316,6 +318,12 @@ export function getDiscordChannelMetadata(connection: ConnectionListItem): {
     error_code:
       connection.channelMetadata?.error_code ??
       stringConfigValue(connection.config, "error_code"),
+    reauthorization_pending:
+      Boolean(
+        pendingReauthorization &&
+        typeof pendingReauthorization === "object" &&
+        !Array.isArray(pendingReauthorization),
+      ),
   };
 }
 

@@ -204,6 +204,7 @@ describe("Discord OAuth callback", () => {
       bot_user_id: applicationId,
       message_content_mode: "mention_only",
       security_acknowledged_at: 123,
+      activation_attempt_id: expect.any(String),
       pending_setup: {
         request_id: "request-1",
         thread_id: "thread-1",
@@ -215,6 +216,111 @@ describe("Discord OAuth callback", () => {
     await expect(decryptCredentials(args[7], "integration-secret")).resolves.toEqual({});
     expect(integrationRouteMocks.completeConnectionSetupPrompt).not.toHaveBeenCalled();
     expect(sessions.delete).toHaveBeenCalledOnce();
+  });
+
+  it("stages reauthorization without invalidating the active channel binding", async () => {
+    const sessions = memoryKv();
+    const updateWorkspaceIntegration = vi.fn(async () => undefined);
+    const applicationId = "123456789012345678";
+    const existingConfig = {
+      schema_version: 1,
+      status: "active",
+      application_id: applicationId,
+      guild_id: "guild-old",
+      guild_name: "Existing Guild",
+      parent_channel_id: "channel-old",
+      parent_channel_name: "general",
+      bot_user_id: applicationId,
+      binding_version: 7,
+      message_content_mode: "full",
+      security_acknowledged_at: 123,
+    };
+    const orgStub = {
+      getWorkspaceIntegration: vi.fn(async () => ({
+        integration_type: "discord_channel",
+        name: "Existing Guild #general",
+        config: JSON.stringify(existingConfig),
+      })),
+      createWorkspaceIntegration: vi.fn(async () => undefined),
+      updateWorkspaceIntegration,
+    };
+    const env = {
+      DISCORD_CHANNEL_ENABLED: "true",
+      DISCORD_CLIENT_ID: applicationId,
+      DISCORD_CLIENT_SECRET: "test-discord-client-secret-value",
+      DISCORD_BRIDGE: {
+        fetch: vi.fn(async (request: Request) => {
+          const path = new URL(request.url).pathname;
+          return path === "/internal/v1/status"
+            ? Response.json({
+                ok: true,
+                applicationId,
+                botUserId: applicationId,
+                gateway: { state: "ready" },
+              })
+            : Response.json({
+                ok: true,
+                guild: { id: "guild-new", name: "Replacement Guild" },
+                botUserId: applicationId,
+                contentMode: "mention_only",
+                channels: [],
+              });
+        }),
+      },
+      INTEGRATION_SECRET_KEY: "integration-secret",
+      SESSIONS: sessions,
+      ORG: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => orgStub),
+      },
+    };
+    const state = await createIntegrationOAuthState(
+      sessions,
+      "discord_channel",
+      "workspace-1",
+      "user-1",
+      "/connections",
+      {
+        org_id: "org-1",
+        reauth_integration_id: "discord-1",
+      },
+    );
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      access_token: "short-lived-token",
+      scope: "bot",
+      guild: { id: "guild-new", name: "Replacement Guild" },
+    })));
+    const url = new URL(
+      `https://staging.camelai.dev/api/integrations/discord/callback?code=code-1&state=${state}`,
+    );
+
+    const response = await handleDiscordOAuthCallback({
+      req: new Request(url),
+      env,
+      url,
+    } as never);
+
+    expect(response.status).toBe(302);
+    expect(updateWorkspaceIntegration).toHaveBeenCalledOnce();
+    const updates = updateWorkspaceIntegration.mock.calls[0]![2];
+    expect(updates.name).toBe("Existing Guild #general");
+    const config = JSON.parse(updates.config);
+    expect(config).toMatchObject(existingConfig);
+    expect(config).toMatchObject({
+      status: "active",
+      guild_id: "guild-old",
+      parent_channel_id: "channel-old",
+      binding_version: 7,
+      pending_reauthorization: {
+        activation_attempt_id: expect.any(String),
+        application_id: applicationId,
+        guild_id: "guild-new",
+        guild_name: "Replacement Guild",
+        bot_user_id: applicationId,
+        message_content_mode: "mention_only",
+      },
+    });
+    expect(orgStub.createWorkspaceIntegration).not.toHaveBeenCalled();
   });
 
   it("returns a denied OAuth attempt to chat without consuming the retryable state", async () => {
@@ -313,6 +419,7 @@ describe("Discord OAuth callback", () => {
     expect(destination.searchParams.has("return_to")).toBe(false);
     expect(integrationRouteMocks.completeConnectionSetupPrompt).not.toHaveBeenCalled();
     const config = JSON.parse(createWorkspaceIntegration.mock.calls[0]![6]);
+    expect(config.activation_attempt_id).toEqual(expect.any(String));
     expect(config).not.toHaveProperty("pending_setup");
   });
 });

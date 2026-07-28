@@ -284,7 +284,7 @@ function DiscordUsage({ connection }: { connection: ConnectionListItem }) {
           ) : (
             <>
               Mention {DISCORD_BOT_MENTION} in #{channelName} to start a thread.
-              Camel replies in a thread and follows it — no mention needed on
+              Camel replies in a thread and follows it, no mention needed on
               follow-ups.
             </>
           )}
@@ -648,7 +648,9 @@ function DiscordDestination({
   const fetcher = useFetcher<DiscordSetupActionData>();
   const metadata = getDiscordChannelMetadata(connection);
   const active = metadata.status === "active";
-  const [selecting, setSelecting] = useState(false);
+  const [selecting, setSelecting] = useState(
+    metadata.reauthorization_pending,
+  );
   const [disconnectConfirmOpen, setDisconnectConfirmOpen] = useState(false);
   const [selectedChannelId, setSelectedChannelId] = useState(
     metadata.parent_channel_id || "",
@@ -739,7 +741,7 @@ function DiscordDestination({
 
   useEffect(() => {
     autoLoadAttempted.current = null;
-    setSelecting(false);
+    setSelecting(metadata.reauthorization_pending);
     setSelectedChannelId(metadata.parent_channel_id || "");
     setAcknowledged(
       typeof connection.config.security_acknowledged_at === "number",
@@ -748,6 +750,7 @@ function DiscordDestination({
     connection.id,
     connection.config.security_acknowledged_at,
     metadata.parent_channel_id,
+    metadata.reauthorization_pending,
   ]);
 
   const loadChannels = useCallback(() => {

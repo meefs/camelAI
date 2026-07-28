@@ -3,10 +3,7 @@ import {
   handleDiscordEventsDeadLetterQueue,
   handleDiscordEventsQueue,
 } from "../src/discord-events-queue.js";
-import type {
-  DiscordBridgeDelivery,
-  DiscordEventQueueMessage,
-} from "../src/discord-types.js";
+import type { DiscordBridgeDelivery } from "../src/discord-types.js";
 
 function activeConfig() {
   return JSON.stringify({
@@ -125,8 +122,26 @@ function baseEnv(args: {
 }
 
 describe("Discord event queue", () => {
-  it("retries a later ordinal instead of processing it out of order", async () => {
+  it("acknowledges a later ordinal so the durable outbox can republish it", async () => {
     const message = queueMessage({ version: 1, eventId: "event-2" });
+    const env = baseEnv({
+      bridgeFetch: async () => Response.json({
+        ok: true,
+        status: "ordered_wait",
+      }),
+    });
+
+    await handleDiscordEventsQueue({
+      queue: "chiridion-app-discord-events-test",
+      messages: [message],
+    } as never, env as never);
+
+    expect(message.ack).toHaveBeenCalledOnce();
+    expect(message.retry).not.toHaveBeenCalled();
+  });
+
+  it("retries when another consumer still owns the eligible delivery lease", async () => {
+    const message = queueMessage({ version: 1, eventId: "event-1" });
     const env = baseEnv({
       bridgeFetch: async () => Response.json({
         ok: true,
@@ -186,6 +201,52 @@ describe("Discord event queue", () => {
     expect(env._startInitialUserMessage).toHaveBeenCalledWith(
       expect.objectContaining({ clientMessageId: "discord:starter-message" }),
     );
+    expect(message.ack).toHaveBeenCalledOnce();
+    expect(message.retry).not.toHaveBeenCalled();
+  });
+
+  it("continues delivering from the active binding while reauthorization is staged", async () => {
+    const message = queueMessage({ version: 1, eventId: "event-reauthorizing" });
+    const paths: string[] = [];
+    const bridgeFetch = vi.fn(async (request: Request) => {
+      const path = new URL(request.url).pathname;
+      paths.push(path);
+      if (path.endsWith("/claim")) {
+        return Response.json({
+          ok: true,
+          status: "claimed",
+          leaseToken: "lease-reauthorizing",
+          payload: delivery(),
+        });
+      }
+      if (path.endsWith("/complete")) return Response.json({ ok: true });
+      throw new Error(`Unexpected bridge path: ${path}`);
+    });
+    const env = baseEnv({
+      bridgeFetch,
+      integrationConfig: JSON.stringify({
+        ...JSON.parse(activeConfig()),
+        pending_reauthorization: {
+          activation_attempt_id: "reauthorization-attempt",
+          application_id: "application-1",
+          guild_id: "guild-2",
+          guild_name: "Replacement Guild",
+          bot_user_id: "application-1",
+          message_content_mode: "full",
+        },
+      }),
+    });
+
+    await handleDiscordEventsQueue({
+      queue: "chiridion-app-discord-events-test",
+      messages: [message],
+    } as never, env as never);
+
+    expect(paths).toEqual([
+      "/internal/v1/deliveries/event-reauthorizing/claim",
+      "/internal/v1/deliveries/event-reauthorizing/complete",
+    ]);
+    expect(env._startInitialUserMessage).toHaveBeenCalledOnce();
     expect(message.ack).toHaveBeenCalledOnce();
     expect(message.retry).not.toHaveBeenCalled();
   });

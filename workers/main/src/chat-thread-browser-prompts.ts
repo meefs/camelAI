@@ -90,6 +90,10 @@ export class BrowserPromptCoordinator {
       .map(([requestId, waiter]) => ({ requestId, ...waiter.info }));
   }
 
+  hasPendingConnectionSetup(requestId: string): boolean {
+    return Boolean(requestId) && this.pendingConnectionSetupWaiters.has(requestId);
+  }
+
   deletePendingQuestion(questionId: string): void {
     this.pendingQuestions.delete(questionId);
   }

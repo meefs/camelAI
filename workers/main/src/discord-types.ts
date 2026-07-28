@@ -24,6 +24,20 @@ export interface DiscordPendingSetupContext {
   created_at: number;
 }
 
+export interface DiscordPendingReauthorization {
+  /**
+   * Stable for retries of one OAuth/setup flow; refreshed by OAuth. The
+   * selected target and binding snapshot are also part of the bridge
+   * transaction ID derived from this attempt.
+   */
+  activation_attempt_id: string;
+  application_id: string;
+  guild_id: string;
+  guild_name: string;
+  bot_user_id?: string;
+  message_content_mode: DiscordMessageContentMode;
+}
+
 export interface DiscordChannelConfigV1 {
   schema_version: 1;
   status: "pending_channel" | "active" | "disconnected" | "setup_error";
@@ -39,6 +53,16 @@ export interface DiscordChannelConfigV1 {
   last_verified_at?: number;
   error_code?: string;
   pending_setup?: DiscordPendingSetupContext;
+  /**
+   * OAuth's replacement target. While present, the top-level active fields
+   * remain authoritative for ingress until activation commits.
+   */
+  pending_reauthorization?: DiscordPendingReauthorization;
+  /**
+   * Stable identity for a non-reauthorization setup flow. The selected target
+   * and binding snapshot are also part of the derived bridge transaction ID.
+   */
+  activation_attempt_id?: string;
   binding_transaction_id?: string;
 }
 
@@ -278,6 +302,7 @@ export async function discordChannelCatalogAvailable(
 export function parseDiscordChannelConfig(value: string): DiscordChannelConfigV1 | null {
   try {
     const parsed = JSON.parse(value) as Partial<DiscordChannelConfigV1>;
+    const pendingReauthorization = parsed.pending_reauthorization;
     const validStatuses = new Set([
       "pending_channel",
       "active",
@@ -292,6 +317,22 @@ export function parseDiscordChannelConfig(value: string): DiscordChannelConfigV1
       typeof parsed.status !== "string" || !validStatuses.has(parsed.status) ||
       (parsed.message_content_mode !== "full" &&
         parsed.message_content_mode !== "mention_only") ||
+      (parsed.activation_attempt_id !== undefined &&
+        (typeof parsed.activation_attempt_id !== "string" ||
+          !parsed.activation_attempt_id.trim())) ||
+      (pendingReauthorization !== undefined &&
+        (!pendingReauthorization ||
+          typeof pendingReauthorization !== "object" ||
+          typeof pendingReauthorization.activation_attempt_id !== "string" ||
+          !pendingReauthorization.activation_attempt_id.trim() ||
+          typeof pendingReauthorization.application_id !== "string" ||
+          !pendingReauthorization.application_id.trim() ||
+          typeof pendingReauthorization.guild_id !== "string" ||
+          !pendingReauthorization.guild_id.trim() ||
+          typeof pendingReauthorization.guild_name !== "string" ||
+          !pendingReauthorization.guild_name.trim() ||
+          (pendingReauthorization.message_content_mode !== "full" &&
+            pendingReauthorization.message_content_mode !== "mention_only"))) ||
       (parsed.status === "active" &&
         (typeof parsed.parent_channel_id !== "string" ||
           !parsed.parent_channel_id.trim() ||

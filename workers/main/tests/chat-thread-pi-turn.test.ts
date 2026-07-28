@@ -8901,6 +8901,64 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
   });
 
+  it('idempotently accepts a connection setup response after its waiter was consumed', async () => {
+    const stored = new Map<string, unknown>();
+    const kv = {
+      get: vi.fn((key: string) => stored.get(key)),
+      put: vi.fn((key: string, value: unknown) => stored.set(key, value)),
+      delete: vi.fn((key: string) => stored.delete(key)),
+    };
+    const makeFake = () => {
+      const fake = Object.create(ChatThreadDO.prototype) as any;
+      fake.ctx = { storage: { kv } };
+      fake.broadcastChat = vi.fn();
+      fake.browserPrompts = new BrowserPromptCoordinator({
+        hasAvailableBrowserUser: () => true,
+        broadcast: fake.broadcastChat,
+        askUserQuestionUnavailableMessage: 'unavailable',
+        questionTimeoutMs: 30 * 60 * 1000,
+        connectionSetupTimeoutMs: 30 * 60 * 1000,
+      });
+      return fake;
+    };
+    const first = makeFake();
+    const pending = first.browserPrompts.promptConnectionSetup({
+      integrationType: 'discord_channel',
+    });
+    const prompt = first.broadcastChat.mock.calls
+      .map(([message]: [Record<string, unknown>]) => message)
+      .find((message: Record<string, unknown>) =>
+        message.type === 'connection_setup_prompt'
+      );
+    const response = {
+      requestId: String(prompt?.requestId),
+      cancelled: false,
+      integration: {
+        type: 'discord_channel',
+        name: 'Example Guild #camel',
+        config: {},
+        credentials: {
+          _oauth_completed: true,
+          integration_id: 'discord-1',
+        },
+      },
+    };
+
+    await expect(
+      ChatThreadDO.prototype.receiveConnectionSetupResponse.call(first, response),
+    ).resolves.toEqual({ accepted: true });
+    await expect(pending).resolves.toEqual(response);
+
+    const afterRestart = makeFake();
+    await expect(
+      ChatThreadDO.prototype.receiveConnectionSetupResponse.call(
+        afterRestart,
+        response,
+      ),
+    ).resolves.toEqual({ accepted: true });
+    expect(afterRestart.broadcastChat).not.toHaveBeenCalled();
+  });
+
   it('normalizes AskUserQuestion string options before broadcasting to the browser', async () => {
     vi.useFakeTimers();
     const fake = Object.create(ChatThreadDO.prototype) as any;

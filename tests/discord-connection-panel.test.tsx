@@ -353,6 +353,33 @@ describe("DiscordDestination setup state", () => {
 });
 
 describe("DiscordDestination active state", () => {
+  it("opens channel selection for a staged reauthorization while keeping the active destination", async () => {
+    const action = vi.fn(async () => setupData());
+    renderDiscordPanel({
+      connection: discordConnection({
+        guild_name: "Camel HQ",
+        parent_channel_name: "general",
+        parent_channel_id: "general",
+        status: "active",
+        message_content_mode: "full",
+        security_acknowledged_at: 1,
+        pending_reauthorization: {
+          activation_attempt_id: "reauthorization-attempt",
+          application_id: "app_1",
+          guild_id: "guild_1",
+          guild_name: "Camel HQ",
+          message_content_mode: "full",
+        },
+      }),
+      action,
+    });
+
+    expect(await screen.findByText("Camel can't see this channel")).toBeInTheDocument();
+    expect(action).toHaveBeenCalledOnce();
+    expect(screen.getByRole("button", { name: "Change channel" })).toBeEnabled();
+    expect(screen.getByText("#general")).toBeInTheDocument();
+  });
+
   it("separates Discord usage from the camelAI-chat mention and copies @Camel", async () => {
     const user = userEvent.setup();
     const writeText = vi.fn().mockResolvedValue(undefined);
@@ -378,7 +405,7 @@ describe("DiscordDestination active state", () => {
     expect(within(discordUsage!).getByText("@Camel")).toBeInTheDocument();
     expect(
       within(discordUsage!).getByText(
-        "Mention @Camel in #general to start a thread. Camel replies in a thread and follows it — no mention needed on follow-ups.",
+        "Mention @Camel in #general to start a thread. Camel replies in a thread and follows it, no mention needed on follow-ups.",
       ),
     ).toBeInTheDocument();
     expect(screen.getByText("Use in camelAI chat")).toBeInTheDocument();

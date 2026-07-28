@@ -33,7 +33,7 @@ interface ClaimedDelivery {
 
 interface NonClaimedDelivery {
   ok: true;
-  status: "wait" | "completed" | "invalid";
+  status: "ordered_wait" | "wait" | "completed" | "invalid";
   retryAfterMs?: number;
 }
 
@@ -604,12 +604,23 @@ export async function handleDiscordEventsQueue(
         `/internal/v1/deliveries/${encodeURIComponent(message.body.eventId)}/claim`,
         { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
       );
+      if (claim.status === "ordered_wait") {
+        recordObservabilityEvent(env, {
+          event: "discord.ingress.deferred",
+          component: "discord_events_queue",
+          operation: "delivery_claim",
+          status: "ordered_wait",
+          sampleIndex: message.body.eventId,
+        });
+        message.ack();
+        continue;
+      }
       if (claim.status === "wait") {
         recordObservabilityEvent(env, {
           event: "discord.ingress.retried",
           component: "discord_events_queue",
           operation: "delivery_claim",
-          status: "ordered_wait",
+          status: "lease_wait",
           sampleIndex: message.body.eventId,
         });
         message.retry({

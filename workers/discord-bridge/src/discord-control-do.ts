@@ -144,6 +144,7 @@ interface ProactiveThreadIntentRow {
   parent_channel_id: string;
   thread_name: string;
   starter_message_id: string | null;
+  starter_notice_included: number;
   thread_id: string | null;
   started_at: number;
   updated_at: number;
@@ -387,6 +388,7 @@ export class DiscordControlDO extends DurableObject<DiscordBridgeEnv> {
         parent_channel_id TEXT NOT NULL,
         thread_name TEXT NOT NULL,
         starter_message_id TEXT,
+        starter_notice_included INTEGER NOT NULL DEFAULT 0,
         thread_id TEXT,
         started_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
@@ -427,6 +429,20 @@ export class DiscordControlDO extends DurableObject<DiscordBridgeEnv> {
       this.ctx.storage.sql.exec(
         "ALTER TABLE proactive_thread_intents ADD COLUMN starter_message_id TEXT",
       );
+    }
+    if (!proactiveIntentColumns.some((column) => column.name === "starter_notice_included")) {
+      this.ctx.storage.sql.exec(
+        "ALTER TABLE proactive_thread_intents ADD COLUMN starter_notice_included INTEGER NOT NULL DEFAULT 0",
+      );
+      if (discordContentMode(this.env) === "mention_only") {
+        // Completed or starter-backed pre-fix intents never included the
+        // notice, so they retain the safe migrated default.
+        this.ctx.storage.sql.exec(
+          `UPDATE proactive_thread_intents
+           SET starter_notice_included = 1
+           WHERE starter_message_id IS NULL AND thread_id IS NULL`,
+        );
+      }
     }
   }
 
@@ -1156,21 +1172,35 @@ export class DiscordControlDO extends DurableObject<DiscordBridgeEnv> {
       "SELECT * FROM channel_bindings WHERE integration_id = ?",
       integrationId,
     ).toArray()[0];
-    if (!existing) return true;
-    if (version !== undefined && existing.version !== version) return false;
+    if (existing && version !== undefined && existing.version !== version) return false;
+    const liveTransactions = this.ctx.storage.sql.exec<BindingTransactionRow>(
+      `SELECT * FROM binding_transactions
+       WHERE integration_id = ? AND state IN ('prepared', 'confirmed', 'committed')
+       ORDER BY created_at`,
+      integrationId,
+    ).toArray();
+    for (const transaction of liveTransactions) {
+      if (transaction.state === "committed") {
+        this.finalizeBindingTransaction(transaction.transaction_id);
+      } else {
+        this.abortBindingTransaction(transaction.transaction_id);
+      }
+    }
     this.ctx.storage.transactionSync(() => {
       this.ctx.storage.sql.exec("DELETE FROM thread_bindings WHERE integration_id = ?", integrationId);
       this.ctx.storage.sql.exec("DELETE FROM channel_bindings WHERE integration_id = ?", integrationId);
     });
-    recordDiscordBridgeEvent(this.env, {
-      event: "discord.binding.released",
-      component: "discord_control",
-      operation: "release",
-      status: "released",
-      orgId: existing.org_id,
-      workspaceId: existing.workspace_id,
-      integrationId,
-    });
+    if (existing) {
+      recordDiscordBridgeEvent(this.env, {
+        event: "discord.binding.released",
+        component: "discord_control",
+        operation: "release",
+        status: "released",
+        orgId: existing.org_id,
+        workspaceId: existing.workspace_id,
+        integrationId,
+      });
+    }
     return true;
   }
 
@@ -1261,14 +1291,21 @@ export class DiscordControlDO extends DurableObject<DiscordBridgeEnv> {
     threadId: string;
     binding: ChannelBindingRow;
     starter: boolean;
+    mentionNoticeSent: boolean;
   }): void {
     const now = Date.now();
     this.ctx.storage.sql.exec(
       `INSERT INTO thread_bindings (
         thread_id, guild_id, parent_channel_id, integration_id, org_id,
-        workspace_id, next_ingress_ordinal, created_at, last_seen_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(thread_id) DO UPDATE SET last_seen_at = excluded.last_seen_at`,
+        workspace_id, next_ingress_ordinal, mention_notice_sent, created_at,
+        last_seen_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(thread_id) DO UPDATE SET
+        mention_notice_sent = MAX(
+          thread_bindings.mention_notice_sent,
+          excluded.mention_notice_sent
+        ),
+        last_seen_at = excluded.last_seen_at`,
       args.threadId,
       args.binding.guild_id,
       args.binding.parent_channel_id,
@@ -1276,6 +1313,7 @@ export class DiscordControlDO extends DurableObject<DiscordBridgeEnv> {
       args.binding.org_id,
       args.binding.workspace_id,
       args.starter ? 2 : 1,
+      args.mentionNoticeSent ? 1 : 0,
       now,
       now,
     );
@@ -1298,7 +1336,12 @@ export class DiscordControlDO extends DurableObject<DiscordBridgeEnv> {
       messageId,
       name: normalizeDiscordThreadName(optionalString(input.name) || "Camel request"),
     });
-    this.registerThread({ threadId: thread.id, binding, starter: true });
+    this.registerThread({
+      threadId: thread.id,
+      binding,
+      starter: true,
+      mentionNoticeSent: false,
+    });
     const result = { threadId: thread.id, integrationId, parentChannelId };
     this.storeOperation(operationId, "thread_from_message", result);
     return result;
@@ -1384,16 +1427,20 @@ export class DiscordControlDO extends DurableObject<DiscordBridgeEnv> {
     }
     if (!intent) {
       const now = Date.now();
+      const starterNoticeIncluded =
+        discordContentMode(this.env) === "mention_only";
       this.ctx.storage.sql.exec(
         `INSERT INTO proactive_thread_intents (
           operation_id, integration_id, guild_id, parent_channel_id,
-          thread_name, starter_message_id, thread_id, started_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?)`,
+          thread_name, starter_message_id, starter_notice_included, thread_id,
+          started_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?)`,
         operationId,
         integrationId,
         binding.guild_id,
         binding.parent_channel_id,
         name,
+        starterNoticeIncluded ? 1 : 0,
         now,
         now,
       );
@@ -1409,10 +1456,15 @@ export class DiscordControlDO extends DurableObject<DiscordBridgeEnv> {
     let starterMessageId = intent.starter_message_id;
     if (!thread) {
       if (!starterMessageId) {
+        const outbound = discordOutboundTextWithNotice(
+          starterText,
+          intent.starter_notice_included === 1 ? "mention_only" : "full",
+          false,
+        );
         const starter = await this.rest.createMessages({
           threadId: binding.parent_channel_id,
           operationId: `proactive-starter:${operationId}`,
-          text: starterText,
+          text: outbound.text,
         });
         starterMessageId = starter.messageIds[0];
         if (!starterMessageId) {
@@ -1441,7 +1493,12 @@ export class DiscordControlDO extends DurableObject<DiscordBridgeEnv> {
       Date.now(),
       operationId,
     );
-    this.registerThread({ threadId: thread.id, binding, starter: false });
+    this.registerThread({
+      threadId: thread.id,
+      binding,
+      starter: false,
+      mentionNoticeSent: intent.starter_notice_included === 1,
+    });
     const result = {
       threadId: thread.id,
       integrationId,
@@ -1874,17 +1931,9 @@ export class DiscordControlDO extends DurableObject<DiscordBridgeEnv> {
   private async enqueueLifecycleEvent(
     binding: ChannelBindingRow,
     lifecycleType: DiscordReducedLifecycleEvent["lifecycleType"],
-    providerEventId: string,
   ): Promise<void> {
-    recordDiscordBridgeEvent(this.env, {
-      event: "discord.binding.invalidated",
-      component: "discord_control",
-      operation: lifecycleType,
-      status: "queued",
-      orgId: binding.org_id,
-      workspaceId: binding.workspace_id,
-      integrationId: binding.integration_id,
-    });
+    const lifecycleEventKey =
+      `binding-lifecycle:${binding.integration_id}:${binding.version}`;
     const payload: DiscordReducedLifecycleEvent = {
       kind: "lifecycle",
       lifecycleType,
@@ -1896,11 +1945,21 @@ export class DiscordControlDO extends DurableObject<DiscordBridgeEnv> {
       bindingVersion: binding.version,
     };
     const eventId = this.insertOutboxEvent({
-      discordMessageId: providerEventId,
+      discordMessageId: lifecycleEventKey,
       conversationKey: `lifecycle:${binding.integration_id}:${binding.version}`,
       ordinal: 1,
       bindingVersion: binding.version,
       payload,
+    });
+    recordDiscordBridgeEvent(this.env, {
+      event: "discord.binding.invalidated",
+      component: "discord_control",
+      operation: lifecycleType,
+      status: eventId ? "queued" : "deduplicated",
+      severity: eventId ? "info" : "debug",
+      orgId: binding.org_id,
+      workspaceId: binding.workspace_id,
+      integrationId: binding.integration_id,
     });
     if (eventId) await this.publishEvent(eventId);
   }
@@ -1935,7 +1994,6 @@ export class DiscordControlDO extends DurableObject<DiscordBridgeEnv> {
           await this.enqueueLifecycleEvent(
             binding,
             "guild_removed",
-            `guild-delete:${guildId}:${binding.integration_id}:${binding.version}`,
           );
         }
         return;
@@ -1950,7 +2008,6 @@ export class DiscordControlDO extends DurableObject<DiscordBridgeEnv> {
           await this.enqueueLifecycleEvent(
             binding,
             "parent_channel_deleted",
-            `channel-delete:${guildId}:${channelId}:${binding.version}`,
           );
         }
         return;
@@ -1983,7 +2040,7 @@ export class DiscordControlDO extends DurableObject<DiscordBridgeEnv> {
         row.conversation_key,
       ).toArray()[0]?.completed_ordinal ?? 0;
       if (row.ordinal !== completed + 1) {
-        return { status: "wait" as const, retryAfterMs: 2_000 };
+        return { status: "ordered_wait" as const };
       }
       const now = Date.now();
       if (row.state === "leased" && (row.lease_expires_at ?? 0) > now) {
@@ -2010,7 +2067,10 @@ export class DiscordControlDO extends DurableObject<DiscordBridgeEnv> {
       component: "discord_control",
       operation: "delivery_claim",
       status: result.status,
-      severity: result.status === "wait" ? "debug" : "info",
+      severity:
+        result.status === "wait" || result.status === "ordered_wait"
+          ? "debug"
+          : "info",
     });
     return result;
   }
