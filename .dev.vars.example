@@ -1,0 +1,14 @@
+# Required for local sessions and encrypted integration credentials.
+# Replace both values with independent random secrets before starting the app.
+TOKEN_SIGNING_SECRET=replace-with-a-random-signing-secret
+INTEGRATION_SECRET_KEY=replace-with-a-random-encryption-secret
+
+# Optional: enables hosted model requests through the development AI Gateway.
+# The account id and gateway name have local defaults in wrangler.jsonc.
+# CF_GATEWAY_TOKEN=
+
+# Optional OAuth providers for exercising non-bypass authentication locally.
+# GITHUB_CLIENT_ID=
+# GITHUB_CLIENT_SECRET=
+# GOOGLE_CLIENT_ID=
+# GOOGLE_CLIENT_SECRET=
