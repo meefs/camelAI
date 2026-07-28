@@ -95,25 +95,13 @@ function claimBody(options: {
 
 async function claim(
   stub: DurableObjectStub<DiscordControlDO>,
-  body = claimBody(),
+  body: Record<string, unknown> = claimBody(),
 ) {
-  return requestJson(stub, "/internal/v1/bindings/claim", {
+  return requestJson(stub, "/internal/v1/bindings/activate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-}
-
-async function bindingTransaction(
-  stub: DurableObjectStub<DiscordControlDO>,
-  transactionId: string,
-  action: "confirm" | "commit" | "finalize" | "abort",
-) {
-  return requestJson(
-    stub,
-    `/internal/v1/binding-transactions/${encodeURIComponent(transactionId)}/${action}`,
-    { method: "POST" },
-  );
 }
 
 describe("DiscordControlDO binding state", () => {
@@ -156,251 +144,32 @@ describe("DiscordControlDO binding state", () => {
     });
   });
 
-  it.each([
-    ["prepared", "aborted"],
-    ["confirmed", "aborted"],
-    ["committed", "finalized"],
-  ] as const)(
-    "settles a %s activation transaction during release so reconnect can prepare",
-    async (transactionState, expectedState) => {
-      const stub = controlStub();
-      await installRest(stub);
-      const transactionId = `activation-before-release:${transactionState}`;
-      const prepared = await requestJson(
-        stub,
-        "/internal/v1/binding-transactions/prepare",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(claimBody({ idempotencyKey: transactionId })),
-        },
-      );
-      expect(prepared.response.status).toBe(200);
-      if (transactionState === "confirmed" || transactionState === "committed") {
-        const confirmed = await bindingTransaction(stub, transactionId, "confirm");
-        expect(confirmed.response.status).toBe(200);
-      }
-      if (transactionState === "committed") {
-        const committed = await bindingTransaction(stub, transactionId, "commit");
-        expect(committed.response.status).toBe(200);
-      }
-
-      const released = await requestJson(
-        stub,
-        "/internal/v1/bindings/integration-1",
-        { method: "DELETE" },
-      );
-      expect(released.body).toMatchObject({ ok: true, released: true });
-      await runInDurableObject(stub, async (_instance, state) => {
-        const transaction = state.storage.sql.exec<{ state: string }>(
-          "SELECT state FROM binding_transactions WHERE transaction_id = ?",
-          transactionId,
-        ).toArray()[0];
-        expect(transaction?.state).toBe(expectedState);
-        const bindings = state.storage.sql.exec<{ count: number }>(
-          "SELECT COUNT(*) AS count FROM channel_bindings WHERE integration_id = ?",
-          "integration-1",
-        ).toArray()[0];
-        expect(bindings?.count).toBe(0);
-      });
-
-      const reconnect = await requestJson(
-        stub,
-        "/internal/v1/binding-transactions/prepare",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(claimBody({
-            idempotencyKey: `activation-after-release:${transactionState}`,
-          })),
-        },
-      );
-      expect(reconnect.response.status).toBe(200);
-      expect(reconnect.body.transaction).toMatchObject({ state: "prepared" });
-    },
-  );
-
-  it("cannot resurrect a binding released while replacement preflight is pending", async () => {
-    const stub = controlStub();
-    await installRest(stub);
-    await claim(stub, claimBody({ idempotencyKey: "initial-binding" }));
-
-    await runInDurableObject(stub, async (instance) => {
-      let enterPreflight: (() => void) | undefined;
-      let finishPreflight: (() => void) | undefined;
-      const entered = new Promise<void>((resolve) => {
-        enterPreflight = resolve;
-      });
-      const finish = new Promise<void>((resolve) => {
-        finishPreflight = resolve;
-      });
-      Reflect.set(instance, "preflightBinding", async () => {
-        enterPreflight?.();
-        await finish;
-        return {
-          guild: { id: "guild-1", name: "Test guild" },
-          botUserId: "123456789012345678",
-          contentMode: "full",
-          channels: [],
-          channel: {
-            id: "channel-2",
-            name: "other",
-            categoryId: null,
-            categoryName: null,
-            position: 2,
-            missingPermissions: [],
-            canActivate: true,
-            exposure: "restricted",
-          },
-        };
-      });
-      const actor = instance as unknown as {
-        replaceBinding(input: Record<string, unknown>): Promise<unknown>;
-        releaseBinding(integrationId: string, version?: number): boolean;
-      };
-      const replacing = actor.replaceBinding({
-        ...claimBody({
-          parentChannelId: "channel-2",
-          idempotencyKey: "replace-after-race",
-        }),
-        expectedVersion: 1,
-      });
-      await entered;
-      expect(actor.releaseBinding("integration-1", 1)).toBe(true);
-      finishPreflight?.();
-      await expect(replacing).rejects.toMatchObject({ code: "binding_mismatch" });
-    });
-
-    const current = await requestJson(stub, "/internal/v1/bindings/integration-1");
-    expect(current.response.status).toBe(404);
-  });
-
-  it("restores the exact prior version after product persistence fails and reuses confirmation on retry", async () => {
-    const stub = controlStub();
-    const createMessages = vi.fn(async () => ({
-      messageIds: ["binding-confirmation-1"],
-      chunkCount: 1,
-    }));
-    await installRest(stub, fakeDiscordRest({ createMessages }));
-    await claim(stub, claimBody({ idempotencyKey: "initial-binding" }));
-    const transactionId = "activation:integration-1:1:channel-2";
-    const prepareBody = {
-      ...claimBody({
-        parentChannelId: "channel-2",
-        idempotencyKey: transactionId,
-      }),
-      expectedVersion: 1,
-    };
-
-    const prepared = await requestJson(
-      stub,
-      "/internal/v1/binding-transactions/prepare",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(prepareBody),
-      },
-    );
-    expect(prepared.body.transaction).toMatchObject({
-      state: "prepared",
-      binding: { parentChannelId: "channel-2", version: 2 },
-      previousBinding: { parentChannelId: "channel-1", version: 1 },
-    });
-    await bindingTransaction(stub, transactionId, "confirm");
-    await bindingTransaction(stub, transactionId, "commit");
-
-    const updateWorkspaceIntegration = vi.fn()
-      .mockRejectedValueOnce(new Error("mock OrgDO update failed"))
-      .mockResolvedValueOnce(undefined);
-    await expect(updateWorkspaceIntegration({ bindingVersion: 2 }))
-      .rejects.toThrow("mock OrgDO update failed");
-    await bindingTransaction(stub, transactionId, "abort");
-
-    const restored = await requestJson(
-      stub,
-      "/internal/v1/bindings/integration-1",
-    );
-    expect(restored.body.binding).toMatchObject({
-      parentChannelId: "channel-1",
-      version: 1,
-    });
-
-    const retried = await requestJson(
-      stub,
-      "/internal/v1/binding-transactions/prepare",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(prepareBody),
-      },
-    );
-    expect(retried.body.transaction).toMatchObject({
-      state: "confirmed",
-      binding: { parentChannelId: "channel-2", version: 2 },
-    });
-    await bindingTransaction(stub, transactionId, "confirm");
-    await bindingTransaction(stub, transactionId, "commit");
-    await expect(updateWorkspaceIntegration({ bindingVersion: 2 })).resolves.toBeUndefined();
-    await bindingTransaction(stub, transactionId, "finalize");
-
-    const converged = await requestJson(
-      stub,
-      "/internal/v1/bindings/integration-1",
-    );
-    expect(converged.body.binding).toMatchObject({
-      parentChannelId: "channel-2",
-      version: 2,
-    });
-    expect(createMessages).toHaveBeenCalledOnce();
-  });
-
-  it("keeps the exact prior binding when confirmation fails before commit", async () => {
+  it("keeps the prior binding when replacement confirmation fails", async () => {
     const stub = controlStub();
     const createMessages = vi.fn()
+      .mockResolvedValueOnce({
+        messageIds: ["initial-confirmation"],
+        chunkCount: 1,
+      })
       .mockRejectedValueOnce(
         new DiscordBridgeError("missing_permissions", "Send Messages is missing"),
-      )
-      .mockResolvedValueOnce({
-        messageIds: ["binding-confirmation-after-fix"],
-        chunkCount: 1,
-      });
+      );
     await installRest(stub, fakeDiscordRest({ createMessages }));
     await claim(stub, claimBody({ idempotencyKey: "initial-binding" }));
-    const transactionId = "activation:confirmation-failure";
-    const body = {
+
+    const replacement = await claim(stub, {
       ...claimBody({
         parentChannelId: "channel-2",
-        idempotencyKey: transactionId,
+        idempotencyKey: "failed-replacement",
       }),
       expectedVersion: 1,
-    };
-    await requestJson(stub, "/internal/v1/binding-transactions/prepare", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
     });
-    const confirmation = await bindingTransaction(stub, transactionId, "confirm");
-    expect(confirmation.response.status).toBe(403);
-    await bindingTransaction(stub, transactionId, "abort");
+    expect(replacement.response.status).toBe(403);
 
-    const unchanged = await requestJson(stub, "/internal/v1/bindings/integration-1");
-    expect(unchanged.body.binding).toMatchObject({
+    const current = await requestJson(stub, "/internal/v1/bindings/integration-1");
+    expect(current.body.binding).toMatchObject({
       parentChannelId: "channel-1",
       version: 1,
-    });
-
-    await requestJson(stub, "/internal/v1/binding-transactions/prepare", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    await bindingTransaction(stub, transactionId, "confirm");
-    await bindingTransaction(stub, transactionId, "commit");
-    await bindingTransaction(stub, transactionId, "finalize");
-    const converged = await requestJson(stub, "/internal/v1/bindings/integration-1");
-    expect(converged.body.binding).toMatchObject({
-      parentChannelId: "channel-2",
-      version: 2,
     });
   });
 
@@ -482,6 +251,7 @@ describe("DiscordControlDO binding state", () => {
       startThreadFromMessage,
     }));
     await claim(stub, claimBody({ idempotencyKey: "proactive-binding" }));
+    createMessages.mockClear();
 
     await runInDurableObject(stub, async (instance, state) => {
       const actor = instance as unknown as {
@@ -538,6 +308,7 @@ describe("DiscordControlDO binding state", () => {
       });
     });
     await claim(stub, claimBody({ idempotencyKey: "notice-binding" }));
+    createMessages.mockClear();
 
     const proactive = await requestJson(stub, "/internal/v1/threads/proactive", {
       method: "POST",
@@ -615,19 +386,6 @@ describe("DiscordControlDO binding state", () => {
       startThreadFromMessage,
       createStarterFailureNotice,
     }));
-    await claim(stub, claimBody({ idempotencyKey: "kill-switch-binding" }));
-    const transactionId = "kill-switch-transaction";
-    await requestJson(stub, "/internal/v1/binding-transactions/prepare", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        ...claimBody({
-          parentChannelId: "channel-2",
-          idempotencyKey: transactionId,
-        }),
-        expectedVersion: 1,
-      }),
-    });
     await runInDurableObject(stub, (instance) => {
       const currentEnv = Reflect.get(instance, "env") as Record<string, unknown>;
       Reflect.set(instance, "env", {
@@ -638,8 +396,8 @@ describe("DiscordControlDO binding state", () => {
 
     const mutations: Array<[string, Record<string, unknown>]> = [
       [
-        `/internal/v1/binding-transactions/${transactionId}/confirm`,
-        {},
+        "/internal/v1/bindings/activate",
+        claimBody({ idempotencyKey: "kill-switch-binding" }),
       ],
       [
         "/internal/v1/threads/from-message",
@@ -667,10 +425,6 @@ describe("DiscordControlDO binding state", () => {
           text: "Hello",
           idempotencyKey: "message",
         },
-      ],
-      [
-        "/internal/v1/bindings/integration-1/confirmation",
-        { idempotencyKey: "legacy-confirmation" },
       ],
       [
         "/internal/v1/failure-notices",
@@ -1371,6 +1125,7 @@ describe("DiscordControlDO delivery recovery", () => {
       });
     });
     await claim(stub, claimBody({ idempotencyKey: "proactive-binding" }));
+    createMessages.mockClear();
 
     const input = {
       integrationId: "integration-1",
@@ -1454,6 +1209,7 @@ describe("DiscordControlDO delivery recovery", () => {
       })),
     }));
     await claim(stub, claimBody({ idempotencyKey: "proactive-binding" }));
+    createMessages.mockClear();
 
     const send = (operationId: string) => requestJson(
       stub,

@@ -152,7 +152,7 @@ import { waitUntil } from "cloudflare:workers";
 import { refreshOrgCustomDomainHostnamesForAdmin } from "../../../../../src/lib/admin-custom-domain.server.js";
 import {
   discordApplicationIdConfigured,
-  discordBridgeRequest,
+  discordBridgeClient,
   discordChannelEnabled,
   discordClientSecretConfigured,
 } from "../../discord-types.js";
@@ -584,10 +584,7 @@ routes.get(
     let bridge: Record<string, unknown> | null = null;
     if (c.env.DISCORD_BRIDGE) {
       try {
-        bridge = await discordBridgeRequest<Record<string, unknown>>(
-          c.env.DISCORD_BRIDGE,
-          "/internal/v1/status",
-        );
+        bridge = { ...await discordBridgeClient(c.env.DISCORD_BRIDGE).status() };
       } catch (error) {
         issues.push(
           error instanceof Error

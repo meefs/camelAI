@@ -1422,7 +1422,7 @@ describe('connections runtime', () => {
     }));
   });
 
-  it('requires exact healthy Discord bridge and binding identity for Ready', async () => {
+  it('requires healthy Discord bridge ownership and ignores stale product versions', async () => {
     const applicationId = '123456789012345678';
     const records = [integration({
       id: 'discord_support',
@@ -1506,9 +1506,8 @@ describe('connections runtime', () => {
       context,
       'discord_support',
     )).resolves.toMatchObject({
-      ok: false,
-      status: 'misconfigured',
-      message: expect.stringContaining('binding changed'),
+      ok: true,
+      status: 'ready',
     });
   });
 

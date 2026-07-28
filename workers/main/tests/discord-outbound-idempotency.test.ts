@@ -73,6 +73,21 @@ describe("Discord proactive outbound idempotency", () => {
     const bodies: Array<{ path: string; body: Record<string, unknown> }> = [];
     const bridgeFetch = vi.fn(async (request: Request) => {
       const path = new URL(request.url).pathname;
+      if (request.method === "GET") {
+        return Response.json({
+          ok: true,
+          binding: {
+            guildId: "guild-1",
+            parentChannelId: "parent-1",
+            integrationId: "discord-1",
+            orgId: "org-1",
+            workspaceId: "workspace-1",
+            guildName: "Camel",
+            parentChannelName: "support",
+            version: 7,
+          },
+        });
+      }
       const body = await request.json() as Record<string, unknown>;
       bodies.push({ path, body });
       if (path === "/internal/v1/threads/proactive") {
@@ -95,11 +110,11 @@ describe("Discord proactive outbound idempotency", () => {
     const fake = Object.create(ChannelTools.prototype) as {
       env: Record<string, unknown>;
       getOriginatingChannelThread: () => Promise<null>;
-      recordDiscordOutboundHistory: () => Promise<string>;
+      recordOutboundChannelHistory: () => Promise<string>;
       markThreadChannelUsedBestEffort: () => Promise<void>;
     };
     fake.getOriginatingChannelThread = vi.fn(async () => null);
-    fake.recordDiscordOutboundHistory = vi.fn(async () => "recorded");
+    fake.recordOutboundChannelHistory = vi.fn(async () => "recorded");
     fake.markThreadChannelUsedBestEffort = vi.fn(async () => undefined);
     fake.env = {
       DISCORD_BRIDGE: { fetch: bridgeFetch },

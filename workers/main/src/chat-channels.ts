@@ -12,8 +12,8 @@ import { buildWorkspaceEmailSenderAddress, getWorkspaceEmailDomain } from "../..
 import { getBillingPlanLimits } from "../../../src/lib/billing-plans";
 import { formatMarkdownForTelegram } from "../../../src/lib/telegram-format";
 import {
-  discordBridgeRequest,
-  parseDiscordChannelConfig,
+  discordBridgeClient,
+  type DiscordBridgeBindingRecord,
 } from "./discord-types";
 import {
   appendEmailThreadReferenceIds,
@@ -717,14 +717,18 @@ export class ChannelTools {
       sentMessageIds.push(responseJson.result?.message_id);
     }
 
-    const channelHistoryStatus = await this.recordTelegramOutboundHistory(context, {
-      chatId,
+    const channelHistoryStatus = await this.recordOutboundChannelHistory(context, {
+      kind: "telegram",
+      remoteConversationId: chatId,
       integrationId: telegramIntegrationId,
       title: telegramTitle,
       recordHistory: recordChannelHistory,
       text: text || undefined,
-      sentMessageIds,
+      providerMessageIds: sentMessageIds,
       attachmentCount: attachments.length,
+      firstUserMessage:
+        text?.trim() ||
+        (attachments.length > 0 ? "Outbound Telegram attachment sent." : null),
     }).catch((error) => {
       console.error("[ChatThreadDO] failed to record Telegram outbound history", error);
       return "error" as const;
@@ -775,13 +779,26 @@ export class ChannelTools {
     }
     let integrationId = originatingIntegrationId || explicitIntegrationId;
     const orgStub = this.getOrgStub(context.orgId);
+    const discord = discordBridgeClient(this.env.DISCORD_BRIDGE);
+    const getBinding = async (candidateId: string): Promise<DiscordBridgeBindingRecord | null> => {
+      return discord.binding(candidateId);
+    };
     if (!integrationId) {
       const integrations = await orgStub.getWorkspaceIntegrations(context.workspaceId);
-      const activeDiscord = integrations.filter((candidate) => {
-        if (candidate.integration_type !== "discord_channel") return false;
-        const config = parseDiscordChannelConfig(candidate.config || "{}");
-        return config?.status === "active" && Boolean(config.parent_channel_id);
-      });
+      const discordIntegrations = integrations.filter(
+        (candidate) => candidate.integration_type === "discord_channel",
+      );
+      const activeDiscord = (
+        await Promise.all(discordIntegrations.map(async (candidate) => ({
+          integration: candidate,
+          binding: await getBinding(candidate.id),
+        })))
+      ).filter(
+        (candidate): candidate is {
+          integration: (typeof discordIntegrations)[number];
+          binding: DiscordBridgeBindingRecord;
+        } => candidate.binding !== null,
+      );
       if (activeDiscord.length === 0) {
         throw new Error(
           "No active Discord channel is available. Ask the user to connect Discord first.",
@@ -792,7 +809,7 @@ export class ChannelTools {
           "Multiple Discord channels are available. Call tools.list_integrations({}) and pass the desired integration id as integration_id.",
         );
       }
-      integrationId = activeDiscord[0].id;
+      integrationId = activeDiscord[0].integration.id;
     }
     if (!integrationId) throw new Error("Discord integration_id is required");
     const integration = await orgStub.getWorkspaceIntegration(
@@ -802,14 +819,14 @@ export class ChannelTools {
     if (!integration || integration.integration_type !== "discord_channel") {
       throw new Error("Discord integration is no longer available");
     }
-    const config = parseDiscordChannelConfig(integration.config || "{}");
-    if (!config || config.status !== "active" || !config.parent_channel_id) {
+    const binding = await getBinding(integrationId);
+    if (!binding) {
       throw new Error("Discord integration is not connected to an active channel");
     }
 
     const stableOperationId = options.operationId?.trim() ||
       `discord-tool-fallback:${crypto.randomUUID()}`;
-    let guildId = config.guild_id;
+    let guildId = binding.guildId;
     let discordThreadId = "";
     let recordChannelHistory = false;
     let proactiveStarterMessageId = "";
@@ -822,26 +839,17 @@ export class ChannelTools {
       }
       guildId = conversationId.slice(0, separator);
       discordThreadId = conversationId.slice(separator + 1);
-      if (guildId !== config.guild_id) {
+      if (guildId !== binding.guildId) {
         throw new Error("Originating Discord server no longer matches the integration");
       }
     } else {
-      const proactive = await discordBridgeRequest<{
-        ok: true;
-        threadId: string;
-        guildId: string;
-        starterMessageId?: string;
-      }>(this.env.DISCORD_BRIDGE, "/internal/v1/threads/proactive", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          integrationId,
-          name: text?.replace(/\s+/gu, " ").trim().slice(0, 100) || "Camel update",
-          // A short text send can be the Discord thread's stable starter
-          // message. Reusing it avoids posting the same text again in-thread.
-          ...(text && text.length <= 2_000 ? { starterText: text } : {}),
-          idempotencyKey: `${stableOperationId}:thread`,
-        }),
+      const proactive = await discord.startProactiveThread({
+        integrationId,
+        name: text?.replace(/\s+/gu, " ").trim().slice(0, 100) || "Camel update",
+        // A short text send can be the Discord thread's stable starter
+        // message. Reusing it avoids posting the same text again in-thread.
+        ...(text && text.length <= 2_000 ? { starterText: text } : {}),
+        idempotencyKey: `${stableOperationId}:thread`,
       });
       discordThreadId = proactive.threadId;
       guildId = proactive.guildId;
@@ -876,11 +884,7 @@ export class ChannelTools {
           attachment.filename,
         );
       }
-      const attachmentResponse = await discordBridgeRequest<typeof response>(
-        this.env.DISCORD_BRIDGE,
-        "/internal/v1/messages",
-        { method: "POST", body: form },
-      );
+      const attachmentResponse = await discord.sendMessage(form);
       response = proactiveStarterConsumedText
         ? {
             ...attachmentResponse,
@@ -901,31 +905,24 @@ export class ChannelTools {
         attachmentCount: 0,
       };
     } else {
-      response = await discordBridgeRequest(
-        this.env.DISCORD_BRIDGE,
-        "/internal/v1/messages",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            integrationId,
-            threadId: discordThreadId,
-            text,
-            idempotencyKey: operationId,
-          }),
-        },
-      );
+      response = await discord.sendMessage({
+        integrationId,
+        threadId: discordThreadId,
+        text: text!,
+        idempotencyKey: operationId,
+      });
     }
 
-    const channelHistoryStatus = await this.recordDiscordOutboundHistory(context, {
-      guildId,
-      threadId: discordThreadId,
+    const channelHistoryStatus = await this.recordOutboundChannelHistory(context, {
+      kind: "discord",
+      remoteConversationId: `${guildId}:${discordThreadId}`,
       integrationId,
-      title: config.parent_channel_name || integration.name || "Discord",
+      title: binding.parentChannelName || integration.name || "Discord",
       recordHistory: recordChannelHistory,
       text: text || undefined,
-      messageIds: response.messageIds,
+      providerMessageIds: response.messageIds,
       attachmentCount: attachments.length,
+      firstUserMessage: null,
     }).catch((error) => {
       console.error("[ChatThreadDO] failed to record Discord outbound history", error);
       return "error" as const;
@@ -949,36 +946,37 @@ export class ChannelTools {
     };
   }
 
-  private async recordDiscordOutboundHistory(
+  private async recordOutboundChannelHistory(
     context: ChatContextState,
     args: {
-      guildId: string;
-      threadId: string;
+      kind: "discord" | "telegram";
+      remoteConversationId: string;
       integrationId: string;
       title: string;
       recordHistory: boolean;
       text?: string;
-      messageIds: string[];
+      providerMessageIds: Array<string | number | undefined>;
       attachmentCount: number;
+      firstUserMessage: string | null;
     },
   ): Promise<"recorded" | "skipped"> {
-    if (!args.recordHistory) return "skipped";
-    const remoteConversationId = `${args.guildId}:${args.threadId}`;
+    if (!args.recordHistory || !args.integrationId) return "skipped";
+    const firstProviderMessageId = args.providerMessageIds
+      .map((id) => (id === undefined ? "" : String(id)))
+      .find(Boolean);
     const channelThread = await getOrCreateChannelThread(
       this.env as Parameters<typeof getOrCreateChannelThread>[0],
       {
-        kind: "discord",
+        kind: args.kind,
         workspaceId: context.workspaceId,
         orgId: context.orgId,
         connectionId: args.integrationId,
-        remoteConversationId,
+        remoteConversationId: args.remoteConversationId,
         title: args.title,
-        createdBy: "discord",
-        // This is an outbound mirror, not a user-authored inbound turn.
-        // appendChannelHistoryEvent below writes the single visible history row.
-        firstUserMessage: null,
-        firstRemoteMessageId: args.messageIds[0]
-          ? `outbound:${args.messageIds[0]}`
+        createdBy: args.kind,
+        firstUserMessage: args.firstUserMessage,
+        firstRemoteMessageId: firstProviderMessageId
+          ? `outbound:${firstProviderMessageId}`
           : undefined,
       },
     );
@@ -994,81 +992,18 @@ export class ChannelTools {
       threadId: channelThread.threadId,
       workspaceId: context.workspaceId,
       orgId: context.orgId,
-      channelKind: "discord",
+      channelKind: args.kind,
       connectionId: args.integrationId,
-      remoteConversationId,
+      remoteConversationId: args.remoteConversationId,
       sourceThreadId: context.threadId,
       direction: "outbound",
       text: args.text,
-      providerMessageIds: args.messageIds,
+      providerMessageIds: args.providerMessageIds,
       attachmentCount: args.attachmentCount,
       sentAt: Date.now(),
     });
     if (result.status === "error") {
-      throw new Error(result.error || "Failed to record Discord channel history");
-    }
-    return result.status === "appended" ? "recorded" : "skipped";
-  }
-
-  private async recordTelegramOutboundHistory(
-    context: ChatContextState,
-    args: {
-      chatId: string;
-      integrationId: string;
-      title: string;
-      recordHistory: boolean;
-      text?: string;
-      sentMessageIds: Array<number | undefined>;
-      attachmentCount: number;
-    },
-  ): Promise<"recorded" | "skipped"> {
-    if (!args.recordHistory || !args.integrationId) return "skipped";
-    const firstProviderMessageId = args.sentMessageIds
-      .map((id) => (id === undefined ? "" : String(id)))
-      .find(Boolean);
-    const thread = await getOrCreateChannelThread(
-      this.env as Parameters<typeof getOrCreateChannelThread>[0],
-      {
-        kind: "telegram",
-        workspaceId: context.workspaceId,
-        orgId: context.orgId,
-        connectionId: args.integrationId,
-        remoteConversationId: args.chatId,
-        title: args.title,
-        createdBy: "telegram",
-        firstUserMessage:
-          args.text?.trim() ||
-          (args.attachmentCount > 0 ? "Outbound Telegram attachment sent." : null),
-        firstRemoteMessageId: firstProviderMessageId
-          ? `outbound:${firstProviderMessageId}`
-          : undefined,
-      },
-    );
-    if (thread.threadId === context.threadId) return "skipped";
-
-    const stub = this.env.CHAT_THREAD.get(
-      this.env.CHAT_THREAD.idFromName(thread.threadId),
-    ) as unknown as {
-      appendChannelHistoryEvent: (
-        input: ChannelHistoryEventRequest,
-      ) => Promise<ChannelHistoryEventResult> | ChannelHistoryEventResult;
-    };
-    const result = await stub.appendChannelHistoryEvent({
-      threadId: thread.threadId,
-      workspaceId: context.workspaceId,
-      orgId: context.orgId,
-      channelKind: "telegram",
-      connectionId: args.integrationId,
-      remoteConversationId: args.chatId,
-      sourceThreadId: context.threadId,
-      direction: "outbound",
-      text: args.text,
-      providerMessageIds: args.sentMessageIds,
-      attachmentCount: args.attachmentCount,
-      sentAt: Date.now(),
-    });
-    if (result.status === "error") {
-      throw new Error(result.error || "Failed to record Telegram channel history");
+      throw new Error(result.error || `Failed to record ${args.kind} channel history`);
     }
     return result.status === "appended" ? "recorded" : "skipped";
   }

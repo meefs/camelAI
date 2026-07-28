@@ -6,7 +6,7 @@ import {
 } from "./channels.js";
 import {
   DiscordBridgeRequestError,
-  discordBridgeRequest,
+  discordBridgeClient,
   parseDiscordChannelConfig,
   type DiscordBridgeDelivery,
   type DiscordBridgeDeliveryMessage,
@@ -23,19 +23,6 @@ const DISCORD_ATTACHMENT_TIMEOUT_MS = 15_000;
 const DISCORD_DEDUPE_TTL_SECONDS = 24 * 60 * 60;
 const DISCORD_BUSY_RETRY_SECONDS = 30;
 const DISCORD_WAIT_RETRY_SECONDS = 2;
-
-interface ClaimedDelivery {
-  ok: true;
-  status: "claimed";
-  leaseToken: string;
-  payload: DiscordBridgeDelivery;
-}
-
-interface NonClaimedDelivery {
-  ok: true;
-  status: "ordered_wait" | "wait" | "completed" | "invalid";
-  retryAfterMs?: number;
-}
 
 function validQueueMessage(value: unknown): value is DiscordEventQueueMessage {
   if (!value || typeof value !== "object") return false;
@@ -296,14 +283,10 @@ async function finishDelivery(
   leaseToken: string,
   action: "complete" | "retry" | "fail",
 ): Promise<void> {
-  await discordBridgeRequest(
-    env.DISCORD_BRIDGE,
-    `/internal/v1/deliveries/${encodeURIComponent(eventId)}/${action}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ leaseToken }),
-    },
+  await discordBridgeClient(env.DISCORD_BRIDGE).finishDelivery(
+    eventId,
+    leaseToken,
+    action,
   );
 }
 
@@ -324,20 +307,7 @@ async function validateDelivery(
   if (!workspace || workspace.archived) return null;
   if (!integration || integration.integration_type !== "discord_channel") return null;
   const config = parseDiscordChannelConfig(integration.config || "{}");
-  if (
-    !config ||
-    config.status !== "active" ||
-    config.guild_id !== payload.guildId ||
-    config.binding_version !== payload.bindingVersion
-  ) {
-    return null;
-  }
-  if (
-    payload.kind === "message" &&
-    config.parent_channel_id !== payload.parentChannelId
-  ) {
-    return null;
-  }
+  if (!config) return null;
   return { orgStub, config, integration };
 }
 
@@ -347,16 +317,12 @@ async function handlePermanentStarterThreadFailure(
   validated: NonNullable<Awaited<ReturnType<typeof validateDelivery>>>,
   error: DiscordBridgeRequestError,
 ): Promise<void> {
-  await discordBridgeRequest(env.DISCORD_BRIDGE, "/internal/v1/failure-notices", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      integrationId: payload.integrationId,
-      parentChannelId: payload.parentChannelId,
-      messageId: payload.discordMessageId,
-      reason: error.code,
-      idempotencyKey: `discord-starter-failure:${payload.discordMessageId}`,
-    }),
+  await discordBridgeClient(env.DISCORD_BRIDGE).sendFailureNotice({
+    integrationId: payload.integrationId,
+    parentChannelId: payload.parentChannelId,
+    messageId: payload.discordMessageId,
+    reason: error.code,
+    idempotencyKey: `discord-starter-failure:${payload.discordMessageId}`,
   }).catch((noticeError) => {
     console.warn("[discord-events] failed to post starter failure notice", {
       integrationId: payload.integrationId,
@@ -421,10 +387,9 @@ async function handleLifecycleDelivery(
     error_code: payload.lifecycleType,
     last_verified_at: Date.now(),
   };
-  await discordBridgeRequest(
-    env.DISCORD_BRIDGE,
-    `/internal/v1/bindings/${encodeURIComponent(payload.integrationId)}?version=${payload.bindingVersion}`,
-    { method: "DELETE" },
+  await discordBridgeClient(env.DISCORD_BRIDGE).releaseBinding(
+    payload.integrationId,
+    payload.bindingVersion,
   );
   await validated.orgStub.updateWorkspaceIntegration(
     payload.workspaceId,
@@ -470,19 +435,12 @@ async function processClaimedDelivery(
     let threadId = payload.threadId;
     if (payload.starter) {
       try {
-        const thread = await discordBridgeRequest<{
-          ok: true;
-          threadId: string;
-        }>(env.DISCORD_BRIDGE, "/internal/v1/threads/from-message", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            integrationId: payload.integrationId,
-            parentChannelId: payload.parentChannelId,
-            messageId: payload.discordMessageId,
-            name: discordThreadTitle(normalizedText),
-            idempotencyKey: `discord-starter:${payload.discordMessageId}`,
-          }),
+        const thread = await discordBridgeClient(env.DISCORD_BRIDGE).startThreadFromMessage({
+          integrationId: payload.integrationId,
+          parentChannelId: payload.parentChannelId,
+          messageId: payload.discordMessageId,
+          name: discordThreadTitle(normalizedText),
+          idempotencyKey: `discord-starter:${payload.discordMessageId}`,
         });
         threadId = thread.threadId;
       } catch (error) {
@@ -517,15 +475,11 @@ async function processClaimedDelivery(
       attachments.skipped,
     );
     if (!normalizedText && attachments.uploadPaths.length === 0) {
-      await discordBridgeRequest(env.DISCORD_BRIDGE, "/internal/v1/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          integrationId: payload.integrationId,
-          threadId,
-          text: "I couldn't use the attached Discord file. Please attach a file under 25 MiB and try again.",
-          idempotencyKey: `discord-invalid-attachments:${payload.discordMessageId}`,
-        }),
+      await discordBridgeClient(env.DISCORD_BRIDGE).sendMessage({
+        integrationId: payload.integrationId,
+        threadId,
+        text: "I couldn't use the attached Discord file. Please attach a file under 25 MiB and try again.",
+        idempotencyKey: `discord-invalid-attachments:${payload.discordMessageId}`,
       });
       await env.APP_KV.put(dedupeKey, "done", { expirationTtl: DISCORD_DEDUPE_TTL_SECONDS });
       await finishDelivery(env, eventId, leaseToken, "complete");
@@ -599,10 +553,8 @@ export async function handleDiscordEventsQueue(
       continue;
     }
     try {
-      const claim = await discordBridgeRequest<ClaimedDelivery | NonClaimedDelivery>(
-        env.DISCORD_BRIDGE,
-        `/internal/v1/deliveries/${encodeURIComponent(message.body.eventId)}/claim`,
-        { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
+      const claim = await discordBridgeClient(env.DISCORD_BRIDGE).claimDelivery(
+        message.body.eventId,
       );
       if (claim.status === "ordered_wait") {
         recordObservabilityEvent(env, {
@@ -715,14 +667,8 @@ export async function handleDiscordEventsDeadLetterQueue(
       continue;
     }
     try {
-      const result = await discordBridgeRequest<{
-        ok: true;
-        status: "failed" | "completed" | "invalid" | "wait";
-        retryAfterMs?: number;
-      }>(
-        env.DISCORD_BRIDGE,
-        `/internal/v1/deliveries/${encodeURIComponent(message.body.eventId)}/dead-letter`,
-        { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
+      const result = await discordBridgeClient(env.DISCORD_BRIDGE).deadLetterDelivery(
+        message.body.eventId,
       );
       if (result.status === "wait") {
         message.retry({

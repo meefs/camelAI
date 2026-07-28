@@ -22,80 +22,11 @@ bunx wrangler queues create chiridion-app-discord-events
 bunx wrangler queues create chiridion-app-discord-events-dlq
 ```
 
-For the private `dev-illiana` canary, use the checked workflow rather than
-copying the staging commands. Do not wipe D1 for this test: D1 is not the only
-state store, and a partial reset can leave Durable Objects, KV, and R2
-inconsistent.
-
-First set the same real application ID in `wrangler.dev-illiana.jsonc` and the
-bridge's `env.dev-illiana.vars`. Configure the Discord application for Guild
-Install, OAuth code grant, and this exact callback:
-
-```text
-https://dev-illiana.camelai.dev/api/integrations/discord/callback
-```
-
-The bootstrap deliberately requires an operator attestation for that
-portal-only setting. Keep both `DISCORD_CHANNEL_ENABLED` and
-`DISCORD_INGRESS_ENABLED` false, then run:
-
-```bash
-export DISCORD_CANARY_CALLBACK_URI_CONFIRMED=https://dev-illiana.camelai.dev/api/integrations/discord/callback
-bun run discord:canary:preflight -- --phase config
-bun run discord:canary:bootstrap
-```
-
-On a brand-new environment, the first bootstrap creates or verifies both
-queues, deploys the bridge dark without a bot token, and then pauses with the
-exact next command. Store the requested secret without placing its value on the
-command line:
-
-```bash
-bunx wrangler secret put DISCORD_BOT_TOKEN -c workers/discord-bridge/wrangler.jsonc --env dev-illiana
-bun run discord:canary:bootstrap
-```
-
-If the main Worker does not exist, that rerun deploys it dark so Cloudflare can
-attach secrets, then pauses. Store both main-Worker secrets and rerun:
-
-```bash
-bunx wrangler secret put DISCORD_CLIENT_SECRET -c wrangler.dev-illiana.jsonc
-bunx wrangler secret put ADMIN_API_KEY -c wrangler.dev-illiana.jsonc
-bun run discord:canary:bootstrap
-```
-
-The successful rerun redeploys both Workers from the current checkout while
-both feature flags remain dark. It is safe to rerun: existing queues and first
-deployments are detected, secret values are never read or printed, and the
-final redeploy cannot enable Discord while the checked flags remain false.
-
-Check each remaining dark-launch boundary in order:
-
-```bash
-# 1. Main and ingress are still disabled. Gateway and heartbeat must be healthy.
-export DISCORD_CANARY_ADMIN_API_KEY="$ADMIN_API_KEY"
-bun run discord:canary:preflight -- --phase bridge
-
-# 2. Set DISCORD_CHANNEL_ENABLED=true, redeploy main, leave ingress false.
-bun run deploy:main:dev-illiana
-DISCORD_CANARY_ADMIN_API_KEY="$ADMIN_API_KEY" bun run discord:canary:preflight -- --phase main
-
-# 3. After OAuth/channel-selection smoke, set bridge ingress true and redeploy.
-bun run deploy:discord-bridge:dev-illiana
-DISCORD_CANARY_ADMIN_API_KEY="$ADMIN_API_KEY" bun run discord:canary:preflight -- --phase ingress
-```
-
-Do not enable bridge ingress before OAuth installation, delegated-workspace
-acknowledgement, parent-channel selection, the one-time binding confirmation,
-and **Verify** all succeed.
-
-If Cloudflare Access protects the environment, also export
-`CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET`; the preflight forwards
-them only as request headers. It fails on placeholders, missing/mismatched IDs,
-missing queues or secrets, absent deployments, the wrong bot identity, a
-disconnected Gateway, or a stale heartbeat ACK. The authenticated status proxy
-is `GET /api/admin/discord/status` and uses the existing `ADMIN_API_KEY` bearer
-authorization.
+Keep `DISCORD_CHANNEL_ENABLED` and `DISCORD_INGRESS_ENABLED` false during a
+new-environment rollout. Deploy the bridge, inspect the authenticated
+`GET /api/admin/discord/status` response, complete an OAuth/channel-selection
+smoke test, and only then enable ingress. Do not wipe only one state store during
+recovery; bindings and delivery state live in Durable Objects.
 
 ### Recovering fatal Gateway configuration
 
@@ -110,11 +41,11 @@ session-start limits. If the bridge reports `gateway_close_4004`,
 - Make `DISCORD_MESSAGE_CONTENT_MODE` match the intents enabled in the Discord
   developer portal.
 
-Redeploy the bridge while ingress remains dark, then rerun the bridge preflight:
+Redeploy the bridge while ingress remains dark, then inspect the authenticated
+Discord status:
 
 ```bash
-bun run deploy:discord-bridge:dev-illiana
-bun run discord:canary:preflight -- --phase bridge
+bun run deploy:discord-bridge:staging
 ```
 
 The Gateway stores a SHA-256 configuration fingerprint, never the token value.

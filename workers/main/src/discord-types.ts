@@ -1,150 +1,38 @@
-export const DISCORD_CHANNEL_PERMISSION_BITS = {
-  VIEW_CHANNEL: 1n << 10n,
-  SEND_MESSAGES: 1n << 11n,
-  EMBED_LINKS: 1n << 14n,
-  ATTACH_FILES: 1n << 15n,
-  READ_MESSAGE_HISTORY: 1n << 16n,
-  CREATE_PUBLIC_THREADS: 1n << 35n,
-  SEND_MESSAGES_IN_THREADS: 1n << 38n,
-} as const;
+import type {
+  DiscordActivateBindingInput,
+  DiscordActivateBindingResult,
+  DiscordBridgeBinding,
+  DiscordDeliveryClaim,
+  DiscordBridgeStatus,
+  DiscordChannelConfigV1,
+  DiscordGuildChannels,
+  DiscordMessageSendResult,
+} from "../../../src/lib/discord-contract.js";
 
-export const DISCORD_CHANNEL_PERMISSION_MASK = Object.values(
+export {
   DISCORD_CHANNEL_PERMISSION_BITS,
-).reduce((mask, permission) => mask | permission, 0n);
+  DISCORD_CHANNEL_PERMISSION_DECIMAL,
+  DISCORD_CHANNEL_PERMISSION_MASK,
+} from "../../../src/lib/discord-contract.js";
+export type {
+  DiscordBridgeDelivery,
+  DiscordBridgeDeliveryLifecycle,
+  DiscordBridgeDeliveryMessage,
+  DiscordChannelConfigV1,
+  DiscordEventQueueMessage,
+  DiscordMessageContentMode,
+  DiscordPendingReauthorization,
+  DiscordPendingSetupContext,
+  DiscordSelectableChannel,
+  DiscordActivateBindingInput,
+  DiscordActivateBindingResult,
+  DiscordBridgeStatus,
+  DiscordGuildChannels,
+  DiscordDeliveryClaim,
+  DiscordMessageSendResult,
+} from "../../../src/lib/discord-contract.js";
 
-export const DISCORD_CHANNEL_PERMISSION_DECIMAL =
-  DISCORD_CHANNEL_PERMISSION_MASK.toString();
-
-export type DiscordMessageContentMode = "full" | "mention_only";
-
-export interface DiscordPendingSetupContext {
-  request_id: string;
-  thread_id: string;
-  return_path: string;
-  created_at: number;
-}
-
-export interface DiscordPendingReauthorization {
-  /**
-   * Stable for retries of one OAuth/setup flow; refreshed by OAuth. The
-   * selected target and binding snapshot are also part of the bridge
-   * transaction ID derived from this attempt.
-   */
-  activation_attempt_id: string;
-  application_id: string;
-  guild_id: string;
-  guild_name: string;
-  bot_user_id?: string;
-  message_content_mode: DiscordMessageContentMode;
-}
-
-export interface DiscordChannelConfigV1 {
-  schema_version: 1;
-  status: "pending_channel" | "active" | "disconnected" | "setup_error";
-  application_id: string;
-  guild_id: string;
-  guild_name: string;
-  parent_channel_id?: string;
-  parent_channel_name?: string;
-  bot_user_id?: string;
-  binding_version?: number;
-  message_content_mode: DiscordMessageContentMode;
-  security_acknowledged_at?: number;
-  last_verified_at?: number;
-  error_code?: string;
-  pending_setup?: DiscordPendingSetupContext;
-  /**
-   * OAuth's replacement target. While present, the top-level active fields
-   * remain authoritative for ingress until activation commits.
-   */
-  pending_reauthorization?: DiscordPendingReauthorization;
-  /**
-   * Stable identity for a non-reauthorization setup flow. The selected target
-   * and binding snapshot are also part of the derived bridge transaction ID.
-   */
-  activation_attempt_id?: string;
-  binding_transaction_id?: string;
-}
-
-export interface DiscordBridgeBindingRecord {
-  guildId: string;
-  parentChannelId: string;
-  integrationId: string;
-  orgId: string;
-  workspaceId: string;
-  guildName: string;
-  parentChannelName: string;
-  status: "active" | "disconnected";
-  version: number;
-}
-
-export interface DiscordSelectableChannel {
-  id: string;
-  name: string;
-  categoryId: string | null;
-  categoryName: string | null;
-  position: number;
-  missingPermissions: string[];
-  canActivate: boolean;
-  exposure: "restricted" | "visible_to_everyone";
-}
-
-export interface DiscordBridgeDeliveryMessage {
-  kind: "message";
-  discordMessageId: string;
-  guildId: string;
-  channelId: string;
-  parentChannelId: string;
-  threadId: string | null;
-  integrationId: string;
-  orgId: string;
-  workspaceId: string;
-  bindingVersion: number;
-  ordinal: number;
-  content: string;
-  messageType: 0 | 19;
-  author: {
-    id: string;
-    username: string | null;
-    globalName: string | null;
-    guildNickname: string | null;
-  };
-  mentions: Array<{
-    id: string;
-    username: string | null;
-    globalName: string | null;
-  }>;
-  attachments: Array<{
-    id: string;
-    filename: string;
-    contentType: string | null;
-    size: number;
-    url: string;
-  }>;
-  timestamp: string | null;
-  contentMode: DiscordMessageContentMode;
-  starter: boolean;
-}
-
-export interface DiscordBridgeDeliveryLifecycle {
-  kind: "lifecycle";
-  lifecycleType: "guild_removed" | "parent_channel_deleted";
-  guildId: string;
-  parentChannelId: string | null;
-  integrationId: string;
-  orgId: string;
-  workspaceId: string;
-  bindingVersion: number;
-}
-
-export type DiscordBridgeDelivery =
-  | DiscordBridgeDeliveryMessage
-  | DiscordBridgeDeliveryLifecycle;
-
-export interface DiscordEventQueueMessage {
-  version: 1;
-  eventId: string;
-}
+export type DiscordBridgeBindingRecord = DiscordBridgeBinding;
 
 export type DiscordBridgeFetcher = Fetcher;
 
@@ -207,6 +95,178 @@ export async function discordBridgeRequest<T>(
   return payload as T;
 }
 
+export class DiscordBridgeClient {
+  constructor(private readonly bridge: DiscordBridgeFetcher | undefined) {}
+
+  status(): Promise<DiscordBridgeStatus> {
+    return discordBridgeRequest(this.bridge, "/internal/v1/status");
+  }
+
+  guildChannels(guildId: string): Promise<DiscordGuildChannels> {
+    return discordBridgeRequest(
+      this.bridge,
+      `/internal/v1/guilds/${encodeURIComponent(guildId)}/channels`,
+    );
+  }
+
+  async binding(integrationId: string): Promise<DiscordBridgeBindingRecord | null> {
+    try {
+      const result = await discordBridgeRequest<{
+        binding: DiscordBridgeBindingRecord;
+      }>(
+        this.bridge,
+        `/internal/v1/bindings/${encodeURIComponent(integrationId)}`,
+      );
+      return result.binding;
+    } catch (error) {
+      if (error instanceof DiscordBridgeRequestError && error.code === "binding_not_found") {
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  async activateBinding(
+    input: DiscordActivateBindingInput,
+  ): Promise<DiscordActivateBindingResult> {
+    const result = await discordBridgeRequest<
+      DiscordActivateBindingResult & { ok: true }
+    >(this.bridge, "/internal/v1/bindings/activate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    return result;
+  }
+
+  releaseBinding(integrationId: string, version?: number): Promise<{ released: boolean }> {
+    const query = version === undefined ? "" : `?version=${version}`;
+    return discordBridgeRequest(
+      this.bridge,
+      `/internal/v1/bindings/${encodeURIComponent(integrationId)}${query}`,
+      { method: "DELETE" },
+    );
+  }
+
+  async releaseCurrentBinding(integrationId: string): Promise<{ released: boolean }> {
+    const current = await this.binding(integrationId);
+    return current
+      ? this.releaseBinding(integrationId, current.version)
+      : { released: false };
+  }
+
+  async verifyBinding<TStatus extends string = string>(
+    integrationId: string,
+  ): Promise<{
+    status: TStatus;
+    message: string;
+    checkedAt?: number;
+    binding: DiscordBridgeBindingRecord | null;
+  }> {
+    const result = await discordBridgeRequest<{
+      verification: {
+        status: TStatus;
+        message: string;
+        checkedAt?: number;
+        binding: DiscordBridgeBindingRecord | null;
+      };
+    }>(
+      this.bridge,
+      `/internal/v1/bindings/${encodeURIComponent(integrationId)}/verify`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
+    );
+    return result.verification;
+  }
+
+  private postJson<T>(path: string, body: unknown): Promise<T> {
+    return discordBridgeRequest(this.bridge, path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  claimDelivery(eventId: string): Promise<DiscordDeliveryClaim> {
+    return this.postJson(
+      `/internal/v1/deliveries/${encodeURIComponent(eventId)}/claim`,
+      {},
+    );
+  }
+
+  finishDelivery(
+    eventId: string,
+    leaseToken: string,
+    action: "complete" | "retry" | "fail",
+  ): Promise<unknown> {
+    return this.postJson(
+      `/internal/v1/deliveries/${encodeURIComponent(eventId)}/${action}`,
+      { leaseToken },
+    );
+  }
+
+  deadLetterDelivery(eventId: string): Promise<{
+    status: "failed" | "completed" | "invalid" | "wait";
+    retryAfterMs?: number;
+  }> {
+    return this.postJson(
+      `/internal/v1/deliveries/${encodeURIComponent(eventId)}/dead-letter`,
+      {},
+    );
+  }
+
+  startThreadFromMessage(input: {
+    integrationId: string;
+    parentChannelId: string;
+    messageId: string;
+    name: string;
+    idempotencyKey: string;
+  }): Promise<{ threadId: string }> {
+    return this.postJson("/internal/v1/threads/from-message", input);
+  }
+
+  startProactiveThread(input: {
+    integrationId: string;
+    name: string;
+    starterText?: string;
+    idempotencyKey: string;
+  }): Promise<{ threadId: string; guildId: string; starterMessageId?: string }> {
+    return this.postJson("/internal/v1/threads/proactive", input);
+  }
+
+  sendMessage(
+    input: FormData | {
+      integrationId: string;
+      threadId: string;
+      text: string;
+      idempotencyKey: string;
+    },
+  ): Promise<DiscordMessageSendResult> {
+    if (input instanceof FormData) {
+      return discordBridgeRequest(this.bridge, "/internal/v1/messages", {
+        method: "POST",
+        body: input,
+      });
+    }
+    return this.postJson("/internal/v1/messages", input);
+  }
+
+  sendFailureNotice(input: {
+    integrationId: string;
+    parentChannelId: string;
+    messageId: string;
+    reason: string;
+    idempotencyKey: string;
+  }): Promise<unknown> {
+    return this.postJson("/internal/v1/failure-notices", input);
+  }
+}
+
+export function discordBridgeClient(
+  bridge: DiscordBridgeFetcher | undefined,
+): DiscordBridgeClient {
+  return new DiscordBridgeClient(bridge);
+}
+
 export function discordChannelEnabled(env: {
   DISCORD_CHANNEL_ENABLED?: string;
   DISCORD_CLIENT_ID?: string;
@@ -217,20 +277,6 @@ export function discordChannelEnabled(env: {
   if (env.DISCORD_CHANNEL_ENABLED?.trim().toLowerCase() !== "true") return false;
   return discordApplicationIdConfigured(env.DISCORD_CLIENT_ID) &&
     discordClientSecretConfigured(env.DISCORD_CLIENT_SECRET);
-}
-
-interface DiscordCatalogBridgeStatus {
-  applicationId: string;
-  botUserId: string | null;
-  readiness: {
-    ready: boolean;
-    reason: string;
-  };
-  gateway: {
-    state: string;
-    heartbeatIntervalMs: number | null;
-    lastHeartbeatAckAt: number | null;
-  };
 }
 
 export interface DiscordChannelAvailability {
@@ -259,10 +305,7 @@ export async function getDiscordChannelAvailability(
   });
   if (!discordChannelEnabled(env)) return unavailable("main_configuration_unavailable");
   try {
-    const status = await discordBridgeRequest<DiscordCatalogBridgeStatus>(
-      env.DISCORD_BRIDGE,
-      "/internal/v1/status",
-    );
+    const status = await discordBridgeClient(env.DISCORD_BRIDGE).status();
     const readinessValid =
       (status.readiness?.ready === true && status.readiness.reason === "ready") ||
       (status.readiness?.ready === false && status.readiness.reason === "ingress_disabled");

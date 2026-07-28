@@ -35,7 +35,7 @@ import type {
 import type { OrgDO } from './auth.js';
 import type { DataProxyEnv } from './data-proxy.js';
 import {
-  discordBridgeRequest,
+  discordBridgeClient,
   discordChannelEnabled,
   parseDiscordChannelConfig,
   type DiscordBridgeFetcher,
@@ -1439,61 +1439,33 @@ export async function verifyConnection(
       if (!config) {
         return finish('misconfigured', 'Discord connection configuration is invalid.', method);
       }
-      const [bridgeStatus, result] = await Promise.all([
-        discordBridgeRequest<{
-          ok: true;
-          applicationId: string;
-          botUserId: string | null;
-          readiness: { ready: boolean; status: string; reason: string; message: string };
-          gateway: { state: string; lastHeartbeatAckAt: number | null };
-        }>(env.DISCORD_BRIDGE, '/internal/v1/status'),
-        discordBridgeRequest<{
-          ok: true;
-          verification: {
-            status: ConnectionVerificationStatus;
-            message: string;
-            checkedAt?: number;
-            binding: {
-              guildId: string;
-              parentChannelId: string;
-              integrationId: string;
-              orgId: string;
-              workspaceId: string;
-              version: number;
-            } | null;
-          };
-        }>(
-          env.DISCORD_BRIDGE,
-          `/internal/v1/bindings/${encodeURIComponent(record.id)}/verify`,
-          { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
-        ),
+      const discord = discordBridgeClient(env.DISCORD_BRIDGE);
+      const [bridgeStatus, verification] = await Promise.all([
+        discord.status(),
+        discord.verifyBinding<ConnectionVerificationStatus>(record.id),
       ]);
       if (
         bridgeStatus.applicationId !== env.DISCORD_CLIENT_ID ||
-        config.application_id !== env.DISCORD_CLIENT_ID ||
         !bridgeStatus.botUserId ||
-        bridgeStatus.botUserId !== config.bot_user_id
+        bridgeStatus.botUserId !== bridgeStatus.applicationId
       ) {
         return finish('misconfigured', 'Discord application identity does not match the connected bot.', method);
       }
       if (!bridgeStatus.readiness.ready) {
         return finish('degraded', bridgeStatus.readiness.message, method);
       }
-      const binding = result.verification.binding;
+      const binding = verification.binding;
       if (
         !binding ||
         binding.integrationId !== record.id ||
         binding.orgId !== context.orgId ||
-        binding.workspaceId !== context.workspaceId ||
-        binding.guildId !== config.guild_id ||
-        binding.parentChannelId !== config.parent_channel_id ||
-        binding.version !== config.binding_version
+        binding.workspaceId !== context.workspaceId
       ) {
-        return finish('misconfigured', 'Discord channel binding changed; reconnect this connection.', method);
+        return finish('misconfigured', 'Discord channel binding does not belong to this connection.', method);
       }
       return finish(
-        result.verification.status,
-        result.verification.message || 'Discord verification completed.',
+        verification.status,
+        verification.message || 'Discord verification completed.',
         method,
       );
     } else if (strategy === 'http_configuration') {

@@ -50,6 +50,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { IntegrationIcon, hasIntegrationIcon, resolveLogoType } from "@/lib/integration-icons";
 import { generateDefaultAvatar, getContrastTextColor } from "@/lib/avatar";
 import { HYDRATION_SAFE_LOCALE } from "@/lib/hydration-safe-datetime";
+import type { DiscordSelectableChannel } from "@/lib/discord-contract";
 import { buildTelegramDeepLink, TELEGRAM_SETUP_TTL_SECONDS } from "@/lib/telegram-channel";
 import {
   DISCORD_BOT_MENTION,
@@ -616,16 +617,6 @@ function TelegramDestination({ connection }: { connection: ConnectionListItem })
   );
 }
 
-interface DiscordSetupChannel {
-  id: string;
-  name: string;
-  categoryId: string | null;
-  categoryName: string | null;
-  missingPermissions: string[];
-  canActivate: boolean;
-  exposure: "restricted" | "visible_to_everyone";
-}
-
 interface DiscordSetupActionData {
   success?: boolean;
   error?: string;
@@ -634,7 +625,7 @@ interface DiscordSetupActionData {
   discordSetup?: {
     integrationId: string;
     guild: { id: string; name: string };
-    channels: DiscordSetupChannel[];
+    channels: DiscordSelectableChannel[];
   };
 }
 
@@ -689,10 +680,10 @@ function DiscordDestination({
     (channel) => getDiscordChannelBlockReason(channel) !== null,
   ).length;
   const channelGroups = useMemo(() => {
-    const uncategorized: DiscordSetupChannel[] = [];
+    const uncategorized: DiscordSelectableChannel[] = [];
     const categorized = new Map<
       string,
-      { heading: string; channels: DiscordSetupChannel[] }
+      { heading: string; channels: DiscordSelectableChannel[] }
     >();
 
     for (const channel of channels) {

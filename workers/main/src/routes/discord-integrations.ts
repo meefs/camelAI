@@ -7,18 +7,18 @@ import {
 } from "../integration-oauth-state.js";
 import {
   DISCORD_CHANNEL_PERMISSION_DECIMAL,
-  discordBridgeRequest,
+  discordBridgeClient,
   discordChannelCatalogAvailable,
   discordChannelEnabled,
   parseDiscordChannelConfig,
   type DiscordChannelConfigV1,
-  type DiscordSelectableChannel,
 } from "../discord-types.js";
 import { requireSession } from "../helpers/auth.js";
 import { getOrgStub } from "../helpers/stubs.js";
 import { redirect, text } from "../helpers/response.js";
 import type { RouteContext } from "../types.js";
 import { recordErrorEvent, recordObservabilityEvent } from "../observability.js";
+import { sanitizeOAuthRedirectPath as sanitizeRedirectPath } from "./oauth-helpers.js";
 import {
   hasConnectionSetupPromptContext,
   verifyWorkspaceManageConnectionsAccess,
@@ -59,16 +59,6 @@ export function discordOAuthTokenFailureStatus(
   // installed bot identity, and application id with the bridge below.
   if (!token.guild?.id?.trim()) return "missing_guild";
   return null;
-}
-
-function sanitizeRedirectPath(input: string): string {
-  if (!input.startsWith("/") || input.startsWith("//")) return "/connections";
-  try {
-    const parsed = new URL(input, "https://camel.invalid");
-    return parsed.pathname.startsWith("//") ? "/connections" : `${parsed.pathname}${parsed.search}`;
-  } catch {
-    return "/connections";
-  }
 }
 
 export function discordOAuthCallbackUrl(url: URL): string {
@@ -311,20 +301,10 @@ export async function handleDiscordOAuthCallback({
 
     // The OAuth access/refresh tokens are deliberately not retained. The bridge
     // confirms the shared bot is present using its own bot credential.
+    const discord = discordBridgeClient(env.DISCORD_BRIDGE);
     const [bridgeStatus, observed] = await Promise.all([
-      discordBridgeRequest<{
-        ok: true;
-        applicationId: string;
-        botUserId: string | null;
-        gateway: { state: string };
-      }>(env.DISCORD_BRIDGE, "/internal/v1/status"),
-      discordBridgeRequest<{
-        ok: true;
-        guild: { id: string; name: string };
-        botUserId: string;
-        contentMode: "full" | "mention_only";
-        channels: DiscordSelectableChannel[];
-      }>(env.DISCORD_BRIDGE, `/internal/v1/guilds/${encodeURIComponent(guildId)}/channels`),
+      discord.status(),
+      discord.guildChannels(guildId),
     ]);
     if (!discordBridgeIdentityMatches(env.DISCORD_CLIENT_ID, bridgeStatus, observed.botUserId)) {
       return oauthFailureRedirect(env, url, "discord_application_mismatch", {

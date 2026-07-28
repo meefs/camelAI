@@ -46,7 +46,6 @@ interface ChannelBindingRow {
   workspace_id: string;
   guild_name: string;
   parent_channel_name: string;
-  status: "active" | "disconnected";
   version: number;
   created_at: number;
   updated_at: number;
@@ -89,33 +88,6 @@ interface ClaimBindingInput {
   orgId: string;
   workspaceId: string;
   idempotencyKey: string;
-}
-
-interface ReplaceBindingResult {
-  binding: DiscordChannelBinding;
-  previousBinding: DiscordChannelBinding;
-}
-
-interface BindingTransactionRow {
-  [key: string]: SqlStorageValue;
-  transaction_id: string;
-  integration_id: string;
-  target_guild_id: string;
-  target_parent_channel_id: string;
-  previous_binding_json: string | null;
-  proposed_binding_json: string;
-  state: "prepared" | "confirmed" | "committed" | "finalized" | "aborted";
-  confirmation_message_ids_json: string | null;
-  created_at: number;
-  updated_at: number;
-}
-
-interface BindingTransactionResult {
-  transactionId: string;
-  binding: DiscordChannelBinding;
-  previousBinding: DiscordChannelBinding | null;
-  state: BindingTransactionRow["state"];
-  confirmationMessageIds: string[];
 }
 
 interface DiscordOperationRow {
@@ -233,22 +205,7 @@ function toBinding(row: ChannelBindingRow): DiscordChannelBinding {
     workspaceId: row.workspace_id,
     guildName: row.guild_name,
     parentChannelName: row.parent_channel_name,
-    status: row.status,
     version: row.version,
-  };
-}
-
-function toBindingTransaction(row: BindingTransactionRow): BindingTransactionResult {
-  return {
-    transactionId: row.transaction_id,
-    binding: JSON.parse(row.proposed_binding_json) as DiscordChannelBinding,
-    previousBinding: row.previous_binding_json
-      ? JSON.parse(row.previous_binding_json) as DiscordChannelBinding
-      : null,
-    state: row.state,
-    confirmationMessageIds: row.confirmation_message_ids_json
-      ? JSON.parse(row.confirmation_message_ids_json) as string[]
-      : [],
   };
 }
 
@@ -292,6 +249,7 @@ export class DiscordControlDO extends DurableObject<DiscordBridgeEnv> {
     );
     ctx.blockConcurrencyWhile(async () => {
       this.initializeSchema();
+      this.migrateControlMetadata();
     });
   }
 
@@ -314,7 +272,7 @@ export class DiscordControlDO extends DurableObject<DiscordBridgeEnv> {
         workspace_id TEXT NOT NULL,
         guild_name TEXT NOT NULL,
         parent_channel_name TEXT NOT NULL,
-        status TEXT NOT NULL CHECK (status IN ('active', 'disconnected')),
+        status TEXT NOT NULL CHECK (status = 'active'),
         version INTEGER NOT NULL,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
@@ -393,26 +351,6 @@ export class DiscordControlDO extends DurableObject<DiscordBridgeEnv> {
         started_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       );
-      CREATE TABLE IF NOT EXISTS binding_transactions (
-        transaction_id TEXT PRIMARY KEY,
-        integration_id TEXT NOT NULL,
-        target_guild_id TEXT NOT NULL,
-        target_parent_channel_id TEXT NOT NULL,
-        previous_binding_json TEXT,
-        proposed_binding_json TEXT NOT NULL,
-        state TEXT NOT NULL CHECK (
-          state IN ('prepared', 'confirmed', 'committed', 'finalized', 'aborted')
-        ),
-        confirmation_message_ids_json TEXT,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
-      );
-      CREATE UNIQUE INDEX IF NOT EXISTS binding_transactions_live_integration
-        ON binding_transactions (integration_id)
-        WHERE state IN ('prepared', 'confirmed', 'committed');
-      CREATE UNIQUE INDEX IF NOT EXISTS binding_transactions_live_target
-        ON binding_transactions (target_guild_id, target_parent_channel_id)
-        WHERE state IN ('prepared', 'confirmed', 'committed');
     `);
     const threadColumns = this.ctx.storage.sql.exec<{ name: string }>(
       "PRAGMA table_info(thread_bindings)",
@@ -446,16 +384,36 @@ export class DiscordControlDO extends DurableObject<DiscordBridgeEnv> {
     }
   }
 
+  private migrateControlMetadata(): void {
+    const rows = this.ctx.storage.sql.exec<{ key: string; value: string }>(
+      "SELECT key, value FROM control_metadata",
+    );
+    for (const row of rows) {
+      if (this.ctx.storage.kv.get(row.key) !== undefined) continue;
+      let value: string | number | string[] = row.value;
+      if (row.key === "next_binding_version" || row.key.startsWith("failure_notice:")) {
+        value = Number(row.value);
+      } else if (row.key.startsWith("bot_role_ids:")) {
+        try {
+          value = JSON.parse(row.value) as string[];
+        } catch {
+          value = [];
+        }
+      }
+      this.ctx.storage.kv.put(row.key, value);
+    }
+  }
+
   private activeBindingByIntegration(integrationId: string): ChannelBindingRow | null {
     return this.ctx.storage.sql.exec<ChannelBindingRow>(
-      "SELECT * FROM channel_bindings WHERE integration_id = ? AND status = 'active'",
+      "SELECT * FROM channel_bindings WHERE integration_id = ?",
       integrationId,
     ).toArray()[0] ?? null;
   }
 
   private activeBindingForChannel(guildId: string, channelId: string): ChannelBindingRow | null {
     return this.ctx.storage.sql.exec<ChannelBindingRow>(
-      "SELECT * FROM channel_bindings WHERE guild_id = ? AND parent_channel_id = ? AND status = 'active'",
+      "SELECT * FROM channel_bindings WHERE guild_id = ? AND parent_channel_id = ?",
       guildId,
       channelId,
     ).toArray()[0] ?? null;
@@ -494,23 +452,13 @@ export class DiscordControlDO extends DurableObject<DiscordBridgeEnv> {
   }
 
   private nextBindingVersion(): number {
-    const row = this.ctx.storage.sql.exec<{ value: string }>(
-      "SELECT value FROM control_metadata WHERE key = 'next_binding_version'",
-    ).toArray()[0];
-    const version = row ? Number(row.value) : 1;
-    this.ctx.storage.sql.exec(
-      `INSERT INTO control_metadata (key, value, updated_at) VALUES ('next_binding_version', ?, ?)
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
-      String(version + 1),
-      Date.now(),
-    );
+    const version = this.ctx.storage.kv.get<number>("next_binding_version") ?? 1;
+    this.ctx.storage.kv.put("next_binding_version", version + 1);
     return version;
   }
 
   private async botUserId(): Promise<string> {
-    const stored = this.ctx.storage.sql.exec<{ value: string }>(
-      "SELECT value FROM control_metadata WHERE key = 'bot_user_id'",
-    ).toArray()[0]?.value;
+    const stored = this.ctx.storage.kv.get<string>("bot_user_id");
     if (stored) return stored;
     const bot = await this.rest.getCurrentUser();
     await this.setBotIdentity(bot.id);
@@ -519,12 +467,7 @@ export class DiscordControlDO extends DurableObject<DiscordBridgeEnv> {
 
   async setBotIdentity(botUserId: string): Promise<void> {
     if (!botUserId) return;
-    this.ctx.storage.sql.exec(
-      `INSERT INTO control_metadata (key, value, updated_at) VALUES ('bot_user_id', ?, ?)
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
-      botUserId,
-      Date.now(),
-    );
+    this.ctx.storage.kv.put("bot_user_id", botUserId);
   }
 
   private storeManagedBotRoleIds(
@@ -535,30 +478,12 @@ export class DiscordControlDO extends DurableObject<DiscordBridgeEnv> {
     const roleIds = roles
       .filter((role) => role.managed === true && role.tags?.bot_id === botUserId)
       .map((role) => role.id);
-    this.ctx.storage.sql.exec(
-      `INSERT INTO control_metadata (key, value, updated_at) VALUES (?, ?, ?)
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
-      `bot_role_ids:${guildId}`,
-      JSON.stringify(roleIds),
-      Date.now(),
-    );
+    this.ctx.storage.kv.put(`bot_role_ids:${guildId}`, roleIds);
     return roleIds;
   }
 
   private cachedManagedBotRoleIds(guildId: string): string[] | null {
-    const row = this.ctx.storage.sql.exec<{ value: string }>(
-      "SELECT value FROM control_metadata WHERE key = ?",
-      `bot_role_ids:${guildId}`,
-    ).toArray()[0];
-    if (!row) return null;
-    try {
-      const parsed = JSON.parse(row.value) as unknown;
-      return Array.isArray(parsed)
-        ? parsed.filter((value): value is string => typeof value === "string")
-        : null;
-    } catch {
-      return null;
-    }
+    return this.ctx.storage.kv.get<string[]>(`bot_role_ids:${guildId}`) ?? null;
   }
 
   private async managedBotRoleIds(
@@ -644,211 +569,40 @@ export class DiscordControlDO extends DurableObject<DiscordBridgeEnv> {
     return { ...inspected, channel };
   }
 
-  private async claimBinding(input: ClaimBindingInput): Promise<DiscordChannelBinding> {
-    const cached = this.operationResult<DiscordChannelBinding>(input.idempotencyKey, "binding_claim");
-    if (cached) return cached;
-    const inspected = await this.preflightBinding(input.guildId, input.parentChannelId);
-    const existingTarget = this.ctx.storage.sql.exec<ChannelBindingRow>(
-      "SELECT * FROM channel_bindings WHERE guild_id = ? AND parent_channel_id = ?",
-      input.guildId,
-      input.parentChannelId,
-    ).toArray()[0];
-    if (existingTarget && existingTarget.integration_id !== input.integrationId) {
-      throw new DiscordBridgeError(
-        "binding_conflict",
-        `#${inspected.channel.name} is already connected to another workspace`,
-      );
-    }
-    const existingIntegration = this.ctx.storage.sql.exec<ChannelBindingRow>(
-      "SELECT * FROM channel_bindings WHERE integration_id = ?",
-      input.integrationId,
-    ).toArray()[0];
-    if (
-      existingIntegration &&
-      (existingIntegration.guild_id !== input.guildId ||
-        existingIntegration.parent_channel_id !== input.parentChannelId)
-    ) {
-      throw new DiscordBridgeError(
-        "binding_conflict",
-        "This integration already owns a different Discord channel; use change channel",
-      );
-    }
-
-    const now = Date.now();
-    const version = existingTarget?.version ?? this.nextBindingVersion();
-    this.ctx.storage.sql.exec(
-      `INSERT INTO channel_bindings (
-        guild_id, parent_channel_id, integration_id, org_id, workspace_id,
-        guild_name, parent_channel_name, status, version, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)
-      ON CONFLICT(guild_id, parent_channel_id) DO UPDATE SET
-        org_id = excluded.org_id,
-        workspace_id = excluded.workspace_id,
-        guild_name = excluded.guild_name,
-        parent_channel_name = excluded.parent_channel_name,
-        status = 'active',
-        updated_at = excluded.updated_at`,
-      input.guildId,
-      input.parentChannelId,
-      input.integrationId,
-      input.orgId,
-      input.workspaceId,
-      inspected.guild.name,
-      inspected.channel.name,
-      version,
-      now,
-      now,
-    );
-    const result = toBinding(this.activeBindingByIntegration(input.integrationId)!);
-    this.storeOperation(input.idempotencyKey, "binding_claim", result);
-    recordDiscordBridgeEvent(this.env, {
-      event: "discord.binding.claimed",
-      component: "discord_control",
-      operation: "claim",
-      status: "active",
-      orgId: result.orgId,
-      workspaceId: result.workspaceId,
-      integrationId: result.integrationId,
-    });
-    return result;
-  }
-
-  private async replaceBinding(input: ClaimBindingInput & { expectedVersion: number }): Promise<ReplaceBindingResult> {
-    const cached = this.operationResult<ReplaceBindingResult>(input.idempotencyKey, "binding_replace");
-    if (cached) return cached;
-    const prior = this.activeBindingByIntegration(input.integrationId);
-    if (!prior || prior.version !== input.expectedVersion) {
-      throw new DiscordBridgeError("binding_mismatch", "Discord binding changed; refresh and try again");
-    }
-    const previousBinding = toBinding(prior);
-    if (prior.guild_id === input.guildId && prior.parent_channel_id === input.parentChannelId) {
-      const result = { binding: previousBinding, previousBinding };
-      this.storeOperation(input.idempotencyKey, "binding_replace", result);
-      return result;
-    }
-    const inspected = await this.preflightBinding(input.guildId, input.parentChannelId);
-    const result = this.ctx.storage.transactionSync(() => {
-      const current = this.ctx.storage.sql.exec<ChannelBindingRow>(
-        "SELECT * FROM channel_bindings WHERE integration_id = ? AND status = 'active'",
-        input.integrationId,
-      ).toArray()[0];
-      if (!current || current.version !== input.expectedVersion) {
-        throw new DiscordBridgeError(
-          "binding_mismatch",
-          "Discord binding changed; refresh and try again",
-        );
-      }
-      const conflict = this.ctx.storage.sql.exec<ChannelBindingRow>(
-        "SELECT * FROM channel_bindings WHERE guild_id = ? AND parent_channel_id = ?",
-        input.guildId,
-        input.parentChannelId,
-      ).toArray()[0];
-      if (conflict && conflict.integration_id !== input.integrationId) {
-        throw new DiscordBridgeError(
-          "binding_conflict",
-          `#${inspected.channel.name} is already connected to another workspace`,
-        );
-      }
-      const version = this.nextBindingVersion();
-      const now = Date.now();
-      this.ctx.storage.sql.exec(
-        "DELETE FROM channel_bindings WHERE integration_id = ? AND version = ?",
-        input.integrationId,
-        input.expectedVersion,
-      );
-      this.ctx.storage.sql.exec(
-        `INSERT INTO channel_bindings (
-          guild_id, parent_channel_id, integration_id, org_id, workspace_id,
-          guild_name, parent_channel_name, status, version, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
-        input.guildId,
-        input.parentChannelId,
-        input.integrationId,
-        input.orgId,
-        input.workspaceId,
-        inspected.guild.name,
-        inspected.channel.name,
-        version,
-        now,
-        now,
-      );
-      return toBinding(this.activeBindingByIntegration(input.integrationId)!);
-    });
-    const replacement = { binding: result, previousBinding };
-    this.storeOperation(input.idempotencyKey, "binding_replace", replacement);
-    recordDiscordBridgeEvent(this.env, {
-      event: "discord.binding.replaced",
-      component: "discord_control",
-      operation: "replace",
-      status: "active",
-      orgId: result.orgId,
-      workspaceId: result.workspaceId,
-      integrationId: result.integrationId,
-    });
-    return replacement;
-  }
-
-  private bindingTransaction(transactionId: string): BindingTransactionRow | null {
-    return this.ctx.storage.sql.exec<BindingTransactionRow>(
-      "SELECT * FROM binding_transactions WHERE transaction_id = ?",
-      transactionId,
-    ).toArray()[0] ?? null;
-  }
-
-  private insertExactBinding(binding: DiscordChannelBinding, now: number): void {
-    this.ctx.storage.sql.exec(
-      `INSERT INTO channel_bindings (
-        guild_id, parent_channel_id, integration_id, org_id, workspace_id,
-        guild_name, parent_channel_name, status, version, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
-      binding.guildId,
-      binding.parentChannelId,
-      binding.integrationId,
-      binding.orgId,
-      binding.workspaceId,
-      binding.guildName,
-      binding.parentChannelName,
-      binding.version,
-      now,
-      now,
-    );
-  }
-
-  private async prepareBindingTransaction(
+  private async activateBinding(
     input: ClaimBindingInput & { expectedVersion?: number },
-  ): Promise<BindingTransactionResult> {
-    const existing = this.bindingTransaction(input.idempotencyKey);
-    const retryingAborted = existing?.state === "aborted";
-    if (existing) {
-      const result = toBindingTransaction(existing);
+  ): Promise<{
+    binding: DiscordChannelBinding;
+    previousBinding: DiscordChannelBinding | null;
+    confirmationMessageIds: string[];
+  }> {
+    this.assertOutboundEnabled();
+    const cached = this.operationResult<{
+      binding: DiscordChannelBinding;
+      previousBinding: DiscordChannelBinding | null;
+      confirmationMessageIds: string[];
+    }>(input.idempotencyKey, "binding_activate");
+    if (cached) {
       if (
-        result.binding.integrationId !== input.integrationId ||
-        result.binding.guildId !== input.guildId ||
-        result.binding.parentChannelId !== input.parentChannelId ||
-        result.binding.orgId !== input.orgId ||
-        result.binding.workspaceId !== input.workspaceId
+        cached.binding.integrationId !== input.integrationId ||
+        cached.binding.guildId !== input.guildId ||
+        cached.binding.parentChannelId !== input.parentChannelId ||
+        cached.binding.orgId !== input.orgId ||
+        cached.binding.workspaceId !== input.workspaceId
       ) {
         throw new DiscordBridgeError(
           "invalid_request",
-          "Binding transaction id was already used for different inputs",
+          "Activation id was already used for different inputs",
         );
       }
-      if (!retryingAborted) return result;
+      return cached;
     }
 
     const inspected = await this.preflightBinding(input.guildId, input.parentChannelId);
-    return this.ctx.storage.transactionSync(() => {
+    const planned = this.ctx.storage.transactionSync(() => {
       const current = this.activeBindingByIntegration(input.integrationId);
-      if (
-        input.expectedVersion === undefined
-          ? current !== null
-          : !current || current.version !== input.expectedVersion
-      ) {
-        throw new DiscordBridgeError(
-          "binding_mismatch",
-          "Discord binding changed; refresh and try again",
-        );
-      }
+      const sameTarget = current?.guild_id === input.guildId &&
+        current.parent_channel_id === input.parentChannelId;
       if (
         current &&
         (current.org_id !== input.orgId || current.workspace_id !== input.workspaceId)
@@ -858,42 +612,28 @@ export class DiscordControlDO extends DurableObject<DiscordBridgeEnv> {
           "Discord binding ownership does not match this workspace",
         );
       }
-      const target = this.ctx.storage.sql.exec<ChannelBindingRow>(
-        "SELECT * FROM channel_bindings WHERE guild_id = ? AND parent_channel_id = ?",
+      if (
+        input.expectedVersion === undefined
+          ? current !== null && !sameTarget
+          : !current || current.version !== input.expectedVersion
+      ) {
+        throw new DiscordBridgeError(
+          "binding_mismatch",
+          "Discord binding changed; refresh and try again",
+        );
+      }
+      const conflict = this.activeBindingForChannel(
         input.guildId,
         input.parentChannelId,
-      ).toArray()[0];
-      if (target && target.integration_id !== input.integrationId) {
+      );
+      if (conflict && conflict.integration_id !== input.integrationId) {
         throw new DiscordBridgeError(
           "binding_conflict",
           `#${inspected.channel.name} is already connected to another workspace`,
         );
       }
-      const inFlight = this.ctx.storage.sql.exec<BindingTransactionRow>(
-        `SELECT * FROM binding_transactions
-         WHERE state IN ('prepared', 'confirmed', 'committed')
-           AND (
-             integration_id = ? OR
-             (target_guild_id = ? AND target_parent_channel_id = ?)
-           )
-         LIMIT 1`,
-        input.integrationId,
-        input.guildId,
-        input.parentChannelId,
-      ).toArray()[0];
-      if (inFlight) {
-        throw new DiscordBridgeError(
-          "binding_conflict",
-          "Another Discord channel activation is still being reconciled",
-        );
-      }
 
       const previousBinding = current ? toBinding(current) : null;
-      const sameTarget = current?.guild_id === input.guildId &&
-        current.parent_channel_id === input.parentChannelId;
-      const retriedBinding = existing
-        ? toBindingTransaction(existing).binding
-        : null;
       const binding: DiscordChannelBinding = {
         guildId: input.guildId,
         parentChannelId: input.parentChannelId,
@@ -902,269 +642,97 @@ export class DiscordControlDO extends DurableObject<DiscordBridgeEnv> {
         workspaceId: input.workspaceId,
         guildName: inspected.guild.name,
         parentChannelName: inspected.channel.name,
-        status: "active",
-        version: retriedBinding?.version ??
-          (sameTarget ? current!.version : this.nextBindingVersion()),
+        version: sameTarget ? current!.version : this.nextBindingVersion(),
       };
-      const now = Date.now();
-      if (retryingAborted) {
-        const retried = toBindingTransaction(existing!);
-        const previousStillMatches = retried.previousBinding
-          ? previousBinding?.guildId === retried.previousBinding.guildId &&
-            previousBinding.parentChannelId === retried.previousBinding.parentChannelId &&
-            previousBinding.version === retried.previousBinding.version
-          : previousBinding === null;
-        if (!previousStillMatches) {
-          throw new DiscordBridgeError(
-            "binding_mismatch",
-            "Discord binding changed after the previous activation attempt",
-          );
-        }
-        const retryState = retried.confirmationMessageIds.length > 0
-          ? "confirmed"
-          : "prepared";
-        this.ctx.storage.sql.exec(
-          `UPDATE binding_transactions
-           SET proposed_binding_json = ?, state = ?, updated_at = ?
-           WHERE transaction_id = ? AND state = 'aborted'`,
-          JSON.stringify(binding),
-          retryState,
-          now,
-          input.idempotencyKey,
-        );
-      } else {
-        this.ctx.storage.sql.exec(
-          `INSERT INTO binding_transactions (
-            transaction_id, integration_id, target_guild_id, target_parent_channel_id,
-            previous_binding_json, proposed_binding_json, state,
-            confirmation_message_ids_json, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, 'prepared', NULL, ?, ?)`,
-          input.idempotencyKey,
-          input.integrationId,
-          input.guildId,
-          input.parentChannelId,
-          previousBinding ? JSON.stringify(previousBinding) : null,
-          JSON.stringify(binding),
-          now,
-          now,
-        );
-      }
-      if (retryingAborted) {
-        return toBindingTransaction(this.bindingTransaction(input.idempotencyKey)!);
-      }
-      return {
-        transactionId: input.idempotencyKey,
-        binding,
-        previousBinding,
-        state: "prepared" as const,
-        confirmationMessageIds: [],
-      };
+      return { binding, previousBinding };
     });
-  }
 
-  private async confirmBindingTransaction(
-    transactionId: string,
-  ): Promise<BindingTransactionResult> {
-    this.assertOutboundEnabled();
-    const row = this.bindingTransaction(transactionId);
-    if (!row) {
-      throw new DiscordBridgeError("binding_not_found", "Binding transaction was not found");
-    }
-    const existing = toBindingTransaction(row);
-    if (existing.confirmationMessageIds.length > 0) return existing;
-    if (row.state !== "prepared" && row.state !== "confirmed") {
-      throw new DiscordBridgeError(
-        "binding_mismatch",
-        "Binding transaction can no longer send a confirmation",
-      );
-    }
-    const sent = await this.rest.createMessages({
-      threadId: existing.binding.parentChannelId,
-      operationId: `binding-confirmation:${transactionId}`,
+    const confirmation = await this.rest.createMessages({
+      threadId: planned.binding.parentChannelId,
+      operationId: `binding-confirmation:${input.idempotencyKey}`,
       text: "Camel is connected. Mention @Camel in this channel to start a conversation thread.",
     });
-    const now = Date.now();
-    this.ctx.storage.sql.exec(
-      `UPDATE binding_transactions
-       SET state = 'confirmed', confirmation_message_ids_json = ?, updated_at = ?
-       WHERE transaction_id = ? AND state IN ('prepared', 'confirmed')`,
-      JSON.stringify(sent.messageIds),
-      now,
-      transactionId,
-    );
-    return toBindingTransaction(this.bindingTransaction(transactionId)!);
-  }
-
-  private commitBindingTransaction(transactionId: string): BindingTransactionResult {
-    const row = this.bindingTransaction(transactionId);
-    if (!row) {
-      throw new DiscordBridgeError("binding_not_found", "Binding transaction was not found");
-    }
-    if (row.state === "committed" || row.state === "finalized") {
-      return toBindingTransaction(row);
-    }
-    if (row.state !== "confirmed") {
-      throw new DiscordBridgeError(
-        "binding_mismatch",
-        "Binding transaction must be confirmed before commit",
-      );
-    }
-    const transaction = toBindingTransaction(row);
     this.ctx.storage.transactionSync(() => {
-      const current = this.activeBindingByIntegration(transaction.binding.integrationId);
-      const previous = transaction.previousBinding;
-      const sameSnapshot = previous &&
-        previous.guildId === transaction.binding.guildId &&
-        previous.parentChannelId === transaction.binding.parentChannelId &&
-        previous.version === transaction.binding.version;
-      if (sameSnapshot) {
-        if (!current || current.version !== previous.version) {
-          throw new DiscordBridgeError(
-            "binding_mismatch",
-            "Discord binding changed before transaction commit",
-          );
-        }
-      } else {
-        if (
-          previous
-            ? !current || current.version !== previous.version
-            : current !== null
-        ) {
-          throw new DiscordBridgeError(
-            "binding_mismatch",
-            "Discord binding changed before transaction commit",
-          );
-        }
-        const conflict = this.activeBindingForChannel(
-          transaction.binding.guildId,
-          transaction.binding.parentChannelId,
+      const current = this.activeBindingByIntegration(input.integrationId);
+      const previous = planned.previousBinding;
+      const unchanged = previous
+        ? current?.guild_id === previous.guildId &&
+          current.parent_channel_id === previous.parentChannelId &&
+          current.version === previous.version &&
+          current.org_id === previous.orgId &&
+          current.workspace_id === previous.workspaceId
+        : current === null;
+      if (!unchanged) {
+        throw new DiscordBridgeError(
+          "binding_mismatch",
+          "Discord binding changed while activation was being confirmed",
         );
-        if (conflict && conflict.integration_id !== transaction.binding.integrationId) {
-          throw new DiscordBridgeError(
-            "binding_conflict",
-            "The selected Discord channel is already connected",
-          );
-        }
-        if (current) {
-          this.ctx.storage.sql.exec(
-            "DELETE FROM channel_bindings WHERE integration_id = ? AND version = ?",
-            current.integration_id,
-            current.version,
-          );
-        }
-        this.insertExactBinding(transaction.binding, Date.now());
       }
-      this.ctx.storage.sql.exec(
-        "UPDATE binding_transactions SET state = 'committed', updated_at = ? WHERE transaction_id = ?",
-        Date.now(),
-        transactionId,
+      const conflict = this.activeBindingForChannel(
+        planned.binding.guildId,
+        planned.binding.parentChannelId,
       );
-    });
-    const committed = toBindingTransaction(this.bindingTransaction(transactionId)!);
-    recordDiscordBridgeEvent(this.env, {
-      event: "discord.binding.transaction_committed",
-      component: "discord_control",
-      operation: "binding_transaction",
-      status: "committed",
-      orgId: committed.binding.orgId,
-      workspaceId: committed.binding.workspaceId,
-      integrationId: committed.binding.integrationId,
-    });
-    return committed;
-  }
-
-  private finalizeBindingTransaction(transactionId: string): BindingTransactionResult {
-    const row = this.bindingTransaction(transactionId);
-    if (!row) {
-      throw new DiscordBridgeError("binding_not_found", "Binding transaction was not found");
-    }
-    if (row.state === "finalized") return toBindingTransaction(row);
-    if (row.state !== "committed") {
-      throw new DiscordBridgeError(
-        "binding_mismatch",
-        "Only a committed binding transaction can be finalized",
-      );
-    }
-    const transaction = toBindingTransaction(row);
-    this.ctx.storage.transactionSync(() => {
+      if (conflict && conflict.integration_id !== input.integrationId) {
+        throw new DiscordBridgeError(
+          "binding_conflict",
+          `#${planned.binding.parentChannelName} is already connected to another workspace`,
+        );
+      }
+      const now = Date.now();
       if (
-        transaction.previousBinding &&
-        transaction.previousBinding.parentChannelId !== transaction.binding.parentChannelId
+        current &&
+        (current.guild_id !== planned.binding.guildId ||
+          current.parent_channel_id !== planned.binding.parentChannelId)
       ) {
         this.ctx.storage.sql.exec(
-          "DELETE FROM thread_bindings WHERE integration_id = ? AND parent_channel_id != ?",
-          transaction.binding.integrationId,
-          transaction.binding.parentChannelId,
+          "DELETE FROM thread_bindings WHERE integration_id = ?",
+          input.integrationId,
+        );
+        this.ctx.storage.sql.exec(
+          "DELETE FROM channel_bindings WHERE integration_id = ?",
+          input.integrationId,
         );
       }
       this.ctx.storage.sql.exec(
-        "UPDATE binding_transactions SET state = 'finalized', updated_at = ? WHERE transaction_id = ?",
-        Date.now(),
-        transactionId,
+        `INSERT INTO channel_bindings (
+          guild_id, parent_channel_id, integration_id, org_id, workspace_id,
+          guild_name, parent_channel_name, status, version, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)
+        ON CONFLICT(guild_id, parent_channel_id) DO UPDATE SET
+          org_id = excluded.org_id,
+          workspace_id = excluded.workspace_id,
+          guild_name = excluded.guild_name,
+          parent_channel_name = excluded.parent_channel_name,
+          updated_at = excluded.updated_at`,
+        planned.binding.guildId,
+        planned.binding.parentChannelId,
+        planned.binding.integrationId,
+        planned.binding.orgId,
+        planned.binding.workspaceId,
+        planned.binding.guildName,
+        planned.binding.parentChannelName,
+        planned.binding.version,
+        now,
+        now,
       );
     });
-    return toBindingTransaction(this.bindingTransaction(transactionId)!);
-  }
-
-  private abortBindingTransaction(transactionId: string): BindingTransactionResult {
-    const row = this.bindingTransaction(transactionId);
-    if (!row) {
-      throw new DiscordBridgeError("binding_not_found", "Binding transaction was not found");
-    }
-    if (row.state === "aborted") return toBindingTransaction(row);
-    if (row.state === "finalized") {
-      throw new DiscordBridgeError(
-        "binding_mismatch",
-        "A finalized binding transaction cannot be aborted",
-      );
-    }
-    const transaction = toBindingTransaction(row);
-    this.ctx.storage.transactionSync(() => {
-      if (row.state === "committed") {
-        const current = this.activeBindingByIntegration(transaction.binding.integrationId);
-        if (
-          !current ||
-          current.version !== transaction.binding.version ||
-          current.guild_id !== transaction.binding.guildId ||
-          current.parent_channel_id !== transaction.binding.parentChannelId
-        ) {
-          throw new DiscordBridgeError(
-            "binding_mismatch",
-            "Discord binding changed before transaction abort",
-          );
-        }
-        const sameSnapshot = transaction.previousBinding &&
-          transaction.previousBinding.guildId === transaction.binding.guildId &&
-          transaction.previousBinding.parentChannelId === transaction.binding.parentChannelId &&
-          transaction.previousBinding.version === transaction.binding.version;
-        if (!sameSnapshot) {
-          this.ctx.storage.sql.exec(
-            "DELETE FROM channel_bindings WHERE integration_id = ? AND version = ?",
-            transaction.binding.integrationId,
-            transaction.binding.version,
-          );
-          if (transaction.previousBinding) {
-            this.insertExactBinding(transaction.previousBinding, Date.now());
-          }
-        }
-      }
-      this.ctx.storage.sql.exec(
-        "UPDATE binding_transactions SET state = 'aborted', updated_at = ? WHERE transaction_id = ?",
-        Date.now(),
-        transactionId,
-      );
-    });
-    const aborted = toBindingTransaction(this.bindingTransaction(transactionId)!);
+    const result = {
+      ...planned,
+      confirmationMessageIds: confirmation.messageIds,
+    };
+    this.storeOperation(input.idempotencyKey, "binding_activate", result);
     recordDiscordBridgeEvent(this.env, {
-      event: "discord.binding.transaction_aborted",
+      event: planned.previousBinding
+        ? "discord.binding.replaced"
+        : "discord.binding.claimed",
       component: "discord_control",
-      operation: "binding_transaction",
-      status: "aborted",
-      orgId: aborted.binding.orgId,
-      workspaceId: aborted.binding.workspaceId,
-      integrationId: aborted.binding.integrationId,
+      operation: "activate",
+      status: "active",
+      orgId: result.binding.orgId,
+      workspaceId: result.binding.workspaceId,
+      integrationId: result.binding.integrationId,
     });
-    return aborted;
+    return result;
   }
 
   private releaseBinding(integrationId: string, version?: number): boolean {
@@ -1173,19 +741,6 @@ export class DiscordControlDO extends DurableObject<DiscordBridgeEnv> {
       integrationId,
     ).toArray()[0];
     if (existing && version !== undefined && existing.version !== version) return false;
-    const liveTransactions = this.ctx.storage.sql.exec<BindingTransactionRow>(
-      `SELECT * FROM binding_transactions
-       WHERE integration_id = ? AND state IN ('prepared', 'confirmed', 'committed')
-       ORDER BY created_at`,
-      integrationId,
-    ).toArray();
-    for (const transaction of liveTransactions) {
-      if (transaction.state === "committed") {
-        this.finalizeBindingTransaction(transaction.transaction_id);
-      } else {
-        this.abortBindingTransaction(transaction.transaction_id);
-      }
-    }
     this.ctx.storage.transactionSync(() => {
       this.ctx.storage.sql.exec("DELETE FROM thread_bindings WHERE integration_id = ?", integrationId);
       this.ctx.storage.sql.exec("DELETE FROM channel_bindings WHERE integration_id = ?", integrationId);
@@ -1566,32 +1121,6 @@ export class DiscordControlDO extends DurableObject<DiscordBridgeEnv> {
     return result;
   }
 
-  private async sendBindingConfirmation(integrationId: string, operationId: string) {
-    this.assertOutboundEnabled();
-    const cached = this.operationResult<{
-      integrationId: string;
-      messageIds: string[];
-      chunkCount: number;
-    }>(operationId, "binding_confirmation");
-    if (cached) return cached;
-    const binding = this.activeBindingByIntegration(integrationId);
-    if (!binding) {
-      throw new DiscordBridgeError("binding_not_found", "Discord integration is not connected");
-    }
-    const sent = await this.rest.createMessages({
-      threadId: binding.parent_channel_id,
-      operationId,
-      text: "Camel is connected. Mention @Camel in this channel to start a conversation thread.",
-    });
-    const result = {
-      integrationId,
-      messageIds: sent.messageIds,
-      chunkCount: sent.chunkCount,
-    };
-    this.storeOperation(operationId, "binding_confirmation", result);
-    return result;
-  }
-
   private async sendStarterFailureNotice(input: Record<string, unknown>) {
     this.assertOutboundEnabled();
     const integrationId = requireString(input.integrationId, "integrationId");
@@ -1611,10 +1140,7 @@ export class DiscordControlDO extends DurableObject<DiscordBridgeEnv> {
       throw new DiscordBridgeError("binding_mismatch", "Discord channel binding no longer matches");
     }
     const rateLimitKey = `failure_notice:${parentChannelId}`;
-    const lastNoticeAt = Number(this.ctx.storage.sql.exec<{ value: string }>(
-      "SELECT value FROM control_metadata WHERE key = ?",
-      rateLimitKey,
-    ).toArray()[0]?.value ?? 0);
+    const lastNoticeAt = this.ctx.storage.kv.get<number>(rateLimitKey) ?? 0;
     if (Date.now() - lastNoticeAt < 60_000) {
       const suppressed = {
         integrationId,
@@ -1641,13 +1167,7 @@ export class DiscordControlDO extends DurableObject<DiscordBridgeEnv> {
       messageId,
       noticeMessageId: sent.id,
     };
-    this.ctx.storage.sql.exec(
-      `INSERT INTO control_metadata (key, value, updated_at) VALUES (?, ?, ?)
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
-      rateLimitKey,
-      String(Date.now()),
-      Date.now(),
-    );
+    this.ctx.storage.kv.put(rateLimitKey, Date.now());
     this.storeOperation(operationId, "starter_failure_notice", result);
     return result;
   }
@@ -1987,7 +1507,7 @@ export class DiscordControlDO extends DurableObject<DiscordBridgeEnv> {
         if (!guildId || payload.unavailable === true) return;
         this.ctx.storage.sql.exec("DELETE FROM guild_presence WHERE guild_id = ?", guildId);
         const bindings = this.ctx.storage.sql.exec<ChannelBindingRow>(
-          "SELECT * FROM channel_bindings WHERE guild_id = ? AND status = 'active'",
+          "SELECT * FROM channel_bindings WHERE guild_id = ?",
           guildId,
         ).toArray();
         for (const binding of bindings) {
@@ -2075,6 +1595,40 @@ export class DiscordControlDO extends DurableObject<DiscordBridgeEnv> {
     return result;
   }
 
+  private terminalizeDelivery(
+    row: OutboxRow,
+    state: "completed" | "failed",
+    now: number,
+  ): boolean {
+    this.ctx.storage.sql.exec(
+      `UPDATE conversation_state SET completed_ordinal = MAX(completed_ordinal, ?), updated_at = ?
+       WHERE conversation_key = ?`,
+      row.ordinal,
+      now,
+      row.conversation_key,
+    );
+    this.ctx.storage.sql.exec(
+      `UPDATE ingress_outbox SET state = ?, payload_json = NULL, lease_token = NULL,
+       lease_expires_at = NULL, updated_at = ? WHERE event_id = ?`,
+      state,
+      now,
+      row.event_id,
+    );
+    const next = this.ctx.storage.sql.exec<{ event_id: string }>(
+      `SELECT event_id FROM ingress_outbox
+       WHERE conversation_key = ? AND ordinal = ? AND state = 'enqueued'`,
+      row.conversation_key,
+      row.ordinal + 1,
+    ).toArray()[0];
+    if (!next) return false;
+    this.ctx.storage.sql.exec(
+      "UPDATE ingress_outbox SET state = 'pending', updated_at = ? WHERE event_id = ?",
+      now,
+      next.event_id,
+    );
+    return true;
+  }
+
   private finishDelivery(eventId: string, leaseToken: string, failed: boolean): boolean {
     let shouldPublishNext = false;
     const finished = this.ctx.storage.transactionSync(() => {
@@ -2086,34 +1640,11 @@ export class DiscordControlDO extends DurableObject<DiscordBridgeEnv> {
       if (row.state === "completed" || row.state === "failed") return true;
       if (row.lease_token !== leaseToken) return false;
       const now = Date.now();
-      this.ctx.storage.sql.exec(
-        `UPDATE conversation_state SET completed_ordinal = MAX(completed_ordinal, ?), updated_at = ?
-         WHERE conversation_key = ?`,
-        row.ordinal,
-        now,
-        row.conversation_key,
-      );
-      this.ctx.storage.sql.exec(
-        `UPDATE ingress_outbox SET state = ?, payload_json = NULL, lease_token = NULL,
-         lease_expires_at = NULL, updated_at = ? WHERE event_id = ?`,
+      shouldPublishNext = this.terminalizeDelivery(
+        row,
         failed ? "failed" : "completed",
         now,
-        eventId,
       );
-      const next = this.ctx.storage.sql.exec<OutboxRow>(
-        `SELECT * FROM ingress_outbox
-         WHERE conversation_key = ? AND ordinal = ? AND state = 'enqueued'`,
-        row.conversation_key,
-        row.ordinal + 1,
-      ).toArray()[0];
-      if (next) {
-        this.ctx.storage.sql.exec(
-          "UPDATE ingress_outbox SET state = 'pending', updated_at = ? WHERE event_id = ?",
-          now,
-          next.event_id,
-        );
-        shouldPublishNext = true;
-      }
       return true;
     });
     if (shouldPublishNext) {
@@ -2167,10 +1698,7 @@ export class DiscordControlDO extends DurableObject<DiscordBridgeEnv> {
       return;
     }
     const rateLimitKey = `failure_notice:${notice.target_channel_id}`;
-    const lastNoticeAt = Number(this.ctx.storage.sql.exec<{ value: string }>(
-      "SELECT value FROM control_metadata WHERE key = ?",
-      rateLimitKey,
-    ).toArray()[0]?.value ?? 0);
+    const lastNoticeAt = this.ctx.storage.kv.get<number>(rateLimitKey) ?? 0;
     if (Date.now() - lastNoticeAt < 60_000) {
       this.ctx.storage.sql.exec(
         "UPDATE failure_notices SET state = 'suppressed', updated_at = ? WHERE event_id = ?",
@@ -2186,20 +1714,12 @@ export class DiscordControlDO extends DurableObject<DiscordBridgeEnv> {
       text: "Camel couldn't process this message after several retries. Please try again.",
     });
     const now = Date.now();
-    this.ctx.storage.transactionSync(() => {
-      this.ctx.storage.sql.exec(
-        "UPDATE failure_notices SET state = 'sent', updated_at = ? WHERE event_id = ?",
-        now,
-        notice.event_id,
-      );
-      this.ctx.storage.sql.exec(
-        `INSERT INTO control_metadata (key, value, updated_at) VALUES (?, ?, ?)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
-        rateLimitKey,
-        String(now),
-        now,
-      );
-    });
+    this.ctx.storage.sql.exec(
+      "UPDATE failure_notices SET state = 'sent', updated_at = ? WHERE event_id = ?",
+      now,
+      notice.event_id,
+    );
+    this.ctx.storage.kv.put(rateLimitKey, now);
   }
 
   private async failDeliveryFromDeadLetter(eventId: string) {
@@ -2251,33 +1771,7 @@ export class DiscordControlDO extends DurableObject<DiscordBridgeEnv> {
           ).toArray()[0] ?? null;
         }
       }
-      this.ctx.storage.sql.exec(
-        `UPDATE conversation_state SET completed_ordinal = MAX(completed_ordinal, ?), updated_at = ?
-         WHERE conversation_key = ?`,
-        row.ordinal,
-        now,
-        row.conversation_key,
-      );
-      this.ctx.storage.sql.exec(
-        `UPDATE ingress_outbox SET state = 'failed', payload_json = NULL,
-         lease_token = NULL, lease_expires_at = NULL, updated_at = ? WHERE event_id = ?`,
-        now,
-        eventId,
-      );
-      const next = this.ctx.storage.sql.exec<OutboxRow>(
-        `SELECT * FROM ingress_outbox
-         WHERE conversation_key = ? AND ordinal = ? AND state = 'enqueued'`,
-        row.conversation_key,
-        row.ordinal + 1,
-      ).toArray()[0];
-      if (next) {
-        this.ctx.storage.sql.exec(
-          "UPDATE ingress_outbox SET state = 'pending', updated_at = ? WHERE event_id = ?",
-          now,
-          next.event_id,
-        );
-        shouldPublishNext = true;
-      }
+      shouldPublishNext = this.terminalizeDelivery(row, "failed", now);
       return { status: "failed" as const, notice };
     });
     if (shouldPublishNext) {
@@ -2312,33 +1806,9 @@ export class DiscordControlDO extends DurableObject<DiscordBridgeEnv> {
     let expiredUnblockedConversation = false;
     for (const row of expired) {
       this.ctx.storage.transactionSync(() => {
-        this.ctx.storage.sql.exec(
-          `UPDATE conversation_state SET completed_ordinal = MAX(completed_ordinal, ?), updated_at = ?
-           WHERE conversation_key = ?`,
-          row.ordinal,
-          now,
-          row.conversation_key,
-        );
-        this.ctx.storage.sql.exec(
-          `UPDATE ingress_outbox SET state = 'failed', payload_json = NULL,
-           lease_token = NULL, lease_expires_at = NULL, updated_at = ? WHERE event_id = ?`,
-          now,
-          row.event_id,
-        );
-        const next = this.ctx.storage.sql.exec<OutboxRow>(
-          `SELECT * FROM ingress_outbox
-           WHERE conversation_key = ? AND ordinal = ? AND state = 'enqueued'`,
-          row.conversation_key,
-          row.ordinal + 1,
-        ).toArray()[0];
-        if (next) {
-          this.ctx.storage.sql.exec(
-            "UPDATE ingress_outbox SET state = 'pending', updated_at = ? WHERE event_id = ?",
-            now,
-            next.event_id,
-          );
-          expiredUnblockedConversation = true;
-        }
+        expiredUnblockedConversation =
+          this.terminalizeDelivery(row, "failed", now) ||
+          expiredUnblockedConversation;
       });
     }
     if (expired.length > 0) {
@@ -2404,11 +1874,6 @@ export class DiscordControlDO extends DurableObject<DiscordBridgeEnv> {
            WHERE conversation_state.conversation_key =
              thread_bindings.guild_id || ':' || thread_bindings.thread_id
          )`,
-      now - AUXILIARY_RETENTION_MS,
-    );
-    this.ctx.storage.sql.exec(
-      `DELETE FROM binding_transactions
-       WHERE state IN ('finalized', 'aborted') AND updated_at < ?`,
       now - AUXILIARY_RETENTION_MS,
     );
     this.ctx.storage.sql.exec(
@@ -2495,9 +1960,7 @@ export class DiscordControlDO extends DurableObject<DiscordBridgeEnv> {
         const installedGuildCount = this.ctx.storage.sql.exec<{ count: number }>(
           "SELECT COUNT(*) AS count FROM guild_presence",
         ).toArray()[0]?.count ?? 0;
-        const botUserId = this.ctx.storage.sql.exec<{ value: string }>(
-          "SELECT value FROM control_metadata WHERE key = 'bot_user_id'",
-        ).toArray()[0]?.value ?? null;
+        const botUserId = this.ctx.storage.kv.get<string>("bot_user_id") ?? null;
         return jsonResponse({
           ok: true,
           applicationId: this.env.DISCORD_APPLICATION_ID,
@@ -2517,7 +1980,7 @@ export class DiscordControlDO extends DurableObject<DiscordBridgeEnv> {
       if (request.method === "GET" && guildChannels) {
         return jsonResponse({ ok: true, ...(await this.inspectGuild(decodeURIComponent(guildChannels[1]))) });
       }
-      if (request.method === "POST" && path === "/internal/v1/binding-transactions/prepare") {
+      if (request.method === "POST" && path === "/internal/v1/bindings/activate") {
         const input = await readJsonObject(request);
         const expectedVersionValue = input.expectedVersion;
         const expectedVersion = expectedVersionValue === undefined
@@ -2529,7 +1992,7 @@ export class DiscordControlDO extends DurableObject<DiscordBridgeEnv> {
         ) {
           throw new DiscordBridgeError("invalid_request", "expectedVersion must be a positive integer");
         }
-        const transaction = await this.prepareBindingTransaction({
+        const activation = await this.activateBinding({
           guildId: requireString(input.guildId, "guildId"),
           parentChannelId: requireString(input.parentChannelId, "parentChannelId"),
           integrationId: requireString(input.integrationId, "integrationId"),
@@ -2538,51 +2001,7 @@ export class DiscordControlDO extends DurableObject<DiscordBridgeEnv> {
           idempotencyKey: requireString(input.idempotencyKey, "idempotencyKey"),
           ...(expectedVersion === undefined ? {} : { expectedVersion }),
         });
-        return jsonResponse({ ok: true, transaction });
-      }
-      const bindingTransactionRoute = path.match(
-        /^\/internal\/v1\/binding-transactions\/([^/]+)\/(confirm|commit|finalize|abort)$/,
-      );
-      if (bindingTransactionRoute && request.method === "POST") {
-        const transactionId = decodeURIComponent(bindingTransactionRoute[1]);
-        const action = bindingTransactionRoute[2];
-        const transaction = action === "confirm"
-          ? await this.confirmBindingTransaction(transactionId)
-          : action === "commit"
-            ? this.commitBindingTransaction(transactionId)
-            : action === "finalize"
-              ? this.finalizeBindingTransaction(transactionId)
-              : this.abortBindingTransaction(transactionId);
-        return jsonResponse({ ok: true, transaction });
-      }
-      if (request.method === "POST" && path === "/internal/v1/bindings/claim") {
-        const input = await readJsonObject(request);
-        const binding = await this.claimBinding({
-          guildId: requireString(input.guildId, "guildId"),
-          parentChannelId: requireString(input.parentChannelId, "parentChannelId"),
-          integrationId: requireString(input.integrationId, "integrationId"),
-          orgId: requireString(input.orgId, "orgId"),
-          workspaceId: requireString(input.workspaceId, "workspaceId"),
-          idempotencyKey: requireString(input.idempotencyKey, "idempotencyKey"),
-        });
-        return jsonResponse({ ok: true, binding });
-      }
-      if (request.method === "POST" && path === "/internal/v1/bindings/replace") {
-        const input = await readJsonObject(request);
-        const expectedVersion = Number(input.expectedVersion);
-        if (!Number.isInteger(expectedVersion) || expectedVersion < 1) {
-          throw new DiscordBridgeError("invalid_request", "expectedVersion is required");
-        }
-        const replacement = await this.replaceBinding({
-          guildId: requireString(input.guildId, "guildId"),
-          parentChannelId: requireString(input.parentChannelId, "parentChannelId"),
-          integrationId: requireString(input.integrationId, "integrationId"),
-          orgId: requireString(input.orgId, "orgId"),
-          workspaceId: requireString(input.workspaceId, "workspaceId"),
-          idempotencyKey: requireString(input.idempotencyKey, "idempotencyKey"),
-          expectedVersion,
-        });
-        return jsonResponse({ ok: true, ...replacement });
+        return jsonResponse({ ok: true, ...activation });
       }
       const bindingRoute = path.match(/^\/internal\/v1\/bindings\/([^/]+)$/);
       if (bindingRoute && request.method === "GET") {
@@ -2602,18 +2021,6 @@ export class DiscordControlDO extends DurableObject<DiscordBridgeEnv> {
       const verifyRoute = path.match(/^\/internal\/v1\/bindings\/([^/]+)\/verify$/);
       if (verifyRoute && request.method === "POST") {
         return jsonResponse({ ok: true, verification: await this.verifyBinding(decodeURIComponent(verifyRoute[1])) });
-      }
-      const confirmationRoute = path.match(/^\/internal\/v1\/bindings\/([^/]+)\/confirmation$/);
-      if (confirmationRoute && request.method === "POST") {
-        const input = await readJsonObject(request);
-        const integrationId = decodeURIComponent(confirmationRoute[1]);
-        return jsonResponse({
-          ok: true,
-          ...(await this.sendBindingConfirmation(
-            integrationId,
-            requireString(input.idempotencyKey, "idempotencyKey"),
-          )),
-        });
       }
       if (request.method === "POST" && path === "/internal/v1/threads/from-message") {
         return jsonResponse({ ok: true, ...(await this.startThreadFromMessage(await readJsonObject(request))) });

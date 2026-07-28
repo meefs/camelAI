@@ -18,6 +18,7 @@ import { requireSession } from "../helpers/auth.js";
 import { completeConnectionSetupPromptContext } from "../connection-setup-completion.js";
 import { getOrgStub } from "../helpers/stubs.js";
 import { redirect, text } from "../helpers/response.js";
+import { sanitizeOAuthRedirectPath as sanitizeRedirectPath } from "./oauth-helpers.js";
 import type { SlackEventCallbackPayload } from "../slack-types.js";
 import { isOrgBanned } from "../ban-list.js";
 import {
@@ -346,33 +347,6 @@ export function hasConnectionSetupPromptContext(stateData: IntegrationOAuthState
     typeof stateData.extra_config?.chat_request_id === "string" &&
       typeof stateData.extra_config?.chat_thread_id === "string",
   );
-}
-
-/**
- * Sanitize redirect URL to prevent open redirect attacks.
- * Only allows relative paths starting with `/` (but not `//` which is protocol-relative).
- */
-function sanitizeRedirectPath(input: string): string {
-  // Default to /connections if empty
-  if (!input) return "/connections";
-
-  // Must start with exactly one `/` (not `//` which is protocol-relative)
-  if (!input.startsWith("/") || input.startsWith("//")) {
-    return "/connections";
-  }
-
-  // Strip any query params or fragments that might contain absolute URLs
-  // and reconstruct with just the pathname
-  try {
-    const parsed = new URL(input, "http://dummy");
-    // Ensure the path doesn't encode an absolute URL
-    if (parsed.pathname.includes("://") || parsed.pathname.startsWith("//")) {
-      return "/connections";
-    }
-    return parsed.pathname + parsed.search;
-  } catch {
-    return "/connections";
-  }
 }
 
 export function integrationOAuthCallbackUrl(url: URL, integrationType: string): string {

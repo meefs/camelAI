@@ -1,4 +1,18 @@
-export type DiscordMessageContentMode = "full" | "mention_only";
+import type {
+  DiscordBridgeBinding,
+  DiscordBridgeDelivery,
+  DiscordBridgeDeliveryLifecycle,
+  DiscordBridgeDeliveryMessage,
+  DiscordBridgeErrorCode,
+  DiscordEventQueueMessage,
+  DiscordMessageContentMode,
+} from "../../../src/lib/discord-contract.js";
+
+export type {
+  DiscordBridgeErrorCode,
+  DiscordMessageContentMode,
+  DiscordSelectableChannel,
+} from "../../../src/lib/discord-contract.js";
 
 export interface DiscordBridgeEnv {
   DISCORD_BOT_TOKEN: string;
@@ -6,7 +20,7 @@ export interface DiscordBridgeEnv {
   DISCORD_MESSAGE_CONTENT_MODE?: string;
   DISCORD_INGRESS_ENABLED?: string;
   DISCORD_OUTBOUND_ENABLED?: string;
-  DISCORD_EVENTS_QUEUE: Queue<DiscordQueueMessage>;
+  DISCORD_EVENTS_QUEUE: Queue<DiscordEventQueueMessage>;
   GATEWAY: DurableObjectNamespace<import("./discord-gateway-do.js").DiscordGatewayDO>;
   CONTROL: DurableObjectNamespace<import("./discord-control-do.js").DiscordControlDO>;
   OBSERVABILITY_EVENTS?: AnalyticsEngineDataset;
@@ -33,10 +47,7 @@ export interface DiscordGatewayHealthState {
   fatalReason: string | null;
 }
 
-export interface DiscordQueueMessage {
-  version: 1;
-  eventId: string;
-}
+export type DiscordQueueMessage = DiscordEventQueueMessage;
 
 export interface DiscordGatewayEnvelope {
   op: number;
@@ -87,69 +98,10 @@ export interface DiscordChannelDeletePayload {
   type?: number;
 }
 
-export interface DiscordReducedMessageEvent {
-  kind: "message";
-  discordMessageId: string;
-  guildId: string;
-  channelId: string;
-  parentChannelId: string;
-  threadId: string | null;
-  integrationId: string;
-  orgId: string;
-  workspaceId: string;
-  bindingVersion: number;
-  ordinal: number;
-  content: string;
-  messageType: 0 | 19;
-  author: {
-    id: string;
-    username: string | null;
-    globalName: string | null;
-    guildNickname: string | null;
-  };
-  mentions: Array<{
-    id: string;
-    username: string | null;
-    globalName: string | null;
-  }>;
-  attachments: Array<{
-    id: string;
-    filename: string;
-    contentType: string | null;
-    size: number;
-    url: string;
-  }>;
-  timestamp: string | null;
-  contentMode: DiscordMessageContentMode;
-  starter: boolean;
-}
-
-export interface DiscordReducedLifecycleEvent {
-  kind: "lifecycle";
-  lifecycleType: "guild_removed" | "parent_channel_deleted";
-  guildId: string;
-  parentChannelId: string | null;
-  integrationId: string;
-  orgId: string;
-  workspaceId: string;
-  bindingVersion: number;
-}
-
-export type DiscordDeliveryPayload =
-  | DiscordReducedMessageEvent
-  | DiscordReducedLifecycleEvent;
-
-export interface DiscordChannelBinding {
-  guildId: string;
-  parentChannelId: string;
-  integrationId: string;
-  orgId: string;
-  workspaceId: string;
-  guildName: string;
-  parentChannelName: string;
-  status: "active" | "disconnected";
-  version: number;
-}
+export type DiscordReducedMessageEvent = DiscordBridgeDeliveryMessage;
+export type DiscordReducedLifecycleEvent = DiscordBridgeDeliveryLifecycle;
+export type DiscordDeliveryPayload = DiscordBridgeDelivery;
+export type DiscordChannelBinding = DiscordBridgeBinding;
 
 export interface DiscordThreadBinding {
   threadId: string;
@@ -191,31 +143,6 @@ export interface DiscordChannelPayload {
   position?: number;
   permission_overwrites?: DiscordPermissionOverwritePayload[];
 }
-
-export interface DiscordSelectableChannel {
-  id: string;
-  name: string;
-  categoryId: string | null;
-  categoryName: string | null;
-  position: number;
-  missingPermissions: string[];
-  canActivate: boolean;
-  exposure: "restricted" | "visible_to_everyone";
-}
-
-export type DiscordBridgeErrorCode =
-  | "invalid_request"
-  | "not_configured"
-  | "binding_conflict"
-  | "binding_not_found"
-  | "binding_mismatch"
-  | "missing_permissions"
-  | "active_thread_limit"
-  | "unknown_channel"
-  | "bot_removed"
-  | "rate_limited"
-  | "provider_unavailable"
-  | "fatal_auth";
 
 export class DiscordBridgeError extends Error {
   constructor(
