@@ -3004,16 +3004,245 @@ export class OrgDO extends DurableObject<DOEnv> {
     });
   }
 
+  async claimSsoInvitedIdentity(
+    connectionId: string,
+    issuer: string,
+    subject: string,
+    email: string,
+  ): Promise<OrgSsoIdentityRecord | null> {
+    const normalizedEmail = email.trim().toLowerCase();
+    const workspaceIds = this.sql
+      .exec<{ id: string }>(
+        "SELECT id FROM workspaces WHERE archived = 0 ORDER BY created_at ASC",
+      )
+      .toArray()
+      .map((workspace) => workspace.id);
+    if (workspaceIds.length > 0) {
+      const memberIds = new Set(
+        (await this.getMembers()).map((member) => member.user_id),
+      );
+      await Promise.all(
+        workspaceIds.map((workspaceId) =>
+          this.ensureWorkspaceAccessMigrated(workspaceId, memberIds),
+        ),
+      );
+    }
+
+    const now = Date.now();
+    let acceptedInvitation: OrgInvitation | null = null;
+    let addedMember = false;
+    let reusedActiveIdentity = false;
+    const identity = this.ctx.storage.transactionSync(() => {
+      let claimedIdentity = this.getSsoIdentity(connectionId, issuer, subject);
+      if (claimedIdentity && claimedIdentity.email !== normalizedEmail) {
+        return null;
+      }
+
+      let existingMember = claimedIdentity
+        ? ((this.sql
+            .exec<OrgMember & Record<string, SqlStorageValue>>(
+              "SELECT user_id, role, joined_at, workspace_access_default FROM members WHERE user_id = ?",
+              claimedIdentity.userId,
+            )
+            .next().value as OrgMember | undefined) ?? null)
+        : null;
+      if (
+        claimedIdentity &&
+        existingMember &&
+        !claimedIdentity.membershipRevoked
+      ) {
+        // A concurrent callback may have loaded the identity before the first
+        // callback committed it. Converge on the now-active identity without
+        // requiring a second invitation.
+        reusedActiveIdentity = true;
+        return claimedIdentity;
+      }
+
+      const invitationRow = this.sql
+        .exec<{
+          id: string;
+          email: string;
+          role: OrgRole;
+          invited_by: string;
+          created_at: number;
+          expires_at: number;
+          workspace_access: string | null;
+        }>(
+          `SELECT id, email, role, invited_by, created_at, expires_at, workspace_access
+             FROM invitations
+            WHERE email = ? AND expires_at > ?
+            ORDER BY created_at ASC
+            LIMIT 1`,
+          normalizedEmail,
+          now,
+        )
+        .next().value;
+      if (
+        !invitationRow ||
+        !["admin", "member", "viewer"].includes(invitationRow.role)
+      ) {
+        return null;
+      }
+
+      const workspaceAccess = invitationRow.workspace_access
+        ? (JSON.parse(invitationRow.workspace_access) as Record<
+            string,
+            WorkspaceAccessLevel
+          >)
+        : null;
+      acceptedInvitation = {
+        ...invitationRow,
+        workspace_access: workspaceAccess,
+      };
+
+      if (!claimedIdentity) {
+        // Email reuse across subjects or connection generations requires an
+        // explicit account-link flow. An invitation authorizes membership, not
+        // replacement of an existing identity binding.
+        const priorEmailIdentity = this.sql
+          .exec<{ user_id: string }>(
+            `SELECT user_id FROM enterprise_sso_identities
+              WHERE email = ?
+              LIMIT 1`,
+            normalizedEmail,
+          )
+          .next().value;
+        if (priorEmailIdentity) return null;
+
+        const userId = crypto.randomUUID();
+        this.sql.exec(
+          `INSERT INTO enterprise_sso_identities
+            (connection_id, issuer, subject, user_id, email, tenant_scoped,
+             membership_revoked, linked_at)
+           VALUES (?, ?, ?, ?, ?, 1, 0, ?)`,
+          connectionId,
+          issuer,
+          subject,
+          userId,
+          normalizedEmail,
+          now,
+        );
+        claimedIdentity = {
+          userId,
+          email: normalizedEmail,
+          tenantScoped: true,
+          membershipRevoked: false,
+        };
+      }
+
+      existingMember ??=
+        (this.sql
+          .exec<OrgMember & Record<string, SqlStorageValue>>(
+            "SELECT user_id, role, joined_at, workspace_access_default FROM members WHERE user_id = ?",
+            claimedIdentity.userId,
+          )
+          .next().value as OrgMember | undefined) ?? null;
+      if (!existingMember) {
+        const activeInvitations =
+          this.sql
+            .exec<{
+              count: number;
+            }>(
+              "SELECT COUNT(*) as count FROM invitations WHERE expires_at > ?",
+              now,
+            )
+            .next().value?.count ?? 0;
+        this.assertSeatCapacityForAdditionalMembers(
+          1,
+          Math.max(0, activeInvitations - 1),
+        );
+        addedMember = true;
+      }
+
+      const workspaceAccessDefault =
+        existingMember?.workspace_access_default ?? "full";
+      this.sql.exec(
+        "INSERT OR REPLACE INTO members (user_id, role, joined_at, workspace_access_default) VALUES (?, ?, ?, ?)",
+        claimedIdentity.userId,
+        invitationRow.role,
+        now,
+        workspaceAccessDefault,
+      );
+      this.sql.exec(
+        "DELETE FROM workspace_memberships WHERE user_id = ?",
+        claimedIdentity.userId,
+      );
+      const activeWorkspaceIds = this.sql
+        .exec<{ id: string }>(
+          "SELECT id FROM workspaces WHERE archived = 0 ORDER BY created_at ASC",
+        )
+        .toArray()
+        .map((workspace) => workspace.id);
+      for (const workspaceId of activeWorkspaceIds) {
+        const accessLevel = this.normalizeWorkspaceAccess(
+          workspaceAccess?.[workspaceId] ?? "full",
+        );
+        if (accessLevel === workspaceAccessDefault) continue;
+        this.sql.exec(
+          `INSERT INTO workspace_memberships (
+            workspace_id, user_id, access_level, granted_by, granted_at
+          ) VALUES (?, ?, ?, ?, ?)`,
+          workspaceId,
+          claimedIdentity.userId,
+          accessLevel,
+          invitationRow.invited_by,
+          now,
+        );
+      }
+      this.sql.exec(
+        "UPDATE enterprise_sso_identities SET membership_revoked = 0 WHERE user_id = ?",
+        claimedIdentity.userId,
+      );
+      this.sql.exec("DELETE FROM invitations WHERE id = ?", invitationRow.id);
+
+      return { ...claimedIdentity, membershipRevoked: false };
+    });
+
+    const invitation = acceptedInvitation as OrgInvitation | null;
+    if (!identity || (!invitation && !reusedActiveIdentity)) return null;
+    if (!invitation) return identity;
+    if (addedMember) {
+      this.log("member_added", identity.userId, identity.userId, {
+        role: invitation.role,
+        source: "enterprise-sso-invitation",
+      });
+      const info = await this.getInfo();
+      if (info) {
+        dispatchAdminEvent(this.ctx, this.env, {
+          type: "org_member_delta",
+          payload: { org_id: info.id, delta: 1 },
+        });
+      }
+      this.dispatchOrgMembershipUpsert(identity.userId, invitation.role, now);
+    }
+    dispatchAdminEvent(this.ctx, this.env, {
+      type: "invitation_delete",
+      payload: { id: invitation.id },
+    });
+    return identity;
+  }
+
   bindSsoIdentity(
     connectionId: string,
     issuer: string,
     subject: string,
     userId: string,
     email: string,
+    allowCrossConnectionRebind = false,
   ): string | null {
     const normalizedEmail = email.trim().toLowerCase();
     return this.ctx.storage.transactionSync(() => {
       const existing = this.getSsoIdentity(connectionId, issuer, subject);
+      const conflictingEmailIdentity = this.sql
+        .exec<{ user_id: string }>(
+          `SELECT user_id FROM enterprise_sso_identities
+            WHERE email = ? AND user_id != ?
+            LIMIT 1`,
+          normalizedEmail,
+          userId,
+        )
+        .next().value;
+      if (conflictingEmailIdentity) return null;
       if (existing) {
         return existing.userId === userId &&
           existing.email === normalizedEmail
@@ -3021,6 +3250,22 @@ export class OrgDO extends DurableObject<DOEnv> {
           : null;
       }
       if (this.getSsoIdentityByEmail(connectionId, issuer, normalizedEmail)) {
+        return null;
+      }
+      const priorEmailIdentity = this.sql
+        .exec<{ user_id: string }>(
+          `SELECT user_id FROM enterprise_sso_identities
+            WHERE email = ?
+            ORDER BY linked_at ASC
+            LIMIT 1`,
+          normalizedEmail,
+        )
+        .next().value;
+      if (
+        priorEmailIdentity &&
+        (!allowCrossConnectionRebind ||
+          priorEmailIdentity.user_id !== userId)
+      ) {
         return null;
       }
       this.sql.exec(

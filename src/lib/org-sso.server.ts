@@ -41,6 +41,12 @@ export interface ValidatedOrgSsoIdentity {
 
 interface OrgSsoIdentityLookup {
   getMember(userId: string): Promise<unknown>;
+  claimSsoInvitedIdentity?(
+    connectionId: string,
+    issuer: string,
+    subject: string,
+    email: string,
+  ): Promise<OrgSsoIdentityMapping | null>;
   claimSsoJitIdentity?(
     connectionId: string,
     issuer: string,
@@ -495,20 +501,45 @@ export async function resolveOrgSsoUser(input: {
   jitProvisioningEnabled?: boolean;
 }): Promise<{ userId: string; user: User; tenantScoped: boolean } | null> {
   const { authEnv, identity } = input;
+  let invitedIdentity: OrgSsoIdentityMapping | null = null;
   if (input.mappedMembershipRevoked) {
-    throw new Response(
-      "Enterprise SSO access was revoked for this organization",
-      { status: 403 },
-    );
+    if (
+      input.connectionId &&
+      input.issuer &&
+      input.orgStub.claimSsoInvitedIdentity &&
+      !isSuperuserEmail(identity.email)
+    ) {
+      invitedIdentity = await input.orgStub.claimSsoInvitedIdentity(
+        input.connectionId,
+        input.issuer,
+        identity.subject,
+        identity.email,
+      );
+    }
+    if (!invitedIdentity) {
+      throw new Response(
+        "Enterprise SSO access was revoked for this organization",
+        { status: 403 },
+      );
+    }
   }
-  const directlyMappedUserId = input.mappedUserId ?? input.linkUserId;
+  const directlyMappedUserId =
+    invitedIdentity?.userId ?? input.mappedUserId ?? input.linkUserId;
   if (directlyMappedUserId) {
-    if (input.mappedTenantScoped) {
+    const tenantScoped =
+      invitedIdentity?.tenantScoped ?? (input.mappedTenantScoped === true);
+    if (tenantScoped) {
       const existingProfile = await authEnv.USER.get(
         authEnv.USER.idFromName(directlyMappedUserId),
       ).getProfile();
       if (!existingProfile) {
-        if (!input.jitProvisioningEnabled) return null;
+        if (
+          !invitedIdentity &&
+          !input.jitProvisioningEnabled &&
+          !(await input.orgStub.getMember(directlyMappedUserId))
+        ) {
+          return null;
+        }
         if (isSuperuserEmail(identity.email)) {
           throw new Response("Superuser identities cannot use enterprise SSO", {
             status: 403,
@@ -527,7 +558,7 @@ export async function resolveOrgSsoUser(input: {
       directlyMappedUserId,
       identity.email,
     );
-    return { ...mapped, tenantScoped: input.mappedTenantScoped === true };
+    return { ...mapped, tenantScoped };
   }
   if (!identity.eligibleForAutoLink) return null;
 
@@ -545,16 +576,42 @@ export async function resolveOrgSsoUser(input: {
       );
       return { ...mapped, tenantScoped: false };
     }
-    if (!input.jitProvisioningEnabled) return null;
     account = null;
   }
-  if (!input.jitProvisioningEnabled) return null;
 
   if (isSuperuserEmail(identity.email)) {
     throw new Response("Superuser identities cannot use enterprise SSO", {
       status: 403,
     });
   }
+  if (
+    !input.connectionId ||
+    !input.issuer ||
+    !input.orgStub.claimSsoInvitedIdentity
+  ) {
+    if (!input.jitProvisioningEnabled) return null;
+  } else {
+    const claim = await input.orgStub.claimSsoInvitedIdentity(
+      input.connectionId,
+      input.issuer,
+      identity.subject,
+      identity.email,
+    );
+    if (claim) {
+      if (claim.tenantScoped) {
+        await createTenantScopedUserFromEnterpriseSso(
+          authEnv,
+          claim.userId,
+          identity.email,
+          identity.name,
+        );
+      }
+      const mapped = await getMappedUser(authEnv, claim.userId, identity.email);
+      return { ...mapped, tenantScoped: claim.tenantScoped };
+    }
+  }
+
+  if (!input.jitProvisioningEnabled) return null;
   if (
     !input.connectionId ||
     !input.issuer ||
@@ -686,7 +743,7 @@ export async function completeOrgSsoLogin(input: {
     throw new Response(
       config.jit_provisioning_enabled
         ? "Enterprise SSO could not provision this account"
-        : "No organization member matches this enterprise identity. Ask the organization owner to invite the user or enable just-in-time provisioning.",
+        : "No organization member or active invitation matches this enterprise identity. Ask an organization administrator to invite this exact email address or allow uninvited SSO users.",
       { status: 403 },
     );
   }
@@ -700,6 +757,7 @@ export async function completeOrgSsoLogin(input: {
     subject,
     userId,
     email,
+    input.transaction.link_user_id === userId,
   );
   if (boundUserId !== userId) {
     throw new Response(
@@ -789,8 +847,9 @@ export async function ensureOrgMembership(
     return workspaceId;
   }
   const memberRole = member.role;
-  const [activeWorkspaces, userOrgs] = await Promise.all([
+  const [activeWorkspaces, allWorkspaces, userOrgs] = await Promise.all([
     orgStub.listUserWorkspaces(userId),
+    orgStub.getWorkspaces(),
     userStub.getOrgs(),
   ]);
   const rememberedWorkspace = userOrgs.find(
@@ -804,12 +863,28 @@ export async function ensureOrgMembership(
 
   if (!(await userStub.hasOrg(org.id))) {
     await userStub.addOrg(org.id, memberRole, workspaceId);
+  } else {
+    await userStub.updateOrgRole(org.id, memberRole);
   }
+  await Promise.all(
+    allWorkspaces
+      .filter((workspace) => !workspace.archived)
+      .map(async (workspace) => {
+        const accessLevel = await orgStub.getWorkspaceAccess(
+          workspace.id,
+          userId,
+        );
+        const workspaceStub = authEnv.WORKSPACE.get(
+          authEnv.WORKSPACE.idFromName(workspace.id),
+        );
+        await workspaceStub.setMemberAccess(
+          userId,
+          accessLevel,
+          "enterprise-sso-jit",
+        );
+      }),
+  );
   if (workspaceId) {
-    const workspaceStub = authEnv.WORKSPACE.get(
-      authEnv.WORKSPACE.idFromName(workspaceId),
-    );
-    await workspaceStub.setMemberAccess(userId, "full", "enterprise-sso-jit");
     await userStub.setOrgLastWorkspace(org.id, workspaceId);
   }
   return workspaceId;

@@ -275,6 +275,181 @@ describe("OrgDO enterprise SSO state", () => {
     ).resolves.toBeNull();
   });
 
+  it("atomically provisions a matching invitation and preserves its access policy", async () => {
+    const {
+      org,
+      orgStub,
+      userId: ownerId,
+      defaultWorkspaceId,
+    } = await freshOrg();
+    const allowedWorkspace = await createWorkspace(
+      testEnv,
+      org.id,
+      "Invited workspace",
+      ownerId,
+    );
+    const email = `invited-${crypto.randomUUID()}@example.com`;
+    const invitation = await orgStub.createInvitation(email, "admin", ownerId, {
+      [defaultWorkspaceId]: "none",
+      [allowedWorkspace.id]: "full",
+    });
+    const connectionId = crypto.randomUUID();
+    const issuer = "https://idp.example.com";
+    const subject = "invited-subject";
+
+    const claims = await Promise.all(
+      Array.from({ length: 4 }, () =>
+        orgStub.claimSsoInvitedIdentity(connectionId, issuer, subject, email),
+      ),
+    );
+    expect(claims.every(Boolean)).toBe(true);
+    expect(new Set(claims.map((claim) => claim?.userId))).toHaveProperty(
+      "size",
+      1,
+    );
+    const userId = claims[0]!.userId;
+    await expect(orgStub.getInvitation(invitation.id)).resolves.toBeNull();
+    await expect(orgStub.getMember(userId)).resolves.toMatchObject({
+      role: "admin",
+    });
+    await expect(
+      orgStub.getWorkspaceAccess(defaultWorkspaceId, userId),
+    ).resolves.toBe("none");
+    await expect(
+      orgStub.getWorkspaceAccess(allowedWorkspace.id, userId),
+    ).resolves.toBe("full");
+    await expect(
+      orgStub.claimSsoInvitedIdentity(
+        connectionId,
+        issuer,
+        "different-subject",
+        email,
+      ),
+    ).resolves.toBeNull();
+  });
+
+  it("does not persist an SSO identity without a matching invitation", async () => {
+    const { orgStub } = await freshOrg();
+    const connectionId = crypto.randomUUID();
+    const issuer = "https://idp.example.com";
+    const subject = "uninvited-subject";
+    const email = `uninvited-${crypto.randomUUID()}@example.com`;
+
+    await expect(
+      orgStub.claimSsoInvitedIdentity(connectionId, issuer, subject, email),
+    ).resolves.toBeNull();
+    await expect(
+      orgStub.getSsoIdentity(connectionId, issuer, subject),
+    ).resolves.toBeNull();
+  });
+
+  it("allows only one subject to consume an invitation", async () => {
+    const { orgStub, userId: ownerId } = await freshOrg();
+    const connectionId = crypto.randomUUID();
+    const issuer = "https://idp.example.com";
+    const email = `single-use-${crypto.randomUUID()}@example.com`;
+    await orgStub.createInvitation(email, "member", ownerId);
+
+    const claims = await Promise.all([
+      orgStub.claimSsoInvitedIdentity(
+        connectionId,
+        issuer,
+        "first-subject",
+        email,
+      ),
+      orgStub.claimSsoInvitedIdentity(
+        connectionId,
+        issuer,
+        "second-subject",
+        email,
+      ),
+    ]);
+
+    expect(claims.filter(Boolean)).toHaveLength(1);
+    expect(
+      await orgStub.getSsoIdentityByEmail(connectionId, issuer, email),
+    ).toMatchObject({
+      email,
+      tenantScoped: true,
+      membershipRevoked: false,
+    });
+  });
+
+  it("requires an explicit same-user link to rebind an email after connection rotation", async () => {
+    const { orgStub, userId } = await freshOrg();
+    const email = `rotation-${crypto.randomUUID()}@example.com`;
+    const issuer = "https://idp.example.com";
+
+    expect(
+      await orgStub.bindSsoIdentity(
+        "old-connection",
+        issuer,
+        "old-subject",
+        userId,
+        email,
+      ),
+    ).toBe(userId);
+    expect(
+      await orgStub.bindSsoIdentity(
+        "new-connection",
+        issuer,
+        "new-subject",
+        userId,
+        email,
+      ),
+    ).toBeNull();
+    expect(
+      await orgStub.bindSsoIdentity(
+        "new-connection",
+        issuer,
+        "new-subject",
+        crypto.randomUUID(),
+        email,
+        true,
+      ),
+    ).toBeNull();
+    expect(
+      await orgStub.bindSsoIdentity(
+        "new-connection",
+        issuer,
+        "new-subject",
+        userId,
+        email,
+        true,
+      ),
+    ).toBe(userId);
+  });
+
+  it("lets an explicit invitation restore a removed SSO identity", async () => {
+    const { orgStub, userId: ownerId } = await freshOrg();
+    const connectionId = crypto.randomUUID();
+    const issuer = "https://idp.example.com";
+    const subject = "returning-subject";
+    const email = `returning-${crypto.randomUUID()}@example.com`;
+    const identity = await orgStub.claimSsoJitIdentity(
+      connectionId,
+      issuer,
+      subject,
+      email,
+    );
+    expect(identity).not.toBeNull();
+    await orgStub.addMember(identity!.userId, "member", ownerId, {
+      workspaceAccessDefault: "none",
+    });
+    await orgStub.removeMember(identity!.userId, ownerId);
+    await orgStub.createInvitation(email, "member", ownerId);
+
+    await expect(
+      orgStub.claimSsoInvitedIdentity(connectionId, issuer, subject, email),
+    ).resolves.toMatchObject({
+      userId: identity!.userId,
+      membershipRevoked: false,
+    });
+    await expect(orgStub.getMember(identity!.userId)).resolves.toMatchObject({
+      role: "member",
+    });
+  });
+
   it("does not let a JIT claim silently acquire an existing global member identity", async () => {
     const { orgStub } = await freshOrg();
     const connectionId = crypto.randomUUID();

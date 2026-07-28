@@ -15,15 +15,16 @@ You will need:
 - A normal user in the identity provider that you can use for the connection
   test.
 
-Decide how users will be provisioned:
+Decide who may join through SSO:
 
-- **Just-in-time provisioning on:** A regular camelAI member is created the
-  first time an assigned user signs in with SSO. The user receives access to
-  the organization's first active workspace. They do not automatically receive
-  access to other or future workspaces.
-- **Just-in-time provisioning off:** The user must already be a member of the
-  camelAI organization with the same email address asserted by the identity
-  provider.
+- **Allow uninvited SSO users on:** A regular camelAI member is created the
+  first time any user allowed by the IdP and domain rules signs in. The user
+  receives access to the organization's first active workspace. They do not
+  automatically receive access to other or future workspaces.
+- **Allow uninvited SSO users off:** Existing members and users with an active
+  camelAI invitation may sign in. An invited user's tenant account is created
+  automatically during their first SSO sign-in, and the invitation's role and
+  workspace access are applied.
 
 Users do not need to sign in twice. An existing organization member is matched
 and linked during their first successful SSO sign-in.
@@ -74,15 +75,15 @@ Google may take several minutes to apply a newly added redirect URI.
 
 Return to **Settings → Organization → Single sign-on** and enter:
 
-| camelAI field                  | Google Workspace value                                   |
-| ------------------------------ | -------------------------------------------------------- |
-| Issuer URL                     | `https://accounts.google.com`                            |
-| Client ID                      | The Google OAuth client ID                               |
-| Client secret                  | The Google OAuth client secret                           |
-| Token endpoint authentication  | **Client secret POST**                                   |
-| Email claim                    | **email**                                                |
-| Allowed email domains          | Usually leave blank for the first test                   |
-| Just-in-time user provisioning | Enable if assigned users should be created automatically |
+| camelAI field                 | Google Workspace value                                                     |
+| ----------------------------- | -------------------------------------------------------------------------- |
+| Issuer URL                    | `https://accounts.google.com`                                              |
+| Client ID                     | The Google OAuth client ID                                                 |
+| Client secret                 | The Google OAuth client secret                                             |
+| Token endpoint authentication | **Client secret POST**                                                     |
+| Email claim                   | **email**                                                                  |
+| Allowed email domains         | Usually leave blank for the first test                                     |
+| Allow uninvited SSO users     | Enable only if every identity allowed by the IdP and domain rules may join |
 
 ### About allowed email domains
 
@@ -157,10 +158,14 @@ transaction, stable provider subject, email, and configured domain rules.
 - If the provider identity is already linked, camelAI signs in that member.
 - If an existing camelAI organization member has the asserted email, camelAI
   safely links that provider identity and signs them in.
-- If no member exists and JIT provisioning is enabled, camelAI creates a
-  tenant-scoped regular member and grants access to the first active workspace.
-- If no member exists and JIT provisioning is disabled, sign-in is denied
-  until an organization administrator adds the user.
+- If no member exists but an active invitation matches the asserted email,
+  camelAI creates a tenant-scoped account, consumes the invitation, and applies
+  its role and workspace access.
+- If no member or invitation exists and uninvited users are allowed, camelAI
+  creates a tenant-scoped regular member and grants access to the first active
+  workspace.
+- If no member or invitation exists and uninvited users are not allowed,
+  sign-in is denied.
 
 A JIT user cannot be created as a camelAI platform superuser. Enterprise SSO
 sessions are restricted to the organization that issued them.
@@ -169,10 +174,13 @@ sessions are restricted to the organization that issued them.
 
 ### Add a user
 
-- With JIT enabled, assign or permit the user in the identity provider and give
-  them the organization sign-in URL.
-- With JIT disabled, first add the exact email address as a camelAI
-  organization member, then give the user the organization sign-in URL.
+- If uninvited users are allowed, permit the user in the identity provider and
+  give them the organization sign-in URL.
+- If uninvited users are not allowed, invite the exact email address in
+  camelAI, choose its role and workspace access, and then give the user the
+  organization sign-in URL. The user does not need to accept the email link or
+  create a separate camelAI login first; the verified SSO identity consumes the
+  invitation.
 
 ### Remove a user
 
@@ -238,11 +246,11 @@ secret from being sent to a newly entered endpoint.
   domain.
 - Confirm the domain in camelAI matches the identity returned by Google.
 
-### “No organization member matches this enterprise identity”
+### “No organization member or active invitation matches this enterprise identity”
 
-JIT provisioning is disabled and no existing member has the asserted email.
-Add the user to the camelAI organization or enable JIT provisioning and retest
-the configuration.
+Uninvited SSO users are not allowed, and no active invitation has the exact
+email asserted by the IdP. Send a new camelAI invitation to that address or
+allow uninvited SSO users and retest the configuration.
 
 ### “This email is already bound to a different enterprise identity”
 

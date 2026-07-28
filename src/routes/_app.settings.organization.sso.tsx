@@ -375,11 +375,11 @@ export default function OrganizationSsoSettings() {
             </div>
             <div className="flex items-start justify-between gap-6 rounded-lg border p-4">
               <div className="space-y-1">
-                <Label htmlFor="sso-jit">Just-in-time user provisioning</Label>
+                <Label htmlFor="sso-jit">Allow uninvited SSO users</Label>
                 <p className="text-xs text-muted-foreground">
-                  Create a regular member when an IdP user signs in for the
-                  first time. New members receive full access to the first
-                  active workspace and can never be created as superusers.
+                  {jitProvisioningEnabled
+                    ? "Create a regular member for any identity allowed by the IdP and domain rules. New members receive full access to the first active workspace."
+                    : "Only existing members and users with an active invitation can sign in. Invited users are created automatically and receive the role and workspace access selected in their invitation."}
                 </p>
               </div>
               <Switch
@@ -387,7 +387,7 @@ export default function OrganizationSsoSettings() {
                 checked={jitProvisioningEnabled}
                 onCheckedChange={setJitProvisioningEnabled}
                 disabled={busy}
-                aria-label="Enable just-in-time user provisioning"
+                aria-label="Allow uninvited SSO users"
               />
             </div>
             {connectionTest && (

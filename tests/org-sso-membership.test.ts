@@ -3,6 +3,8 @@ import { ensureOrgMembership } from "../src/lib/org-sso.server";
 
 function authEnvWithWorkspaces(
   workspaces: Array<{ id: string; archived: boolean }>,
+  allWorkspaces = workspaces,
+  accessByWorkspace: Record<string, "full" | "none"> = {},
 ) {
   const setOrgLastWorkspace = vi.fn(async () => undefined);
   const setMemberAccess = vi.fn(async () => undefined);
@@ -13,6 +15,10 @@ function authEnvWithWorkspaces(
       joined_at: Date.now(),
     })),
     listUserWorkspaces: vi.fn(async () => workspaces),
+    getWorkspaces: vi.fn(async () => allWorkspaces),
+    getWorkspaceAccess: vi.fn(
+      async (workspaceId: string) => accessByWorkspace[workspaceId] ?? "full",
+    ),
   };
   const userStub = {
     getOrgs: vi.fn(async () => [
@@ -20,6 +26,7 @@ function authEnvWithWorkspaces(
     ]),
     hasOrg: vi.fn(async () => true),
     addOrg: vi.fn(async () => undefined),
+    updateOrgRole: vi.fn(async () => undefined),
     setOrgLastWorkspace,
   };
   const namespace = (stub: object) => ({
@@ -53,7 +60,14 @@ describe("enterprise SSO membership reconciliation", () => {
   });
 
   it("selects an authorized workspace and heals its WorkspaceDO access mirror", async () => {
-    const fixture = authEnvWithWorkspaces([{ id: "allowed", archived: false }]);
+    const fixture = authEnvWithWorkspaces(
+      [{ id: "allowed", archived: false }],
+      [
+        { id: "allowed", archived: false },
+        { id: "restricted", archived: false },
+      ],
+      { allowed: "full", restricted: "none" },
+    );
     await expect(
       ensureOrgMembership(fixture.env, { id: "org-1" } as never, "user-1"),
     ).resolves.toBe("allowed");
@@ -61,10 +75,22 @@ describe("enterprise SSO membership reconciliation", () => {
       "org-1",
       "allowed",
     );
-    expect(fixture.setMemberAccess).toHaveBeenCalledWith(
+    expect(fixture.setMemberAccess).toHaveBeenCalledTimes(2);
+    expect(fixture.setMemberAccess).toHaveBeenNthCalledWith(
+      1,
       "user-1",
       "full",
       "enterprise-sso-jit",
+    );
+    expect(fixture.setMemberAccess).toHaveBeenNthCalledWith(
+      2,
+      "user-1",
+      "none",
+      "enterprise-sso-jit",
+    );
+    expect(fixture.userStub.updateOrgRole).toHaveBeenCalledWith(
+      "org-1",
+      "member",
     );
   });
 
