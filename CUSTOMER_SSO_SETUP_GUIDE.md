@@ -167,8 +167,7 @@ transaction, stable provider subject, email, and configured domain rules.
 - If no member or invitation exists and uninvited users are not allowed,
   sign-in is denied.
 
-A JIT user cannot be created as a camelAI platform superuser. Enterprise SSO
-sessions are restricted to the organization that issued them.
+Enterprise SSO sessions are restricted to the organization that issued them.
 
 ## Managing and removing access
 
