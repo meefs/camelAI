@@ -44,6 +44,10 @@ import {
 } from '../../../src/lib/custom-domain-state';
 import { parseFilePreviewPath } from './preview-paths';
 import { formatDeterministicAutomation } from './code-mode-deterministic-automations';
+import {
+  discordChannelCatalogAvailable,
+  type DiscordBridgeFetcher,
+} from './discord-types';
 
 export interface McpEnv {
   ORG: DurableObjectNamespace<OrgDO>;
@@ -67,6 +71,10 @@ export interface McpEnv {
   WORKER_SELF_REFERENCE?: Fetcher;
   APP_DB?: D1Database;
   RUN_AGENT_EVALS?: string;
+  DISCORD_CHANNEL_ENABLED?: string;
+  DISCORD_CLIENT_ID?: string;
+  DISCORD_CLIENT_SECRET?: string;
+  DISCORD_BRIDGE?: DiscordBridgeFetcher;
 }
 
 // Headers used to pass auth context to the MCP DO
@@ -113,6 +121,23 @@ function recommendedIntegrationAccess(
         },
       ],
       routing: telegramRoutingNote(config),
+    };
+  }
+  if (integrationType === 'discord_channel') {
+    return {
+      tool: 'js_exec',
+      inspect_methods: 'await env.CONNECTIONS.methods()',
+      call_pattern: `await tools.send_discord_message({ integration_id: ${JSON.stringify(integrationId)}, text: "..." })`,
+      connection_id: integrationId,
+      recommended_actions: [
+        {
+          name: 'send_discord_message',
+          tool: 'tools.send_discord_message',
+          usage: `await tools.send_discord_message({ integration_id: ${JSON.stringify(integrationId)}, text: "..." })`,
+          description: 'Send a message through this native Discord channel.',
+          routing: 'The destination is fixed by the selected integration; never supply Discord channel or thread ids.',
+        },
+      ],
     };
   }
   return {
@@ -1184,7 +1209,12 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
           .describe('Optional category to filter integration types'),
       },
       async ({ category }) => {
-        const integrations = category ? getIntegrationsByCategory(category) : getAllIntegrations();
+        const catalogOptions = {
+          includeFeatureGated: await discordChannelCatalogAvailable(this.env),
+        };
+        const integrations = category
+          ? getIntegrationsByCategory(category, catalogOptions)
+          : getAllIntegrations(catalogOptions);
 
         const types = integrations.map((def) => ({
           connection_kind:
@@ -1264,6 +1294,15 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
           return this.textResponse({
             success: false,
             error: `Unknown integration type: ${integration_type}. Use list_integration_types to see available types.`,
+          });
+        }
+        if (
+          definition.featureGate === 'discord_channel' &&
+          !(await discordChannelCatalogAvailable(this.env))
+        ) {
+          return this.textResponse({
+            success: false,
+            error: 'Discord channel connections are not available in this environment.',
           });
         }
 

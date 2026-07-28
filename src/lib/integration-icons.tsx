@@ -1,6 +1,6 @@
 import type { CSSProperties, ReactNode } from 'react';
 import { Settings } from 'lucide-react';
-import { logoRegistry } from '@/lib/integration-logo-registry';
+import { integrationLogoAliases, logoRegistry } from '@/lib/integration-logo-registry';
 import { cn } from '@/lib/utils';
 
 interface IntegrationIconProps {
@@ -22,7 +22,8 @@ export function IntegrationIcon({
   className,
   size = 20,
 }: IntegrationIconProps): ReactNode {
-  const variant = logoRegistry[type];
+  const logoType = integrationLogoAliases[type] ?? type;
+  const variant = logoRegistry[logoType];
 
   if (!variant) {
     // No logo registered - show fallback
@@ -33,8 +34,8 @@ export function IntegrationIcon({
     const style = {
       width: size,
       height: size,
-      '--integration-icon-light': `url(/logos/${type}_light.svg)`,
-      '--integration-icon-dark': `url(/logos/${type}_dark.svg)`,
+      '--integration-icon-light': `url(/logos/${logoType}_light.svg)`,
+      '--integration-icon-dark': `url(/logos/${logoType}_dark.svg)`,
     } as CSSProperties;
 
     return (
@@ -52,7 +53,7 @@ export function IntegrationIcon({
 
   // The camelAI mark is the application favicon, rather than an integration
   // asset. Reference it directly so nested SVG image loading cannot hide it.
-  const src = type === 'camelai' ? '/favicon.svg' : `/logos/${type}.svg`;
+  const src = logoType === 'camelai' ? '/favicon.svg' : `/logos/${logoType}.svg`;
 
   return (
     <img
@@ -69,7 +70,7 @@ export function IntegrationIcon({
  * Check if a logo exists for an integration type
  */
 export function hasIntegrationIcon(type: string): boolean {
-  return Object.hasOwn(logoRegistry, type);
+  return Object.hasOwn(logoRegistry, integrationLogoAliases[type] ?? type);
 }
 
 /**
@@ -82,6 +83,7 @@ export function resolveLogoType(
   integrationType: string,
   nameHints?: (string | undefined | null)[]
 ): string {
+  if (Object.hasOwn(integrationLogoAliases, integrationType)) return integrationType;
   if (Object.hasOwn(logoRegistry, integrationType)) return integrationType;
 
   if (nameHints) {

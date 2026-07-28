@@ -2,6 +2,7 @@ export const CHANNEL_INDICATOR_KIND_ORDER = [
   "email",
   "slack",
   "telegram",
+  "discord",
 ] as const;
 
 export type ChannelIndicatorKind =

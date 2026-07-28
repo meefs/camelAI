@@ -29,8 +29,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { AlertCircle, ExternalLink } from 'lucide-react';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Checkbox } from '@/components/ui/checkbox';
+import { AlertCircle, ExternalLink, ShieldAlert } from 'lucide-react';
 import { SnowflakeCredentialsForm } from '@/components/snowflake-credentials-form';
 import { SandboxIpNotice } from '@/components/connections/sandbox-ip-notice';
 
@@ -82,6 +83,7 @@ export function AddConnectionDialog({
 }: AddConnectionDialogProps) {
   const fetcher = useFetcher<{ success?: boolean; error?: string; oauthUrl?: string }>();
   const [form, setForm] = useState(getEmptyConnectionFormState);
+  const [discordSecurityAcknowledged, setDiscordSecurityAcknowledged] = useState(false);
   const { name, config, credentials, error } = form;
 
   const submitting = fetcher.state !== 'idle';
@@ -121,6 +123,7 @@ export function AddConnectionDialog({
 
   const handleClose = () => {
     setForm(getEmptyConnectionFormState());
+    setDiscordSecurityAcknowledged(false);
     onOpenChange(false);
   };
 
@@ -178,9 +181,44 @@ export function AddConnectionDialog({
               </Alert>
             ) : null}
 
+            {connectionType === 'discord_channel' ? (
+              <>
+                <Alert>
+                  <AlertDescription>
+                    You&apos;ll choose a Discord server, then return here to select one text
+                    channel.
+                  </AlertDescription>
+                </Alert>
+                <Alert variant="destructive">
+                  <ShieldAlert className="size-4" />
+                  <AlertTitle>Discord members can instruct this workspace</AlertTitle>
+                  <AlertDescription>
+                    Anyone who can post in the selected Discord channel can use this
+                    workspace&apos;s files, connected services, credits, and deploy permissions.
+                    Use a private or appropriately restricted channel.
+                  </AlertDescription>
+                </Alert>
+                <div className="flex items-start gap-2">
+                  <Checkbox
+                    id="discord-install-security"
+                    checked={discordSecurityAcknowledged}
+                    onCheckedChange={(checked) => setDiscordSecurityAcknowledged(checked === true)}
+                  />
+                  <Label
+                    htmlFor="discord-install-security"
+                    className="text-xs font-normal leading-5"
+                  >
+                    I understand that Discord members can instruct Camel with this
+                    workspace&apos;s authority.
+                  </Label>
+                </div>
+              </>
+            ) : null}
+
             {/* Name field */}
-            <div className="grid gap-1.5">
-              <Label htmlFor="name">Name</Label>
+            {connectionType !== 'discord_channel' ? (
+              <div className="grid gap-1.5">
+                <Label htmlFor="name">Name</Label>
                 <Input
                   id="name"
                   value={name}
@@ -192,7 +230,8 @@ export function AddConnectionDialog({
               <p className="text-xs text-muted-foreground">
                 A friendly name to identify this connection
               </p>
-            </div>
+              </div>
+            ) : null}
 
             {/* Config fields */}
             {typeDef.configSchema.flatMap((field) => {
@@ -301,11 +340,10 @@ export function AddConnectionDialog({
             )}
 
             {/* OAuth flow for supported integrations */}
-            {hasOAuthFlow && (
+            {hasOAuthFlow && connectionType !== 'discord_channel' && (
               <Alert>
                 <AlertDescription>
-                  Click the button below to connect your {typeDef.displayName} account.
-                  You&apos;ll be redirected to authorize access.
+                  {`Click the button below to connect your ${typeDef.displayName} account. You’ll be redirected to authorize access.`}
                 </AlertDescription>
               </Alert>
             )}
@@ -335,13 +373,21 @@ export function AddConnectionDialog({
             {hasOAuthFlow ? (
               <Button
                 type="button"
+                disabled={connectionType === 'discord_channel' && !discordSecurityAcknowledged}
                 onClick={() => {
                   // Redirect to OAuth flow
-                  window.location.href = `/api/integrations/${connectionType}/oauth?redirect=/connections`;
+                  const oauthType = connectionType === 'discord_channel' ? 'discord' : connectionType;
+                  const params = new URLSearchParams({ redirect: '/connections' });
+                  if (connectionType === 'discord_channel') {
+                    params.set('security_acknowledged', 'true');
+                  }
+                  window.location.href = `/api/integrations/${oauthType}/oauth?${params.toString()}`;
                 }}
               >
                 <ExternalLink className="mr-2 size-4" />
-                Connect {typeDef.displayName}
+                {connectionType === 'discord_channel'
+                  ? 'Add Camel to Discord'
+                  : `Connect ${typeDef.displayName}`}
               </Button>
             ) : (
               <Button

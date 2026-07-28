@@ -150,8 +150,27 @@ import { buildLogTail, cleanBuildLog, projectBuildSandboxKey, runProjectBuild } 
 import type { ProjectBuildSandboxLike } from "../../project-worker-bundle.js";
 import { waitUntil } from "cloudflare:workers";
 import { refreshOrgCustomDomainHostnamesForAdmin } from "../../../../../src/lib/admin-custom-domain.server.js";
+import {
+  discordApplicationIdConfigured,
+  discordBridgeClient,
+  discordChannelEnabled,
+  discordClientSecretConfigured,
+} from "../../discord-types.js";
 
 type HonoEnv = { Bindings: Env };
+
+const DiscordBridgeAdminStatusSchema = z.object({
+  ok: z.boolean(),
+  main: z.object({
+    applicationId: z.string().nullable(),
+    featureEnabled: z.boolean(),
+    clientIdConfigured: z.boolean(),
+    clientSecretConfigured: z.boolean(),
+    bridgeBound: z.boolean(),
+  }),
+  bridge: z.record(z.string(), z.unknown()).nullable(),
+  issues: z.array(z.string()),
+});
 
 function centsFromUsd(value: number): number {
   return Math.round(value * 100);
@@ -540,6 +559,97 @@ routes.use("*", async (c, next) => {
     c.res.headers.set("Cache-Control", "private, max-age=30");
   }
 });
+
+// ---------------------------------------------------------------------------
+// GET /discord/status
+// ---------------------------------------------------------------------------
+
+routes.get(
+  "/discord/status",
+  openApi({
+    summary: "Discord canary configuration and bridge health",
+    responses: {
+      200: DiscordBridgeAdminStatusSchema,
+      503: DiscordBridgeAdminStatusSchema,
+    },
+  }),
+  async (c) => {
+    const clientIdConfigured = discordApplicationIdConfigured(c.env.DISCORD_CLIENT_ID);
+    const clientSecretConfigured = discordClientSecretConfigured(c.env.DISCORD_CLIENT_SECRET);
+    const issues: string[] = [];
+    if (!clientIdConfigured) issues.push("main_client_id_invalid");
+    if (!clientSecretConfigured) issues.push("main_client_secret_missing");
+    if (!c.env.DISCORD_BRIDGE) issues.push("bridge_binding_missing");
+
+    let bridge: Record<string, unknown> | null = null;
+    if (c.env.DISCORD_BRIDGE) {
+      try {
+        bridge = { ...await discordBridgeClient(c.env.DISCORD_BRIDGE).status() };
+      } catch (error) {
+        issues.push(
+          error instanceof Error
+            ? `bridge_status_failed:${error.message}`
+            : "bridge_status_failed",
+        );
+      }
+    }
+    if (
+      bridge &&
+      typeof bridge.applicationId === "string" &&
+      c.env.DISCORD_CLIENT_ID &&
+      bridge.applicationId !== c.env.DISCORD_CLIENT_ID
+    ) {
+      issues.push("application_id_mismatch");
+    }
+    if (bridge) {
+      const bridgeApplicationId = typeof bridge.applicationId === "string"
+        ? bridge.applicationId
+        : null;
+      const bridgeBotUserId = typeof bridge.botUserId === "string"
+        ? bridge.botUserId
+        : null;
+      if (!bridgeBotUserId) {
+        issues.push("bridge_bot_identity_missing");
+      } else if (bridgeApplicationId && bridgeBotUserId !== bridgeApplicationId) {
+        issues.push("bridge_bot_identity_mismatch");
+      }
+      const gateway = bridge.gateway && typeof bridge.gateway === "object"
+        ? bridge.gateway as Record<string, unknown>
+        : null;
+      const gatewayState = typeof gateway?.state === "string" ? gateway.state : null;
+      if (gatewayState !== "ready" && gatewayState !== "resumed") {
+        issues.push("gateway_not_ready");
+      }
+      const lastHeartbeatAckAt = Number(gateway?.lastHeartbeatAckAt);
+      const heartbeatIntervalMs = Number(gateway?.heartbeatIntervalMs);
+      const freshnessWindow = Math.max(
+        120_000,
+        Number.isFinite(heartbeatIntervalMs) ? heartbeatIntervalMs * 2 : 0,
+      );
+      if (
+        !Number.isFinite(lastHeartbeatAckAt) ||
+        lastHeartbeatAckAt <= 0 ||
+        Date.now() - lastHeartbeatAckAt > freshnessWindow
+      ) {
+        issues.push("gateway_heartbeat_stale");
+      }
+    }
+
+    const payload = {
+      ok: issues.length === 0,
+      main: {
+        applicationId: c.env.DISCORD_CLIENT_ID?.trim() || null,
+        featureEnabled: discordChannelEnabled(c.env),
+        clientIdConfigured,
+        clientSecretConfigured,
+        bridgeBound: Boolean(c.env.DISCORD_BRIDGE),
+      },
+      bridge,
+      issues,
+    };
+    return c.json(payload, issues.length === 0 && bridge ? 200 : 503);
+  },
+);
 
 // ---------------------------------------------------------------------------
 // GET /stats

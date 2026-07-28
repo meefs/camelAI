@@ -20,7 +20,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { PromptInput } from '@/components/prompt-input';
 import { ConnectionPicker } from '@/components/connection-picker';
 import { Skeleton } from '@/components/ui/skeleton';
-import { INTEGRATION_REGISTRY } from '@/lib/integration-registry';
+import { getAllIntegrations } from '@/lib/integration-registry';
 import { IntegrationIcon } from '@/lib/integration-icons';
 import {
   buildSlugMap,
@@ -85,7 +85,7 @@ interface WelcomeScreenProps {
 
 const EMPTY_INTEGRATIONS: Integration[] = [];
 const EMPTY_PROJECTS: MentionableProject[] = [];
-const ALL_INTEGRATION_DEFS = Object.values(INTEGRATION_REGISTRY).map((def) => ({
+const ALL_INTEGRATION_DEFS = getAllIntegrations().map((def) => ({
   type: def.type,
   displayName: def.displayName,
   category: def.category,

@@ -6,7 +6,8 @@ import {
   type ConnectionContract,
 } from "@/lib/connection-contract";
 
-export const CHANNEL_INTEGRATION_TYPES = ["slack", "telegram"] as const;
+export const CHANNEL_INTEGRATION_TYPES = ["slack", "telegram", "discord_channel"] as const;
+export const DISCORD_BOT_MENTION = "@Camel";
 
 export type ChannelIntegrationType = (typeof CHANNEL_INTEGRATION_TYPES)[number];
 export type ConnectionSort = "updated" | "name" | "created";
@@ -25,6 +26,13 @@ export interface ConnectionListItem extends Integration {
     team_id?: string | null;
     team_name?: string | null;
     bot_user_id?: string | null;
+    guild_id?: string | null;
+    guild_name?: string | null;
+    parent_channel_id?: string | null;
+    parent_channel_name?: string | null;
+    message_content_mode?: string | null;
+    status?: string | null;
+    error_code?: string | null;
   };
   definitionMetadata?: {
     source: string;
@@ -184,6 +192,11 @@ const DETAIL_FIELDS_BY_TYPE: Record<string, DetailField[]> = {
   anthropic: [{ label: "Provider", keys: ["display_name"] }],
   openrouter: [{ label: "Provider", keys: ["display_name"] }],
   discord: [{ label: "Application ID", keys: ["application_id"] }],
+  discord_channel: [
+    { label: "Server", keys: ["guild_name", "guild_id"] },
+    { label: "Channel", keys: ["parent_channel_name", "parent_channel_id"] },
+    { label: "Content mode", keys: ["message_content_mode"] },
+  ],
   teams: [{ label: "Tenant ID", keys: ["tenant_id"] }],
 };
 
@@ -260,6 +273,7 @@ export function canReconnectConnection(connection: ConnectionListItem): boolean 
   if (connection.integration_type === "telegram") return false;
   if (
     connection.integration_type === "slack" ||
+    connection.integration_type === "discord_channel" ||
     connection.integration_type === "notion" ||
     connection.integration_type === "salesforce"
   ) {
@@ -269,6 +283,128 @@ export function canReconnectConnection(connection: ConnectionListItem): boolean 
     connection.integration_type === "remote_mcp" &&
     connection.config.auth_type === "oauth"
   );
+}
+
+export function getDiscordChannelMetadata(connection: ConnectionListItem): {
+  guild_id: string | null;
+  guild_name: string | null;
+  parent_channel_id: string | null;
+  parent_channel_name: string | null;
+  message_content_mode: string | null;
+  status: string | null;
+  error_code: string | null;
+  reauthorization_pending: boolean;
+} {
+  const pendingReauthorization = connection.config.pending_reauthorization;
+  return {
+    guild_id:
+      connection.channelMetadata?.guild_id ??
+      stringConfigValue(connection.config, "guild_id"),
+    guild_name:
+      connection.channelMetadata?.guild_name ??
+      stringConfigValue(connection.config, "guild_name"),
+    parent_channel_id:
+      connection.channelMetadata?.parent_channel_id ??
+      stringConfigValue(connection.config, "parent_channel_id"),
+    parent_channel_name:
+      connection.channelMetadata?.parent_channel_name ??
+      stringConfigValue(connection.config, "parent_channel_name"),
+    message_content_mode:
+      connection.channelMetadata?.message_content_mode ??
+      stringConfigValue(connection.config, "message_content_mode"),
+    status:
+      connection.channelMetadata?.status ??
+      stringConfigValue(connection.config, "status"),
+    error_code:
+      connection.channelMetadata?.error_code ??
+      stringConfigValue(connection.config, "error_code"),
+    reauthorization_pending:
+      Boolean(
+        pendingReauthorization &&
+        typeof pendingReauthorization === "object" &&
+        !Array.isArray(pendingReauthorization),
+      ),
+  };
+}
+
+export const DISCORD_PERMISSION_LABELS: Record<string, string> = {
+  VIEW_CHANNEL: "View Channel",
+  SEND_MESSAGES: "Send Messages",
+  EMBED_LINKS: "Embed Links",
+  ATTACH_FILES: "Attach Files",
+  READ_MESSAGE_HISTORY: "Read Message History",
+  CREATE_PUBLIC_THREADS: "Create Public Threads",
+  SEND_MESSAGES_IN_THREADS: "Send Messages in Threads",
+};
+
+export function formatDiscordPermissionList(names: string[]): string {
+  return names
+    .map((name) => DISCORD_PERMISSION_LABELS[name] ?? name)
+    .join(", ");
+}
+
+export type DiscordChannelBlockReason =
+  | { kind: "no_access" }
+  | { kind: "missing_permissions"; label: string };
+
+export function getDiscordChannelBlockReason(channel: {
+  canActivate: boolean;
+  missingPermissions: string[];
+}): DiscordChannelBlockReason | null {
+  if (channel.canActivate) return null;
+  if (channel.missingPermissions.includes("VIEW_CHANNEL")) {
+    return { kind: "no_access" };
+  }
+  return {
+    kind: "missing_permissions",
+    label: formatDiscordPermissionList(channel.missingPermissions),
+  };
+}
+
+export const DISCORD_STATUS_LABELS: Record<string, string> = {
+  pending_channel: "Waiting for channel selection",
+  active: "Active",
+  disconnected: "Disconnected",
+  setup_error: "Setup error",
+};
+
+export function getChannelAttentionBadge(
+  connection: ConnectionListItem,
+): { label: string; tooltip: string } | null {
+  if (connection.integration_type === "discord_channel") {
+    const metadata = getDiscordChannelMetadata(connection);
+    if (metadata.status === "pending_channel") {
+      return {
+        label: "Finish setup",
+        tooltip: `Camel is installed in ${metadata.guild_name ?? "your server"} but no channel is selected yet.`,
+      };
+    }
+    if (metadata.status === "disconnected") {
+      return {
+        label: "Disconnected",
+        tooltip: "Camel is not connected to a channel. Open to reconnect.",
+      };
+    }
+    if (metadata.status === "setup_error") {
+      return {
+        label: "Setup error",
+        tooltip: "Something went wrong during setup. Open to retry.",
+      };
+    }
+    return null;
+  }
+
+  if (
+    connection.integration_type === "telegram" &&
+    stringConfigValue(connection.config, "status") === "pending"
+  ) {
+    return {
+      label: "Finish setup",
+      tooltip: "Open to finish linking your Telegram chat.",
+    };
+  }
+
+  return null;
 }
 
 export function getSlackChannelMetadata(connection: ConnectionListItem): {

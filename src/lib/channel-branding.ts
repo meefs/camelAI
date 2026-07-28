@@ -17,6 +17,7 @@ export const CHANNEL_BRANDS: Record<ChannelIndicatorKind, ChannelBrand> = {
   email: { kind: "email", label: "Email", icon: Mail },
   slack: { kind: "slack", label: "Slack", logoType: "slack" },
   telegram: { kind: "telegram", label: "Telegram", logoType: "telegram" },
+  discord: { kind: "discord", label: "Discord", logoType: "discord" },
 };
 
 export function getChannelBrand(kind?: string | null): ChannelBrand | null {

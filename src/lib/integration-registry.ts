@@ -60,7 +60,13 @@ export interface IntegrationDefinition {
   configSchema: ConfigField[];
   credentialSchema: CredentialField[];
   oauthConfig?: OAuthConfig;
+  featureGate?: 'discord_channel';
   requiresOutboundIpAllowlist?: boolean;
+  deprecated?: {
+    hiddenFromCreate: boolean;
+    replacementType?: string;
+    message: string;
+  };
 }
 
 export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
@@ -289,6 +295,22 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     authMethod: 'api_key',
     configSchema: [],
     credentialSchema: [],
+  },
+
+  discord_channel: {
+    type: 'discord_channel',
+    displayName: 'Discord',
+    description: 'Connect a Discord server channel through the shared Camel bot',
+    category: 'communication',
+    authMethod: 'oauth2',
+    featureGate: 'discord_channel',
+    configSchema: [],
+    credentialSchema: [],
+    oauthConfig: {
+      authorizationUrl: 'https://discord.com/oauth2/authorize',
+      tokenUrl: 'https://discord.com/api/v10/oauth2/token',
+      scopes: ['bot'],
+    },
   },
 
   openai: {
@@ -1137,8 +1159,8 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
 
   discord: {
     type: 'discord',
-    displayName: 'Discord',
-    description: 'Discord bot and webhook integration',
+    displayName: 'Discord bot token (legacy)',
+    description: 'Legacy credential-only Discord bot connection',
     category: 'communication',
     authMethod: 'api_key',
     configSchema: [
@@ -1159,6 +1181,11 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
         description: 'Bot token from discord.com/developers/applications',
       },
     ],
+    deprecated: {
+      hiddenFromCreate: true,
+      replacementType: 'discord_channel',
+      message: 'Install the shared Camel Discord app for native channel support.',
+    },
   },
 
   teams: {
@@ -1505,8 +1532,25 @@ export function hasManagedOAuthFlow(
   return definition?.authMethod === 'oauth2' && Boolean(definition.oauthConfig);
 }
 
-export function getIntegrationsByCategory(category: IntegrationCategory): IntegrationDefinition[] {
-  return Object.values(INTEGRATION_REGISTRY).filter((def) => def.category === category);
+export interface IntegrationCatalogOptions {
+  includeFeatureGated?: boolean;
+}
+
+function isVisibleInCatalog(
+  definition: IntegrationDefinition,
+  options: IntegrationCatalogOptions,
+): boolean {
+  return !definition.deprecated?.hiddenFromCreate &&
+    (options.includeFeatureGated === true || !definition.featureGate);
+}
+
+export function getIntegrationsByCategory(
+  category: IntegrationCategory,
+  options: IntegrationCatalogOptions = {},
+): IntegrationDefinition[] {
+  return Object.values(INTEGRATION_REGISTRY).filter(
+    (definition) => definition.category === category && isVisibleInCatalog(definition, options),
+  );
 }
 
 export function getAllCategories(): IntegrationCategory[] {
@@ -1514,8 +1558,12 @@ export function getAllCategories(): IntegrationCategory[] {
   return [...categories];
 }
 
-export function getAllIntegrations(): IntegrationDefinition[] {
-  return Object.values(INTEGRATION_REGISTRY);
+export function getAllIntegrations(
+  options: IntegrationCatalogOptions = {},
+): IntegrationDefinition[] {
+  return Object.values(INTEGRATION_REGISTRY).filter((definition) =>
+    isVisibleInCatalog(definition, options)
+  );
 }
 
 export function validateConfig(type: string, config: Record<string, unknown>): string[] {

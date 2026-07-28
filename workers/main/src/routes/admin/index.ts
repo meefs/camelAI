@@ -22,6 +22,7 @@
  *   GET   /api/admin/dashboard/retention   — Dashboard retention metrics
  *   GET   /api/admin/dashboard/spam-summary — Spam-tab entity + usage snapshot
  *   GET   /api/admin/chat-errors          — User-visible chat error dashboard data
+ *   GET   /api/admin/discord/status       — Discord canary configuration and bridge health
  *   GET   /api/admin/threads               — All threads
  *   GET   /api/admin/threads/:id/messages  — Parsed thread messages
  *   PUT   /api/admin/orgs/:id/model-access — Update org model access

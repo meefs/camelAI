@@ -19,9 +19,17 @@ import {
   normalizeRemoteMcpUrl,
   validateRemoteMcpConnection,
 } from "../../../src/lib/remote-mcp";
+import {
+  discordChannelCatalogAvailable,
+  type DiscordBridgeFetcher,
+} from "./discord-types";
 
 interface CodeModeIntegrationsEnv {
   INTEGRATION_SECRET_KEY: string;
+  DISCORD_CHANNEL_ENABLED?: string;
+  DISCORD_CLIENT_ID?: string;
+  DISCORD_CLIENT_SECRET?: string;
+  DISCORD_BRIDGE?: DiscordBridgeFetcher;
 }
 
 interface CodeModeIntegrationsOptions {
@@ -75,6 +83,17 @@ function recommendedChannelActions(
   integration: IntegrationAccessMetadata,
   connectedTelegramCount?: number,
 ): Record<string, unknown>[] {
+  if (integration.type === "discord_channel") {
+    return [
+      {
+        name: "send_discord_message",
+        tool: "tools.send_discord_message",
+        usage: `await tools.send_discord_message({ integration_id: ${JSON.stringify(integration.id)}, text: "..." })`,
+        description: "Send a Discord message from js_exec through this connected native channel.",
+        routing: "The destination is restricted to this integration's configured channel; do not supply channel or thread ids.",
+      },
+    ];
+  }
   if (integration.type !== "telegram") return [];
   return [
     {
@@ -100,6 +119,16 @@ function recommendedAccess(
       connection_id: integration.id,
       recommended_actions: recommendedActions,
       routing: telegramRoutingNote(integration.config, connectedTelegramCount),
+    };
+  }
+  if (integration.type === "discord_channel") {
+    return {
+      tool: "js_exec",
+      inspect_methods: "await env.CONNECTIONS.methods()",
+      call_pattern: `await tools.send_discord_message({ integration_id: ${JSON.stringify(integration.id)}, text: "..." })`,
+      connection_id: integration.id,
+      recommended_actions: recommendedActions,
+      routing: "Messages are sent only to the configured Discord channel or originating Camel-created thread.",
     };
   }
   return {
@@ -196,7 +225,7 @@ export class CodeModeIntegrations {
     };
   }
 
-  listTypes(args: Record<string, unknown>): unknown {
+  async listTypes(args: Record<string, unknown>): Promise<unknown> {
     const category = typeof args.category === "string" ? args.category : "";
     const validCategory: IntegrationCategory | "" =
       category === "databases" ||
@@ -206,7 +235,12 @@ export class CodeModeIntegrations {
       category === "communication"
         ? category
         : "";
-    const definitions = validCategory ? getIntegrationsByCategory(validCategory) : getAllIntegrations();
+    const catalogOptions = {
+      includeFeatureGated: await discordChannelCatalogAvailable(this.options.env),
+    };
+    const definitions = validCategory
+      ? getIntegrationsByCategory(validCategory, catalogOptions)
+      : getAllIntegrations(catalogOptions);
     const types = definitions.map((definition) => {
       const contract = getConnectionContract(definition.type);
       return {
@@ -261,6 +295,15 @@ export class CodeModeIntegrations {
       return {
         success: false,
         error: `Unknown integration type: ${integrationType}. Use list_integration_types to see available types.`,
+      };
+    }
+    if (
+      definition.featureGate === "discord_channel" &&
+      !(await discordChannelCatalogAvailable(this.options.env))
+    ) {
+      return {
+        success: false,
+        error: "Discord channel connections are not available in this environment.",
       };
     }
     const configErrors = validateConfig(integrationType, config);
@@ -450,6 +493,15 @@ export class CodeModeIntegrations {
       return {
         success: false,
         error: `Unknown integration type: ${integrationType}. Use list_integration_types to see available types.`,
+      };
+    }
+    if (
+      definition.featureGate === "discord_channel" &&
+      !(await discordChannelCatalogAvailable(this.options.env))
+    ) {
+      return {
+        success: false,
+        error: "Discord channel connections are not available in this environment.",
       };
     }
     const dynamicSchema = integrationType === "other" && Array.isArray(args.fields)

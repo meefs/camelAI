@@ -55,4 +55,12 @@ describe("IntegrationIcon", () => {
     expect(icon.tagName).toBe("IMG");
     expect(icon).toHaveAttribute("src", "/logos/google_analytics.svg");
   });
+
+  it("aliases the native Discord connection to the existing Discord asset", () => {
+    render(<IntegrationIcon type="discord_channel" size={16} />);
+
+    const icon = screen.getByRole("img", { name: "discord_channel" });
+    expect(icon.tagName).toBe("IMG");
+    expect(icon).toHaveAttribute("src", "/logos/discord.svg");
+  });
 });

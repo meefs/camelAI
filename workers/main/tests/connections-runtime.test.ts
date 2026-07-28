@@ -63,6 +63,7 @@ function envWith(
   records: WorkspaceIntegrationRecord[],
   onAuthStatus?: (id: string, status: string, code: string | null, message: string | null) => void,
   onVerification?: (id: string, verification: Record<string, unknown>) => void,
+  overrides: Partial<ConnectionsRuntimeEnv> = {},
 ): ConnectionsRuntimeEnv {
   const orgStub = {
     getWorkspaceIntegrations: async () => records,
@@ -106,6 +107,7 @@ function envWith(
         },
       }),
     } as unknown as ConnectionsRuntimeEnv['WORKSPACE'],
+    ...overrides,
   };
 }
 
@@ -916,6 +918,70 @@ describe('connections runtime', () => {
     );
   });
 
+  it('keeps native Discord bounded to its virtual channel send action', async () => {
+    const records = [
+      integration({
+        id: 'discord_native',
+        integration_type: 'discord_channel',
+        name: 'product-support',
+        category: 'communication',
+        config: JSON.stringify({
+          schema_version: 1,
+          status: 'active',
+          application_id: 'app-1',
+          guild_id: 'guild-1',
+          guild_name: 'Camel',
+          parent_channel_id: 'channel-1',
+          parent_channel_name: 'product-support',
+          binding_version: 3,
+          message_content_mode: 'full',
+        }),
+      }),
+    ];
+
+    await expect(listConnections(envWith(records), context)).resolves.toMatchObject([
+      {
+        id: 'discord_native',
+        type: 'discord_channel',
+        capabilities: ['channel_send'],
+        nativeMcp: null,
+        recommendedActions: [
+          {
+            name: 'send_discord_message',
+            tool: 'tools.send_discord_message',
+            usage: 'await tools.send_discord_message({ integration_id: "discord_native", text: "Hello" })',
+          },
+        ],
+      },
+    ]);
+
+    const catalog = await listConnectionMethods(envWith(records), context);
+    expect(catalog).toMatchObject([
+      {
+        alias: 'discordChannelProductSupport',
+        methods: [
+          {
+            name: 'sendDiscordMessage',
+            tool: 'send_discord_message',
+            invokeVia: 'tools.send_discord_message',
+          },
+        ],
+      },
+    ]);
+    await expect(listConnectionTools(envWith(records), context, 'discord_native'))
+      .rejects.toMatchObject({
+        message: 'Connection type "discord_channel" does not have MCP-backed tools.',
+        status: 404,
+      });
+    await expect(invokeConnectionMethod(envWith(records), context, {
+      connection: 'discordChannelProductSupport',
+      method: 'sendDiscordMessage',
+      input: { text: 'Hello' },
+    })).rejects.toThrow(
+      'Discord send is available in js_exec as tools.send_discord_message(...)',
+    );
+  });
+
   it('invokes native Resend fetch methods with server-side auth and User-Agent', async () => {
     const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
       expect(String(url)).toBe('https://api.resend.com/emails');
@@ -1354,6 +1420,164 @@ describe('connections runtime', () => {
       status: 'ready',
       live: true,
     }));
+  });
+
+  it('requires healthy Discord bridge ownership and ignores stale product versions', async () => {
+    const applicationId = '123456789012345678';
+    const records = [integration({
+      id: 'discord_support',
+      integration_type: 'discord_channel',
+      name: 'support',
+      category: 'communication',
+      auth_method: 'oauth2',
+      config: JSON.stringify({
+        schema_version: 1,
+        status: 'active',
+        application_id: applicationId,
+        guild_id: 'guild-1',
+        guild_name: 'Camel',
+        parent_channel_id: 'parent-1',
+        parent_channel_name: 'support',
+        bot_user_id: applicationId,
+        binding_version: 7,
+        message_content_mode: 'full',
+      }),
+    })];
+    const bridgeFetch = vi.fn(async (request: Request) => {
+      const path = new URL(request.url).pathname;
+      if (path === '/internal/v1/status') {
+        return Response.json({
+          ok: true,
+          applicationId,
+          botUserId: applicationId,
+          readiness: { ready: true, status: 'ready', reason: 'ready', message: 'Bridge ready' },
+          gateway: { state: 'ready', lastHeartbeatAckAt: Date.now() },
+        });
+      }
+      return Response.json({
+        ok: true,
+        verification: {
+          status: 'ready',
+          message: 'Discord channel is ready',
+          checkedAt: Date.now(),
+          binding: {
+            integrationId: 'discord_support',
+            orgId: 'org_1',
+            workspaceId: 'ws_1',
+            guildId: 'guild-1',
+            parentChannelId: 'parent-1',
+            version: 7,
+          },
+        },
+      });
+    });
+    const discordEnv = {
+      DISCORD_CHANNEL_ENABLED: 'true',
+      DISCORD_CLIENT_ID: applicationId,
+      DISCORD_CLIENT_SECRET: 'test-discord-client-secret-value',
+      DISCORD_BRIDGE: { fetch: bridgeFetch },
+    } as Partial<ConnectionsRuntimeEnv>;
+
+    await expect(verifyConnection(
+      envWith(records, undefined, undefined, discordEnv),
+      context,
+      'discord_support',
+    )).resolves.toMatchObject({
+      ok: true,
+      status: 'ready',
+      live: true,
+      strategy: 'discord_channel_access',
+    });
+
+    const mismatchedBindingFetch = vi.fn(async (request: Request) => {
+      const response = await bridgeFetch(request);
+      if (new URL(request.url).pathname === '/internal/v1/status') return response;
+      const body = await response.json() as {
+        verification: { binding: { version: number } };
+      };
+      body.verification.binding.version = 8;
+      return Response.json({ ok: true, ...body });
+    });
+    await expect(verifyConnection(
+      envWith(records, undefined, undefined, {
+        ...discordEnv,
+        DISCORD_BRIDGE: { fetch: mismatchedBindingFetch },
+      }),
+      context,
+      'discord_support',
+    )).resolves.toMatchObject({
+      ok: true,
+      status: 'ready',
+    });
+  });
+
+  it('degrades Discord when globally disabled or bridge health is stale', async () => {
+    const applicationId = '123456789012345678';
+    const records = [integration({
+      id: 'discord_support',
+      integration_type: 'discord_channel',
+      name: 'support',
+      category: 'communication',
+      auth_method: 'oauth2',
+      config: JSON.stringify({
+        schema_version: 1,
+        status: 'active',
+        application_id: applicationId,
+        guild_id: 'guild-1',
+        guild_name: 'Camel',
+        parent_channel_id: 'parent-1',
+        parent_channel_name: 'support',
+        bot_user_id: applicationId,
+        binding_version: 7,
+        message_content_mode: 'full',
+      }),
+    })];
+    const darkFetch = vi.fn();
+    await expect(verifyConnection(
+      envWith(records, undefined, undefined, { DISCORD_BRIDGE: { fetch: darkFetch } }),
+      context,
+      'discord_support',
+    )).resolves.toMatchObject({
+      ok: false,
+      status: 'degraded',
+      message: expect.stringContaining('unavailable'),
+    });
+    expect(darkFetch).not.toHaveBeenCalled();
+
+    const staleFetch = vi.fn(async (request: Request) => {
+      if (new URL(request.url).pathname === '/internal/v1/status') {
+        return Response.json({
+          ok: true,
+          applicationId,
+          botUserId: applicationId,
+          readiness: {
+            ready: false,
+            status: 'degraded',
+            reason: 'heartbeat_stale',
+            message: 'Discord Gateway heartbeat acknowledgement is stale',
+          },
+          gateway: { state: 'ready', lastHeartbeatAckAt: 1 },
+        });
+      }
+      return Response.json({
+        ok: true,
+        verification: { status: 'degraded', message: 'stale', binding: null },
+      });
+    });
+    await expect(verifyConnection(
+      envWith(records, undefined, undefined, {
+        DISCORD_CHANNEL_ENABLED: 'true',
+        DISCORD_CLIENT_ID: applicationId,
+        DISCORD_CLIENT_SECRET: 'test-discord-client-secret-value',
+        DISCORD_BRIDGE: { fetch: staleFetch },
+      }),
+      context,
+      'discord_support',
+    )).resolves.toMatchObject({
+      ok: false,
+      status: 'degraded',
+      message: expect.stringContaining('stale'),
+    });
   });
 
   it('verifies Databricks by listing warehouses without requiring a warehouse id', async () => {

@@ -4785,6 +4785,12 @@ describe('ChatThreadDO Pi turn handling', () => {
       externalDelivery: true,
       examples: expect.arrayContaining([expect.stringContaining('tools.send_telegram_message')]),
     });
+    expect(byName.get('send_discord_message')).toMatchObject({
+      category: 'communication',
+      sideEffect: true,
+      externalDelivery: true,
+      examples: expect.arrayContaining([expect.stringContaining('tools.send_discord_message')]),
+    });
     expect(byName.get('connections_methods')).toMatchObject({
       category: 'connections',
       examples: expect.arrayContaining([expect.stringContaining('env.CONNECTIONS.methods')]),
@@ -5385,11 +5391,13 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(piTools.find((tool: any) => tool.name === 'send_email')).toBeUndefined();
     expect(piTools.find((tool: any) => tool.name === 'send_slack_message')).toBeUndefined();
     expect(piTools.find((tool: any) => tool.name === 'send_telegram_message')).toBeUndefined();
+    expect(piTools.find((tool: any) => tool.name === 'send_discord_message')).toBeUndefined();
 
     const codeModeTools = await CodeModeToolsBinding.prototype.listTools.call({} as any);
     expect(codeModeTools.find((tool: any) => tool.name === 'send_email')).toBeTruthy();
     expect(codeModeTools.find((tool: any) => tool.name === 'send_slack_message')).toBeTruthy();
     expect(codeModeTools.find((tool: any) => tool.name === 'send_telegram_message')).toBeTruthy();
+    expect(codeModeTools.find((tool: any) => tool.name === 'send_discord_message')).toBeTruthy();
   });
 
   it('moves files between explicit locations without vm_push/vm_pull', async () => {
@@ -6282,6 +6290,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(prompt).not.toContain('tools.send_email');
     expect(prompt).not.toContain('tools.send_slack_message');
     expect(prompt).not.toContain('tools.send_telegram_message');
+    expect(prompt).not.toContain('tools.send_discord_message');
 
     fake.currentThreadModel = 'deepseek-v4-auto';
     const camelFreePrompt = ChatThreadDO.prototype['createPiSystemPrompt'].call(fake, context);
@@ -6310,6 +6319,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(jsExec?.description).not.toContain('tools.send_email');
     expect(jsExec?.description).not.toContain('tools.send_slack_message');
     expect(jsExec?.description).not.toContain('tools.send_telegram_message');
+    expect(jsExec?.description).not.toContain('tools.send_discord_message');
   });
 
   it('tells isolated subagents to hand external research back to the primary agent', async () => {
@@ -9199,6 +9209,64 @@ describe('ChatThreadDO Pi turn handling', () => {
       literal: true,
       limit: 2,
     });
+  });
+
+  it('idempotently accepts a connection setup response after its waiter was consumed', async () => {
+    const stored = new Map<string, unknown>();
+    const kv = {
+      get: vi.fn((key: string) => stored.get(key)),
+      put: vi.fn((key: string, value: unknown) => stored.set(key, value)),
+      delete: vi.fn((key: string) => stored.delete(key)),
+    };
+    const makeFake = () => {
+      const fake = Object.create(ChatThreadDO.prototype) as any;
+      fake.ctx = { storage: { kv } };
+      fake.broadcastChat = vi.fn();
+      fake.browserPrompts = new BrowserPromptCoordinator({
+        hasAvailableBrowserUser: () => true,
+        broadcast: fake.broadcastChat,
+        askUserQuestionUnavailableMessage: 'unavailable',
+        questionTimeoutMs: 30 * 60 * 1000,
+        connectionSetupTimeoutMs: 30 * 60 * 1000,
+      });
+      return fake;
+    };
+    const first = makeFake();
+    const pending = first.browserPrompts.promptConnectionSetup({
+      integrationType: 'discord_channel',
+    });
+    const prompt = first.broadcastChat.mock.calls
+      .map(([message]: [Record<string, unknown>]) => message)
+      .find((message: Record<string, unknown>) =>
+        message.type === 'connection_setup_prompt'
+      );
+    const response = {
+      requestId: String(prompt?.requestId),
+      cancelled: false,
+      integration: {
+        type: 'discord_channel',
+        name: 'Example Guild #camel',
+        config: {},
+        credentials: {
+          _oauth_completed: true,
+          integration_id: 'discord-1',
+        },
+      },
+    };
+
+    await expect(
+      ChatThreadDO.prototype.receiveConnectionSetupResponse.call(first, response),
+    ).resolves.toEqual({ accepted: true });
+    await expect(pending).resolves.toEqual(response);
+
+    const afterRestart = makeFake();
+    await expect(
+      ChatThreadDO.prototype.receiveConnectionSetupResponse.call(
+        afterRestart,
+        response,
+      ),
+    ).resolves.toEqual({ accepted: true });
+    expect(afterRestart.broadcastChat).not.toHaveBeenCalled();
   });
 
   it('normalizes AskUserQuestion string options before broadcasting to the browser', async () => {
@@ -12349,6 +12417,92 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(recordThreadChannelUsed).toHaveBeenCalledWith('thread1', 'telegram');
   });
 
+  it('routes Discord-originated sends only to the bound Camel-created thread', async () => {
+    const recordThreadChannelUsed = vi.fn(async () => null);
+    const integration = {
+      id: 'discord-int',
+      integration_type: 'discord_channel',
+      name: 'Support Discord',
+      config: JSON.stringify({
+        schema_version: 1,
+        status: 'active',
+        application_id: 'app-1',
+        guild_id: 'guild-1',
+        guild_name: 'Camel',
+        parent_channel_id: 'channel-1',
+        parent_channel_name: 'support',
+        binding_version: 4,
+        message_content_mode: 'full',
+      }),
+    };
+    const bridgeFetch = vi.fn(async (request: Request) => {
+      const path = new URL(request.url).pathname;
+      if (request.method === 'GET') {
+        expect(path).toBe('/internal/v1/bindings/discord-int');
+        return Response.json({
+          ok: true,
+          binding: {
+            guildId: 'guild-1',
+            parentChannelId: 'channel-1',
+            integrationId: 'discord-int',
+            orgId: 'org1',
+            workspaceId: 'workspace1',
+            guildName: 'Camel',
+            parentChannelName: 'support',
+            version: 4,
+          },
+        });
+      }
+      expect(path).toBe('/internal/v1/messages');
+      expect(await request.json()).toMatchObject({
+        integrationId: 'discord-int',
+        threadId: 'thread-1',
+        text: 'Hello from Camel',
+      });
+      return Response.json({
+        ok: true,
+        threadId: 'thread-1',
+        integrationId: 'discord-int',
+        messageIds: ['message-1'],
+        chunkCount: 1,
+        attachmentCount: 0,
+      });
+    });
+    const fake = Object.create(ChannelTools.prototype) as any;
+    fake.getOriginatingChannelThread = vi.fn(async () => ({
+      source: 'channel',
+      channel_kind: 'discord',
+      channel_connection_id: 'discord-int',
+      channel_conversation_id: 'guild-1:thread-1',
+    }));
+    fake.env = {
+      DISCORD_BRIDGE: { fetch: bridgeFetch },
+      ORG: createChannelOrgNamespace({ integration, recordThreadChannelUsed }),
+      R2_BUCKET: { get: vi.fn() },
+    };
+
+    const result = await ChannelTools.prototype['sendChannelDiscordMessageTool'].call(
+      fake,
+      { orgId: 'org1', workspaceId: 'workspace1', threadId: 'camel-thread' },
+      {
+        text: 'Hello from Camel',
+        thread_id: 'invented-thread-is-ignored',
+      },
+    );
+
+    expect(result.details).toMatchObject({
+      status: 'sent',
+      channel: 'discord',
+      integrationId: 'discord-int',
+      guildId: 'guild-1',
+      threadId: 'thread-1',
+      messageIds: ['message-1'],
+      channelHistoryStatus: 'skipped',
+    });
+    expect(bridgeFetch).toHaveBeenCalledTimes(2);
+    expect(recordThreadChannelUsed).toHaveBeenCalledWith('camel-thread', 'discord');
+  });
+
   it('selects Slack connection by decrypted team id when sending outside Slack threads', async () => {
     const recordThreadChannelUsed = vi.fn(async () => null);
     const wrongEncrypted = await encryptCredentials(
@@ -12744,7 +12898,11 @@ describe('ChatThreadDO Pi turn handling', () => {
     const mirrored = renderMessages[renderMessages.length - 1];
     expect(mirrored).toMatchObject({
       role: 'user',
-      metadata: { channelHistory: true },
+      metadata: {
+        authorDisplayName: 'Camel',
+        source: 'telegram',
+        channelHistory: true,
+      },
     });
     expect(mirrored.parts[0]).toMatchObject({ type: 'text', text: 'Weekly update.' });
   });

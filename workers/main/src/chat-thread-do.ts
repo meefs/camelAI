@@ -507,6 +507,16 @@ const CHAT_CONTEXT_USED_PERCENT_KEY = "chatContextUsedPercent";
 const CHAT_CONTEXT_WINDOW_BY_MODEL_KEY = "chatContextWindowByModel";
 const CHAT_ACTIVE_TURN_USER_ID_KEY = "chatActiveTurnUserId";
 const CHAT_VERIFIED_WORK_STATE_KEY = "chatVerifiedWorkState";
+// The integration record and this DO cannot update atomically. Keep a bounded,
+// content-free receipt ledger so cleanup can safely retry an accepted response.
+const CHAT_ACCEPTED_CONNECTION_SETUP_RESPONSES_KEY =
+  "chatAcceptedConnectionSetupResponses";
+const MAX_ACCEPTED_CONNECTION_SETUP_RESPONSES = 64;
+
+interface AcceptedConnectionSetupResponse {
+  requestId: string;
+  acceptedAt: number;
+}
 
 // ai-chat's recovery-bookkeeping storage keys are imported from agents/chat
 // (CHAT_RECOVERY_INCIDENT_KEY_PREFIX / CHAT_RECOVERING_KEY /
@@ -2037,7 +2047,24 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   async receiveConnectionSetupResponse(
     response: ConnectionSetupResponse,
   ): Promise<{ accepted: boolean }> {
-    return this.handleConnectionSetupResponse(response);
+    if (this.wasConnectionSetupResponseAccepted(response.requestId)) {
+      return { accepted: true };
+    }
+    if (!this.browserPrompts.hasPendingConnectionSetup(response.requestId)) {
+      return this.handleConnectionSetupResponse(response);
+    }
+
+    this.recordAcceptedConnectionSetupResponse(response.requestId);
+    try {
+      const result = await this.handleConnectionSetupResponse(response);
+      if (!result.accepted) {
+        this.forgetAcceptedConnectionSetupResponse(response.requestId);
+      }
+      return result;
+    } catch (error) {
+      this.forgetAcceptedConnectionSetupResponse(response.requestId);
+      throw error;
+    }
   }
 
   async runCodeModeSubagent(
@@ -2195,6 +2222,8 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     const channelSkeleton = text
       ? this.buildUserUiSkeleton({
           rawContent: text,
+          authorDisplayName: "Camel",
+          messageSource: channelKind,
           channelHistory: true,
           piCoreMessageKey: sentAt,
         })
@@ -3630,6 +3659,54 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       });
     }
     return result;
+  }
+
+  private acceptedConnectionSetupResponses(): AcceptedConnectionSetupResponse[] {
+    const stored = this.ctx.storage.kv.get<unknown>(
+      CHAT_ACCEPTED_CONNECTION_SETUP_RESPONSES_KEY,
+    );
+    if (!Array.isArray(stored)) return [];
+    return stored.filter(
+      (entry): entry is AcceptedConnectionSetupResponse =>
+        Boolean(entry) &&
+        typeof entry === "object" &&
+        typeof (entry as AcceptedConnectionSetupResponse).requestId === "string" &&
+        Boolean((entry as AcceptedConnectionSetupResponse).requestId) &&
+        typeof (entry as AcceptedConnectionSetupResponse).acceptedAt === "number" &&
+        Number.isFinite((entry as AcceptedConnectionSetupResponse).acceptedAt),
+    );
+  }
+
+  private wasConnectionSetupResponseAccepted(requestId: string): boolean {
+    if (!requestId) return false;
+    return this.acceptedConnectionSetupResponses().some(
+      (entry) => entry.requestId === requestId,
+    );
+  }
+
+  private recordAcceptedConnectionSetupResponse(requestId: string): void {
+    const accepted = this.acceptedConnectionSetupResponses()
+      .filter((entry) => entry.requestId !== requestId);
+    accepted.push({ requestId, acceptedAt: Date.now() });
+    this.ctx.storage.kv.put(
+      CHAT_ACCEPTED_CONNECTION_SETUP_RESPONSES_KEY,
+      accepted.slice(-MAX_ACCEPTED_CONNECTION_SETUP_RESPONSES),
+    );
+  }
+
+  private forgetAcceptedConnectionSetupResponse(requestId: string): void {
+    const accepted = this.acceptedConnectionSetupResponses()
+      .filter((entry) => entry.requestId !== requestId);
+    if (accepted.length > 0) {
+      this.ctx.storage.kv.put(
+        CHAT_ACCEPTED_CONNECTION_SETUP_RESPONSES_KEY,
+        accepted,
+      );
+    } else {
+      this.ctx.storage.kv.delete(
+        CHAT_ACCEPTED_CONNECTION_SETUP_RESPONSES_KEY,
+      );
+    }
   }
 
   // The degraded-auth grant map and recently-accepted clientMessageId dedup

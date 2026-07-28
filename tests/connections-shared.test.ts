@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  DISCORD_BOT_MENTION,
   buildConnectionGroups,
   deriveCapabilities,
   filterAndSortConnectionGroups,
+  formatDiscordPermissionList,
+  getChannelAttentionBadge,
+  getDiscordChannelBlockReason,
+  getDiscordChannelMetadata,
   type ConnectionListItem,
   type EmailChannel,
 } from "@/lib/connections-shared";
@@ -44,7 +49,7 @@ describe("buildConnectionGroups", () => {
     expect(groups.connections).toEqual([]);
   });
 
-  it("pins native email and classifies only Slack and Telegram integration records as channels", () => {
+  it("pins native email and classifies native messaging integration records as channels", () => {
     const groups = buildConnectionGroups(
       [
         connection({
@@ -57,6 +62,18 @@ describe("buildConnectionGroups", () => {
           id: "telegram",
           integration_type: "telegram",
           name: "Telegram group",
+          category: "communication",
+        }),
+        connection({
+          id: "discord",
+          integration_type: "discord_channel",
+          name: "Discord channel",
+          category: "communication",
+        }),
+        connection({
+          id: "legacy-discord",
+          integration_type: "discord",
+          name: "Legacy Discord token",
           category: "communication",
         }),
         connection({
@@ -85,8 +102,10 @@ describe("buildConnectionGroups", () => {
       "email",
       "slack",
       "telegram",
+      "discord",
     ]);
     expect(groups.connections.map((item) => item.id)).toEqual([
+      "legacy-discord",
       "gmail",
       "sendgrid",
       "postgres",
@@ -172,7 +191,7 @@ describe("deriveCapabilities", () => {
     ).toEqual(["mcp_tools"]);
   });
 
-  it("keeps generic API integrations and Telegram channel sends distinct", () => {
+  it("keeps generic API integrations and native channel sends distinct", () => {
     expect(
       deriveCapabilities(
         connection({
@@ -194,6 +213,17 @@ describe("deriveCapabilities", () => {
         }),
       ),
     ).toEqual(["channel_send"]);
+
+    expect(
+      deriveCapabilities(
+        connection({
+          id: "discord",
+          integration_type: "discord_channel",
+          name: "Discord",
+          category: "communication",
+        }),
+      ),
+    ).toEqual(["channel_send"]);
   });
 
   it("reports credential-only connections honestly", () => {
@@ -206,5 +236,153 @@ describe("deriveCapabilities", () => {
         }),
       ),
     ).toEqual(["project_credentials"]);
+  });
+});
+
+describe("Discord channel presentation helpers", () => {
+  it("uses the product Discord bot mention consistently", () => {
+    expect(DISCORD_BOT_MENTION).toBe("@Camel");
+  });
+
+  it("formats Discord permission names and preserves unknown permissions", () => {
+    expect(
+      formatDiscordPermissionList([
+        "VIEW_CHANNEL",
+        "SEND_MESSAGES",
+        "EMBED_LINKS",
+        "ATTACH_FILES",
+        "READ_MESSAGE_HISTORY",
+        "CREATE_PUBLIC_THREADS",
+        "SEND_MESSAGES_IN_THREADS",
+        "USE_EXTERNAL_APPS",
+      ]),
+    ).toBe(
+      "View Channel, Send Messages, Embed Links, Attach Files, Read Message History, Create Public Threads, Send Messages in Threads, USE_EXTERNAL_APPS",
+    );
+  });
+
+  it("explains why a Discord channel cannot be selected", () => {
+    expect(
+      getDiscordChannelBlockReason({
+        canActivate: true,
+        missingPermissions: ["SEND_MESSAGES"],
+      }),
+    ).toBeNull();
+    expect(
+      getDiscordChannelBlockReason({
+        canActivate: false,
+        missingPermissions: [
+          "VIEW_CHANNEL",
+          "SEND_MESSAGES",
+          "EMBED_LINKS",
+          "ATTACH_FILES",
+          "READ_MESSAGE_HISTORY",
+          "CREATE_PUBLIC_THREADS",
+          "SEND_MESSAGES_IN_THREADS",
+        ],
+      }),
+    ).toEqual({ kind: "no_access" });
+    expect(
+      getDiscordChannelBlockReason({
+        canActivate: false,
+        missingPermissions: ["SEND_MESSAGES", "ATTACH_FILES"],
+      }),
+    ).toEqual({
+      kind: "missing_permissions",
+      label: "Send Messages, Attach Files",
+    });
+  });
+
+  it("surfaces Discord lifecycle error codes in channel metadata", () => {
+    expect(
+      getDiscordChannelMetadata(
+        connection({
+          id: "discord",
+          integration_type: "discord_channel",
+          name: "Discord",
+          config: {
+            status: "disconnected",
+            error_code: "guild_removed",
+          },
+        }),
+      ),
+    ).toMatchObject({
+      status: "disconnected",
+      error_code: "guild_removed",
+    });
+  });
+});
+
+describe("getChannelAttentionBadge", () => {
+  it.each([
+    [
+      "pending_channel",
+      {
+        label: "Finish setup",
+        tooltip:
+          "Camel is installed in Camel HQ but no channel is selected yet.",
+      },
+    ],
+    [
+      "disconnected",
+      {
+        label: "Disconnected",
+        tooltip: "Camel is not connected to a channel. Open to reconnect.",
+      },
+    ],
+    [
+      "setup_error",
+      {
+        label: "Setup error",
+        tooltip: "Something went wrong during setup. Open to retry.",
+      },
+    ],
+  ])("returns the expected Discord badge for %s", (status, expected) => {
+    expect(
+      getChannelAttentionBadge(
+        connection({
+          id: "discord",
+          integration_type: "discord_channel",
+          name: "Discord",
+          config: { status, guild_name: "Camel HQ" },
+        }),
+      ),
+    ).toEqual(expected);
+  });
+
+  it("returns a setup badge for pending Telegram and null for healthy channels", () => {
+    expect(
+      getChannelAttentionBadge(
+        connection({
+          id: "telegram",
+          integration_type: "telegram",
+          name: "Telegram",
+          config: { status: "pending" },
+        }),
+      ),
+    ).toEqual({
+      label: "Finish setup",
+      tooltip: "Open to finish linking your Telegram chat.",
+    });
+
+    expect(
+      getChannelAttentionBadge(
+        connection({
+          id: "discord",
+          integration_type: "discord_channel",
+          name: "Discord",
+          config: { status: "active" },
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      getChannelAttentionBadge(
+        connection({
+          id: "slack",
+          integration_type: "slack",
+          name: "Slack",
+        }),
+      ),
+    ).toBeNull();
   });
 });

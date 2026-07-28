@@ -15,6 +15,7 @@ export function getIntegrationAuthLabel(
   }
 
   if (integration.type === 'telegram') return 'Bot setup';
+  if (integration.type === 'discord_channel') return 'Discord install';
 
   if (!integration.authMethod) return undefined;
 
