@@ -12025,7 +12025,24 @@ describe('ChatThreadDO Pi turn handling', () => {
       }),
     };
     const bridgeFetch = vi.fn(async (request: Request) => {
-      expect(new URL(request.url).pathname).toBe('/internal/v1/messages');
+      const path = new URL(request.url).pathname;
+      if (request.method === 'GET') {
+        expect(path).toBe('/internal/v1/bindings/discord-int');
+        return Response.json({
+          ok: true,
+          binding: {
+            guildId: 'guild-1',
+            parentChannelId: 'channel-1',
+            integrationId: 'discord-int',
+            orgId: 'org1',
+            workspaceId: 'workspace1',
+            guildName: 'Camel',
+            parentChannelName: 'support',
+            version: 4,
+          },
+        });
+      }
+      expect(path).toBe('/internal/v1/messages');
       expect(await request.json()).toMatchObject({
         integrationId: 'discord-int',
         threadId: 'thread-1',
@@ -12071,7 +12088,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       messageIds: ['message-1'],
       channelHistoryStatus: 'skipped',
     });
-    expect(bridgeFetch).toHaveBeenCalledOnce();
+    expect(bridgeFetch).toHaveBeenCalledTimes(2);
     expect(recordThreadChannelUsed).toHaveBeenCalledWith('camel-thread', 'discord');
   });
 
