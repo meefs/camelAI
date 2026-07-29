@@ -36,6 +36,7 @@ const MINIFLARE_WORKERS_DIR = path.join(
 );
 
 const SELFHOST_DEFAULT_VARS = {
+  NODE_ENV: 'production',
   AI_VIRTUAL_MODEL: 'dynamic/auto',
   AI_GATEWAY_AUTH_TOKEN: '',
   CF_ACCOUNT_ID: 'selfhost',
@@ -61,7 +62,12 @@ const SELFHOST_DEFAULT_VARS = {
   LOCAL_APP_IFRAME_DOMAIN: '',
   LOCAL_ARTIFACTS_BASE_URL: 'http://localhost:7001',
   LOCAL_ARTIFACTS_SECRET: 'selfhost-artifacts-secret-change-me',
-  SANDBOX_HOST_URL: '',
+  LOCAL_AUTH_BYPASS: '',
+  LOCAL_AUTH_BYPASS_HOSTS: '',
+  LOCAL_AUTH_USER_EMAIL: '',
+  LOCAL_AUTH_USER_NAME: '',
+  TURNSTILE_SITE_KEY: '',
+  TURNSTILE_SECRET_KEY: '',
   CLOUDFLARE_ACCESS_TEAM_DOMAIN: '',
   CLOUDFLARE_ACCESS_AUD: '',
   CLOUDFLARE_ACCESS_AUDS: '',
@@ -91,7 +97,11 @@ const SELFHOST_KV_IDS = {
 
 const SELFHOST_R2_BUCKETS = {
   R2_BUCKET: 'chiridion-selfhost',
+  // AnalysisSandbox mounts the same bucket twice: read-only uploads and
+  // writable outputs. Preserve that alias in local R2 storage.
+  R2_OUTPUTS_BUCKET: 'chiridion-selfhost',
   BACKUP_BUCKET: 'chiridion-selfhost-backups',
+  WAREHOUSE_EXPORT_BUCKET: 'chiridion-selfhost-warehouse-exports',
 };
 
 const SELFHOST_D1_DATABASES = {
@@ -116,6 +126,23 @@ const SELFHOST_WORKFLOW_NAMES = {
 };
 
 const BROWSER_RENDERING_SERVICE_NAME = 'browser-rendering:service';
+const DEFAULT_CONTAINER_EGRESS_INTERCEPTOR_IMAGE =
+  'camelai-selfhost-container-egress:0.12.0';
+const DEFAULT_DOCKER_SOCKET_URI = 'unix:///var/run/docker.sock';
+const SELFHOST_CONTAINER_IMAGES = {
+  ProjectBuildSandbox: {
+    env: 'SELFHOST_PROJECT_BUILD_IMAGE',
+    image: 'camelai-selfhost-project-build:0.12.0',
+  },
+  AnalysisSandbox: {
+    env: 'SELFHOST_ANALYSIS_IMAGE',
+    image: 'camelai-selfhost-analysis:0.12.0',
+  },
+  DbQuerySandbox: {
+    env: 'SELFHOST_DB_QUERY_IMAGE',
+    image: 'camelai-selfhost-db-query:0.12.0',
+  },
+};
 
 function q(value) {
   return JSON.stringify(String(value));
@@ -160,6 +187,22 @@ function bindingDurableObject(name, className) {
 function bindingDurableObjectFromService(name, className, serviceName) {
   return `(name = ${q(name)}, durableObjectNamespace = (` +
     `className = ${q(className)}, serviceName = ${q(serviceName)}` +
+  `))`;
+}
+
+function durableObjectNamespace(className, containerImage) {
+  const container = containerImage
+    ? `, container = (imageName = ${q(containerImage)})`
+    : '';
+  return `(className = ${q(className)}, ` +
+    `uniqueKey = ${q(`camelai-selfhost-${className}`)}, ` +
+    `enableSql = true${container})`;
+}
+
+function containerEngine(socketUri, egressImage) {
+  return `(localDocker = (` +
+    `socketPath = ${q(socketUri)}, ` +
+    `containerEgressInterceptorImage = ${q(egressImage)}` +
   `))`;
 }
 
@@ -227,6 +270,69 @@ async function readJson(filePath) {
   return JSON.parse(await fs.readFile(filePath, 'utf8'));
 }
 
+function configuredValue(env, name, fallback) {
+  const value = process.env[name] ?? env[name] ?? fallback;
+  return String(value ?? '').trim();
+}
+
+function resolveContainerRuntime(wrangler, env) {
+  const durableObjectClasses = new Set(
+    (wrangler.durable_objects?.bindings ?? []).map((binding) => binding.class_name),
+  );
+  const seen = new Set();
+  const containers = (wrangler.containers ?? []).map((container) => {
+    const className = container.class_name;
+    const supported = SELFHOST_CONTAINER_IMAGES[className];
+    if (!supported) {
+      throw new Error(
+        `Unsupported self-host container class ${className}; ` +
+        `supported classes: ${Object.keys(SELFHOST_CONTAINER_IMAGES).join(', ')}`,
+      );
+    }
+    if (seen.has(className)) {
+      throw new Error(`Duplicate self-host container class ${className}`);
+    }
+    if (!durableObjectClasses.has(className)) {
+      throw new Error(
+        `Self-host container class ${className} has no matching Durable Object binding`,
+      );
+    }
+    seen.add(className);
+    const image = configuredValue(env, supported.env, supported.image);
+    if (!image) throw new Error(`${supported.env} must not be empty`);
+    return { className, image, imageEnv: supported.env };
+  });
+
+  const expected = Object.keys(SELFHOST_CONTAINER_IMAGES);
+  const missing = expected.filter((className) => !seen.has(className));
+  if (missing.length > 0) {
+    throw new Error(
+      `Built Wrangler config is missing required self-host containers: ${missing.join(', ')}`,
+    );
+  }
+
+  const socketUri = configuredValue(
+    env,
+    'SELFHOST_DOCKER_SOCKET_URI',
+    DEFAULT_DOCKER_SOCKET_URI,
+  );
+  if (!socketUri.startsWith('unix:///')) {
+    throw new Error(
+      'SELFHOST_DOCKER_SOCKET_URI must be an absolute unix:/// socket URI',
+    );
+  }
+  const egressImage = configuredValue(
+    env,
+    'SELFHOST_CONTAINER_EGRESS_IMAGE',
+    DEFAULT_CONTAINER_EGRESS_INTERCEPTOR_IMAGE,
+  );
+  if (!egressImage) {
+    throw new Error('SELFHOST_CONTAINER_EGRESS_IMAGE must not be empty');
+  }
+
+  return { containers, socketUri, egressImage };
+}
+
 async function listJsModules(dir) {
   const result = [];
   async function walk(current) {
@@ -272,12 +378,8 @@ async function buildDispatcherBundle(outDir) {
   const outfile = path.join(bundleDir, 'index.js');
   await fs.mkdir(bundleDir, { recursive: true });
   await runCommand('bun', [
-    'build',
-    'workers/dispatcher/src/index.ts',
-    '--target=browser',
-    '--format=esm',
-    '--external=cloudflare:workers',
-    `--outfile=${outfile}`,
+    'scripts/build-selfhost-dispatcher.mjs',
+    outfile,
   ]);
   return outfile;
 }
@@ -623,6 +725,7 @@ async function main() {
   const dispatcherServiceName = 'dispatcher';
   const bindings = [];
   const services = [];
+  const r2ServiceNames = new Set();
   const extensions = [];
 
   const selfhostEnv = await readSelfhostEnv(false);
@@ -666,7 +769,16 @@ async function main() {
     )}])`);
   }
 
-  for (const binding of wrangler.durable_objects?.bindings ?? []) {
+  const containerRuntime = resolveContainerRuntime(wrangler, selfhostEnv);
+  const containerImageByClass = new Map(
+    containerRuntime.containers.map((container) => [
+      container.className,
+      container.image,
+    ]),
+  );
+  const durableObjectBindings = wrangler.durable_objects?.bindings ?? [];
+
+  for (const binding of durableObjectBindings) {
     bindings.push(bindingDurableObject(binding.name, binding.class_name));
   }
 
@@ -681,7 +793,10 @@ async function main() {
     const bucketId = SELFHOST_R2_BUCKETS[bucket.binding] ?? bucket.bucket_name ?? bucket.binding;
     const serviceName = `r2:bucket:${bucketId}`;
     bindings.push(bindingR2(bucket.binding, serviceName));
-    services.push(serviceObjectEntry(serviceName, 'r2:bucket', 'R2BucketObject', bucketId));
+    if (!r2ServiceNames.has(serviceName)) {
+      services.push(serviceObjectEntry(serviceName, 'r2:bucket', 'R2BucketObject', bucketId));
+      r2ServiceNames.add(serviceName);
+    }
   }
 
   for (const database of wrangler.d1_databases ?? []) {
@@ -742,7 +857,9 @@ async function main() {
     return flag !== 'global_fetch_strictly_public';
   });
 
-  const durableObjectClasses = (wrangler.durable_objects?.bindings ?? []).map((binding) => binding.class_name);
+  const durableObjectClasses = durableObjectBindings.map(
+    (binding) => binding.class_name,
+  );
   const mainWorker = `(name = ${q(mainServiceName)}, worker = (` +
     `compatibilityDate = ${q(wrangler.compatibility_date)}, ` +
     `compatibilityFlags = [${compatibilityFlags.map(q).join(', ')}], ` +
@@ -751,11 +868,16 @@ async function main() {
     `globalOutbound = "internet", ` +
     `cacheApiOutbound = "cache:0", ` +
     `durableObjectNamespaces = [` +
-      durableObjectClasses.map((className) => (
-        `(className = ${q(className)}, uniqueKey = ${q(`camelai-selfhost-${className}`)}, enableSql = true)`
+      durableObjectClasses.map((className) => durableObjectNamespace(
+        className,
+        containerImageByClass.get(className),
       )).join(', ') +
     `], ` +
-    `durableObjectStorage = (localDisk = "do-storage")` +
+    `durableObjectStorage = (localDisk = "do-storage"), ` +
+    `containerEngine = ${containerEngine(
+      containerRuntime.socketUri,
+      containerRuntime.egressImage,
+    )}` +
   `))`;
 
   const dispatcherBindings = [
@@ -883,6 +1005,12 @@ const camelai :Workerd.Config = (
       ],
       assets: wrangler.assets?.binding,
       browser: enableBrowserBinding ? [browserBindingName] : [],
+      containers: containerRuntime.containers,
+    },
+    containerEngine: {
+      kind: 'localDocker',
+      socketUri: containerRuntime.socketUri,
+      egressImage: containerRuntime.egressImage,
     },
     loopback: enableBrowserBinding
       ? { mode: 'external', hostname: '127.0.0.1' }

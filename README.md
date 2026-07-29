@@ -56,12 +56,15 @@ bun run deploy:dispatcher:prod
 bun run deploy:dispatcher:staging
 ```
 
-See `AGENTS.md` for architecture and conventions, and `docs/README.md` for the
-canonical docs index.
+See `AGENTS.md` for architecture and conventions.
 
 ## Self-Hosting
 
-See [docs/self-hosting.md](docs/self-hosting.md) for the Docker Compose stack:
+See [SELF_HOSTING.md](SELF_HOSTING.md) for the supported single-VM
+Docker deployment, release-image and source-build modes, capability contract,
+authentication, outbound-email policy, and operator validation. Detailed
+Compose and provider configuration is in
+[infra/selfhost/README.md](infra/selfhost/README.md).
 
 ```bash
 bun run selfhost:init

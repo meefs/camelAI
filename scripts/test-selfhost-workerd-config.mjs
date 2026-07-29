@@ -39,9 +39,17 @@ async function main() {
     cwd: repoRoot,
     env: {
       ...process.env,
+      SELFHOST_ENV_FILE: path.join(tempDir, 'intentionally-missing.env'),
       SELFHOST_AI_PROVIDER: 'bedrock',
       SELFHOST_AI_API_KEY: 'test-bedrock-key',
       SELFHOST_AI_AWS_REGION: 'us-east-1',
+      NODE_ENV: 'release-process-env',
+      LOCAL_AUTH_BYPASS: '1',
+      LOCAL_AUTH_BYPASS_HOSTS: 'localhost,127.0.0.1',
+      LOCAL_AUTH_USER_EMAIL: 'operator@example.test',
+      LOCAL_AUTH_USER_NAME: 'Self-host Operator',
+      TURNSTILE_SITE_KEY: 'process-turnstile-site',
+      TURNSTILE_SECRET_KEY: 'process-turnstile-secret',
     },
     encoding: 'utf8',
   });
@@ -61,13 +69,41 @@ async function main() {
     'LOCAL_ARTIFACTS_SECRET',
     'WORKER_BASE_URL',
     'LOCAL_APP_VANITY_DOMAIN',
+    'NODE_ENV',
+    'LOCAL_AUTH_BYPASS',
+    'LOCAL_AUTH_BYPASS_HOSTS',
+    'LOCAL_AUTH_USER_EMAIL',
+    'LOCAL_AUTH_USER_NAME',
+    'TURNSTILE_SITE_KEY',
+    'TURNSTILE_SECRET_KEY',
   ], 'vars');
   assert(!bindings.vars.includes('PROJECT_REPO_PROVIDER'), 'PROJECT_REPO_PROVIDER must not be a self-host var');
   assert(!bindings.vars.includes('R2_PARENT_ACCESS_KEY_ID'), 'Cloudflare dev R2 credentials must not leak into self-host vars');
+  assert(!bindings.vars.includes('SANDBOX_HOST_URL'), 'retired sandbox host vars must not leak into self-host vars');
 
-  includesAll(bindings.durableObjects, ['ChatThreadDO', 'WorkspaceDO', 'WorkspaceFilesystemDO'], 'durableObjects');
+  includesAll(
+    bindings.durableObjects,
+    [
+      'ChatThreadDO',
+      'WorkspaceDO',
+      'WorkspaceFilesystemDO',
+      'ProjectBuildSandbox',
+      'AnalysisSandbox',
+      'DbQuerySandbox',
+    ],
+    'durableObjects',
+  );
   includesAll(bindings.kv, ['EMAIL_TO_USER', 'APP_KV', 'SESSIONS'], 'kv');
-  includesAll(bindings.r2, ['R2_BUCKET', 'BACKUP_BUCKET'], 'r2');
+  includesAll(
+    bindings.r2,
+    [
+      'R2_BUCKET',
+      'R2_OUTPUTS_BUCKET',
+      'BACKUP_BUCKET',
+      'WAREHOUSE_EXPORT_BUCKET',
+    ],
+    'r2',
+  );
   includesAll(bindings.d1, ['APP_DB'], 'd1');
   includesAll(bindings.queues, ['APP_SCREENSHOT_QUEUE', 'SLACK_EVENTS_QUEUE'], 'queues');
   includesAll(bindings.workflows, ['DETERMINISTIC_AUTOMATION_WORKFLOWS'], 'workflows');
@@ -76,10 +112,42 @@ async function main() {
   includesAll(bindings.workerLoaders, ['CODE_MODE_LOADER', 'SELFHOST_WORKER_LOADER'], 'workerLoaders');
   assert(!bindings.workerLoaders.includes('LOADER'), 'dispatcher must not include the obsolete generic local Dynamic Worker loader');
   includesAll(manifest.omittedBindings.sendEmail, ['EMAIL'], 'omitted sendEmail bindings');
+  includesAll(
+    bindings.containers.map((container) => container.className),
+    ['ProjectBuildSandbox', 'AnalysisSandbox', 'DbQuerySandbox'],
+    'container bindings',
+  );
+  assert(
+    manifest.containerEngine?.kind === 'localDocker',
+    'manifest should configure the local Docker container engine',
+  );
+  assert(
+    manifest.containerEngine?.socketUri === 'unix:///var/run/docker.sock',
+    'manifest should use the in-container Docker socket',
+  );
+  assert(
+    manifest.containerEngine?.egressImage ===
+      'camelai-selfhost-container-egress:0.12.0',
+    'container engine should use the workerd bridge-bypass interceptor',
+  );
 
   assert(manifest.dispatcherServiceName === 'dispatcher', 'manifest should include dispatcher service');
   assert(config.includes('name = "ARTIFACTS"'), 'config should contain ARTIFACTS binding');
   assert(config.includes('name = "AI"'), 'config should contain AI binding');
+  for (const [name, value] of [
+    ['NODE_ENV', 'release-process-env'],
+    ['LOCAL_AUTH_BYPASS', '1'],
+    ['LOCAL_AUTH_BYPASS_HOSTS', 'localhost,127.0.0.1'],
+    ['LOCAL_AUTH_USER_EMAIL', 'operator@example.test'],
+    ['LOCAL_AUTH_USER_NAME', 'Self-host Operator'],
+    ['TURNSTILE_SITE_KEY', 'process-turnstile-site'],
+    ['TURNSTILE_SECRET_KEY', 'process-turnstile-secret'],
+  ]) {
+    assert(
+      config.includes(`(name = "${name}", text = "${value}")`),
+      `${name} should be emitted from process env without an env file`,
+    );
+  }
   assert(config.includes('infra/selfhost/ai-binding.worker.js'), 'config should embed the self-host AI binding module');
   assert(config.includes('name = "dispatcher"'), 'config should contain dispatcher service');
   assert(config.includes('name = "SELFHOST_WORKER_LOADER"'), 'config should contain self-host worker loader binding');
@@ -96,8 +164,54 @@ async function main() {
   assert(manifest.loopback?.mode === 'external', 'manifest should request external loopback for browser rendering');
   includesAll(bindings.browser ?? [], ['BROWSER'], 'browser');
   assert(config.includes('selfhost-app-db'), 'config should contain self-host D1 database id');
+  assert(
+    config.split('(name = "r2:bucket:chiridion-selfhost", worker = (').length -
+      1 ===
+      1,
+    'R2_BUCKET and R2_OUTPUTS_BUCKET should share one local bucket service',
+  );
+  assert(
+    config.includes('r2:bucket:chiridion-selfhost-warehouse-exports'),
+    'config should contain a local warehouse export bucket',
+  );
   assert(config.includes('chiridion-selfhost-deterministic-automations'), 'config should contain self-host workflow names');
   assert(!config.includes('PROJECT_REPO_PROVIDER'), 'config must not contain PROJECT_REPO_PROVIDER');
+  assert(!config.includes('SANDBOX_HOST'), 'config must not contain retired sandbox host bindings');
+  assert(
+    config.includes('containerEngine = (localDocker = ('),
+    'config should contain the local Docker container engine',
+  );
+  assert(
+    config.includes('socketPath = "unix:///var/run/docker.sock"'),
+    'config should point workerd at the mounted Docker socket',
+  );
+  for (const [containerClass, image] of [
+    ['ProjectBuildSandbox', 'camelai-selfhost-project-build:0.12.0'],
+    ['AnalysisSandbox', 'camelai-selfhost-analysis:0.12.0'],
+    ['DbQuerySandbox', 'camelai-selfhost-db-query:0.12.0'],
+  ]) {
+    assert(
+      config.includes(
+        `className = "${containerClass}", uniqueKey = "camelai-selfhost-${containerClass}", ` +
+        `enableSql = true, container = (imageName = "${image}")`,
+      ),
+      `config should attach ${containerClass} to ${image}`,
+    );
+  }
+
+  const compileResult = spawnSync(
+    path.join(repoRoot, 'node_modules/workerd/bin/workerd'),
+    ['compile', '--config-only', outPath],
+    {
+      cwd: repoRoot,
+      stdio: ['ignore', 'ignore', 'pipe'],
+      encoding: 'utf8',
+    },
+  );
+  if (compileResult.status !== 0) {
+    process.stderr.write(compileResult.stderr);
+    process.exit(compileResult.status ?? 1);
+  }
 
   console.log('Self-host workerd config test passed.');
 }

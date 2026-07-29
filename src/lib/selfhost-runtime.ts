@@ -3,9 +3,9 @@ export interface SelfhostRuntimeEnv {
   CF_DISPATCH_NAMESPACE?: string;
 }
 
-export function isSelfhostRuntime(env: SelfhostRuntimeEnv): boolean {
+export function isSelfhostRuntime(env?: SelfhostRuntimeEnv): boolean {
   return (
-    env.CF_ACCOUNT_ID?.trim().toLowerCase() === "selfhost" ||
-    env.CF_DISPATCH_NAMESPACE?.trim().toLowerCase() === "selfhost"
+    env?.CF_ACCOUNT_ID?.trim().toLowerCase() === "selfhost" ||
+    env?.CF_DISPATCH_NAMESPACE?.trim().toLowerCase() === "selfhost"
   );
 }

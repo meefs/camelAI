@@ -57,7 +57,10 @@ import {
   resolveOrgBillingAccess,
 } from "@/lib/billing.server";
 import { isBillingLockedModel } from "@/lib/chat-do.server";
-import { getEffectiveLlmProviderConfig } from "@/lib/selfhost-ai-provider";
+import {
+  getEffectiveLlmProviderConfig,
+  isSelfhostRuntime,
+} from "@/lib/selfhost-ai-provider";
 import { cn } from "@/lib/utils";
 import type {
   LlmModel,
@@ -154,6 +157,7 @@ function buildPickerRows(
     customModelId?: string | null;
     awsRegion?: string | null;
     allowOpenAiSubscription?: boolean;
+    allowCamelCode?: boolean;
   },
 ): PickerModelRow[] {
   return resolveModelPickerCatalog({
@@ -164,6 +168,7 @@ function buildPickerRows(
     customModelId: options.customModelId,
     awsRegion: options.awsRegion,
     allowOpenAiSubscription: options.allowOpenAiSubscription,
+    allowCamelCode: options.allowCamelCode,
   })
     .filter((entry) => visibleModelIds.has(entry.id))
     .map((entry) => ({
@@ -245,14 +250,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     effectiveLlmProviderConfig,
   );
   const awsRegion = getStoredBedrockAwsRegion(effectiveLlmProviderConfig);
-  const visibleModelIds = getVisibleModelIdsForSettings(
-    effectiveLlmProviderConfig?.provider,
-    experimentalSettings,
-    customApi,
-    customModelId,
-    awsRegion,
-    allowOpenAiSubscription,
-  );
   const billingAccess = resolveOrgBillingAccess({
     env,
     org: authContext.currentOrg,
@@ -261,6 +258,16 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const billingAccessMode = isOrgBillingAccessReady(billingAccess)
     ? billingAccess.mode
     : null;
+  const allowCamelCode = billingAccessMode !== "selfhost";
+  const visibleModelIds = getVisibleModelIdsForSettings(
+    effectiveLlmProviderConfig?.provider,
+    experimentalSettings,
+    customApi,
+    customModelId,
+    awsRegion,
+    allowOpenAiSubscription,
+    allowCamelCode,
+  );
   const showLockedModels =
     billingAccessMode !== "enterprise" && billingAccessMode !== "selfhost";
   const billingLockedModelIds =
@@ -306,6 +313,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     customModelId,
     awsRegion,
     allowOpenAiSubscription,
+    allowCamelCode,
   });
   const useOrgDefaults =
     scope === "ws" ? (workspaceConfig?.use_org_defaults ?? true) : false;
@@ -366,6 +374,7 @@ async function loadActionTarget(args: {
     getStoredCustomLlmProviderModelId(effectiveLlmProviderConfig),
     getStoredBedrockAwsRegion(effectiveLlmProviderConfig),
     allowOpenAiSubscription,
+    !isSelfhostRuntime(env),
   );
 
   if (scope === "org") {
@@ -465,6 +474,7 @@ function getVisibleModelIdsForSettings(
   customModelId?: string | null,
   awsRegion?: string | null,
   allowOpenAiSubscription?: boolean,
+  allowCamelCode?: boolean,
 ): Set<LlmModel> {
   return new Set(
     getVisibleLlmModelOptions(experimentalSettings, null, {
@@ -473,6 +483,7 @@ function getVisibleModelIdsForSettings(
       customModelId,
       awsRegion,
       allowOpenAiSubscription,
+      allowCamelCode,
     }).map((option) => option.value),
   );
 }

@@ -21,13 +21,29 @@ if (existsSync(envFile) && !force) {
 
 const values = {
   COMPOSE_PROJECT_NAME: defaultProjectName,
+  // A cloned repository defaults to the explicit source-build override. Cloud
+  // templates set this to "release" and replace every image below with an
+  // immutable tag or digest.
+  SELFHOST_DEPLOYMENT_MODE: "source",
+  SELFHOST_APP_IMAGE: "camelai-selfhost-app:source",
+  SELFHOST_LOCAL_ARTIFACTS_IMAGE: "camelai-selfhost-local-artifacts:source",
+  SELFHOST_PROJECT_BUILD_IMAGE: "camelai-selfhost-project-build:0.12.0",
+  SELFHOST_ANALYSIS_IMAGE: "camelai-selfhost-analysis:0.12.0",
+  SELFHOST_DB_QUERY_IMAGE: "camelai-selfhost-db-query:0.12.0",
+  SELFHOST_CONTAINER_EGRESS_IMAGE:
+    "camelai-selfhost-container-egress:0.12.0",
   SELFHOST_BIND_ADDRESS: "127.0.0.1",
   SELFHOST_APP_PORT: "3001",
   SELFHOST_PUBLIC_BASE_URL: "http://localhost:3001",
-  SELFHOST_INTERNAL_APP_URL: "http://app:3001",
+  SELFHOST_INTERNAL_APP_URL: "http://127.0.0.1:3001",
   LOCAL_APP_VANITY_DOMAIN: "",
   LOCAL_APP_IFRAME_DOMAIN: "",
-  CONTAINER_RUNTIME: "runc",
+  TURNSTILE_SITE_KEY: "",
+  TURNSTILE_SECRET_KEY: "",
+  LOCAL_AUTH_BYPASS: "",
+  LOCAL_AUTH_BYPASS_HOSTS: "",
+  LOCAL_AUTH_USER_EMAIL: "",
+  LOCAL_AUTH_USER_NAME: "",
   CLOUDFLARE_ACCESS_TEAM_DOMAIN: "",
   CLOUDFLARE_ACCESS_AUD: "",
   CLOUDFLARE_ACCESS_AUDS: "",

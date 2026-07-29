@@ -250,6 +250,16 @@ describe("llm provider config helpers", () => {
     ).toBe(true);
   });
 
+  it("can exclude gateway-only camelCode from self-host model options", () => {
+    expect(
+      getVisibleLlmModelOptions({ claude_proxy_models: false }, null, {
+        orgProvider: "bedrock",
+        awsRegion: "us-east-1",
+        allowCamelCode: false,
+      }).map((option) => option.value),
+    ).toEqual([...CLAUDE_MODELS, ...BEDROCK_OPENAI_MODELS]);
+  });
+
   it("shows only policy-allowed model families for new chats", () => {
     expect(
       getVisibleLlmModelOptions(

@@ -164,7 +164,7 @@ const TOOL_CATEGORY_DESCRIPTIONS = Object.freeze({
 const TOOL_HELP_DEFINITION = Object.freeze({
   name: "help",
   description:
-    "Show js_exec tool and runtime help. Call await tools.help() for expandable categories, await tools.help(\"communication\") for one category, or await tools.help(\"send_email\") for one tool.",
+    "Show js_exec tool and runtime help. Call await tools.help() for expandable categories, await tools.help(\"communication\") for one category, or await tools.help(\"list_apps\") for one tool.",
   parameters: {
     type: "object",
     properties: {
@@ -178,7 +178,7 @@ const TOOL_HELP_DEFINITION = Object.freeze({
   examples: [
     "await tools.help()",
     "await tools.help(\"communication\")",
-    "await tools.help(\"send_email\")",
+    "await tools.help(\"list_apps\")",
     "await tools.help({ runtime: \"env.CAMELAI\" })",
   ],
   sideEffect: false,
@@ -200,7 +200,7 @@ const TOOL_SEARCH_DEFINITION = Object.freeze({
   },
   category: "runtime",
   examples: [
-    "await tools.search(\"send email\")",
+    "await tools.search(\"send slack message\")",
     "await tools.search({ query: \"list deployed apps\", limit: 5 })",
   ],
   sideEffect: false,
@@ -221,7 +221,7 @@ const TOOL_DESCRIBE_DEFINITION = Object.freeze({
   },
   category: "runtime",
   examples: [
-    "await tools.describe(\"send_email\")",
+    "await tools.describe(\"list_apps\")",
     "await tools.describe(\"env.CAMELAI\")",
   ],
   sideEffect: false,
@@ -490,7 +490,7 @@ function createToolHelp(allTools) {
 
     if (!requestedKey && !requestedTool && !requestedCategory && !requestedRuntime) {
       return {
-        usage: "Expand a category with await tools.help(\"communication\") or inspect one tool with await tools.help(\"send_email\").",
+        usage: "Expand a category with await tools.help(\"communication\") or inspect one tool with await tools.help(\"list_apps\").",
         guide: cloneHelpValue(JS_EXEC_GUIDE),
         categories: categorySummary(),
       };
@@ -696,7 +696,7 @@ function createToolDescribe(allTools) {
       ? input.trim()
       : (input && typeof input === "object" && typeof input.name === "string" ? input.name.trim() : "");
     if (!name) {
-      throw new Error("tools.describe requires a tool name, e.g. await tools.describe(\"send_email\")");
+      throw new Error("tools.describe requires a tool name, e.g. await tools.describe(\"list_apps\")");
     }
     const key = name.toLowerCase();
     if (toolsByName.has(key)) {

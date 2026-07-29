@@ -164,7 +164,7 @@ export default defineConfig(({ command }) => {
     ignoreOutdatedRequests: true,
   };
 
-  // Allow common tunnel/proxy hosts for local development (e.g., exe.dev, ngrok).
+  // Allow common tunnel/proxy hosts for local development.
   // Additional hosts can be provided via VITE_ALLOWED_HOSTS=host1,host2.
   // Leading dot entries allow subdomains (e.g. ".ngrok-free.app").
   const extraAllowedHosts = (process.env.VITE_ALLOWED_HOSTS || '')
@@ -173,7 +173,6 @@ export default defineConfig(({ command }) => {
     .filter(Boolean);
   const allowedHosts = Array.from(new Set([
     'host.docker.internal',
-    '.exe.xyz',
     '.ngrok-free.app',
     '.ngrok-free.dev',
     '.ngrok.app',

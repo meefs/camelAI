@@ -991,6 +991,7 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
       orgProvider: effectiveLlmProviderConfig?.provider,
       customApi,
       customModelId,
+      allowCamelCode: !isSelfhostRuntime(this.env),
     });
     const model = resolveDefaultModelForChat({
       effectiveDefaultModel: effectiveConfig.default_model,

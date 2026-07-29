@@ -60,4 +60,28 @@ describe("auth verify-email send route", () => {
       expect.not.objectContaining({ promptKey: expect.anything() }),
     );
   });
+
+  it("returns an explicit disabled-state error in self-host mode", async () => {
+    getEnvMock.mockReturnValue({
+      CF_ACCOUNT_ID: "selfhost",
+      USER: {
+        idFromName: (id: string) => id,
+        get: vi.fn(),
+      },
+    });
+
+    const response = await action({
+      request: new Request("https://selfhost.example/api/auth/verify-email/send", {
+        method: "POST",
+      }),
+      context: {},
+    } as never);
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error:
+        "Email verification delivery is disabled in self-host mode. Use the configured enterprise identity provider.",
+    });
+    expect(sendUserVerificationEmailMock).not.toHaveBeenCalled();
+  });
 });

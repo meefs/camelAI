@@ -2,6 +2,8 @@ import type { AppLoadContext } from "react-router";
 import { requireAuthContext } from "@/lib/auth.server";
 import { getEnv } from "@/lib/cloudflare.server";
 import { sendUserVerificationEmail } from "@/lib/email-verification.server";
+import { isSelfhostRuntime } from "@/lib/selfhost-runtime";
+import { SELFHOST_EMAIL_VERIFICATION_DISABLED_MESSAGE } from "@/lib/selfhost-capabilities";
 
 export async function action({
   request,
@@ -16,6 +18,12 @@ export async function action({
 
   const authContext = await requireAuthContext(request, context);
   const env = getEnv(context);
+  if (isSelfhostRuntime(env)) {
+    return Response.json(
+      { error: SELFHOST_EMAIL_VERIFICATION_DISABLED_MESSAGE },
+      { status: 503 },
+    );
+  }
   const userStub = env.USER.get(env.USER.idFromName(authContext.user.id));
   const verificationStatus = await userStub.getEmailVerificationStatus();
 

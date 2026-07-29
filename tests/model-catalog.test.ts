@@ -360,6 +360,22 @@ describe('MODEL_CATALOG', () => {
     expect(visible[0]?.id).toBe('deepseek-v4-auto');
   });
 
+  it('removes gateway-only camelCode from self-host platform models', () => {
+    const visible = resolveModelPickerCatalog({
+      effectiveConfig: {
+        source: 'org',
+        use_platform_defaults: true,
+        default_model: null,
+        models: [],
+      },
+      orgProvider: 'bedrock',
+      allowCamelCode: false,
+    });
+
+    expect(visible.map((entry) => entry.id)).not.toContain('deepseek-v4-auto');
+    expect(visible.map((entry) => entry.id)).toContain('sonnet');
+  });
+
   it('uses explicit custom overrides as an allowlist', () => {
     const visible = resolveModelPickerCatalog({
       effectiveConfig: {

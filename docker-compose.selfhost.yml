@@ -1,22 +1,16 @@
 services:
   app:
-    build:
-      context: .
-      dockerfile: infra/selfhost/app.Dockerfile
-    working_dir: /workspace
-    command: >
-      sh -lc "bun install &&
-      bun run selfhost:workerd:build &&
-      SELFHOST_WORKERD_SOCKET=0.0.0.0:3001 bun run selfhost:workerd:serve"
+    image: ${SELFHOST_APP_IMAGE:?Set SELFHOST_APP_IMAGE to an immutable camelAI self-host image}
+    # workerd's localDocker engine assigns loopback addresses to its sandbox
+    # sidecars. It therefore has to share the Linux VM network namespace rather
+    # than run behind a second Docker bridge.
+    network_mode: host
     environment:
       NODE_ENV: production
       TOKEN_SIGNING_SECRET: ${TOKEN_SIGNING_SECRET:?Run bun run selfhost:init}
       INTEGRATION_SECRET_KEY: ${INTEGRATION_SECRET_KEY:?Run bun run selfhost:init}
       WORKER_BASE_URL: ${SELFHOST_PUBLIC_BASE_URL:?Run bun run selfhost:init}
-      PROJECT_RUNTIME_SERVICE_URL: http://project-runtime:4410
-      PROJECT_RUNTIME_DOCKER_PROXY_BASE_URL: ${PROJECT_RUNTIME_DOCKER_PROXY_BASE_URL:-http://project-runtime:4411}
-      PROJECT_RUNTIME_PROXY_SECRET: ${PROJECT_RUNTIME_PROXY_SECRET:?Run bun run selfhost:init}
-      LOCAL_ARTIFACTS_BASE_URL: http://local-artifacts:7001
+      LOCAL_ARTIFACTS_BASE_URL: http://127.0.0.1:7001
       LOCAL_ARTIFACTS_SECRET: ${LOCAL_ARTIFACTS_SECRET:?Run bun run selfhost:init}
       CF_ACCOUNT_ID: selfhost
       CF_DISPATCH_NAMESPACE: selfhost
@@ -30,11 +24,23 @@ services:
       SELFHOST_AI_AUTH_TYPE: ${SELFHOST_AI_AUTH_TYPE:-bearer}
       SELFHOST_AI_API: ${SELFHOST_AI_API:-openai-completions}
       SELFHOST_AI_AWS_REGION: ${SELFHOST_AI_AWS_REGION:-us-east-1}
+      LOCAL_AUTH_BYPASS: ${LOCAL_AUTH_BYPASS:-}
+      LOCAL_AUTH_BYPASS_HOSTS: ${LOCAL_AUTH_BYPASS_HOSTS:-}
+      LOCAL_AUTH_USER_EMAIL: ${LOCAL_AUTH_USER_EMAIL:-}
+      LOCAL_AUTH_USER_NAME: ${LOCAL_AUTH_USER_NAME:-}
+      SELFHOST_WORKERD_SOCKET: ${SELFHOST_BIND_ADDRESS:-127.0.0.1}:${SELFHOST_APP_PORT:-3001}
       EMAIL_FROM_ADDRESS: no-reply@localhost
       WORKSPACE_EMAIL_DOMAIN: localhost
       LOCAL_APP_VANITY_DOMAIN: ${LOCAL_APP_VANITY_DOMAIN:-}
       LOCAL_APP_IFRAME_DOMAIN: ${LOCAL_APP_IFRAME_DOMAIN:-}
       SELFHOST_BROWSER_NO_SANDBOX: ${SELFHOST_BROWSER_NO_SANDBOX:-1}
+      SELFHOST_DOCKER_SOCKET_URI: unix:///var/run/docker.sock
+      SELFHOST_PROJECT_BUILD_IMAGE: ${SELFHOST_PROJECT_BUILD_IMAGE:?Set SELFHOST_PROJECT_BUILD_IMAGE to an immutable sandbox image}
+      SELFHOST_ANALYSIS_IMAGE: ${SELFHOST_ANALYSIS_IMAGE:?Set SELFHOST_ANALYSIS_IMAGE to an immutable sandbox image}
+      SELFHOST_DB_QUERY_IMAGE: ${SELFHOST_DB_QUERY_IMAGE:?Set SELFHOST_DB_QUERY_IMAGE to an immutable sandbox image}
+      SELFHOST_CONTAINER_EGRESS_IMAGE: ${SELFHOST_CONTAINER_EGRESS_IMAGE:?Set SELFHOST_CONTAINER_EGRESS_IMAGE to the immutable camelAI egress image}
+      TURNSTILE_SITE_KEY: ${TURNSTILE_SITE_KEY:-}
+      TURNSTILE_SECRET_KEY: ${TURNSTILE_SECRET_KEY:-}
       CLOUDFLARE_ACCESS_TEAM_DOMAIN: ${CLOUDFLARE_ACCESS_TEAM_DOMAIN:-}
       CLOUDFLARE_ACCESS_AUD: ${CLOUDFLARE_ACCESS_AUD:-}
       CLOUDFLARE_ACCESS_AUDS: ${CLOUDFLARE_ACCESS_AUDS:-}
@@ -54,73 +60,56 @@ services:
       POMERIUM_ADMIN_GROUP_PREFIX: ${POMERIUM_ADMIN_GROUP_PREFIX:-}
       POMERIUM_DEFAULT_ORG_NAME: ${POMERIUM_DEFAULT_ORG_NAME:-}
       POMERIUM_REQUIRED_EMAIL_DOMAIN: ${POMERIUM_REQUIRED_EMAIL_DOMAIN:-}
-    ports:
-      - "${SELFHOST_BIND_ADDRESS:-127.0.0.1}:${SELFHOST_APP_PORT:-3001}:3001"
     volumes:
-      - .:/workspace
-      - app-node-modules:/workspace/node_modules
-      - bun-cache:/root/.bun
       - app-state:/workspace/.selfhost/workerd/state
+      # Attached workerd containers require read-write Docker API access.
+      # Treat control of this container as root-equivalent access to the VM.
+      - ${SELFHOST_DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock:rw
     depends_on:
       local-artifacts:
         condition: service_healthy
-      project-runtime:
-        condition: service_healthy
+      project-build-image:
+        condition: service_completed_successfully
+      analysis-image:
+        condition: service_completed_successfully
+      db-query-image:
+        condition: service_completed_successfully
+      container-egress-image:
+        condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/api/selfhost/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:${SELFHOST_APP_PORT:-3001}/api/selfhost/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 10s
       timeout: 5s
       retries: 30
 
-  project-runtime:
-    image: golang:1.24-bookworm
-    working_dir: /runtime
-    command: go run ./cmd/project-runtime
-    environment:
-      PORT: "4410"
-      PROJECT_RUNTIME_DOCKER_PROXY_PORT: "4411"
-      CONTAINER_RUNTIME: ${CONTAINER_RUNTIME:-runc}
-      PROJECT_RUNTIME_HOST_STATE_DIR: ${PROJECT_RUNTIME_HOST_STATE_DIR:?Run bun run selfhost:init}
-      WORKSPACES_ROOT: ${PROJECT_RUNTIME_HOST_STATE_DIR:?Run bun run selfhost:init}/workspaces
-      PROJECT_RUNTIME_USAGE_DB_DIR: ${PROJECT_RUNTIME_HOST_STATE_DIR:?Run bun run selfhost:init}/usage
-      PROJECT_RUNTIME_STATE_ROOT: ${PROJECT_RUNTIME_HOST_STATE_DIR:?Run bun run selfhost:init}/state
-      PROJECT_RUNTIME_BACKUP_ROOT: ${PROJECT_RUNTIME_HOST_STATE_DIR:?Run bun run selfhost:init}/backups
-      PROJECT_RUNTIME_IMAGE: ${PROJECT_RUNTIME_IMAGE:-project-runtime-basic:latest}
-      PROJECT_RUNTIME_ENABLE_PROJECT_QUOTA: ${PROJECT_RUNTIME_ENABLE_PROJECT_QUOTA:-0}
-      PROJECT_RUNTIME_CONTAINER_USER: ${PROJECT_RUNTIME_CONTAINER_USER:-claude}
-      PROJECT_RUNTIME_CONTAINER_HOME: ${PROJECT_RUNTIME_CONTAINER_HOME:-/workspace}
-      PROJECT_RUNTIME_CONTAINER_WORKDIR: ${PROJECT_RUNTIME_CONTAINER_WORKDIR:-/workspace}
-      PROJECT_RUNTIME_CONTAINER_NETWORK_MODE: ${PROJECT_RUNTIME_CONTAINER_NETWORK_MODE:-${COMPOSE_PROJECT_NAME:-camelai-selfhost}_default}
-      PROJECT_RUNTIME_PROXY_SECRET: ${PROJECT_RUNTIME_PROXY_SECRET:?Run bun run selfhost:init}
-      WORKER_BASE_URL: ${SELFHOST_INTERNAL_APP_URL:-http://app:3001}
-      PROJECT_RUNTIME_PROXY_CAPABILITIES_JSON: >
-        {"capabilities":[
-          {"name":"camelai-artifacts","target":"${SELFHOST_INTERNAL_APP_URL:-http://app:3001}/api/internal/project-runtime/artifacts"},
-          {"name":"camelai-cloudflare-api","target":"${SELFHOST_INTERNAL_APP_URL:-http://app:3001}"}
-        ]}
-    ports:
-      - "${SELFHOST_BIND_ADDRESS:-127.0.0.1}:4410:4410"
-      - "${SELFHOST_BIND_ADDRESS:-127.0.0.1}:4411:4411"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    volumes:
-      - ${PROJECT_RUNTIME_SERVICE_DIR:-${HOME}/qaml-ai/project-runtime-service}:/runtime
-      - ${PROJECT_RUNTIME_HOST_STATE_DIR:?Run bun run selfhost:init}:${PROJECT_RUNTIME_HOST_STATE_DIR:?Run bun run selfhost:init}
-      - /var/run/docker.sock:/var/run/docker.sock
-    healthcheck:
-      test: ["CMD", "bash", "-lc", "exec 3<>/dev/tcp/127.0.0.1/4410; printf 'GET /health HTTP/1.1\\r\\nHost: 127.0.0.1\\r\\nConnection: close\\r\\n\\r\\n' >&3; cat <&3 | grep project-runtime-service"]
-      interval: 5s
-      timeout: 3s
-      retries: 30
+  # These one-shot services make the exact image names referenced by workerd
+  # available in the VM's Docker daemon before the app starts.
+  project-build-image:
+    image: ${SELFHOST_PROJECT_BUILD_IMAGE:?Set SELFHOST_PROJECT_BUILD_IMAGE to an immutable sandbox image}
+    entrypoint: ["/bin/true"]
+    restart: "no"
+
+  analysis-image:
+    image: ${SELFHOST_ANALYSIS_IMAGE:?Set SELFHOST_ANALYSIS_IMAGE to an immutable sandbox image}
+    entrypoint: ["/bin/true"]
+    restart: "no"
+
+  db-query-image:
+    image: ${SELFHOST_DB_QUERY_IMAGE:?Set SELFHOST_DB_QUERY_IMAGE to an immutable sandbox image}
+    entrypoint: ["/bin/true"]
+    restart: "no"
+
+  container-egress-image:
+    image: ${SELFHOST_CONTAINER_EGRESS_IMAGE:?Set SELFHOST_CONTAINER_EGRESS_IMAGE to the immutable camelAI egress image}
+    entrypoint: ["/bin/true"]
+    restart: "no"
 
   local-artifacts:
-    build:
-      context: .
-      dockerfile: infra/selfhost/local-artifacts.Dockerfile
+    image: ${SELFHOST_LOCAL_ARTIFACTS_IMAGE:?Set SELFHOST_LOCAL_ARTIFACTS_IMAGE to an immutable local-artifacts image}
     environment:
       LOCAL_ARTIFACTS_PORT: "7001"
       LOCAL_ARTIFACTS_REPO_ROOT: /data/repos
-      LOCAL_ARTIFACTS_PUBLIC_BASE_URL: http://local-artifacts:7001
+      LOCAL_ARTIFACTS_PUBLIC_BASE_URL: http://127.0.0.1:7001
       LOCAL_ARTIFACTS_SECRET: ${LOCAL_ARTIFACTS_SECRET:?Run bun run selfhost:init}
     ports:
       - "${SELFHOST_BIND_ADDRESS:-127.0.0.1}:7001:7001"
@@ -134,6 +123,4 @@ services:
 
 volumes:
   app-state:
-  app-node-modules:
-  bun-cache:
   local-artifacts-repos:

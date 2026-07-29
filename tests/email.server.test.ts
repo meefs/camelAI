@@ -1,9 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   buildInvitationUrl,
   resolveAppBaseUrl,
   sendOrgInvitationEmail,
 } from '@/lib/email.server';
+import { SELFHOST_OUTBOUND_EMAIL_DISABLED_MESSAGE } from '@/lib/selfhost-capabilities';
 
 describe('email.server', () => {
   it('resolves base URL from WORKER_BASE_URL when provided', () => {
@@ -74,5 +75,28 @@ describe('email.server', () => {
       status: 'skipped',
       reason: 'EMAIL_FROM_ADDRESS is not configured',
     });
+  });
+
+  it('never sends through a configured Cloudflare binding in self-host mode', async () => {
+    const send = vi.fn();
+    const result = await sendOrgInvitationEmail({
+      env: {
+        CF_ACCOUNT_ID: 'selfhost',
+        EMAIL_FROM_ADDRESS: 'no-reply@example.com',
+        EMAIL: { send },
+      },
+      to: 'invitee@example.com',
+      orgName: 'Acme',
+      inviterName: 'Owner',
+      role: 'member',
+      invitationUrl: 'https://selfhost.example/invitations/org/inv',
+      expiresAt: Date.now() + 3600_000,
+    });
+
+    expect(result).toEqual({
+      status: 'skipped',
+      reason: SELFHOST_OUTBOUND_EMAIL_DISABLED_MESSAGE,
+    });
+    expect(send).not.toHaveBeenCalled();
   });
 });

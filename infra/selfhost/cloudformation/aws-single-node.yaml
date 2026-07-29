@@ -1,170 +1,315 @@
-AWSTemplateFormatVersion: '2010-09-09'
-Description: Single-node camelAI self-host deployment on AWS EC2 using prebuilt ECR images for app services.
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  camelAI supported single-node self-host release on Ubuntu, Docker Compose,
+  encrypted EBS, SSM, Secrets Manager, and Caddy. The six runtime images are
+  prebuilt release artifacts; this stack does not build application images.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Network and compute
+        Parameters:
+          - Name
+          - VpcId
+          - SubnetId
+          - AvailabilityZone
+          - UbuntuAmiId
+          - InstanceType
+          - RootVolumeSizeGiB
+          - DataVolumeSizeGiB
+          - EbsKmsKeyId
+          - WebIngressCidr
+          - SshIngressCidr
+          - KeyName
+      - Label:
+          default: Versioned release
+        Parameters:
+          - RepositoryUrl
+          - RepositoryRef
+          - AppImage
+          - LocalArtifactsImage
+          - ProjectBuildImage
+          - AnalysisImage
+          - DbQueryImage
+          - ContainerEgressImage
+      - Label:
+          default: Hostnames, TLS, and DNS
+        Parameters:
+          - MainHostname
+          - AppVanityDomain
+          - AppIframeDomain
+          - TlsMode
+          - TlsCertificateSecretArn
+          - TlsPrivateKeySecretArn
+          - CreateRoute53Records
+          - Route53HostedZoneId
+      - Label:
+          default: Identity-aware proxy
+        Parameters:
+          - AuthProvider
+          - AuthDefaultOrgName
+          - CloudflareAccessTeamDomain
+          - CloudflareAccessAudience
+          - PomeriumAuthenticateUrl
+          - PomeriumJwksUrl
+          - PomeriumIssuer
+          - PomeriumAudience
+      - Label:
+          default: AI provider
+        Parameters:
+          - SelfhostAiProvider
+          - SelfhostAiApiKeySecretArn
+          - SelfhostAiAwsRegion
+          - SelfhostAiBaseUrl
+          - SelfhostAiModel
+          - SelfhostAiName
+          - SelfhostAiApi
+          - SelfhostAiAuthType
 
 Parameters:
-  AppImageUri:
+  Name:
     Type: String
-    Description: ECR image URI for the bundled camelAI app container.
-  LocalArtifactsImageUri:
-    Type: String
-    Description: ECR image URI for the local artifacts service container.
-  RuntimeRepositoryUrl:
-    Type: String
-    Description: Git URL for the project-runtime-service repository. The instance must be able to clone it.
-  RuntimeRepositoryRef:
-    Type: String
-    Default: main
-  PublicBaseUrl:
-    Type: String
-    Description: Public base URL for the main app, for example https://camel.example.com.
-  AppVanityDomain:
-    Type: String
-    Description: Wildcard user app domain root, for example apps.example.com.
-  AppIframeDomain:
-    Type: String
-    Default: ''
-  InstanceType:
-    Type: String
-    Default: t3a.xlarge
-  LatestUbuntuAmiId:
-    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
-    Default: /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id
+    Default: camelai-selfhost
+    AllowedPattern: "[A-Za-z0-9-]+"
   VpcId:
     Type: AWS::EC2::VPC::Id
   SubnetId:
     Type: AWS::EC2::Subnet::Id
+  AvailabilityZone:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Description: Availability Zone containing SubnetId.
+  UbuntuAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id
+  InstanceType:
+    Type: String
+    Default: t3a.xlarge
+    AllowedValues:
+      - t3a.xlarge
+      - t3.xlarge
+      - m6a.xlarge
+      - m6i.xlarge
+      - m7a.xlarge
+      - m7i.xlarge
+  RootVolumeSizeGiB:
+    Type: Number
+    Default: 30
+    MinValue: 20
+  DataVolumeSizeGiB:
+    Type: Number
+    Default: 100
+    MinValue: 50
+  EbsKmsKeyId:
+    Type: String
+    Default: ""
+    Description: Optional KMS key ARN/id. Blank uses the AWS-managed EBS key.
+  WebIngressCidr:
+    Type: String
+    Default: 0.0.0.0/0
+    AllowedPattern: "(?:\\d{1,3}\\.){3}\\d{1,3}/\\d{1,2}"
+  SshIngressCidr:
+    Type: String
+    Default: ""
+    Description: Optional SSH CIDR. Prefer SSM Session Manager and leave blank.
   KeyName:
     Type: String
-    Default: ''
-  SshCidr:
+    Default: ""
+    Description: Optional existing EC2 key pair name.
+
+  RepositoryUrl:
     Type: String
-    Default: ''
-  VolumeSizeGiB:
-    Type: Number
-    Default: 200
-    MinValue: 80
-  ExistingElasticIpAllocationId:
+    Default: https://github.com/qaml-ai/camelAI.git
+    AllowedPattern: "https://[^\\s']+"
+  RepositoryRef:
     Type: String
-    Default: ''
-    Description: Optional existing Elastic IP allocation id. Useful when the public URL embeds a preallocated IP.
-  ExistingElasticIpPublicIp:
+    Description: Pinned camelAI release tag or full commit SHA.
+    AllowedPattern: "[A-Za-z0-9._/-]+"
+  AppImage:
     Type: String
-    Default: ''
-    Description: Public IP for ExistingElasticIpAllocationId. Required when Route53 DNS creation is enabled with an existing Elastic IP.
-  HostedZoneId:
+    Description: Immutable camelai-selfhost-app tag or digest.
+    AllowedPattern: "(?!.*:latest$)[A-Za-z0-9._/@:-]+"
+  LocalArtifactsImage:
     Type: String
-    Default: ''
-  MainHostName:
+    Description: Immutable camelai-selfhost-local-artifacts tag or digest.
+    AllowedPattern: "(?!.*:latest$)[A-Za-z0-9._/@:-]+"
+  ProjectBuildImage:
     Type: String
-    Default: ''
+    Description: Immutable camelai-selfhost-project-build tag or digest.
+    AllowedPattern: "(?!.*:latest$)[A-Za-z0-9._/@:-]+"
+  AnalysisImage:
+    Type: String
+    Description: Immutable camelai-selfhost-analysis tag or digest.
+    AllowedPattern: "(?!.*:latest$)[A-Za-z0-9._/@:-]+"
+  DbQueryImage:
+    Type: String
+    Description: Immutable camelai-selfhost-db-query tag or digest.
+    AllowedPattern: "(?!.*:latest$)[A-Za-z0-9._/@:-]+"
+  ContainerEgressImage:
+    Type: String
+    Description: Immutable camelai-selfhost-container-egress tag or digest.
+    AllowedPattern: "(?!.*:latest$)[A-Za-z0-9._/@:-]+"
+
+  MainHostname:
+    Type: String
+    Description: camelAI hostname without a scheme, for example camel.example.com.
+    AllowedPattern: "[A-Za-z0-9.-]+"
+  AppVanityDomain:
+    Type: String
+    Description: Wildcard app domain root without '*.', for example apps.example.com.
+    AllowedPattern: "[A-Za-z0-9.-]+"
+  AppIframeDomain:
+    Type: String
+    Default: ""
+    Description: Optional separate iframe domain root; blank uses AppVanityDomain.
+    AllowedPattern: "[A-Za-z0-9.-]*"
+  TlsMode:
+    Type: String
+    Default: provided
+    AllowedValues:
+      - provided
+      - external
+    Description: >-
+      provided installs PEM secrets on Caddy; external exposes an HTTP origin
+      intended only for a TLS-terminating upstream proxy.
+  TlsCertificateSecretArn:
+    Type: String
+    Default: ""
+    Description: Secrets Manager ARN containing the PEM certificate chain.
+    AllowedPattern: "(|arn:[A-Za-z0-9-]+:secretsmanager:[A-Za-z0-9-]+:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+)"
+  TlsPrivateKeySecretArn:
+    Type: String
+    Default: ""
+    Description: Secrets Manager ARN containing the PEM private key.
+    AllowedPattern: "(|arn:[A-Za-z0-9-]+:secretsmanager:[A-Za-z0-9-]+:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+)"
+  CreateRoute53Records:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+  Route53HostedZoneId:
+    Type: String
+    Default: ""
+
+  AuthProvider:
+    Type: String
+    AllowedValues:
+      - cloudflare-access
+      - pomerium
+    Description: Public installs require an identity-aware proxy.
+  AuthDefaultOrgName:
+    Type: String
+    AllowedPattern: "[A-Za-z0-9 ._-]+"
+  CloudflareAccessTeamDomain:
+    Type: String
+    Default: ""
+    AllowedPattern: "(|https://[^\\s']+)"
+  CloudflareAccessAudience:
+    Type: String
+    Default: ""
+    AllowedPattern: "[A-Za-z0-9._-]*"
+  PomeriumAuthenticateUrl:
+    Type: String
+    Default: ""
+    AllowedPattern: "(|https://[^\\s']+)"
+  PomeriumJwksUrl:
+    Type: String
+    Default: ""
+    AllowedPattern: "(|https://[^\\s']+)"
+  PomeriumIssuer:
+    Type: String
+    Default: ""
+    AllowedPattern: "(|https://[^\\s']+)"
+  PomeriumAudience:
+    Type: String
+    Default: ""
+    AllowedPattern: "[A-Za-z0-9._:/-]*"
+
   SelfhostAiProvider:
     Type: String
     Default: bedrock
-    AllowedValues: ['', openrouter, anthropic, openai, bedrock, custom]
-    Description: AI provider for the self-host deployment. On AWS, bedrock works by default through the EC2 instance role when SelfhostAiApiKey is empty.
-  SelfhostAiApiKey:
+    AllowedValues:
+      - bedrock
+      - anthropic
+      - openai
+      - openrouter
+      - custom
+  SelfhostAiApiKeySecretArn:
     Type: String
-    Default: ''
-    NoEcho: true
+    Description: >-
+      Secrets Manager ARN whose SecretString is the provider API key. Bedrock
+      uses its long-term API key through the Mantle compatibility endpoint;
+      EC2 instance-profile SigV4 is not used by this release.
+    AllowedPattern: "arn:[A-Za-z0-9-]+:secretsmanager:[A-Za-z0-9-]+:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+"
+  SelfhostAiAwsRegion:
+    Type: String
+    Default: us-east-1
+    AllowedPattern: "[a-z]{2}-[a-z]+-[0-9]"
   SelfhostAiBaseUrl:
     Type: String
-    Default: ''
+    Default: ""
+    AllowedPattern: "(|https://[^\\s']+)"
   SelfhostAiModel:
     Type: String
-    Default: ''
-  EnablePublicIngress:
+    Default: ""
+    AllowedPattern: "[A-Za-z0-9._:/-]*"
+  SelfhostAiName:
     Type: String
-    Default: 'false'
-    AllowedValues: ['true', 'false']
-    Description: Open public HTTP/HTTPS to Caddy. Set false when using Cloudflare Tunnel.
-  AssociatePublicIpForOutbound:
+    Default: ""
+    AllowedPattern: "[A-Za-z0-9 ._:/-]*"
+  SelfhostAiApi:
     Type: String
-    Default: 'true'
-    AllowedValues: ['true', 'false']
-    Description: Attach an ephemeral public IPv4 for outbound internet in public subnets. No inbound ports are opened unless EnablePublicIngress is true.
-  CloudflaredTunnelToken:
+    Default: openai-completions
+    AllowedValues:
+      - openai-completions
+      - openai-responses
+      - anthropic-messages
+  SelfhostAiAuthType:
     Type: String
-    Default: ''
-    NoEcho: true
-    Description: Optional Cloudflare Tunnel token. When set, cloudflared is installed and connected.
-  CloudflareAccessTeamDomain:
-    Type: String
-    Default: ''
-    Description: Cloudflare Access team domain, for example https://your-team.cloudflareaccess.com.
-  CloudflareAccessAud:
-    Type: String
-    Default: ''
-    Description: Cloudflare Access application audience tag.
-  CloudflareAccessDefaultOrgName:
-    Type: String
-    Default: ''
-  CloudflareAccessOrgClaims:
-    Type: String
-    Default: __selfhost_org__
-    Description: Comma-separated Access identity claim paths for org mapping. Default intentionally points at a missing claim so self-host falls back to CloudflareAccessDefaultOrgName.
-  CloudflareAccessRequiredEmailDomain:
-    Type: String
-    Default: ''
-  PomeriumAuthenticateUrl:
-    Type: String
-    Default: ''
-    Description: Pomerium authenticate service URL; the JWKS endpoint (/.well-known/pomerium/jwks.json) is derived from it. Alternatively set PomeriumJwksUrl directly.
-  PomeriumJwksUrl:
-    Type: String
-    Default: ''
-    Description: Full Pomerium JWKS URL. Overrides PomeriumAuthenticateUrl when set.
-  PomeriumIssuer:
-    Type: String
-    Default: ''
-    Description: Expected JWT issuer (the route host Pomerium fronts).
-  PomeriumAudience:
-    Type: String
-    Default: ''
-    Description: Comma-separated accepted JWT audiences (the route host).
-  PomeriumDefaultOrgName:
-    Type: String
-    Default: ''
-  PomeriumOrgClaims:
-    Type: String
-    Default: __selfhost_org__
-    Description: Comma-separated Pomerium identity claim paths for org mapping. Default intentionally points at a missing claim so self-host falls back to PomeriumDefaultOrgName.
-  PomeriumOrgMap:
-    Type: String
-    Default: ''
-    Description: Optional JSON object mapping exact group ids/claim values to friendly org names.
-  PomeriumOrgGroupPrefix:
-    Type: String
-    Default: ''
-    Description: Prefix that maps inline SSO groups to orgs (e.g. camelai-office-).
-  PomeriumAdminGroupPrefix:
-    Type: String
-    Default: ''
-    Description: Prefix that maps inline SSO groups to admin membership in the mapped org.
-  PomeriumRequiredEmailDomain:
-    Type: String
-    Default: ''
+    Default: bearer
+    AllowedValues:
+      - bearer
+      - x-api-key
 
 Rules:
-  ExistingEipDnsRequiresPublicIp:
-    RuleCondition: !And
-      - !Equals [!Ref EnablePublicIngress, 'true']
-      - !Not [!Equals [!Ref ExistingElasticIpAllocationId, '']]
-      - !Not [!Equals [!Ref HostedZoneId, '']]
-      - !Not [!Equals [!Ref MainHostName, '']]
+  ProvidedTlsRequiresSecrets:
+    RuleCondition: !Equals [!Ref TlsMode, provided]
     Assertions:
-      - Assert: !Not [!Equals [!Ref ExistingElasticIpPublicIp, '']]
-        AssertDescription: ExistingElasticIpPublicIp is required when creating Route53 records for an existing Elastic IP.
+      - Assert: !Not [!Equals [!Ref TlsCertificateSecretArn, ""]]
+        AssertDescription: TlsCertificateSecretArn is required for provided TLS.
+      - Assert: !Not [!Equals [!Ref TlsPrivateKeySecretArn, ""]]
+        AssertDescription: TlsPrivateKeySecretArn is required for provided TLS.
+  Route53RequiresZone:
+    RuleCondition: !Equals [!Ref CreateRoute53Records, "true"]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref Route53HostedZoneId, ""]]
+        AssertDescription: Route53HostedZoneId is required when creating records.
+  CloudflareAccessRequiresSettings:
+    RuleCondition: !Equals [!Ref AuthProvider, cloudflare-access]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref CloudflareAccessTeamDomain, ""]]
+        AssertDescription: CloudflareAccessTeamDomain is required.
+      - Assert: !Not [!Equals [!Ref CloudflareAccessAudience, ""]]
+        AssertDescription: CloudflareAccessAudience is required.
+  PomeriumRequiresSettings:
+    RuleCondition: !Equals [!Ref AuthProvider, pomerium]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref PomeriumAuthenticateUrl, ""]]
+        AssertDescription: PomeriumAuthenticateUrl is required.
+      - Assert: !Not [!Equals [!Ref PomeriumIssuer, ""]]
+        AssertDescription: PomeriumIssuer is required.
+      - Assert: !Not [!Equals [!Ref PomeriumAudience, ""]]
+        AssertDescription: PomeriumAudience is required.
 
 Conditions:
-  HasKeyName: !Not [!Equals [!Ref KeyName, '']]
-  EnableSsh: !Not [!Equals [!Ref SshCidr, '']]
-  PublicIngressEnabled: !Equals [!Ref EnablePublicIngress, 'true']
-  PublicIpForOutboundEnabled: !Equals [!Ref AssociatePublicIpForOutbound, 'true']
-  CreateDns: !And [!Condition PublicIngressEnabled, !Not [!Equals [!Ref HostedZoneId, '']], !Not [!Equals [!Ref MainHostName, '']]]
-  HasCloudflaredTunnel: !Not [!Equals [!Ref CloudflaredTunnelToken, '']]
-  UseExistingEip: !And [!Condition PublicIngressEnabled, !Not [!Equals [!Ref ExistingElasticIpAllocationId, '']]]
-  UseNewEip: !And [!Condition PublicIngressEnabled, !Equals [!Ref ExistingElasticIpAllocationId, '']]
-  HasAnyEip: !Or [!Condition UseExistingEip, !Condition UseNewEip]
+  HasKmsKey: !Not [!Equals [!Ref EbsKmsKeyId, ""]]
+  HasSshCidr: !Not [!Equals [!Ref SshIngressCidr, ""]]
+  HasKeyName: !Not [!Equals [!Ref KeyName, ""]]
+  HasSeparateIframeDomain: !Not [!Equals [!Ref AppIframeDomain, ""]]
+  IsProvidedTls: !Equals [!Ref TlsMode, provided]
+  CreateDns: !Equals [!Ref CreateRoute53Records, "true"]
+  CreateSeparateIframeDns: !And
+    - !Condition CreateDns
+    - !Condition HasSeparateIframeDomain
 
 Resources:
   SecurityGroup:
@@ -172,418 +317,524 @@ Resources:
     Properties:
       GroupDescription: camelAI self-host ingress
       VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
       SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: !Ref WebIngressCidr
         - !If
-          - PublicIngressEnabled
-          - IpProtocol: tcp
-            FromPort: 80
-            ToPort: 80
-            CidrIp: 0.0.0.0/0
-          - !Ref AWS::NoValue
-        - !If
-          - PublicIngressEnabled
+          - IsProvidedTls
           - IpProtocol: tcp
             FromPort: 443
             ToPort: 443
-            CidrIp: 0.0.0.0/0
+            CidrIp: !Ref WebIngressCidr
           - !Ref AWS::NoValue
         - !If
-          - EnableSsh
+          - HasSshCidr
           - IpProtocol: tcp
             FromPort: 22
             ToPort: 22
-            CidrIp: !Ref SshCidr
+            CidrIp: !Ref SshIngressCidr
           - !Ref AWS::NoValue
-      SecurityGroupEgress:
-        - IpProtocol: -1
-          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub ${Name}-sg
 
   InstanceRole:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
-        Version: '2012-10-17'
+        Version: "2012-10-17"
         Statement:
           - Effect: Allow
             Principal:
               Service: ec2.amazonaws.com
             Action: sts:AssumeRole
       ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
         - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
       Policies:
-        - PolicyName: BedrockInference
+        - PolicyName: ReadCamelAiBootstrapSecrets
           PolicyDocument:
-            Version: '2012-10-17'
+            Version: "2012-10-17"
             Statement:
               - Effect: Allow
-                Action:
-                  - bedrock:InvokeModel
-                  - bedrock:InvokeModelWithResponseStream
-                Resource: '*'
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref SelfhostAiApiKeySecretArn
+              - !If
+                - IsProvidedTls
+                - Effect: Allow
+                  Action: secretsmanager:GetSecretValue
+                  Resource:
+                    - !Sub "${TlsCertificateSecretArn}*"
+                    - !Sub "${TlsPrivateKeySecretArn}*"
+                - !Ref AWS::NoValue
+      Tags:
+        - Key: Name
+          Value: !Sub ${Name}-role
 
   InstanceProfile:
     Type: AWS::IAM::InstanceProfile
     Properties:
-      Roles: [!Ref InstanceRole]
+      Roles:
+        - !Ref InstanceRole
 
-  ElasticIp:
-    Condition: UseNewEip
-    Type: AWS::EC2::EIP
+  DataVolume:
+    Type: AWS::EC2::Volume
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Retain
     Properties:
-      Domain: vpc
+      AvailabilityZone: !Ref AvailabilityZone
+      Encrypted: true
+      KmsKeyId: !If [HasKmsKey, !Ref EbsKmsKeyId, !Ref AWS::NoValue]
+      Size: !Ref DataVolumeSizeGiB
+      VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: !Sub ${Name}-data
 
   Instance:
     Type: AWS::EC2::Instance
     Properties:
-      ImageId: !Ref LatestUbuntuAmiId
+      AvailabilityZone: !Ref AvailabilityZone
+      ImageId: !Ref UbuntuAmiId
       InstanceType: !Ref InstanceType
       IamInstanceProfile: !Ref InstanceProfile
+      KeyName: !If [HasKeyName, !Ref KeyName, !Ref AWS::NoValue]
+      SecurityGroupIds:
+        - !Ref SecurityGroup
+      SubnetId: !Ref SubnetId
       MetadataOptions:
         HttpEndpoint: enabled
-        HttpTokens: optional
-        HttpPutResponseHopLimit: 2
-      KeyName: !If [HasKeyName, !Ref KeyName, !Ref AWS::NoValue]
-      NetworkInterfaces:
-        - AssociatePublicIpAddress: !If [PublicIngressEnabled, true, !If [PublicIpForOutboundEnabled, true, false]]
-          DeviceIndex: '0'
-          SubnetId: !Ref SubnetId
-          GroupSet: [!Ref SecurityGroup]
+        HttpTokens: required
+        HttpPutResponseHopLimit: 1
       BlockDeviceMappings:
         - DeviceName: /dev/sda1
           Ebs:
-            VolumeSize: !Ref VolumeSizeGiB
+            DeleteOnTermination: true
+            Encrypted: true
+            KmsKeyId: !If [HasKmsKey, !Ref EbsKmsKeyId, !Ref AWS::NoValue]
+            VolumeSize: !Ref RootVolumeSizeGiB
             VolumeType: gp3
-            DeleteOnTermination: false
       Tags:
         - Key: Name
-          Value: camelai-selfhost
+          Value: !Ref Name
       UserData:
-        Fn::Base64: !Sub |
-          #!/usr/bin/env bash
-          set -euxo pipefail
-          export DEBIAN_FRONTEND=noninteractive
-          apt-get update
-          apt-get install -y ca-certificates curl gnupg git openssl unzip
-          install -m 0755 -d /etc/apt/keyrings
-          curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-          chmod a+r /etc/apt/keyrings/docker.asc
-          . /etc/os-release
-          echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu ${!VERSION_CODENAME} stable" > /etc/apt/sources.list.d/docker.list
-          curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/gpg.key -o /etc/apt/keyrings/caddy.asc
-          chmod a+r /etc/apt/keyrings/caddy.asc
-          echo "deb [signed-by=/etc/apt/keyrings/caddy.asc] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" > /etc/apt/sources.list.d/caddy.list
-          apt-get update
-          apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin caddy
-          curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
-          unzip -q /tmp/awscliv2.zip -d /tmp
-          /tmp/aws/install
-          if [ -n "${CloudflaredTunnelToken}" ]; then
-            curl -fsSL -o /tmp/cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
-            apt-get install -y /tmp/cloudflared.deb
-            cloudflared service install "${CloudflaredTunnelToken}"
-            systemctl restart cloudflared
-          fi
-          usermod -aG docker ubuntu || true
+        Fn::Base64:
+          Fn::Join:
+            - ""
+            - - |
+                #!/usr/bin/env bash
+                set -Eeuo pipefail
+                export DEBIAN_FRONTEND=noninteractive
+                SIGNAL_URL='
+              - !Ref BootstrapWaitHandle
+              - |
+                '
+                signal() {
+                  local status=$1
+                  curl --fail --silent --show-error -X PUT -H 'Content-Type:' \
+                    --data-binary "{\"Status\":\"$status\",\"UniqueId\":\"$(hostname)\",\"Data\":\"camelAI bootstrap $status\"}" \
+                    "$SIGNAL_URL"
+                }
+                trap 'signal FAILURE' ERR
+                DATA_VOLUME_ID='
+              - !Ref DataVolume
+              - |
+                '
+                REPOSITORY_URL='
+              - !Ref RepositoryUrl
+              - "'\nREPOSITORY_REF='"
+              - !Ref RepositoryRef
+              - "'\nAPP_IMAGE='"
+              - !Ref AppImage
+              - "'\nLOCAL_ARTIFACTS_IMAGE='"
+              - !Ref LocalArtifactsImage
+              - "'\nPROJECT_BUILD_IMAGE='"
+              - !Ref ProjectBuildImage
+              - "'\nANALYSIS_IMAGE='"
+              - !Ref AnalysisImage
+              - "'\nDB_QUERY_IMAGE='"
+              - !Ref DbQueryImage
+              - "'\nCONTAINER_EGRESS_IMAGE='"
+              - !Ref ContainerEgressImage
+              - "'\nMAIN_HOSTNAME='"
+              - !Ref MainHostname
+              - "'\nAPP_VANITY_DOMAIN='"
+              - !Ref AppVanityDomain
+              - "'\nAPP_IFRAME_DOMAIN='"
+              - !If [HasSeparateIframeDomain, !Ref AppIframeDomain, !Ref AppVanityDomain]
+              - "'\nTLS_MODE='"
+              - !Ref TlsMode
+              - "'\nTLS_CERTIFICATE_SECRET_ARN='"
+              - !Ref TlsCertificateSecretArn
+              - "'\nTLS_PRIVATE_KEY_SECRET_ARN='"
+              - !Ref TlsPrivateKeySecretArn
+              - "'\nAUTH_PROVIDER='"
+              - !Ref AuthProvider
+              - "'\nAUTH_DEFAULT_ORG_NAME='"
+              - !Ref AuthDefaultOrgName
+              - "'\nCLOUDFLARE_ACCESS_TEAM_DOMAIN='"
+              - !Ref CloudflareAccessTeamDomain
+              - "'\nCLOUDFLARE_ACCESS_AUD='"
+              - !Ref CloudflareAccessAudience
+              - "'\nPOMERIUM_AUTHENTICATE_URL='"
+              - !Ref PomeriumAuthenticateUrl
+              - "'\nPOMERIUM_JWKS_URL='"
+              - !Ref PomeriumJwksUrl
+              - "'\nPOMERIUM_ISSUER='"
+              - !Ref PomeriumIssuer
+              - "'\nPOMERIUM_AUDIENCE='"
+              - !Ref PomeriumAudience
+              - "'\nSELFHOST_AI_PROVIDER='"
+              - !Ref SelfhostAiProvider
+              - "'\nSELFHOST_AI_API_KEY_SECRET_ARN='"
+              - !Ref SelfhostAiApiKeySecretArn
+              - "'\nSELFHOST_AI_AWS_REGION='"
+              - !Ref SelfhostAiAwsRegion
+              - "'\nSELFHOST_AI_BASE_URL='"
+              - !Ref SelfhostAiBaseUrl
+              - "'\nSELFHOST_AI_MODEL='"
+              - !Ref SelfhostAiModel
+              - "'\nSELFHOST_AI_NAME='"
+              - !Ref SelfhostAiName
+              - "'\nSELFHOST_AI_API='"
+              - !Ref SelfhostAiApi
+              - "'\nSELFHOST_AI_AUTH_TYPE='"
+              - !Ref SelfhostAiAuthType
+              - |
+                '
 
-          printf '%s\n%s\n' "${AppImageUri}" "${LocalArtifactsImageUri}" | cut -d/ -f1 | sort -u | while read -r REGISTRY; do
-            if printf '%s' "$REGISTRY" | grep -Eq '^[0-9]+\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com$'; then
-              ECR_REGION=$(printf '%s' "$REGISTRY" | sed -E 's#^[0-9]+\.dkr\.ecr\.([a-z0-9-]+)\.amazonaws\.com$#\1#')
-              aws ecr get-login-password --region "$ECR_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
-            fi
-          done
-          docker pull "${AppImageUri}"
-          docker pull "${LocalArtifactsImageUri}"
+                apt-get update
+                apt-get install -y ca-certificates curl git jq awscli caddy xfsprogs
+                install -m 0755 -d /etc/apt/keyrings
+                curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+                chmod a+r /etc/apt/keyrings/docker.asc
+                . /etc/os-release
+                echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $VERSION_CODENAME stable" > /etc/apt/sources.list.d/docker.list
+                curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+                apt-get update
+                apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin nodejs
+                npm install --global bun@1.3.14
+                systemctl enable --now docker
+                if systemctl list-unit-files amazon-ssm-agent.service --no-legend | grep -q amazon-ssm-agent; then
+                  systemctl enable --now amazon-ssm-agent
+                elif systemctl list-unit-files snap.amazon-ssm-agent.amazon-ssm-agent.service --no-legend | grep -q amazon-ssm-agent; then
+                  systemctl enable --now snap.amazon-ssm-agent.amazon-ssm-agent
+                fi
 
-          mkdir -p /opt/camelai/selfhost /srv/camelai/project-runtime /srv/camelai/runtime-state
-          if [ ! -d /srv/camelai/project-runtime/.git ]; then git clone "${RuntimeRepositoryUrl}" /srv/camelai/project-runtime; fi
-          cd /srv/camelai/project-runtime
-          git fetch --all --tags
-          git checkout "${RuntimeRepositoryRef}"
-          cd /opt/camelai/selfhost
+                serial=${DATA_VOLUME_ID//-/}
+                device=""
+                for attempt in $(seq 1 120); do
+                  for candidate in "/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_$serial" /dev/xvdf /dev/sdf; do
+                    if [ -b "$candidate" ]; then device=$(readlink -f "$candidate"); break 2; fi
+                  done
+                  device=$(lsblk -ndo PATH,SERIAL | awk -v serial="$serial" '$2 == serial { print $1; exit }')
+                  [ -n "$device" ] && break
+                  sleep 5
+                done
+                [ -b "$device" ] || { echo "Persistent EBS volume did not attach" >&2; exit 1; }
+                if ! blkid "$device" >/dev/null 2>&1; then mkfs.ext4 -L camelai-data "$device"; fi
+                mkdir -p /srv/camelai
+                uuid=$(blkid -s UUID -o value "$device")
+                grep -q "UUID=$uuid" /etc/fstab || echo "UUID=$uuid /srv/camelai ext4 defaults,nofail 0 2" >> /etc/fstab
+                mount /srv/camelai
+                mkdir -p /srv/camelai/docker /srv/camelai/backups
+                printf '{"data-root":"/srv/camelai/docker"}\n' > /etc/docker/daemon.json
+                systemctl restart docker
 
-          TOKEN_SIGNING_SECRET=$(openssl rand -base64 48 | tr -d '\n')
-          INTEGRATION_SECRET_KEY=$(openssl rand -base64 48 | tr -d '\n')
-          PROJECT_RUNTIME_PROXY_SECRET=$(openssl rand -base64 48 | tr -d '\n')
-          LOCAL_ARTIFACTS_SECRET=$(openssl rand -base64 48 | tr -d '\n')
-          APP_IFRAME_DOMAIN="${AppIframeDomain}"
-          if [ -z "$APP_IFRAME_DOMAIN" ]; then APP_IFRAME_DOMAIN="${AppVanityDomain}"; fi
-          cat > .env.selfhost <<EOF
-          COMPOSE_PROJECT_NAME=camelai-selfhost
-          SELFHOST_PUBLIC_BASE_URL=${PublicBaseUrl}
-          LOCAL_APP_VANITY_DOMAIN=${AppVanityDomain}
-          LOCAL_APP_IFRAME_DOMAIN=$APP_IFRAME_DOMAIN
-          PROJECT_RUNTIME_HOST_STATE_DIR=/srv/camelai/runtime-state
-          PROJECT_RUNTIME_IMAGE=project-runtime-basic:latest
-          PROJECT_RUNTIME_ENABLE_PROJECT_QUOTA=0
-          PROJECT_RUNTIME_CONTAINER_USER=claude
-          PROJECT_RUNTIME_CONTAINER_HOME=/workspace
-          PROJECT_RUNTIME_CONTAINER_WORKDIR=/workspace
-          PROJECT_RUNTIME_CONTAINER_NETWORK_MODE=camelai-selfhost_default
-          PROJECT_RUNTIME_DOCKER_PROXY_BASE_URL=http://project-runtime:4411
-          CONTAINER_RUNTIME=runc
-          TOKEN_SIGNING_SECRET=$TOKEN_SIGNING_SECRET
-          INTEGRATION_SECRET_KEY=$INTEGRATION_SECRET_KEY
-          PROJECT_RUNTIME_PROXY_SECRET=$PROJECT_RUNTIME_PROXY_SECRET
-          LOCAL_ARTIFACTS_SECRET=$LOCAL_ARTIFACTS_SECRET
-          SELFHOST_AI_PROVIDER=${SelfhostAiProvider}
-          SELFHOST_AI_API_KEY=${SelfhostAiApiKey}
-          SELFHOST_AI_BASE_URL=${SelfhostAiBaseUrl}
-          SELFHOST_AI_MODEL=${SelfhostAiModel}
-          SELFHOST_AI_AUTH_TYPE=bearer
-          SELFHOST_AI_API=openai-completions
-          SELFHOST_AI_AWS_REGION=${AWS::Region}
-          CLOUDFLARE_ACCESS_TEAM_DOMAIN=${CloudflareAccessTeamDomain}
-          CLOUDFLARE_ACCESS_AUD=${CloudflareAccessAud}
-          CLOUDFLARE_ACCESS_DEFAULT_ORG_NAME=${CloudflareAccessDefaultOrgName}
-          CLOUDFLARE_ACCESS_ORG_CLAIMS=${CloudflareAccessOrgClaims}
-          CLOUDFLARE_ACCESS_REQUIRED_EMAIL_DOMAIN=${CloudflareAccessRequiredEmailDomain}
-          POMERIUM_AUTHENTICATE_URL=${PomeriumAuthenticateUrl}
-          POMERIUM_JWKS_URL=${PomeriumJwksUrl}
-          POMERIUM_ISSUER=${PomeriumIssuer}
-          POMERIUM_AUDIENCE=${PomeriumAudience}
-          POMERIUM_DEFAULT_ORG_NAME=${PomeriumDefaultOrgName}
-          POMERIUM_ORG_CLAIMS=${PomeriumOrgClaims}
-          POMERIUM_ORG_MAP=${PomeriumOrgMap}
-          POMERIUM_ORG_GROUP_PREFIX=${PomeriumOrgGroupPrefix}
-          POMERIUM_ADMIN_GROUP_PREFIX=${PomeriumAdminGroupPrefix}
-          POMERIUM_REQUIRED_EMAIL_DOMAIN=${PomeriumRequiredEmailDomain}
-          EOF
-          chmod 600 .env.selfhost
+                if [ ! -d /srv/camelai/repo/.git ]; then git clone "$REPOSITORY_URL" /srv/camelai/repo; fi
+                cd /srv/camelai/repo
+                git remote set-url origin "$REPOSITORY_URL"
+                git fetch --tags --force origin
+                git checkout --detach "$REPOSITORY_REF"
+                bun install --frozen-lockfile
+                [ -f .env.selfhost ] || bun run selfhost:init
 
-          cat > docker-compose.yml <<'EOF'
-          services:
-            app:
-              image: ${AppImageUri}
-              restart: unless-stopped
-              networks:
-                default:
-                  ipv4_address: 172.30.0.10
-              environment:
-                NODE_ENV: production
-                TOKEN_SIGNING_SECRET: __DOLLAR__{TOKEN_SIGNING_SECRET:?missing}
-                INTEGRATION_SECRET_KEY: __DOLLAR__{INTEGRATION_SECRET_KEY:?missing}
-                WORKER_BASE_URL: __DOLLAR__{SELFHOST_PUBLIC_BASE_URL:?missing}
-                PROJECT_RUNTIME_SERVICE_URL: http://project-runtime:4410
-                PROJECT_RUNTIME_DOCKER_PROXY_BASE_URL: __DOLLAR__{PROJECT_RUNTIME_DOCKER_PROXY_BASE_URL:-http://project-runtime:4411}
-                PROJECT_RUNTIME_PROXY_SECRET: __DOLLAR__{PROJECT_RUNTIME_PROXY_SECRET:?missing}
-                LOCAL_ARTIFACTS_BASE_URL: http://local-artifacts:7001
-                LOCAL_ARTIFACTS_SECRET: __DOLLAR__{LOCAL_ARTIFACTS_SECRET:?missing}
-                CF_ACCOUNT_ID: selfhost
-                CF_DISPATCH_NAMESPACE: selfhost
-                CF_WORKER_NAME: chiridion-selfhost
-                AI_VIRTUAL_MODEL: dynamic/auto
-                SELFHOST_AI_PROVIDER: __DOLLAR__{SELFHOST_AI_PROVIDER:-}
-                SELFHOST_AI_API_KEY: __DOLLAR__{SELFHOST_AI_API_KEY:-}
-                SELFHOST_AI_BASE_URL: __DOLLAR__{SELFHOST_AI_BASE_URL:-}
-                SELFHOST_AI_MODEL: __DOLLAR__{SELFHOST_AI_MODEL:-}
-                SELFHOST_AI_AUTH_TYPE: __DOLLAR__{SELFHOST_AI_AUTH_TYPE:-bearer}
-                SELFHOST_AI_API: __DOLLAR__{SELFHOST_AI_API:-openai-completions}
-                SELFHOST_AI_AWS_REGION: __DOLLAR__{SELFHOST_AI_AWS_REGION:-us-east-1}
-                EMAIL_FROM_ADDRESS: no-reply@localhost
-                WORKSPACE_EMAIL_DOMAIN: localhost
-                LOCAL_APP_VANITY_DOMAIN: __DOLLAR__{LOCAL_APP_VANITY_DOMAIN:-}
-                LOCAL_APP_IFRAME_DOMAIN: __DOLLAR__{LOCAL_APP_IFRAME_DOMAIN:-}
-                CLOUDFLARE_ACCESS_TEAM_DOMAIN: __DOLLAR__{CLOUDFLARE_ACCESS_TEAM_DOMAIN:-}
-                CLOUDFLARE_ACCESS_AUD: __DOLLAR__{CLOUDFLARE_ACCESS_AUD:-}
-                CLOUDFLARE_ACCESS_DEFAULT_ORG_NAME: __DOLLAR__{CLOUDFLARE_ACCESS_DEFAULT_ORG_NAME:-}
-                CLOUDFLARE_ACCESS_ORG_CLAIMS: __DOLLAR__{CLOUDFLARE_ACCESS_ORG_CLAIMS:-}
-                CLOUDFLARE_ACCESS_REQUIRED_EMAIL_DOMAIN: __DOLLAR__{CLOUDFLARE_ACCESS_REQUIRED_EMAIL_DOMAIN:-}
-                POMERIUM_AUTHENTICATE_URL: __DOLLAR__{POMERIUM_AUTHENTICATE_URL:-}
-                POMERIUM_JWKS_URL: __DOLLAR__{POMERIUM_JWKS_URL:-}
-                POMERIUM_ISSUER: __DOLLAR__{POMERIUM_ISSUER:-}
-                POMERIUM_AUDIENCE: __DOLLAR__{POMERIUM_AUDIENCE:-}
-                POMERIUM_DEFAULT_ORG_NAME: __DOLLAR__{POMERIUM_DEFAULT_ORG_NAME:-}
-                POMERIUM_ORG_CLAIMS: __DOLLAR__{POMERIUM_ORG_CLAIMS:-}
-                POMERIUM_ORG_MAP: __DOLLAR__{POMERIUM_ORG_MAP:-}
-                POMERIUM_ORG_GROUP_PREFIX: __DOLLAR__{POMERIUM_ORG_GROUP_PREFIX:-}
-                POMERIUM_ADMIN_GROUP_PREFIX: __DOLLAR__{POMERIUM_ADMIN_GROUP_PREFIX:-}
-                POMERIUM_REQUIRED_EMAIL_DOMAIN: __DOLLAR__{POMERIUM_REQUIRED_EMAIL_DOMAIN:-}
-              ports:
-                - "127.0.0.1:3001:3001"
-              volumes:
-                - app-state:/workspace/.selfhost/workerd/state
-              depends_on:
-                local-artifacts:
-                  condition: service_healthy
-                project-runtime:
-                  condition: service_healthy
-              healthcheck:
-                test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/api/selfhost/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
-                interval: 10s
-                timeout: 5s
-                retries: 30
-            project-runtime:
-              image: golang:1.24-bookworm
-              restart: unless-stopped
-              working_dir: /runtime
-              command: go run ./cmd/project-runtime
-              environment:
-                PORT: "4410"
-                PROJECT_RUNTIME_DOCKER_PROXY_PORT: "4411"
-                CONTAINER_RUNTIME: __DOLLAR__{CONTAINER_RUNTIME:-runc}
-                PROJECT_RUNTIME_HOST_STATE_DIR: __DOLLAR__{PROJECT_RUNTIME_HOST_STATE_DIR:?missing}
-                WORKSPACES_ROOT: __DOLLAR__{PROJECT_RUNTIME_HOST_STATE_DIR:?missing}/workspaces
-                PROJECT_RUNTIME_USAGE_DB_DIR: __DOLLAR__{PROJECT_RUNTIME_HOST_STATE_DIR:?missing}/usage
-                PROJECT_RUNTIME_STATE_ROOT: __DOLLAR__{PROJECT_RUNTIME_HOST_STATE_DIR:?missing}/state
-                PROJECT_RUNTIME_BACKUP_ROOT: __DOLLAR__{PROJECT_RUNTIME_HOST_STATE_DIR:?missing}/backups
-                PROJECT_RUNTIME_IMAGE: __DOLLAR__{PROJECT_RUNTIME_IMAGE:-project-runtime-basic:latest}
-                PROJECT_RUNTIME_ENABLE_PROJECT_QUOTA: __DOLLAR__{PROJECT_RUNTIME_ENABLE_PROJECT_QUOTA:-0}
-                PROJECT_RUNTIME_CONTAINER_USER: __DOLLAR__{PROJECT_RUNTIME_CONTAINER_USER:-claude}
-                PROJECT_RUNTIME_CONTAINER_HOME: __DOLLAR__{PROJECT_RUNTIME_CONTAINER_HOME:-/workspace}
-                PROJECT_RUNTIME_CONTAINER_WORKDIR: __DOLLAR__{PROJECT_RUNTIME_CONTAINER_WORKDIR:-/workspace}
-                PROJECT_RUNTIME_CONTAINER_NETWORK_MODE: __DOLLAR__{PROJECT_RUNTIME_CONTAINER_NETWORK_MODE:-camelai-selfhost_default}
-                PROJECT_RUNTIME_PROXY_SECRET: __DOLLAR__{PROJECT_RUNTIME_PROXY_SECRET:?missing}
-                WORKER_BASE_URL: http://app:3001
-                PROJECT_RUNTIME_PROXY_CAPABILITIES_JSON: '{"capabilities":[{"name":"camelai-artifacts","target":"http://app:3001/api/internal/project-runtime/artifacts"},{"name":"camelai-cloudflare-api","target":"http://app:3001"}]}'
-              ports:
-                - "127.0.0.1:4410:4410"
-                - "127.0.0.1:4411:4411"
-              extra_hosts:
-                - "host.docker.internal:host-gateway"
-              volumes:
-                - /srv/camelai/project-runtime:/runtime
-                - /srv/camelai/runtime-state:/srv/camelai/runtime-state
-                - /var/run/docker.sock:/var/run/docker.sock
-              healthcheck:
-                test: ["CMD", "bash", "-lc", "exec 3<>/dev/tcp/127.0.0.1/4410; printf 'GET /health HTTP/1.1\\r\\nHost: 127.0.0.1\\r\\nConnection: close\\r\\n\\r\\n' >&3; cat <&3 | grep project-runtime-service"]
-                interval: 5s
-                timeout: 3s
-                retries: 30
-            local-artifacts:
-              image: ${LocalArtifactsImageUri}
-              restart: unless-stopped
-              environment:
-                LOCAL_ARTIFACTS_PORT: "7001"
-                LOCAL_ARTIFACTS_REPO_ROOT: /data/repos
-                LOCAL_ARTIFACTS_PUBLIC_BASE_URL: http://local-artifacts:7001
-                LOCAL_ARTIFACTS_SECRET: __DOLLAR__{LOCAL_ARTIFACTS_SECRET:?missing}
-              ports:
-                - "127.0.0.1:7001:7001"
-              volumes:
-                - local-artifacts-repos:/data/repos
-              healthcheck:
-                test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:7001/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
-                interval: 5s
-                timeout: 3s
-                retries: 20
-          volumes:
-            app-state:
-            local-artifacts-repos:
-          networks:
-            default:
-              ipam:
-                config:
-                  - subnet: 172.30.0.0/24
-          EOF
-          perl -pi -e 's/__DOLLAR__/\$/g' docker-compose.yml
+                SELFHOST_AI_API_KEY=$(aws secretsmanager get-secret-value --secret-id "$SELFHOST_AI_API_KEY_SECRET_ARN" --query SecretString --output text)
+                [ -n "$SELFHOST_AI_API_KEY" ] && [ "$SELFHOST_AI_API_KEY" != None ]
+                [[ "$SELFHOST_AI_API_KEY" != *$'\n'* ]] || { echo "AI API key secret must be one line" >&2; exit 1; }
 
-          cat > /etc/systemd/system/camelai-selfhost.service <<'EOF'
-          [Unit]
-          Description=camelAI self-host Docker Compose stack
-          After=docker.service network-online.target
-          Wants=network-online.target
-          Requires=docker.service
-          [Service]
-          Type=oneshot
-          RemainAfterExit=yes
-          WorkingDirectory=/opt/camelai/selfhost
-          ExecStartPre=/usr/bin/docker build -t project-runtime-basic:latest -f /srv/camelai/project-runtime/Dockerfile.sandbox /srv/camelai/project-runtime
-          ExecStart=/usr/bin/docker compose --env-file .env.selfhost -f docker-compose.yml up -d
-          ExecStop=/usr/bin/docker compose --env-file .env.selfhost -f docker-compose.yml down
-          TimeoutStartSec=0
-          [Install]
-          WantedBy=multi-user.target
-          EOF
+                export APP_IMAGE LOCAL_ARTIFACTS_IMAGE PROJECT_BUILD_IMAGE ANALYSIS_IMAGE DB_QUERY_IMAGE CONTAINER_EGRESS_IMAGE
+                export MAIN_HOSTNAME APP_VANITY_DOMAIN APP_IFRAME_DOMAIN SELFHOST_AI_PROVIDER SELFHOST_AI_API_KEY
+                export SELFHOST_AI_AWS_REGION SELFHOST_AI_BASE_URL SELFHOST_AI_MODEL SELFHOST_AI_NAME SELFHOST_AI_API SELFHOST_AI_AUTH_TYPE
+                export AUTH_PROVIDER AUTH_DEFAULT_ORG_NAME CLOUDFLARE_ACCESS_TEAM_DOMAIN CLOUDFLARE_ACCESS_AUD
+                export POMERIUM_AUTHENTICATE_URL POMERIUM_JWKS_URL POMERIUM_ISSUER POMERIUM_AUDIENCE
+                node <<'NODE'
+                import fs from "node:fs";
+                const e = process.env;
+                const updates = {
+                  SELFHOST_DEPLOYMENT_MODE: "release",
+                  SELFHOST_APP_IMAGE: e.APP_IMAGE,
+                  SELFHOST_LOCAL_ARTIFACTS_IMAGE: e.LOCAL_ARTIFACTS_IMAGE,
+                  SELFHOST_PROJECT_BUILD_IMAGE: e.PROJECT_BUILD_IMAGE,
+                  SELFHOST_ANALYSIS_IMAGE: e.ANALYSIS_IMAGE,
+                  SELFHOST_DB_QUERY_IMAGE: e.DB_QUERY_IMAGE,
+                  SELFHOST_CONTAINER_EGRESS_IMAGE: e.CONTAINER_EGRESS_IMAGE,
+                  SELFHOST_PUBLIC_BASE_URL: `https://${e.MAIN_HOSTNAME}`,
+                  LOCAL_APP_VANITY_DOMAIN: e.APP_VANITY_DOMAIN,
+                  LOCAL_APP_IFRAME_DOMAIN: e.APP_IFRAME_DOMAIN,
+                  SELFHOST_AI_PROVIDER: e.SELFHOST_AI_PROVIDER,
+                  SELFHOST_AI_API_KEY: e.SELFHOST_AI_API_KEY,
+                  SELFHOST_AI_AWS_REGION: e.SELFHOST_AI_AWS_REGION,
+                  SELFHOST_AI_BASE_URL: e.SELFHOST_AI_BASE_URL,
+                  SELFHOST_AI_MODEL: e.SELFHOST_AI_MODEL,
+                  SELFHOST_AI_NAME: e.SELFHOST_AI_NAME,
+                  SELFHOST_AI_API: e.SELFHOST_AI_API,
+                  SELFHOST_AI_AUTH_TYPE: e.SELFHOST_AI_AUTH_TYPE,
+                  COMPOSE_PROJECT_NAME: "camelai-selfhost",
+                  SELFHOST_BIND_ADDRESS: "127.0.0.1",
+                  SELFHOST_APP_PORT: "3001",
+                  SELFHOST_INTERNAL_APP_URL: "http://127.0.0.1:3001",
+                  LOCAL_AUTH_BYPASS: "",
+                  TURNSTILE_SITE_KEY: "",
+                  TURNSTILE_SECRET_KEY: "",
+                  CLOUDFLARE_ACCESS_TEAM_DOMAIN: e.AUTH_PROVIDER === "cloudflare-access" ? e.CLOUDFLARE_ACCESS_TEAM_DOMAIN : "",
+                  CLOUDFLARE_ACCESS_AUD: e.AUTH_PROVIDER === "cloudflare-access" ? e.CLOUDFLARE_ACCESS_AUD : "",
+                  CLOUDFLARE_ACCESS_DEFAULT_ORG_NAME: e.AUTH_PROVIDER === "cloudflare-access" ? e.AUTH_DEFAULT_ORG_NAME : "",
+                  POMERIUM_AUTHENTICATE_URL: e.AUTH_PROVIDER === "pomerium" ? e.POMERIUM_AUTHENTICATE_URL : "",
+                  POMERIUM_JWKS_URL: e.AUTH_PROVIDER === "pomerium" ? e.POMERIUM_JWKS_URL : "",
+                  POMERIUM_ISSUER: e.AUTH_PROVIDER === "pomerium" ? e.POMERIUM_ISSUER : "",
+                  POMERIUM_AUDIENCE: e.AUTH_PROVIDER === "pomerium" ? e.POMERIUM_AUDIENCE : "",
+                  POMERIUM_DEFAULT_ORG_NAME: e.AUTH_PROVIDER === "pomerium" ? e.AUTH_DEFAULT_ORG_NAME : "",
+                };
+                const path = ".env.selfhost";
+                let text = fs.readFileSync(path, "utf8");
+                for (const [key, value] of Object.entries(updates)) {
+                  const line = `${key}=${/^[A-Za-z0-9_./:@-]*$/.test(value) ? value : JSON.stringify(value)}`;
+                  text = new RegExp(`^${key}=.*$`, "m").test(text)
+                    ? text.replace(new RegExp(`^${key}=.*$`, "m"), line)
+                    : `${text.trimEnd()}\n${line}\n`;
+                }
+                fs.writeFileSync(path, text, { mode: 0o600 });
+                NODE
+                unset SELFHOST_AI_API_KEY
+                chmod 600 .env.selfhost
 
-          cat > /usr/local/sbin/camelai-imds-firewall <<'EOF'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          iptables -N DOCKER-USER 2>/dev/null || true
-          iptables -D DOCKER-USER -s 172.30.0.10/32 -d 169.254.169.254/32 -j RETURN 2>/dev/null || true
-          iptables -D DOCKER-USER -d 169.254.169.254/32 -j REJECT 2>/dev/null || true
-          iptables -I DOCKER-USER 1 -s 172.30.0.10/32 -d 169.254.169.254/32 -j RETURN
-          iptables -I DOCKER-USER 2 -d 169.254.169.254/32 -j REJECT
-          EOF
-          chmod 755 /usr/local/sbin/camelai-imds-firewall
-          cat > /etc/systemd/system/camelai-imds-firewall.service <<'EOF'
-          [Unit]
-          Description=Restrict EC2 IMDS access to the camelAI app container
-          After=docker.service
-          Requires=docker.service
-          [Service]
-          Type=oneshot
-          ExecStart=/usr/local/sbin/camelai-imds-firewall
-          RemainAfterExit=yes
-          [Install]
-          WantedBy=multi-user.target
-          EOF
+                install -d -m 0700 /etc/camelai
+                if [ "$TLS_MODE" = provided ]; then
+                  aws secretsmanager get-secret-value --secret-id "$TLS_CERTIFICATE_SECRET_ARN" --query SecretString --output text > /etc/camelai/tls.crt
+                  aws secretsmanager get-secret-value --secret-id "$TLS_PRIVATE_KEY_SECRET_ARN" --query SecretString --output text > /etc/camelai/tls.key
+                  chmod 0600 /etc/camelai/tls.crt /etc/camelai/tls.key
+                  chown root:caddy /etc/camelai/tls.crt /etc/camelai/tls.key
+                  app_sites="https://*.$APP_VANITY_DOMAIN"
+                  [ "$APP_IFRAME_DOMAIN" = "$APP_VANITY_DOMAIN" ] || app_sites="$app_sites, https://*.$APP_IFRAME_DOMAIN"
+                  cat > /etc/caddy/Caddyfile <<CADDY
+                http://$MAIN_HOSTNAME, http://*.$APP_VANITY_DOMAIN, http://*.$APP_IFRAME_DOMAIN {
+                  redir https://{host}{uri} permanent
+                }
+                https://$MAIN_HOSTNAME {
+                  tls /etc/camelai/tls.crt /etc/camelai/tls.key
+                  reverse_proxy 127.0.0.1:3001
+                }
+                $app_sites {
+                  tls /etc/camelai/tls.crt /etc/camelai/tls.key
+                  reverse_proxy 127.0.0.1:3001
+                }
+                CADDY
+                else
+                  cat > /etc/caddy/Caddyfile <<CADDY
+                http://$MAIN_HOSTNAME, http://*.$APP_VANITY_DOMAIN, http://*.$APP_IFRAME_DOMAIN {
+                  reverse_proxy 127.0.0.1:3001
+                }
+                CADDY
+                fi
+                caddy validate --config /etc/caddy/Caddyfile
+                systemctl enable --now caddy
 
-          systemctl daemon-reload
-          systemctl enable --now camelai-imds-firewall.service
-          systemctl enable --now camelai-selfhost.service
+                cat > /etc/systemd/system/camelai-selfhost.service <<'UNIT'
+                [Unit]
+                Description=camelAI self-host release
+                Requires=docker.service
+                After=docker.service network-online.target
+                Wants=network-online.target
 
-          MAIN_HOST=$(printf '%s' "${PublicBaseUrl}" | sed -E 's#^https?://##; s#/.*$##')
-          APPS_HOST="${AppVanityDomain}"
-          if [ "${EnablePublicIngress}" != "true" ]; then
-            systemctl stop caddy || true
-            systemctl disable caddy || true
-          elif printf '%s' "${PublicBaseUrl}" | grep -q '^http://'; then
-            cat > /etc/caddy/Caddyfile <<EOF
-          :80 {
-            reverse_proxy 127.0.0.1:3001
-          }
-          EOF
-            systemctl reload caddy || systemctl restart caddy
-          elif [ -n "$MAIN_HOST" ] && [ "$MAIN_HOST" != localhost ]; then
-            cat > /etc/caddy/Caddyfile <<EOF
-          $MAIN_HOST {
-            reverse_proxy 127.0.0.1:3001
-          }
+                [Service]
+                Type=oneshot
+                RemainAfterExit=yes
+                WorkingDirectory=/srv/camelai/repo
+                ExecStart=/usr/bin/docker compose --env-file .env.selfhost -f docker-compose.selfhost.yml pull
+                ExecStart=/usr/bin/docker compose --env-file .env.selfhost -f docker-compose.selfhost.yml up --detach --wait
+                ExecStop=/usr/bin/docker compose --env-file .env.selfhost -f docker-compose.selfhost.yml down
+                TimeoutStartSec=1200
 
-          http://*.$APPS_HOST {
-            reverse_proxy 127.0.0.1:3001
-          }
-          EOF
-            systemctl reload caddy || systemctl restart caddy
-          fi
+                [Install]
+                WantedBy=multi-user.target
+                UNIT
 
-  EipAssociation:
-    Condition: HasAnyEip
+                cat > /usr/local/sbin/camelai-selfhost-upgrade <<'UPGRADE'
+                #!/usr/bin/env bash
+                set -Eeuo pipefail
+                if [ "$#" -ne 1 ] && [ "$#" -ne 7 ]; then
+                  echo "usage: camelai-selfhost-upgrade <release-ref> [app-image local-artifacts-image project-build-image analysis-image db-query-image container-egress-image]" >&2
+                  exit 2
+                fi
+                ref=$1
+                if [ "$#" -eq 1 ]; then
+                  release_app_image="ghcr.io/qaml-ai/camelai-selfhost-app:$ref"
+                  release_artifacts_image="ghcr.io/qaml-ai/camelai-selfhost-local-artifacts:$ref"
+                  release_build_image="ghcr.io/qaml-ai/camelai-selfhost-project-build:$ref"
+                  release_analysis_image="ghcr.io/qaml-ai/camelai-selfhost-analysis:$ref"
+                  release_query_image="ghcr.io/qaml-ai/camelai-selfhost-db-query:$ref"
+                  release_egress_image="ghcr.io/qaml-ai/camelai-selfhost-container-egress:$ref"
+                else
+                  release_app_image=$2
+                  release_artifacts_image=$3
+                  release_build_image=$4
+                  release_analysis_image=$5
+                  release_query_image=$6
+                  release_egress_image=$7
+                fi
+                cd /srv/camelai/repo
+                bun run selfhost:backup
+                cp -p .env.selfhost /srv/camelai/.env.selfhost.previous
+                git rev-parse HEAD > /srv/camelai/repository-ref.previous
+                git fetch --tags --force origin
+                git checkout --detach "$ref"
+                bun install --frozen-lockfile
+                export RELEASE_APP_IMAGE="$release_app_image"
+                export RELEASE_ARTIFACTS_IMAGE="$release_artifacts_image"
+                export RELEASE_BUILD_IMAGE="$release_build_image"
+                export RELEASE_ANALYSIS_IMAGE="$release_analysis_image"
+                export RELEASE_QUERY_IMAGE="$release_query_image"
+                export RELEASE_EGRESS_IMAGE="$release_egress_image"
+                node <<'NODE'
+                import fs from "node:fs";
+                const images = {
+                  SELFHOST_DEPLOYMENT_MODE: "release",
+                  SELFHOST_APP_IMAGE: process.env.RELEASE_APP_IMAGE,
+                  SELFHOST_LOCAL_ARTIFACTS_IMAGE: process.env.RELEASE_ARTIFACTS_IMAGE,
+                  SELFHOST_PROJECT_BUILD_IMAGE: process.env.RELEASE_BUILD_IMAGE,
+                  SELFHOST_ANALYSIS_IMAGE: process.env.RELEASE_ANALYSIS_IMAGE,
+                  SELFHOST_DB_QUERY_IMAGE: process.env.RELEASE_QUERY_IMAGE,
+                  SELFHOST_CONTAINER_EGRESS_IMAGE: process.env.RELEASE_EGRESS_IMAGE,
+                };
+                let text = fs.readFileSync(".env.selfhost", "utf8");
+                for (const [key, value] of Object.entries(images)) {
+                  const line = `${key}=${value}`;
+                  text = new RegExp(`^${key}=.*$`, "m").test(text)
+                    ? text.replace(new RegExp(`^${key}=.*$`, "m"), line)
+                    : `${text.trimEnd()}\n${line}\n`;
+                }
+                fs.writeFileSync(".env.selfhost", text, { mode: 0o600 });
+                NODE
+                if ! bun run selfhost:upgrade -- --skip-backup; then
+                  cp -p /srv/camelai/.env.selfhost.previous .env.selfhost
+                  git checkout --detach "$(cat /srv/camelai/repository-ref.previous)"
+                  bun install --frozen-lockfile
+                  docker compose --env-file .env.selfhost -f docker-compose.selfhost.yml pull
+                  docker compose --env-file .env.selfhost -f docker-compose.selfhost.yml up --detach --wait
+                  exit 1
+                fi
+                UPGRADE
+                chmod 0750 /usr/local/sbin/camelai-selfhost-upgrade
+
+                cat > /usr/local/sbin/camelai-selfhost-rollback <<'ROLLBACK'
+                #!/usr/bin/env bash
+                set -Eeuo pipefail
+                cd /srv/camelai/repo
+                [ -f /srv/camelai/.env.selfhost.previous ] && [ -f /srv/camelai/repository-ref.previous ]
+                cp -p /srv/camelai/.env.selfhost.previous .env.selfhost
+                git checkout --detach "$(cat /srv/camelai/repository-ref.previous)"
+                bun install --frozen-lockfile
+                docker compose --env-file .env.selfhost -f docker-compose.selfhost.yml pull
+                docker compose --env-file .env.selfhost -f docker-compose.selfhost.yml up --detach --wait
+                echo "Runtime rolled back. D1 migrations are forward-only; restore a backup if schema rollback is required."
+                ROLLBACK
+                chmod 0750 /usr/local/sbin/camelai-selfhost-rollback
+
+                systemctl daemon-reload
+                systemctl enable --now camelai-selfhost
+                bun run selfhost:doctor
+                curl --fail --retry 30 --retry-delay 5 http://127.0.0.1:3001/api/selfhost/health
+                # Health proves configured services are responding; these deep
+                # smokes prove all attached execution runtimes are operational.
+                bun --env-file=.env.selfhost run selfhost:container:smoke:project
+                bun --env-file=.env.selfhost run selfhost:container:smoke:analysis
+                bun --env-file=.env.selfhost run selfhost:container:smoke:db-query
+                signal SUCCESS
+
+  DataVolumeAttachment:
+    Type: AWS::EC2::VolumeAttachment
+    Properties:
+      Device: /dev/sdf
+      InstanceId: !Ref Instance
+      VolumeId: !Ref DataVolume
+
+  BootstrapWaitHandle:
+    Type: AWS::CloudFormation::WaitConditionHandle
+
+  BootstrapWaitCondition:
+    Type: AWS::CloudFormation::WaitCondition
+    DependsOn:
+      - DataVolumeAttachment
+    Properties:
+      Handle: !Ref BootstrapWaitHandle
+      Timeout: "1800"
+      Count: 1
+
+  ElasticIp:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${Name}-eip
+
+  ElasticIpAssociation:
     Type: AWS::EC2::EIPAssociation
     Properties:
-      AllocationId: !If [UseExistingEip, !Ref ExistingElasticIpAllocationId, !GetAtt ElasticIp.AllocationId]
+      AllocationId: !GetAtt ElasticIp.AllocationId
       InstanceId: !Ref Instance
 
-  MainRecord:
-    Condition: CreateDns
+  MainDnsRecord:
     Type: AWS::Route53::RecordSet
+    Condition: CreateDns
     Properties:
-      HostedZoneId: !Ref HostedZoneId
-      Name: !Ref MainHostName
+      HostedZoneId: !Ref Route53HostedZoneId
+      Name: !Ref MainHostname
       Type: A
-      TTL: '60'
-      ResourceRecords: [!If [UseExistingEip, !Ref ExistingElasticIpPublicIp, !Ref ElasticIp]]
+      TTL: "60"
+      ResourceRecords:
+        - !GetAtt ElasticIp.PublicIp
 
-  WildcardAppsRecord:
-    Condition: CreateDns
+  AppWildcardDnsRecord:
     Type: AWS::Route53::RecordSet
+    Condition: CreateDns
     Properties:
-      HostedZoneId: !Ref HostedZoneId
-      Name: !Sub '*.${AppVanityDomain}'
+      HostedZoneId: !Ref Route53HostedZoneId
+      Name: !Sub "*.${AppVanityDomain}"
       Type: A
-      TTL: '60'
-      ResourceRecords: [!If [UseExistingEip, !Ref ExistingElasticIpPublicIp, !Ref ElasticIp]]
+      TTL: "60"
+      ResourceRecords:
+        - !GetAtt ElasticIp.PublicIp
+
+  IframeWildcardDnsRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: CreateSeparateIframeDns
+    Properties:
+      HostedZoneId: !Ref Route53HostedZoneId
+      Name: !Sub "*.${AppIframeDomain}"
+      Type: A
+      TTL: "60"
+      ResourceRecords:
+        - !GetAtt ElasticIp.PublicIp
 
 Outputs:
-  PublicIp:
-    Condition: HasAnyEip
-    Value: !If [UseExistingEip, !Ref ExistingElasticIpPublicIp, !Ref ElasticIp]
-  AppUrl:
-    Value: !Ref PublicBaseUrl
   InstanceId:
     Value: !Ref Instance
-  AppImage:
-    Value: !Ref AppImageUri
-  LocalArtifactsImage:
-    Value: !Ref LocalArtifactsImageUri
+  PublicIp:
+    Value: !GetAtt ElasticIp.PublicIp
+  DataVolumeId:
+    Value: !Ref DataVolume
+  MainUrl:
+    Value: !Sub https://${MainHostname}
+  SessionManagerCommand:
+    Value: !Sub aws ssm start-session --target ${Instance}
+  UpgradeCommand:
+    Value: !Sub >-
+      aws ssm send-command --instance-ids ${Instance}
+      --document-name AWS-RunShellScript
+      --parameters commands='sudo camelai-selfhost-upgrade selfhost-vX.Y.Z'

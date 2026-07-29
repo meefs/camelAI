@@ -300,6 +300,7 @@ export function resolveModelPickerCatalog(args: {
   customModelId?: string | null;
   awsRegion?: string | null;
   allowOpenAiSubscription?: boolean;
+  allowCamelCode?: boolean;
 }): ResolvedModelCatalogEntry[] {
   const visibleModelIds = new Set(
     getVisibleLlmModelOptions(args.experimentalSettings, null, {
@@ -308,6 +309,7 @@ export function resolveModelPickerCatalog(args: {
       customModelId: args.customModelId,
       awsRegion: args.awsRegion,
       allowOpenAiSubscription: args.allowOpenAiSubscription,
+      allowCamelCode: args.allowCamelCode,
     }).map((option) => option.value),
   );
 

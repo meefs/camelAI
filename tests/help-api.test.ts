@@ -258,6 +258,28 @@ describe('POST /api/help', () => {
     expect(json.success).toBe(true);
   });
 
+  it('returns an explicit unavailable response instead of pretending self-host email was sent', async () => {
+    getEnvMock.mockReturnValue({ CF_ACCOUNT_ID: 'selfhost' });
+
+    const response = await action({
+      request: makeRequest({
+        category: 'bug',
+        severity: 'high',
+        description: 'Agent freezes when uploading files.',
+      }),
+      context: {},
+    } as never);
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error:
+        'Email-based support requests are disabled in self-host mode. Contact your deployment administrator.',
+    });
+    expect(waitUntilMock).not.toHaveBeenCalled();
+    expect(sendHelpConfirmationEmailMock).not.toHaveBeenCalled();
+    expect(sendHelpSupportEmailMock).not.toHaveBeenCalled();
+  });
+
   it('does not fail the request when async email delivery throws', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     sendHelpConfirmationEmailMock.mockRejectedValueOnce(new Error('smtp down'));

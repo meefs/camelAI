@@ -33,6 +33,8 @@ import type { HostedCapability } from "../../../src/lib/capability-allowances";
 import { buildWorkspaceScopedR2Key } from "../../../src/lib/workspace-r2-paths";
 import { retryR2Read } from "../../../src/lib/r2-read-retry";
 import { buildWorkspaceEmailAddress, getWorkspaceEmailDomain } from "../../../src/lib/workspace-email";
+import { isSelfhostRuntime } from "../../../src/lib/selfhost-runtime";
+import { SELFHOST_OUTBOUND_EMAIL_DISABLED_MESSAGE } from "../../../src/lib/selfhost-capabilities";
 import { CodeModeCustomDomains } from "./code-mode-custom-domains";
 import { detectImageMimeType as detectSharedImageMimeType, getSupportedImageMimeTypeFromContentType, inlineImageMaxBase64Chars, prepareInlineImageFromStream, readImageSniffBytesAndReplayStream, type PreparedInlineImage, readStreamBytes } from "./image-tool-content";
 import { CodeModeScheduledPrompts } from "./code-mode-scheduled-prompts";
@@ -2711,6 +2713,9 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     return CODE_MODE_TOOL_DEFINITIONS
       .filter((definition) => !JS_EXEC_EXCLUDED_TOOL_NAMES.has(definition.name))
       .filter((definition) => (
+        definition.name !== "send_email" || !isSelfhostRuntime(this.env)
+      ))
+      .filter((definition) => (
         this.ctx?.props?.allowWebTools !== false || !AGENT_WEB_TOOL_NAMES.has(definition.name)
       ));
   }
@@ -2796,6 +2801,9 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   }
 
   async callTool(name: string, rawArgs: unknown = {}): Promise<unknown> {
+    if (name === "send_email" && isSelfhostRuntime(this.env)) {
+      throw new Error(SELFHOST_OUTBOUND_EMAIL_DISABLED_MESSAGE);
+    }
     if (this.ctx?.props?.allowWebTools === false && AGENT_WEB_TOOL_NAMES.has(name)) {
       throw new Error(`${name} is reserved for the Research agent; delegate web lookup to Research instead`);
     }
@@ -4277,8 +4285,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     }
     const isLocalMainWorker = hostname === "localhost" ||
       hostname === "127.0.0.1" ||
-      hostname === "::1" ||
-      hostname.endsWith(".exe.xyz");
+      hostname === "::1";
     if (!isLocalMainWorker) return [];
     if (this.isRemoteDispatcherHostConfigured()) return [];
     return [

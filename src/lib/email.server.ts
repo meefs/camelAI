@@ -6,6 +6,8 @@ import {
   type DevEmailOutboxStatus,
   type DevEmailOutboxTransport,
 } from './dev-email-outbox';
+import { isSelfhostRuntime } from './selfhost-runtime';
+import { SELFHOST_OUTBOUND_EMAIL_DISABLED_MESSAGE } from './selfhost-capabilities';
 
 export type EmailDeliveryStatus = 'sent' | 'skipped' | 'failed';
 
@@ -15,7 +17,12 @@ export interface EmailDeliveryResult {
 }
 
 type EmailEnvBindings = Pick<CloudflareEnv, 'EMAIL' | 'EMAIL_FROM_ADDRESS'> &
-  Partial<Pick<CloudflareEnv, 'APP_KV' | 'NEXTJS_ENV'>>;
+  Partial<
+    Pick<
+      CloudflareEnv,
+      'APP_KV' | 'NEXTJS_ENV' | 'CF_ACCOUNT_ID' | 'CF_DISPATCH_NAMESPACE'
+    >
+  >;
 
 interface OrgInvitationEmailArgs {
   env: EmailEnvBindings;
@@ -203,6 +210,18 @@ async function deliverEmail({
     textBody,
     htmlBody,
   };
+
+  if (isSelfhostRuntime(env)) {
+    return finalizeEmailDelivery(
+      env,
+      emailContent,
+      {
+        status: 'skipped',
+        reason: SELFHOST_OUTBOUND_EMAIL_DISABLED_MESSAGE,
+      },
+      'none'
+    );
+  }
 
   if (!env.EMAIL) {
     return finalizeEmailDelivery(

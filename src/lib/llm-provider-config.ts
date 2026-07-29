@@ -220,6 +220,7 @@ interface LlmProviderModelOptions {
   customModelId?: string | null;
   awsRegion?: string | null;
   allowOpenAiSubscription?: boolean;
+  allowCamelCode?: boolean;
 }
 
 export const DEFAULT_ORG_EXPERIMENTAL_SETTINGS: OrganizationExperimentalSettings =
@@ -305,6 +306,7 @@ export function getVisibleLlmModelOptions(
     customModelId?: string | null;
     awsRegion?: string | null;
     allowOpenAiSubscription?: boolean;
+    allowCamelCode?: boolean;
   },
 ): ReadonlyArray<{
   value: LlmModel;
@@ -316,6 +318,7 @@ export function getVisibleLlmModelOptions(
     customModelId: options?.customModelId,
     awsRegion: options?.awsRegion,
     allowOpenAiSubscription: options?.allowOpenAiSubscription,
+    allowCamelCode: options?.allowCamelCode,
   });
   const visibleOptions = sortVisibleLlmModelOptions(baseOptions);
 
@@ -367,7 +370,9 @@ export function isLlmModelAllowedForOrgProvider(
   ) {
     return true;
   }
-  if (model === CAMEL_CODE_LLM_MODEL) return true;
+  if (model === CAMEL_CODE_LLM_MODEL) {
+    return options?.allowCamelCode !== false;
+  }
   if (CAMELAI_HOSTED_ONLY_CODEX_MODELS.has(model) && orgProvider) {
     return false;
   }

@@ -20,6 +20,8 @@ import {
   BILLING_PLAN_LIMITS,
   getOrgBillingPlan,
 } from '@/lib/billing-plans';
+import { isSelfhostRuntime } from '@/lib/selfhost-runtime';
+import { SELFHOST_HELP_EMAIL_DISABLED_MESSAGE } from '@/lib/selfhost-capabilities';
 
 function deriveFirstName(name: string | null | undefined): string {
   const firstName = name?.trim().split(/\s+/).find((token) => token.length > 0);
@@ -75,6 +77,12 @@ export async function action({ request, context }: Route.ActionArgs) {
   }
 
   const env = getEnv(context);
+  if (isSelfhostRuntime(env)) {
+    return Response.json(
+      { error: SELFHOST_HELP_EMAIL_DISABLED_MESSAGE },
+      { status: 503 }
+    );
+  }
   const { category, severity, description, pageUrl, screenSize } = submission.value;
   const categoryLabel = HELP_CATEGORY_LABELS[category];
   const categorySubjectLabel = HELP_CATEGORY_SUBJECT_LABELS[category];
