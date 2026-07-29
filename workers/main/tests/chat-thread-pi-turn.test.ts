@@ -2778,6 +2778,49 @@ describe('ChatThreadDO Pi turn handling', () => {
     );
   });
 
+  it('replaces a retained camelCode thread model with the self-host provider default', async () => {
+    const orgStub = {
+      getThread: vi.fn(async () => ({
+        id: 'thread1',
+        model: 'deepseek-v4-auto',
+        workspace_id: 'workspace1',
+      })),
+      getLlmProviderConfig: vi.fn(async () => null),
+    };
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.chatContext = {
+      threadId: 'thread1',
+      workspaceId: 'workspace1',
+      orgId: 'org1',
+      userId: 'user1',
+    };
+    fake.env = {
+      CF_ACCOUNT_ID: 'selfhost',
+      SELFHOST_AI_PROVIDER: 'bedrock',
+      SELFHOST_AI_API_KEY: 'bedrock-api-key-test',
+      ORG: {
+        idFromName: vi.fn((name: string) => name),
+        get: vi.fn(() => orgStub),
+      },
+    };
+    fake.ctx = {
+      storage: { kv: { put: vi.fn() } },
+    };
+    fake.runnerTransitionChain = Promise.resolve();
+    fake.lastRunnerSeq = 0;
+    fake.trace = vi.fn();
+    fake.ensurePiSession = vi.fn(async () => undefined);
+
+    await ChatThreadDO.prototype['ensurePiSessionReady'].call(fake);
+
+    expect(fake.ensurePiSession).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: 'thread1' }),
+      expect.objectContaining({
+        CHIRIDION_MODEL: 'sonnet',
+      }),
+    );
+  });
+
   it('preserves a stored custom thread model when initializing Pi', async () => {
     const orgStub = {
       getThread: vi.fn(async () => ({
@@ -7959,7 +8002,7 @@ describe('ChatThreadDO Pi turn handling', () => {
 
   it('warns when a local deploy may need the local dispatcher worker for reachability', async () => {
     const { fake } = createProjectToolFake({ deploy: true });
-    fake.env = { ...fake.env, WORKER_BASE_URL: 'https://snowboard-owl.exe.xyz:3001' };
+    fake.env = { ...fake.env, WORKER_BASE_URL: 'http://localhost:3001' };
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({ success: true, result: { id: 'version-1' } }, { status: 200 })));
 
     const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
@@ -7975,7 +8018,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     const { fake } = createProjectToolFake({ deploy: true });
     fake.env = {
       ...fake.env,
-      WORKER_BASE_URL: 'https://snowboard-owl.exe.xyz:3001',
+      WORKER_BASE_URL: 'http://localhost:3001',
       CF_DISPATCH_NAMESPACE: 'chiridion-platform-evals',
       CF_WORKER_NAME: 'chiridion-app-staging',
       LOCAL_APP_VANITY_DOMAIN: 'evals.camelai.app',

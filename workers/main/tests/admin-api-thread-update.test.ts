@@ -256,7 +256,6 @@ describe('admin API thread patch route', () => {
     );
     expect(setModel).toHaveBeenCalledWith(
       'opus-4.8',
-      undefined,
       result.updated_at,
     );
     expect(refreshRunnerConfig).toHaveBeenCalledTimes(1);

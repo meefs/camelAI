@@ -68,8 +68,7 @@ export function getSelfhostAiProviderCredentials(
     throw new Error(status.message ?? "Self-host AI provider is not configured correctly.");
   }
   const provider = status.provider!;
-  const apiKey = requiredTrimmed(env.SELFHOST_AI_API_KEY) ??
-    (provider === "bedrock" ? "aws-iam" : undefined);
+  const apiKey = requiredTrimmed(env.SELFHOST_AI_API_KEY);
   if (!apiKey) {
     throw new Error(status.message ?? "Self-host AI provider is not configured correctly.");
   }
@@ -139,7 +138,7 @@ export function getSelfhostAiProviderStatus(
 
   const provider = providerValue as LlmProvider;
   const apiKey = requiredTrimmed(env.SELFHOST_AI_API_KEY);
-  if (!apiKey && provider !== "bedrock") {
+  if (!apiKey) {
     return {
       configured: true,
       valid: false,
@@ -185,7 +184,7 @@ export function getSelfhostAiProviderStatus(
     publicConfig: {
       provider,
       config: parseStoredLlmProviderConfig(record.config),
-      key_hint: apiKey ? keyHint(apiKey) : "AWS IAM role",
+      key_hint: keyHint(apiKey!),
       created_by: "selfhost-env",
       created_at: 0,
       updated_at: 0,

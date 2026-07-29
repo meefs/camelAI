@@ -347,6 +347,7 @@ async function getWorkspaceModelPickerStateForOrg(
     customModelId,
     awsRegion,
     allowOpenAiSubscription,
+    allowCamelCode: billingAccessMode !== "selfhost",
   });
   const isCustomPicker = effectiveConfig.use_platform_defaults === false;
   const visibleCatalog =

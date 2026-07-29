@@ -572,6 +572,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
         customModelId,
         awsRegion,
         allowOpenAiSubscription,
+        allowCamelCode: !isSelfhostRuntime(env),
       },
     ).map((option) => option.value);
     const hasModelFallback = Boolean(workspaceId);

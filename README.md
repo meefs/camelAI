@@ -183,12 +183,16 @@ bun run selfhost:up
 ```
 
 The self-hosted target supports the web application, authentication, model
-providers, durable state, project source files, and browser rendering. Project
-builds and deployments, notebooks, SQL execution, and outbound email are not
-yet available in that target.
+providers, durable state, project source files and local history, project
+builds and deployments, notebooks, SQL execution, and browser rendering.
+Outbound email and password-email verification are intentionally unavailable,
+as is multi-node failover.
 
-See [infra/selfhost/README.md](infra/selfhost/README.md) for requirements,
-configuration, the current capability matrix, backup, upgrades, and validation.
+See [SELF_HOSTING.md](SELF_HOSTING.md) for the release-image and source-build
+modes, capability contract, authentication, outbound-email policy, and
+operator validation. Detailed requirements, Compose and provider
+configuration, backup, and upgrade procedures are in
+[infra/selfhost/README.md](infra/selfhost/README.md).
 
 ## Deployment
 

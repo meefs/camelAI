@@ -7,13 +7,18 @@ import {
   run,
   scriptEnv,
 } from './selfhost-common.mjs';
+import { writePomeriumConfig } from './selfhost-pomerium-config.mjs';
 
 async function main() {
   const env = await readSelfhostEnv(true);
+  await writePomeriumConfig(env);
+  const sourceMode =
+    (env.SELFHOST_DEPLOYMENT_MODE || process.env.SELFHOST_DEPLOYMENT_MODE) ===
+    'source';
   console.log('[selfhost:workerd] Starting Docker Compose workerd stack');
   await run('docker', composeArgs(env, [
     'up',
-    '--build',
+    ...(sourceMode ? ['--build'] : []),
     'app',
   ]), { env: scriptEnv(env) });
 }

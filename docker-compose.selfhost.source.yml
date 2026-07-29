@@ -1,0 +1,45 @@
+services:
+  app:
+    image: camelai-selfhost-app:source
+    build:
+      context: .
+      dockerfile: infra/selfhost/app.Dockerfile
+    working_dir: /workspace
+    command: >
+      sh -lc "bun install &&
+      bun run selfhost:workerd:build &&
+      bun run selfhost:workerd:serve"
+    volumes:
+      - .:/workspace
+      - app-node-modules:/workspace/node_modules
+      - bun-cache:/root/.bun
+
+  project-build-image:
+    build:
+      context: workers/main
+      dockerfile: project-build-sandbox.Dockerfile
+
+  analysis-image:
+    build:
+      context: workers/main
+      dockerfile: analysis-sandbox.Dockerfile
+
+  db-query-image:
+    build:
+      context: workers/main
+      dockerfile: db-query-sandbox.Dockerfile
+
+  container-egress-image:
+    build:
+      context: workers/main/eval-egress-fix
+      dockerfile: Dockerfile
+
+  local-artifacts:
+    image: camelai-selfhost-local-artifacts:source
+    build:
+      context: .
+      dockerfile: infra/selfhost/local-artifacts.Dockerfile
+
+volumes:
+  app-node-modules:
+  bun-cache:

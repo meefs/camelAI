@@ -6,15 +6,31 @@ import process from "node:process";
 
 export const repoRoot = path.resolve(import.meta.dirname, "..");
 export const composeFile = path.join(repoRoot, "docker-compose.selfhost.yml");
+export const sourceComposeFile = path.join(
+  repoRoot,
+  "docker-compose.selfhost.source.yml",
+);
+export const pomeriumComposeFile = path.join(
+  repoRoot,
+  "docker-compose.selfhost.pomerium.yml",
+);
+export const pomeriumLoopbackComposeFile = path.join(
+  repoRoot,
+  "docker-compose.selfhost.pomerium-loopback.yml",
+);
 export const envFile = path.resolve(
   repoRoot,
   process.env.SELFHOST_ENV_FILE || ".env.selfhost",
 );
 export const defaultProjectName = "camelai-selfhost";
-export const volumeNames = [
-  "app-state",
-  "local-artifacts-repos",
-];
+export const volumeNames = ["app-state", "local-artifacts-repos"];
+
+export function volumeNamesForEnv(env = {}) {
+  return (env.SELFHOST_AUTH_MODE || process.env.SELFHOST_AUTH_MODE) ===
+    "bundled-pomerium"
+    ? [...volumeNames, "pomerium-data"]
+    : volumeNames;
+}
 
 export async function readSelfhostEnv(required = false) {
   if (!existsSync(envFile)) {
@@ -58,20 +74,66 @@ export function volumeName(name, env = {}) {
 }
 
 export function composeArgs(env, args) {
+  const sourceMode =
+    (env.SELFHOST_DEPLOYMENT_MODE || process.env.SELFHOST_DEPLOYMENT_MODE) ===
+    "source";
+  const bundledPomerium =
+    (env.SELFHOST_AUTH_MODE || process.env.SELFHOST_AUTH_MODE) ===
+    "bundled-pomerium";
+  const pomeriumLoopbackHttps =
+    bundledPomerium &&
+    (env.SELFHOST_POMERIUM_LOOPBACK_HTTPS ||
+      process.env.SELFHOST_POMERIUM_LOOPBACK_HTTPS ||
+      "1") !== "0";
   return [
     "compose",
     "--env-file",
     envFile,
     "-f",
     composeFile,
+    ...(sourceMode ? ["-f", sourceComposeFile] : []),
+    ...(bundledPomerium ? ["-f", pomeriumComposeFile] : []),
+    ...(pomeriumLoopbackHttps ? ["-f", pomeriumLoopbackComposeFile] : []),
     ...args,
   ];
 }
 
 export function scriptEnv(env = {}, extra = {}) {
+  const sourceMode =
+    (env.SELFHOST_DEPLOYMENT_MODE || process.env.SELFHOST_DEPLOYMENT_MODE) ===
+    "source";
+  const sourceImages = sourceMode
+    ? {
+        SELFHOST_APP_IMAGE:
+          env.SELFHOST_APP_IMAGE ||
+          process.env.SELFHOST_APP_IMAGE ||
+          "camelai-selfhost-app:source",
+        SELFHOST_LOCAL_ARTIFACTS_IMAGE:
+          env.SELFHOST_LOCAL_ARTIFACTS_IMAGE ||
+          process.env.SELFHOST_LOCAL_ARTIFACTS_IMAGE ||
+          "camelai-selfhost-local-artifacts:source",
+        SELFHOST_PROJECT_BUILD_IMAGE:
+          env.SELFHOST_PROJECT_BUILD_IMAGE ||
+          process.env.SELFHOST_PROJECT_BUILD_IMAGE ||
+          "camelai-selfhost-project-build:0.12.0",
+        SELFHOST_ANALYSIS_IMAGE:
+          env.SELFHOST_ANALYSIS_IMAGE ||
+          process.env.SELFHOST_ANALYSIS_IMAGE ||
+          "camelai-selfhost-analysis:0.12.0",
+        SELFHOST_DB_QUERY_IMAGE:
+          env.SELFHOST_DB_QUERY_IMAGE ||
+          process.env.SELFHOST_DB_QUERY_IMAGE ||
+          "camelai-selfhost-db-query:0.12.0",
+        SELFHOST_CONTAINER_EGRESS_IMAGE:
+          env.SELFHOST_CONTAINER_EGRESS_IMAGE ||
+          process.env.SELFHOST_CONTAINER_EGRESS_IMAGE ||
+          "camelai-selfhost-container-egress:0.12.0",
+      }
+    : {};
   return {
     ...process.env,
     ...env,
+    ...sourceImages,
     ...extra,
   };
 }

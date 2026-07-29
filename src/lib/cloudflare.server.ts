@@ -29,6 +29,9 @@ export interface CloudflareEnv {
   WORKER_LOGS: DurableObjectNamespace<WorkerLogsDO>;
   TELEGRAM_REGISTRY?: DurableObjectNamespace<TelegramRegistryDO>;
   SLACK_TEAM_REGISTRY?: DurableObjectNamespace<SlackTeamRegistryDO>;
+  PROJECT_BUILD_SANDBOX?: DurableObjectNamespace;
+  ANALYSIS_SANDBOX?: DurableObjectNamespace;
+  DB_QUERY_SANDBOX?: DurableObjectNamespace;
 
   // KV Namespaces
   EMAIL_TO_USER: KVNamespace;

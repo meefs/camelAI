@@ -240,6 +240,16 @@ describe("llm provider config helpers", () => {
     expect(isLlmModelAllowedForNewThread("deepseek-v4-auto", null)).toBe(true);
   });
 
+  it("can exclude gateway-only camelCode from self-host model options", () => {
+    expect(
+      getVisibleLlmModelOptions(null, {
+        orgProvider: "bedrock",
+        awsRegion: "us-east-1",
+        allowCamelCode: false,
+      }).map((option) => option.value),
+    ).toEqual([...ANTHROPIC_MODELS, ...BEDROCK_OPENAI_MODELS]);
+  });
+
   it("shows only policy-allowed model families for new chats", () => {
     expect(
       getVisibleLlmModelOptions(null, { orgProvider: null }).map(

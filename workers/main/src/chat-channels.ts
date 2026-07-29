@@ -11,6 +11,8 @@ import { buildWorkspaceScopedR2Key } from "../../../src/lib/workspace-r2-paths";
 import { buildWorkspaceEmailSenderAddress, getWorkspaceEmailDomain } from "../../../src/lib/workspace-email";
 import { getBillingPlanLimits } from "../../../src/lib/billing-plans";
 import { formatMarkdownForTelegram } from "../../../src/lib/telegram-format";
+import { isSelfhostRuntime } from "../../../src/lib/selfhost-runtime";
+import { SELFHOST_OUTBOUND_EMAIL_DISABLED_MESSAGE } from "../../../src/lib/selfhost-capabilities";
 import {
   discordBridgeClient,
   type DiscordBridgeBindingRecord,
@@ -337,6 +339,9 @@ export class ChannelTools {
     context: ChatContextState,
     params: unknown,
   ): Promise<AgentToolResult<unknown>> {
+    if (isSelfhostRuntime(this.env)) {
+      throw new Error(SELFHOST_OUTBOUND_EMAIL_DISABLED_MESSAGE);
+    }
     const orgStub = this.env.ORG.get(
       this.env.ORG.idFromName(context.orgId),
     ) as unknown as OrgDO;

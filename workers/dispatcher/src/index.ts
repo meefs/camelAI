@@ -411,6 +411,8 @@ function dynamicWorkerWrapperSource(record: SelfhostWorkerRecord, bridgeSecret: 
   )).join('\n');
 
   return `
+import { DurableObject } from "cloudflare:workers";
+
 const SELFHOST_USER_MAIN_MODULE = ${quotedModuleSpecifier(record.mainModule)};
 const SELFHOST_DO_BRIDGE_SECRET = ${JSON.stringify(bridgeSecret)};
 
@@ -553,8 +555,9 @@ async function getUserDefault() {
   return (await getUserModule()).default;
 }
 
-class SelfhostUserDurableObject {
+class SelfhostUserDurableObject extends DurableObject {
   constructor(ctx, env) {
+    super(ctx, env);
     installUnsupportedCaches();
     this.ctx = ctx;
     this.env = withSelfhostNamespaces(env);

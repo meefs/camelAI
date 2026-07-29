@@ -346,7 +346,6 @@ Common local secret/config files:
 - `wrangler*.jsonc` for environment-specific Cloudflare config.
 Useful local variables include `CF_GATEWAY_TOKEN`, OAuth client IDs/secrets, `INTEGRATION_SECRET_KEY`, `TOKEN_SIGNING_SECRET`, and email provider settings.
 
-For exe.dev-specific admin MCP setup with mcporter, see `docs/exedev-admin-mcp.md`.
 
 ### SSH to shared hosts
 

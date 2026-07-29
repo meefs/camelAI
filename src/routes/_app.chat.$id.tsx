@@ -806,6 +806,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       customApi,
       customModelId,
       awsRegion,
+      allowCamelCode: !isSelfhostRuntime(env),
     },
   ).map((option) => option.value);
 

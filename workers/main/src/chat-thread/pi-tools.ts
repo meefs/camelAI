@@ -56,6 +56,8 @@ export interface PiToolDefinitionOptions {
   includeOracle?: boolean;
   /** WebSearch/WebFetch are reserved for the Research capability agent. */
   includeWebTools?: boolean;
+  /** Self-host mode disables outbound email and omits it from js_exec discovery. */
+  outboundEmailEnabled?: boolean;
 }
 
 const RESEARCH_CAPABILITY_MODEL = "deepseek-v4-auto";
@@ -228,10 +230,11 @@ const ALWAYS_TOP_LEVEL_PASSTHROUGH_NAMES = new Set<string>([
 // tools.search()/tools.describe(). Computed over the full catalog (not just the
 // passthrough list — communication tools like send_email were never advertised
 // top-level) so it can never drift from the actual top-level exclusion.
-const JS_EXEC_ONLY_TOOL_INVENTORY = (() => {
+function jsExecOnlyToolInventory(outboundEmailEnabled: boolean): string {
   const byCategory = new Map<string, string[]>();
   for (const definition of CODE_MODE_TOOL_DEFINITIONS) {
     if (definition.hidden) continue;
+    if (!outboundEmailEnabled && definition.name === "send_email") continue;
     if (ALWAYS_TOP_LEVEL_PASSTHROUGH_NAMES.has(definition.name)) continue;
     if (!TOP_LEVEL_EXCLUDED_CATEGORIES.has(definition.category)) continue;
     const names = byCategory.get(definition.category) ?? [];
@@ -241,7 +244,7 @@ const JS_EXEC_ONLY_TOOL_INVENTORY = (() => {
   return [...byCategory.entries()]
     .map(([category, names]) => `${category}: ${names.join(", ")}`)
     .join("; ");
-})();
+}
 
 // The js_exec tool description, kept executor-style small: a one-line intro, a
 // pointer to the on-demand guide (`await tools.help()` inside the sandbox), the
@@ -249,14 +252,18 @@ const JS_EXEC_ONLY_TOOL_INVENTORY = (() => {
 // long-form usage guidance lives in JS_EXEC_GUIDE in code-mode-runner.ts so it
 // is fetched only when the model actually writes code, instead of sitting in
 // every turn's prompt prefix.
-const JS_EXEC_DESCRIPTION =
-  "Run JavaScript or TypeScript in a Worker sandbox with workspace tools on `tools` and runtime bindings on `env`. The final expression and console output are returned. " +
-  "Before non-trivial code, run `await tools.help()` once for the guide and catalog. " +
-  "NEVER guess a tool name: call `await tools.search(\"<intent + nouns>\")`, inspect with `await tools.describe(name)`, then invoke as its `call` field shows. Runtime results are globals, not `tools` methods. " +
-  "Tool calls return `{ ok, data?, error?, completionEvidence? }`; branch on `result.ok` and assert only `completionEvidence.supportedClaims`. Unknown tools suggest replacements and equivalent failures have retry budgets. " +
-  `Tools reachable ONLY here (not in your tool list) — ${JS_EXEC_ONLY_TOOL_INVENTORY}. ` +
-  "`run_notebook` and `deploy_project` open successful results in preview automatically; failures leave preview unchanged. No follow-up `set_preview` or `list_apps` call is needed; use `set_preview` only for an explicit switch. " +
-  "Interactive tools that wait for the user (prompt_connection_setup, delete_connection, delete_project, AskUserQuestion) are top-level tools and cannot be called from js_exec.";
+export function buildJsExecDescription(outboundEmailEnabled = true): string {
+  const inventory = jsExecOnlyToolInventory(outboundEmailEnabled);
+  return (
+    "Run JavaScript or TypeScript in a Worker sandbox with workspace tools on `tools` and runtime bindings on `env`. The final expression and console output are returned. " +
+    "Before non-trivial code, run `await tools.help()` once for the guide and catalog. " +
+    "NEVER guess a tool name: call `await tools.search(\"<intent + nouns>\")`, inspect with `await tools.describe(name)`, then invoke as its `call` field shows. Runtime results are globals, not `tools` methods. " +
+    "Tool calls return `{ ok, data?, error?, completionEvidence? }`; branch on `result.ok` and assert only `completionEvidence.supportedClaims`. Unknown tools suggest replacements and equivalent failures have retry budgets. " +
+    `Tools reachable ONLY here (not in your tool list) — ${inventory}. ` +
+    "`run_notebook` and `deploy_project` open successful results in preview automatically; failures leave preview unchanged. No follow-up `set_preview` or `list_apps` call is needed; use `set_preview` only for an explicit switch. " +
+    "Interactive tools that wait for the user (prompt_connection_setup, delete_connection, delete_project, AskUserQuestion) are top-level tools and cannot be called from js_exec."
+  );
+}
 
 export interface PiAfterToolCallOptions {
   /**
@@ -407,7 +414,7 @@ export function createPiToolDefinitions(
     {
       name: "js_exec",
       label: "JavaScript",
-      description: JS_EXEC_DESCRIPTION,
+      description: buildJsExecDescription(options.outboundEmailEnabled !== false),
       parameters: Type.Object({
         description: Type.String({
           description:

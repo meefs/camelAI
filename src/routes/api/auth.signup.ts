@@ -20,6 +20,8 @@ import {
 } from "@/lib/sales-prompt.server";
 import { validateTurnstileToken } from "@/lib/turnstile.server";
 import { waitUntil } from "@/lib/wait-until";
+import { isSelfhostRuntime } from "@/lib/selfhost-runtime";
+import { SELFHOST_PASSWORD_SIGNUP_DISABLED_MESSAGE } from "@/lib/selfhost-capabilities";
 export async function action({ request, context }: Route.ActionArgs) {
   if (request.method !== "POST") {
     return Response.json({ error: "Method not allowed" }, { status: 405 });
@@ -51,6 +53,12 @@ export async function action({ request, context }: Route.ActionArgs) {
     }
 
     const env = getEnv(context);
+    if (isSelfhostRuntime(env)) {
+      return Response.json(
+        { error: SELFHOST_PASSWORD_SIGNUP_DISABLED_MESSAGE },
+        { status: 503 },
+      );
+    }
     const authEnv = getAuthEnv(env);
     const signupIp = getSignupIpFromRequest(request);
     const turnstileResult = await validateTurnstileToken({

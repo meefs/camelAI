@@ -19,6 +19,8 @@ import {
   getEmailThreadReferencesKey,
 } from '../channels.js';
 import type { OrgThread } from '../identity/org-do.js';
+import { isSelfhostRuntime } from '../../../../src/lib/selfhost-runtime.js';
+import { SELFHOST_OUTBOUND_EMAIL_DISABLED_MESSAGE } from '../../../../src/lib/selfhost-capabilities.js';
 
 // ---------------------------------------------------------------------------
 // Rate limit constants
@@ -214,6 +216,10 @@ export async function handleEmailSendProxy({ req, env }: RouteContext): Promise<
   }
 
   const { orgId, workspaceId } = proxyAuth;
+
+  if (isSelfhostRuntime(env)) {
+    return errorResponse(SELFHOST_OUTBOUND_EMAIL_DISABLED_MESSAGE, 503);
+  }
 
   const orgInfo = await getOrgStub(env, orgId).getInfo();
   if (

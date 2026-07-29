@@ -342,12 +342,8 @@ async function buildDispatcherBundle(dir) {
   const bundlePath = path.join(bundleDir, "index.js");
   await fs.mkdir(bundleDir, { recursive: true });
   await runCommand("bun", [
-    "build",
-    "workers/dispatcher/src/index.ts",
-    "--target=browser",
-    "--format=esm",
-    "--external=cloudflare:workers",
-    `--outfile=${bundlePath}`,
+    "scripts/build-selfhost-dispatcher.mjs",
+    bundlePath,
   ]);
   return bundlePath;
 }

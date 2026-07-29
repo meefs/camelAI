@@ -25,12 +25,28 @@ if (!existsSync(manifestPath)) {
 }
 
 const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"));
-for (const name of volumeNames) {
+const allowedVolumeNames = new Set([...volumeNames, "pomerium-data"]);
+const selectedVolumeNames = Array.isArray(manifest.volumes)
+  ? manifest.volumes.map((entry) => entry?.name)
+  : [];
+if (
+  selectedVolumeNames.length === 0 ||
+  new Set(selectedVolumeNames).size !== selectedVolumeNames.length ||
+  selectedVolumeNames.some(
+    (name) => typeof name !== "string" || !allowedVolumeNames.has(name),
+  )
+) {
+  console.error(`Invalid volume list in backup manifest: ${manifestPath}`);
+  process.exit(1);
+}
+for (const name of selectedVolumeNames) {
   const archive = path.join(backupDir, `${name}.tgz`);
   if (!existsSync(archive)) {
-    console.warn(`[selfhost:restore] Skipping missing archive ${archive}`);
-    continue;
+    console.error(`Missing declared backup archive: ${archive}`);
+    process.exit(1);
   }
+}
+for (const name of selectedVolumeNames) {
   await restoreVolume(volumeName(name, env), `${name}.tgz`);
 }
 
@@ -51,4 +67,3 @@ async function restoreVolume(dockerVolume, archiveName) {
     `rm -rf /data/* /data/.[!.]* /data/..?* 2>/dev/null || true; tar -xzf /backup/${archiveName} -C /data`,
   ], { env: scriptEnv(env) });
 }
-

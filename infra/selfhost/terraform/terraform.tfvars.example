@@ -1,74 +1,74 @@
-# Select one: aws, azure, or gcp.
-cloud_provider = "aws"
-name           = "camelai-selfhost"
+aws_region = "us-east-1"
+name       = "camelai-selfhost"
 
-# Prebuilt images pulled by cloud-init on first boot.
-app_image_uri             = "904534089871.dkr.ecr.us-west-2.amazonaws.com/camelai-selfhost-app:test-latest"
-local_artifacts_image_uri = "904534089871.dkr.ecr.us-west-2.amazonaws.com/camelai-selfhost-local-artifacts:test-latest"
+# Pin a tested tag or commit SHA. Avoid a moving branch in production.
+repository_url = "https://github.com/qaml-ai/camelAI.git"
+repository_ref = "REPLACE_WITH_TESTED_TAG_OR_COMMIT"
 
-# The project runtime service is still cloned so the host can build Dockerfile.sandbox
-# and run the Go control-plane service.
-runtime_repository_url = "https://github.com/YOUR_ORG/project-runtime-service.git"
-runtime_repository_ref = "main"
+# Use the six references from the same self-host release. Digest-pinned
+# references are preferred; release or commit tags are accepted.
+app_image             = "ghcr.io/qaml-ai/camelai-selfhost-app:selfhost-v0.1.0"
+local_artifacts_image = "ghcr.io/qaml-ai/camelai-selfhost-local-artifacts:selfhost-v0.1.0"
+project_build_image   = "ghcr.io/qaml-ai/camelai-selfhost-project-build:selfhost-v0.1.0"
+analysis_image        = "ghcr.io/qaml-ai/camelai-selfhost-analysis:selfhost-v0.1.0"
+db_query_image        = "ghcr.io/qaml-ai/camelai-selfhost-db-query:selfhost-v0.1.0"
+container_egress_image = "ghcr.io/qaml-ai/camelai-selfhost-container-egress:selfhost-v0.1.0"
 
-# DNS must point to the output public_ip before Caddy can issue HTTPS certs.
-public_base_url  = "https://camel.example.com"
+# A certificate in tls_certificate_secret_arn must cover all three names below:
+# camel.example.com, authenticate.example.com, and *.apps.example.com.
+main_hostname     = "camel.example.com"
 app_vanity_domain = "apps.example.com"
-# app_iframe_domain = "apps.example.com"
+tls_mode          = "provided"
 
-# Cloudflare Tunnel + Access is the recommended AWS ingress path.
-# Configure two tunnel public hostnames targeting http://localhost:3001:
-#   camel.example.com
-#   *.apps.example.com
-cloudflared_tunnel_token = ""
-cloudflare_access_team_domain = "https://your-team.cloudflareaccess.com"
-cloudflare_access_aud = "your-access-aud"
-cloudflare_access_default_org_name = "Your Organization"
-# cloudflare_access_required_email_domain = "example.com"
+# SecretString values are the raw PEM certificate chain and private key.
+tls_certificate_secret_arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:camelai/tls-cert-AbCdEf"
+tls_private_key_secret_arn  = "arn:aws:secretsmanager:us-east-1:123456789012:secret:camelai/tls-key-AbCdEf"
 
-# Self-hosted SSO via Pomerium instead of Cloudflare Access (set one or the
-# other). The fronting Pomerium route must set pass_identity_headers: true.
-# Issuer/audience are the bare route host (no scheme), matched exactly.
-# pomerium_authenticate_url = "https://authenticate.your-domain.com"
-# pomerium_issuer = "app.your-domain.com"
-# pomerium_audience = "app.your-domain.com"
-# pomerium_default_org_name = "Your Organization"
-# pomerium_required_email_domain = "example.com"
-# Group-based org mapping (most common; groups arrive inline in the assertion):
-# pomerium_org_group_prefix = "camelai-office-"
-# pomerium_admin_group_prefix = "camelai-office-admin-"
-# pomerium_org_map = "{\"8f1e...\":\"Austin Office\"}"
-enable_public_ingress = false
+# Set this to true when the domain is in Route53. Otherwise create equivalent
+# main + wildcard records with your DNS provider using the public_ip output.
+create_route53_records = true
+route53_zone_id        = "Z0123456789EXAMPLE"
 
-# AI provider. AWS defaults to Bedrock through the EC2 instance role, so no
-# API key is required when using selfhost_ai_provider = "bedrock".
-# selfhost_ai_provider      = "bedrock"
-# selfhost_ai_aws_region    = "us-east-1"
-# For non-AWS providers, set a key explicitly:
-# selfhost_ai_provider = "openrouter"
-# selfhost_ai_api_key  = "sk-or-..."
-# selfhost_ai_model    = "anthropic/claude-sonnet-4"
+# Prefer SSM Session Manager. Add a narrowly scoped CIDR and key only for
+# break-glass SSH.
+ssh_ingress_cidrs = []
+ssh_key_name      = ""
 
-# Optional SSH access. Leave ssh_cidr blank to disable public SSH.
-ssh_user       = "ubuntu"
-ssh_public_key = "ssh-ed25519 AAAA... you@example.com"
-ssh_cidr       = "203.0.113.10/32"
+# Bundled Pomerium is the turnkey default. Register this OIDC callback with the
+# identity provider:
+# https://authenticate.example.com/oauth2/callback
+auth_provider         = "bundled-pomerium"
+auth_default_org_name = "Example Corp"
+pomerium_authenticate_hostname = "authenticate.example.com"
+pomerium_authenticate_url      = "https://authenticate.example.com"
+pomerium_image                 = "pomerium/pomerium@sha256:aae6010af6ba4c864bbd3f748cf37843a140b1ddef74d7d2ac1aa87660f8da1f"
+pomerium_idp_provider          = "oidc"
+pomerium_idp_provider_url      = "https://login.example.com/application/o/camelai/"
+pomerium_idp_client_id         = "camelai"
+pomerium_idp_client_secret_arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:camelai/pomerium-oidc-client-AbCdEf"
 
-# AWS settings.
-aws_region        = "us-east-1"
-aws_instance_type = "t3a.xlarge"
-# aws_vpc_id      = "vpc-..."
-# aws_subnet_id   = "subnet-..."
-# aws_key_name    = "existing-keypair"
+# To use an existing Pomerium deployment instead:
+# auth_provider                 = "pomerium"
+# pomerium_authenticate_url     = "https://authenticate.example.com"
+# pomerium_issuer               = "camel.example.com"
+# pomerium_audience             = "camel.example.com"
+#
+# For Cloudflare Access instead:
+# auth_provider                  = "cloudflare-access"
+# auth_default_org_name          = "Example Corp"
+# cloudflare_access_team_domain  = "https://example.cloudflareaccess.com"
+# cloudflare_access_aud          = "your-access-application-aud"
 
-# Azure settings.
-# cloud_provider  = "azure"
-# azure_location  = "eastus"
-# azure_vm_size   = "Standard_D4s_v5"
+# SecretString is the raw provider API key. Bedrock uses a Bedrock API key over
+# the Mantle compatibility endpoint; this deployment does not claim IAM/IMDS
+# SigV4 model authentication.
+selfhost_ai_provider           = "bedrock"
+selfhost_ai_api_key_secret_arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:camelai/bedrock-api-key-AbCdEf"
+selfhost_ai_aws_region         = "us-east-1"
 
-# GCP settings.
-# cloud_provider   = "gcp"
-# gcp_project_id   = "my-project"
-# gcp_region       = "us-central1"
-# gcp_zone         = "us-central1-a"
-# gcp_machine_type = "e2-standard-4"
+# Optional network placement and sizing.
+# vpc_id              = "vpc-..."
+# subnet_id           = "subnet-..."
+# instance_type       = "t3a.xlarge"
+# data_volume_size_gb = 100
+# ebs_kms_key_id      = "arn:aws:kms:..."

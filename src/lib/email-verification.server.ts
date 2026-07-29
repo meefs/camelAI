@@ -16,6 +16,8 @@ export async function sendUserVerificationEmail(args: {
     | "WORKER_BASE_URL"
     | "EMAIL"
     | "EMAIL_FROM_ADDRESS"
+    | "CF_ACCOUNT_ID"
+    | "CF_DISPATCH_NAMESPACE"
   >;
   requestUrl: URL;
   userId: string;

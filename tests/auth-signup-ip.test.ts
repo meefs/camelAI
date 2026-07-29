@@ -121,4 +121,33 @@ describe('signup action IP handling', () => {
     expect(authDoMocks.isSignupIpBlocked).toHaveBeenCalledWith(expect.anything(), '198.51.100.7');
     expect(authDoMocks.completePasswordSignup).not.toHaveBeenCalled();
   });
+
+  it('returns an explicit disabled-state error before creating a password user in self-host mode', async () => {
+    const request = new Request('https://selfhost.example/api/auth/signup', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        email: 'person@example.com',
+        password: 'password123',
+        name: 'Person',
+      }),
+    });
+
+    const response = await action({
+      request,
+      context: {
+        cloudflare: {
+          env: { ...fakeEnv, CF_ACCOUNT_ID: 'selfhost' },
+        },
+      },
+    } as never);
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error:
+        'Password signup is disabled in self-host mode because email verification cannot be delivered. Use the configured enterprise identity provider.',
+    });
+    expect(authDoMocks.completePasswordSignup).not.toHaveBeenCalled();
+    expect(emailMocks.sendUserVerificationEmail).not.toHaveBeenCalled();
+  });
 });

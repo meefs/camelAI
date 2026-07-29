@@ -181,6 +181,22 @@ describe('email-send-proxy route', () => {
     expect(res.status).toBe(503);
   });
 
+  it('rejects self-host delivery even when an EMAIL binding exists', async () => {
+    const res = await handleEmailSendProxy(
+      buildRouteContext(
+        makeRequest({ to: 'alice@example.com', subject: 'Hi', text: 'Hello!' }),
+        buildEnv({ CF_ACCOUNT_ID: 'selfhost' }),
+      ),
+    );
+
+    expect(res.status).toBe(503);
+    await expect(res.json()).resolves.toEqual({
+      error:
+        'Outbound email is disabled in self-host mode. No SMTP transport is implemented.',
+    });
+    expect(emailSendMock).not.toHaveBeenCalled();
+  });
+
   it('rejects malformed recipient types', async () => {
     const res = await handleEmailSendProxy(
       buildRouteContext(

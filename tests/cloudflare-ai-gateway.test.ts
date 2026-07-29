@@ -15,17 +15,17 @@ describe("cloudflare-ai-gateway", () => {
   it("uses CF_GATEWAY_BASE_URL for local dev gateway proxies", () => {
     expect(
       resolveCloudflareGatewayOrigin({
-        CF_GATEWAY_BASE_URL: "http://cloudflare-ai-gateway.int.exe.xyz/",
+        CF_GATEWAY_BASE_URL: "http://cloudflare-ai-gateway.internal.example/",
       }),
-    ).toBe("https://cloudflare-ai-gateway.int.exe.xyz");
+    ).toBe("https://cloudflare-ai-gateway.internal.example");
 
     expect(
       buildCloudflareGatewayUrl(
-        { CF_GATEWAY_BASE_URL: "http://cloudflare-ai-gateway.int.exe.xyz" },
+        { CF_GATEWAY_BASE_URL: "http://cloudflare-ai-gateway.internal.example" },
         "/v1/acct/gw/openai/chat/completions",
       ),
     ).toBe(
-      "https://cloudflare-ai-gateway.int.exe.xyz/v1/acct/gw/openai/chat/completions",
+      "https://cloudflare-ai-gateway.internal.example/v1/acct/gw/openai/chat/completions",
     );
   });
 });

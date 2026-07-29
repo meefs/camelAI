@@ -1,290 +1,434 @@
 #!/usr/bin/env bash
-set -euxo pipefail
+set -euo pipefail
+exec > >(tee -a /var/log/camelai-bootstrap.log) 2>&1
 export DEBIAN_FRONTEND=noninteractive
 
+BOOTSTRAP_STATUS_DIR=/var/lib/camelai-selfhost
+install -d -m 0755 "$BOOTSTRAP_STATUS_DIR"
+rm -f "$BOOTSTRAP_STATUS_DIR/ready" "$BOOTSTRAP_STATUS_DIR/failed"
+BOOTSTRAP_SUCCEEDED=0
+trap 'status=$?; if [ "$BOOTSTRAP_SUCCEEDED" -ne 1 ]; then touch "$BOOTSTRAP_STATUS_DIR/failed"; fi; exit "$status"' EXIT
+
+decode() {
+  printf '%s' "$1" | base64 --decode
+}
+
+DATA_VOLUME_ID="$(decode "${data_volume_id_b64}")"
+REPOSITORY_URL="$(decode "${repository_url_b64}")"
+REPOSITORY_REF="$(decode "${repository_ref_b64}")"
+APP_IMAGE="$(decode "${app_image_b64}")"
+LOCAL_ARTIFACTS_IMAGE="$(decode "${local_artifacts_image_b64}")"
+PROJECT_BUILD_IMAGE="$(decode "${project_build_image_b64}")"
+ANALYSIS_IMAGE="$(decode "${analysis_image_b64}")"
+DB_QUERY_IMAGE="$(decode "${db_query_image_b64}")"
+CONTAINER_EGRESS_IMAGE="$(decode "${container_egress_image_b64}")"
+MAIN_HOSTNAME="$(decode "${main_hostname_b64}")"
+APP_VANITY_DOMAIN="$(decode "${app_vanity_domain_b64}")"
+APP_IFRAME_DOMAIN="$(decode "${app_iframe_domain_b64}")"
+TLS_MODE="$(decode "${tls_mode_b64}")"
+TLS_CERTIFICATE_SECRET_ARN="$(decode "${tls_certificate_secret_arn_b64}")"
+TLS_PRIVATE_KEY_SECRET_ARN="$(decode "${tls_private_key_secret_arn_b64}")"
+AUTH_PROVIDER="$(decode "${auth_provider_b64}")"
+AUTH_DEFAULT_ORG_NAME="$(decode "${auth_default_org_name_b64}")"
+CLOUDFLARE_ACCESS_TEAM_DOMAIN="$(decode "${cloudflare_access_team_domain_b64}")"
+CLOUDFLARE_ACCESS_AUD="$(decode "${cloudflare_access_aud_b64}")"
+POMERIUM_AUTHENTICATE_URL="$(decode "${pomerium_authenticate_url_b64}")"
+POMERIUM_AUTHENTICATE_HOSTNAME="$(decode "${pomerium_authenticate_hostname_b64}")"
+POMERIUM_IMAGE="$(decode "${pomerium_image_b64}")"
+POMERIUM_JWKS_URL="$(decode "${pomerium_jwks_url_b64}")"
+POMERIUM_IDP_PROVIDER="$(decode "${pomerium_idp_provider_b64}")"
+POMERIUM_IDP_PROVIDER_URL="$(decode "${pomerium_idp_provider_url_b64}")"
+POMERIUM_IDP_CLIENT_ID="$(decode "${pomerium_idp_client_id_b64}")"
+POMERIUM_IDP_CLIENT_SECRET_ARN="$(decode "${pomerium_idp_client_secret_arn_b64}")"
+POMERIUM_ISSUER="$(decode "${pomerium_issuer_b64}")"
+POMERIUM_AUDIENCE="$(decode "${pomerium_audience_b64}")"
+SELFHOST_AI_PROVIDER="$(decode "${selfhost_ai_provider_b64}")"
+SELFHOST_AI_API_KEY_SECRET_ARN="$(decode "${selfhost_ai_api_key_secret_arn_b64}")"
+SELFHOST_AI_AWS_REGION="$(decode "${selfhost_ai_aws_region_b64}")"
+SELFHOST_AI_BASE_URL="$(decode "${selfhost_ai_base_url_b64}")"
+SELFHOST_AI_MODEL="$(decode "${selfhost_ai_model_b64}")"
+SELFHOST_AI_NAME="$(decode "${selfhost_ai_name_b64}")"
+SELFHOST_AI_API="$(decode "${selfhost_ai_api_b64}")"
+SELFHOST_AI_AUTH_TYPE="$(decode "${selfhost_ai_auth_type_b64}")"
+
 apt-get update
-apt-get install -y ca-certificates curl gnupg git openssl lsb-release unzip
+apt-get install -y ca-certificates curl git gnupg jq openssl unzip
+
 install -m 0755 -d /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
 chmod a+r /etc/apt/keyrings/docker.asc
 . /etc/os-release
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $VERSION_CODENAME stable" > /etc/apt/sources.list.d/docker.list
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $${VERSION_CODENAME} stable" > /etc/apt/sources.list.d/docker.list
+
+curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
 curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/gpg.key -o /etc/apt/keyrings/caddy.asc
 chmod a+r /etc/apt/keyrings/caddy.asc
 echo "deb [signed-by=/etc/apt/keyrings/caddy.asc] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" > /etc/apt/sources.list.d/caddy.list
+
 apt-get update
-apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin caddy
+apt-get install -y caddy docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin nodejs
+npm install --global bun@1.3.14
+
 if ! command -v aws >/dev/null 2>&1; then
-  curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+  curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscliv2.zip
   unzip -q /tmp/awscliv2.zip -d /tmp
   /tmp/aws/install
 fi
-if [ -n "${cloudflared_tunnel_token}" ]; then
-  curl -fsSL -o /tmp/cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
-  apt-get install -y /tmp/cloudflared.deb
-  cloudflared service install "${cloudflared_tunnel_token}"
-  systemctl restart cloudflared
+
+systemctl stop docker.service docker.socket || true
+
+find_data_device() {
+  local serial
+  serial="$${DATA_VOLUME_ID//-/}"
+  for _ in $(seq 1 120); do
+    for candidate in \
+      "/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_$${serial}" \
+      /dev/xvdf \
+      /dev/sdf; do
+      if [ -b "$${candidate}" ]; then
+        readlink -f "$${candidate}"
+        return 0
+      fi
+    done
+    lsblk -ndo PATH,SERIAL | awk -v serial="$${serial}" '$2 == serial { print $1; exit }' | grep -m1 . && return 0
+    sleep 5
+  done
+  return 1
+}
+
+DATA_DEVICE="$(find_data_device)" || {
+  echo "Persistent EBS volume $${DATA_VOLUME_ID} did not attach" >&2
+  exit 1
+}
+
+if ! blkid "$${DATA_DEVICE}" >/dev/null 2>&1; then
+  mkfs.ext4 -L camelai-data "$${DATA_DEVICE}"
 fi
-usermod -aG docker ubuntu || true
-usermod -aG docker azureuser || true
-usermod -aG docker ${ssh_user} || true
+install -d -m 0750 /srv/camelai
+DATA_UUID="$(blkid -s UUID -o value "$${DATA_DEVICE}")"
+if ! grep -q "UUID=$${DATA_UUID}" /etc/fstab; then
+  echo "UUID=$${DATA_UUID} /srv/camelai ext4 defaults,nofail 0 2" >> /etc/fstab
+fi
+mountpoint -q /srv/camelai || mount /srv/camelai
+install -d -m 0710 /srv/camelai/docker /srv/camelai/releases
 
-mkdir -p /opt/camelai/selfhost /srv/camelai/project-runtime /srv/camelai/runtime-state
-if [ -n "${registry_login_command}" ]; then
-  :
-  ${registry_login_command}
+cat > /etc/docker/daemon.json <<'JSON'
+{
+  "data-root": "/srv/camelai/docker",
+  "live-restore": true,
+  "log-driver": "local"
+}
+JSON
+systemctl enable --now docker
+if systemctl list-unit-files amazon-ssm-agent.service --no-legend | grep -q amazon-ssm-agent; then
+  systemctl enable --now amazon-ssm-agent
+elif systemctl list-unit-files snap.amazon-ssm-agent.amazon-ssm-agent.service --no-legend | grep -q amazon-ssm-agent; then
+  systemctl enable --now snap.amazon-ssm-agent.amazon-ssm-agent
 fi
 
-docker pull "${app_image_uri}"
-docker pull "${local_artifacts_image_uri}"
+if [ ! -d /srv/camelai/repo/.git ]; then
+  git clone "$${REPOSITORY_URL}" /srv/camelai/repo
+fi
+cd /srv/camelai/repo
+git remote set-url origin "$${REPOSITORY_URL}"
+git fetch --force --tags origin
+git checkout --detach "$${REPOSITORY_REF}"
+bun install --frozen-lockfile
 
-if [ ! -d /srv/camelai/project-runtime/.git ]; then git clone "${runtime_repository_url}" /srv/camelai/project-runtime; fi
-cd /srv/camelai/project-runtime
-git fetch --all --tags
-git checkout "${runtime_repository_ref}"
-cd /opt/camelai/selfhost
+if [ ! -f .env.selfhost ]; then
+  bun run selfhost:init
+fi
 
-TOKEN_SIGNING_SECRET=$(openssl rand -base64 48 | tr -d '\n')
-INTEGRATION_SECRET_KEY=$(openssl rand -base64 48 | tr -d '\n')
-PROJECT_RUNTIME_PROXY_SECRET=$(openssl rand -base64 48 | tr -d '\n')
-LOCAL_ARTIFACTS_SECRET=$(openssl rand -base64 48 | tr -d '\n')
-APP_IFRAME_DOMAIN="${app_iframe_domain}"
-if [ -z "$APP_IFRAME_DOMAIN" ]; then APP_IFRAME_DOMAIN="${app_vanity_domain}"; fi
-cat > .env.selfhost <<EOF
-COMPOSE_PROJECT_NAME=camelai-selfhost
-SELFHOST_BIND_ADDRESS=127.0.0.1
-SELFHOST_APP_PORT=3001
-SELFHOST_PUBLIC_BASE_URL=${public_base_url}
-SELFHOST_INTERNAL_APP_URL=http://app:3001
-LOCAL_APP_VANITY_DOMAIN=${app_vanity_domain}
-LOCAL_APP_IFRAME_DOMAIN=$APP_IFRAME_DOMAIN
-PROJECT_RUNTIME_SERVICE_DIR=/srv/camelai/project-runtime
-PROJECT_RUNTIME_HOST_STATE_DIR=/srv/camelai/runtime-state
-PROJECT_RUNTIME_IMAGE=project-runtime-basic:latest
-PROJECT_RUNTIME_IMAGE_DOCKERFILE=Dockerfile.sandbox
-PROJECT_RUNTIME_ENABLE_PROJECT_QUOTA=0
-PROJECT_RUNTIME_CONTAINER_USER=claude
-PROJECT_RUNTIME_CONTAINER_HOME=/workspace
-PROJECT_RUNTIME_CONTAINER_WORKDIR=/workspace
-PROJECT_RUNTIME_CONTAINER_NETWORK_MODE=camelai-selfhost_default
-PROJECT_RUNTIME_DOCKER_PROXY_BASE_URL=http://project-runtime:4411
-CONTAINER_RUNTIME=runc
-TOKEN_SIGNING_SECRET=$TOKEN_SIGNING_SECRET
-INTEGRATION_SECRET_KEY=$INTEGRATION_SECRET_KEY
-PROJECT_RUNTIME_PROXY_SECRET=$PROJECT_RUNTIME_PROXY_SECRET
-LOCAL_ARTIFACTS_SECRET=$LOCAL_ARTIFACTS_SECRET
-SELFHOST_AI_PROVIDER=${selfhost_ai_provider}
-SELFHOST_AI_API_KEY=${selfhost_ai_api_key}
-SELFHOST_AI_BASE_URL=${selfhost_ai_base_url}
-SELFHOST_AI_MODEL=${selfhost_ai_model}
-SELFHOST_AI_AUTH_TYPE=bearer
-SELFHOST_AI_API=openai-completions
-SELFHOST_AI_AWS_REGION=${selfhost_ai_aws_region}
-CLOUDFLARE_ACCESS_TEAM_DOMAIN=${cloudflare_access_team_domain}
-CLOUDFLARE_ACCESS_AUD=${cloudflare_access_aud}
-CLOUDFLARE_ACCESS_DEFAULT_ORG_NAME=${cloudflare_access_default_org_name}
-CLOUDFLARE_ACCESS_ORG_CLAIMS=${cloudflare_access_org_claims}
-CLOUDFLARE_ACCESS_REQUIRED_EMAIL_DOMAIN=${cloudflare_access_required_email_domain}
-POMERIUM_AUTHENTICATE_URL=${pomerium_authenticate_url}
-POMERIUM_JWKS_URL=${pomerium_jwks_url}
-POMERIUM_ISSUER=${pomerium_issuer}
-POMERIUM_AUDIENCE=${pomerium_audience}
-POMERIUM_DEFAULT_ORG_NAME=${pomerium_default_org_name}
-POMERIUM_ORG_CLAIMS=${pomerium_org_claims}
-POMERIUM_ORG_MAP=${pomerium_org_map}
-POMERIUM_ORG_GROUP_PREFIX=${pomerium_org_group_prefix}
-POMERIUM_ADMIN_GROUP_PREFIX=${pomerium_admin_group_prefix}
-POMERIUM_REQUIRED_EMAIL_DOMAIN=${pomerium_required_email_domain}
-EOF
+SELFHOST_AI_API_KEY="$(aws secretsmanager get-secret-value \
+  --secret-id "$${SELFHOST_AI_API_KEY_SECRET_ARN}" \
+  --query SecretString \
+  --output text)"
+if [ -z "$${SELFHOST_AI_API_KEY}" ] || [ "$${SELFHOST_AI_API_KEY}" = "None" ]; then
+  echo "AI API key secret is empty" >&2
+  exit 1
+fi
+if [[ "$${SELFHOST_AI_API_KEY}" == *$'\n'* ]]; then
+  echo "AI API key SecretString must be a single line" >&2
+  exit 1
+fi
+
+POMERIUM_IDP_CLIENT_SECRET=""
+if [ "$${AUTH_PROVIDER}" = "bundled-pomerium" ]; then
+  POMERIUM_IDP_CLIENT_SECRET="$(aws secretsmanager get-secret-value \
+    --secret-id "$${POMERIUM_IDP_CLIENT_SECRET_ARN}" \
+    --query SecretString \
+    --output text)"
+  if [ -z "$${POMERIUM_IDP_CLIENT_SECRET}" ] || [ "$${POMERIUM_IDP_CLIENT_SECRET}" = "None" ]; then
+    echo "Pomerium IdP client secret is empty" >&2
+    exit 1
+  fi
+  if [[ "$${POMERIUM_IDP_CLIENT_SECRET}" == *$'\n'* ]]; then
+    echo "Pomerium IdP client SecretString must be a single line" >&2
+    exit 1
+  fi
+fi
+
+export CFG_SELFHOST_APP_IMAGE="$${APP_IMAGE}"
+export CFG_SELFHOST_LOCAL_ARTIFACTS_IMAGE="$${LOCAL_ARTIFACTS_IMAGE}"
+export CFG_SELFHOST_PROJECT_BUILD_IMAGE="$${PROJECT_BUILD_IMAGE}"
+export CFG_SELFHOST_ANALYSIS_IMAGE="$${ANALYSIS_IMAGE}"
+export CFG_SELFHOST_DB_QUERY_IMAGE="$${DB_QUERY_IMAGE}"
+export CFG_SELFHOST_CONTAINER_EGRESS_IMAGE="$${CONTAINER_EGRESS_IMAGE}"
+export CFG_SELFHOST_DEPLOYMENT_MODE="release"
+export CFG_SELFHOST_PUBLIC_BASE_URL="https://$${MAIN_HOSTNAME}"
+export CFG_SELFHOST_MAIN_HOSTNAME="$${MAIN_HOSTNAME}"
+export CFG_SELFHOST_AUTH_MODE="$${AUTH_PROVIDER}"
+if [ "$${AUTH_PROVIDER}" = "pomerium" ]; then
+  export CFG_SELFHOST_AUTH_MODE="external-pomerium"
+fi
+export CFG_SELFHOST_POMERIUM_TLS_MODE="upstream"
+export CFG_SELFHOST_POMERIUM_LOOPBACK_HTTPS="0"
+if [ "$${TLS_MODE}" = "provided" ]; then
+  export CFG_SELFHOST_POMERIUM_LOOPBACK_HTTPS="1"
+fi
+export CFG_SELFHOST_POMERIUM_IMAGE="$${POMERIUM_IMAGE}"
+export CFG_LOCAL_APP_VANITY_DOMAIN="$${APP_VANITY_DOMAIN}"
+export CFG_LOCAL_APP_IFRAME_DOMAIN="$${APP_IFRAME_DOMAIN}"
+export CFG_SELFHOST_AI_PROVIDER="$${SELFHOST_AI_PROVIDER}"
+export CFG_SELFHOST_AI_API_KEY="$${SELFHOST_AI_API_KEY}"
+export CFG_SELFHOST_AI_AWS_REGION="$${SELFHOST_AI_AWS_REGION}"
+export CFG_SELFHOST_AI_BASE_URL="$${SELFHOST_AI_BASE_URL}"
+export CFG_SELFHOST_AI_MODEL="$${SELFHOST_AI_MODEL}"
+export CFG_SELFHOST_AI_NAME="$${SELFHOST_AI_NAME}"
+export CFG_SELFHOST_AI_API="$${SELFHOST_AI_API}"
+export CFG_SELFHOST_AI_AUTH_TYPE="$${SELFHOST_AI_AUTH_TYPE}"
+export CFG_CLOUDFLARE_ACCESS_TEAM_DOMAIN=""
+export CFG_CLOUDFLARE_ACCESS_AUD=""
+export CFG_CLOUDFLARE_ACCESS_DEFAULT_ORG_NAME=""
+export CFG_POMERIUM_AUTHENTICATE_URL=""
+export CFG_POMERIUM_JWKS_URL=""
+export CFG_POMERIUM_ISSUER=""
+export CFG_POMERIUM_AUDIENCE=""
+export CFG_POMERIUM_DEFAULT_ORG_NAME=""
+export CFG_POMERIUM_AUTHENTICATE_HOSTNAME=""
+export CFG_POMERIUM_IDP_PROVIDER=""
+export CFG_POMERIUM_IDP_PROVIDER_URL=""
+export CFG_POMERIUM_IDP_CLIENT_ID=""
+export CFG_POMERIUM_IDP_CLIENT_SECRET=""
+
+if [ "$${AUTH_PROVIDER}" = "cloudflare-access" ]; then
+  export CFG_CLOUDFLARE_ACCESS_TEAM_DOMAIN="$${CLOUDFLARE_ACCESS_TEAM_DOMAIN}"
+  export CFG_CLOUDFLARE_ACCESS_AUD="$${CLOUDFLARE_ACCESS_AUD}"
+  export CFG_CLOUDFLARE_ACCESS_DEFAULT_ORG_NAME="$${AUTH_DEFAULT_ORG_NAME}"
+elif [ "$${AUTH_PROVIDER}" = "pomerium" ]; then
+  export CFG_POMERIUM_AUTHENTICATE_URL="$${POMERIUM_AUTHENTICATE_URL}"
+  export CFG_POMERIUM_JWKS_URL="$${POMERIUM_JWKS_URL}"
+  export CFG_POMERIUM_ISSUER="$${POMERIUM_ISSUER}"
+  export CFG_POMERIUM_AUDIENCE="$${POMERIUM_AUDIENCE}"
+  export CFG_POMERIUM_DEFAULT_ORG_NAME="$${AUTH_DEFAULT_ORG_NAME}"
+else
+  export CFG_POMERIUM_AUTHENTICATE_URL="$${POMERIUM_AUTHENTICATE_URL}"
+  export CFG_POMERIUM_AUTHENTICATE_HOSTNAME="$${POMERIUM_AUTHENTICATE_HOSTNAME}"
+  export CFG_POMERIUM_JWKS_URL="https://$${MAIN_HOSTNAME}/.well-known/pomerium/jwks.json"
+  export CFG_POMERIUM_ISSUER="$${MAIN_HOSTNAME}"
+  export CFG_POMERIUM_AUDIENCE="$${MAIN_HOSTNAME}"
+  export CFG_POMERIUM_DEFAULT_ORG_NAME="$${AUTH_DEFAULT_ORG_NAME}"
+  export CFG_POMERIUM_IDP_PROVIDER="$${POMERIUM_IDP_PROVIDER}"
+  export CFG_POMERIUM_IDP_PROVIDER_URL="$${POMERIUM_IDP_PROVIDER_URL}"
+  export CFG_POMERIUM_IDP_CLIENT_ID="$${POMERIUM_IDP_CLIENT_ID}"
+  export CFG_POMERIUM_IDP_CLIENT_SECRET="$${POMERIUM_IDP_CLIENT_SECRET}"
+fi
+
+node <<'NODE'
+import fs from "node:fs";
+
+const envPath = ".env.selfhost";
+const updates = Object.fromEntries(
+  Object.entries(process.env)
+    .filter(([key]) => key.startsWith("CFG_"))
+    .map(([key, value]) => [key.slice(4), value ?? ""]),
+);
+updates.COMPOSE_PROJECT_NAME = "camelai-selfhost";
+updates.SELFHOST_BIND_ADDRESS = "127.0.0.1";
+updates.SELFHOST_APP_PORT = "3001";
+updates.SELFHOST_INTERNAL_APP_URL = "http://127.0.0.1:3001";
+updates.LOCAL_AUTH_BYPASS = "";
+updates.TURNSTILE_SITE_KEY = "";
+updates.TURNSTILE_SECRET_KEY = "";
+
+const format = (value) =>
+  /^[A-Za-z0-9_./:@-]*$/.test(value) ? value : JSON.stringify(value);
+const original = fs.readFileSync(envPath, "utf8").split(/\r?\n/);
+const seen = new Set();
+const output = original.map((line) => {
+  const match = /^([A-Z][A-Z0-9_]*)=/.exec(line);
+  if (!match || !(match[1] in updates)) return line;
+  seen.add(match[1]);
+  return `$${match[1]}=$${format(updates[match[1]])}`;
+});
+for (const [key, value] of Object.entries(updates)) {
+  if (!seen.has(key)) output.push(`$${key}=$${format(value)}`);
+}
+fs.writeFileSync(envPath, `$${output.join("\n").replace(/\n+$/, "")}\n`, {
+  mode: 0o600,
+});
+NODE
+unset SELFHOST_AI_API_KEY CFG_SELFHOST_AI_API_KEY POMERIUM_IDP_CLIENT_SECRET CFG_POMERIUM_IDP_CLIENT_SECRET
 chmod 600 .env.selfhost
+bun run selfhost:configure
 
-cat > docker-compose.yml <<EOF
-services:
-  app:
-    image: ${app_image_uri}
-    restart: unless-stopped
-    networks:
-      default:
-        ipv4_address: 172.30.0.10
-    environment:
-      NODE_ENV: production
-      TOKEN_SIGNING_SECRET: \$${TOKEN_SIGNING_SECRET:?missing}
-      INTEGRATION_SECRET_KEY: \$${INTEGRATION_SECRET_KEY:?missing}
-      WORKER_BASE_URL: \$${SELFHOST_PUBLIC_BASE_URL:?missing}
-      PROJECT_RUNTIME_SERVICE_URL: http://project-runtime:4410
-      PROJECT_RUNTIME_DOCKER_PROXY_BASE_URL: \$${PROJECT_RUNTIME_DOCKER_PROXY_BASE_URL:-http://project-runtime:4411}
-      PROJECT_RUNTIME_PROXY_SECRET: \$${PROJECT_RUNTIME_PROXY_SECRET:?missing}
-      LOCAL_ARTIFACTS_BASE_URL: http://local-artifacts:7001
-      LOCAL_ARTIFACTS_SECRET: \$${LOCAL_ARTIFACTS_SECRET:?missing}
-      CF_ACCOUNT_ID: selfhost
-      CF_DISPATCH_NAMESPACE: selfhost
-      CF_WORKER_NAME: chiridion-selfhost
-      AI_VIRTUAL_MODEL: dynamic/auto
-      SELFHOST_AI_PROVIDER: \$${SELFHOST_AI_PROVIDER:-}
-      SELFHOST_AI_API_KEY: \$${SELFHOST_AI_API_KEY:-}
-      SELFHOST_AI_BASE_URL: \$${SELFHOST_AI_BASE_URL:-}
-      SELFHOST_AI_MODEL: \$${SELFHOST_AI_MODEL:-}
-      SELFHOST_AI_NAME: \$${SELFHOST_AI_NAME:-}
-      SELFHOST_AI_AUTH_TYPE: \$${SELFHOST_AI_AUTH_TYPE:-bearer}
-      SELFHOST_AI_API: \$${SELFHOST_AI_API:-openai-completions}
-      SELFHOST_AI_AWS_REGION: \$${SELFHOST_AI_AWS_REGION:-us-east-1}
-      EMAIL_FROM_ADDRESS: no-reply@localhost
-      WORKSPACE_EMAIL_DOMAIN: localhost
-      LOCAL_APP_VANITY_DOMAIN: \$${LOCAL_APP_VANITY_DOMAIN:-}
-      LOCAL_APP_IFRAME_DOMAIN: \$${LOCAL_APP_IFRAME_DOMAIN:-}
-      CLOUDFLARE_ACCESS_TEAM_DOMAIN: \$${CLOUDFLARE_ACCESS_TEAM_DOMAIN:-}
-      CLOUDFLARE_ACCESS_AUD: \$${CLOUDFLARE_ACCESS_AUD:-}
-      CLOUDFLARE_ACCESS_DEFAULT_ORG_NAME: \$${CLOUDFLARE_ACCESS_DEFAULT_ORG_NAME:-}
-      CLOUDFLARE_ACCESS_ORG_CLAIMS: \$${CLOUDFLARE_ACCESS_ORG_CLAIMS:-}
-      CLOUDFLARE_ACCESS_REQUIRED_EMAIL_DOMAIN: \$${CLOUDFLARE_ACCESS_REQUIRED_EMAIL_DOMAIN:-}
-      POMERIUM_AUTHENTICATE_URL: \$${POMERIUM_AUTHENTICATE_URL:-}
-      POMERIUM_JWKS_URL: \$${POMERIUM_JWKS_URL:-}
-      POMERIUM_ISSUER: \$${POMERIUM_ISSUER:-}
-      POMERIUM_AUDIENCE: \$${POMERIUM_AUDIENCE:-}
-      POMERIUM_DEFAULT_ORG_NAME: \$${POMERIUM_DEFAULT_ORG_NAME:-}
-      POMERIUM_ORG_CLAIMS: \$${POMERIUM_ORG_CLAIMS:-}
-      POMERIUM_ORG_MAP: \$${POMERIUM_ORG_MAP:-}
-      POMERIUM_ORG_GROUP_PREFIX: \$${POMERIUM_ORG_GROUP_PREFIX:-}
-      POMERIUM_ADMIN_GROUP_PREFIX: \$${POMERIUM_ADMIN_GROUP_PREFIX:-}
-      POMERIUM_REQUIRED_EMAIL_DOMAIN: \$${POMERIUM_REQUIRED_EMAIL_DOMAIN:-}
-    ports:
-      - "127.0.0.1:3001:3001"
-    volumes:
-      - app-state:/workspace/.selfhost/workerd/state
-    depends_on:
-      local-artifacts:
-        condition: service_healthy
-      project-runtime:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/api/selfhost/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
-      interval: 10s
-      timeout: 5s
-      retries: 30
+install -d -m 0700 /etc/camelai
+APP_HTTP_SITE_ADDRESSES="http://*.$${APP_VANITY_DOMAIN}"
+if [ "$${APP_IFRAME_DOMAIN}" != "$${APP_VANITY_DOMAIN}" ]; then
+  APP_HTTP_SITE_ADDRESSES="$${APP_HTTP_SITE_ADDRESSES}, http://*.$${APP_IFRAME_DOMAIN}"
+fi
+if [ "$${TLS_MODE}" = "provided" ]; then
+  aws secretsmanager get-secret-value \
+    --secret-id "$${TLS_CERTIFICATE_SECRET_ARN}" \
+    --query SecretString \
+    --output text > /etc/camelai/tls.crt
+  aws secretsmanager get-secret-value \
+    --secret-id "$${TLS_PRIVATE_KEY_SECRET_ARN}" \
+    --query SecretString \
+    --output text > /etc/camelai/tls.key
+  chmod 600 /etc/camelai/tls.crt /etc/camelai/tls.key
+  chown root:caddy /etc/camelai/tls.crt /etc/camelai/tls.key
+  chmod 640 /etc/camelai/tls.crt /etc/camelai/tls.key
 
-  project-runtime:
-    image: golang:1.24-bookworm
-    restart: unless-stopped
-    working_dir: /runtime
-    command: go run ./cmd/project-runtime
-    environment:
-      PORT: "4410"
-      PROJECT_RUNTIME_DOCKER_PROXY_PORT: "4411"
-      CONTAINER_RUNTIME: \$${CONTAINER_RUNTIME:-runc}
-      PROJECT_RUNTIME_HOST_STATE_DIR: \$${PROJECT_RUNTIME_HOST_STATE_DIR:?missing}
-      WORKSPACES_ROOT: \$${PROJECT_RUNTIME_HOST_STATE_DIR:?missing}/workspaces
-      PROJECT_RUNTIME_USAGE_DB_DIR: \$${PROJECT_RUNTIME_HOST_STATE_DIR:?missing}/usage
-      PROJECT_RUNTIME_STATE_ROOT: \$${PROJECT_RUNTIME_HOST_STATE_DIR:?missing}/state
-      PROJECT_RUNTIME_BACKUP_ROOT: \$${PROJECT_RUNTIME_HOST_STATE_DIR:?missing}/backups
-      PROJECT_RUNTIME_IMAGE: \$${PROJECT_RUNTIME_IMAGE:-project-runtime-basic:latest}
-      PROJECT_RUNTIME_ENABLE_PROJECT_QUOTA: \$${PROJECT_RUNTIME_ENABLE_PROJECT_QUOTA:-0}
-      PROJECT_RUNTIME_CONTAINER_USER: \$${PROJECT_RUNTIME_CONTAINER_USER:-claude}
-      PROJECT_RUNTIME_CONTAINER_HOME: \$${PROJECT_RUNTIME_CONTAINER_HOME:-/workspace}
-      PROJECT_RUNTIME_CONTAINER_WORKDIR: \$${PROJECT_RUNTIME_CONTAINER_WORKDIR:-/workspace}
-      PROJECT_RUNTIME_CONTAINER_NETWORK_MODE: \$${PROJECT_RUNTIME_CONTAINER_NETWORK_MODE:-camelai-selfhost_default}
-      PROJECT_RUNTIME_PROXY_SECRET: \$${PROJECT_RUNTIME_PROXY_SECRET:?missing}
-      WORKER_BASE_URL: http://app:3001
-      PROJECT_RUNTIME_PROXY_CAPABILITIES_JSON: '{"capabilities":[{"name":"camelai-artifacts","target":"http://app:3001/api/internal/project-runtime/artifacts"},{"name":"camelai-cloudflare-api","target":"http://app:3001"}]}'
-    ports:
-      - "127.0.0.1:4410:4410"
-      - "127.0.0.1:4411:4411"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    volumes:
-      - /srv/camelai/project-runtime:/runtime
-      - /srv/camelai/runtime-state:/srv/camelai/runtime-state
-      - /var/run/docker.sock:/var/run/docker.sock
-    healthcheck:
-      test: ["CMD", "bash", "-lc", "exec 3<>/dev/tcp/127.0.0.1/4410; printf 'GET /health HTTP/1.1\\r\\nHost: 127.0.0.1\\r\\nConnection: close\\r\\n\\r\\n' >&3; cat <&3 | grep project-runtime-service"]
-      interval: 5s
-      timeout: 3s
-      retries: 30
+  APP_SITE_ADDRESSES="https://*.$${APP_VANITY_DOMAIN}"
+  if [ "$${APP_IFRAME_DOMAIN}" != "$${APP_VANITY_DOMAIN}" ]; then
+    APP_SITE_ADDRESSES="$${APP_SITE_ADDRESSES}, https://*.$${APP_IFRAME_DOMAIN}"
+  fi
+  AUTH_SITE_ADDRESS=""
+  MAIN_UPSTREAM="127.0.0.1:3001"
+  if [ "$${AUTH_PROVIDER}" = "bundled-pomerium" ]; then
+    AUTH_SITE_ADDRESS=", http://$${POMERIUM_AUTHENTICATE_HOSTNAME}"
+    MAIN_UPSTREAM="127.0.0.1:5444"
+  fi
+  cat > /etc/caddy/Caddyfile <<EOF
+http://$${MAIN_HOSTNAME}, $${APP_HTTP_SITE_ADDRESSES}$${AUTH_SITE_ADDRESS} {
+  redir https://{host}{uri} permanent
+}
 
-  local-artifacts:
-    image: ${local_artifacts_image_uri}
-    restart: unless-stopped
-    environment:
-      LOCAL_ARTIFACTS_PORT: "7001"
-      LOCAL_ARTIFACTS_REPO_ROOT: /data/repos
-      LOCAL_ARTIFACTS_PUBLIC_BASE_URL: http://local-artifacts:7001
-      LOCAL_ARTIFACTS_SECRET: \$${LOCAL_ARTIFACTS_SECRET:?missing}
-    ports:
-      - "127.0.0.1:7001:7001"
-    volumes:
-      - local-artifacts-repos:/data/repos
-    healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:7001/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
+https://$${MAIN_HOSTNAME} {
+  tls /etc/camelai/tls.crt /etc/camelai/tls.key
+  reverse_proxy $${MAIN_UPSTREAM}
+}
 
-volumes:
-  app-state:
-  local-artifacts-repos:
-networks:
-  default:
-    ipam:
-      config:
-        - subnet: 172.30.0.0/24
+$${APP_SITE_ADDRESSES} {
+  tls /etc/camelai/tls.crt /etc/camelai/tls.key
+  reverse_proxy 127.0.0.1:3001
+}
 EOF
+  if [ "$${AUTH_PROVIDER}" = "bundled-pomerium" ]; then
+    cat >> /etc/caddy/Caddyfile <<EOF
+
+https://$${POMERIUM_AUTHENTICATE_HOSTNAME} {
+  tls /etc/camelai/tls.crt /etc/camelai/tls.key
+  reverse_proxy 127.0.0.1:5444
+}
+EOF
+  fi
+else
+  if [ "$${AUTH_PROVIDER}" = "bundled-pomerium" ]; then
+    cat > /etc/caddy/Caddyfile <<EOF
+http://$${MAIN_HOSTNAME}, http://$${POMERIUM_AUTHENTICATE_HOSTNAME} {
+  reverse_proxy 127.0.0.1:5444 {
+    header_up X-Forwarded-Proto https
+  }
+}
+
+$${APP_HTTP_SITE_ADDRESSES} {
+  reverse_proxy 127.0.0.1:3001 {
+    header_up X-Forwarded-Proto https
+  }
+}
+EOF
+  else
+    cat > /etc/caddy/Caddyfile <<'EOF'
+:80 {
+  reverse_proxy 127.0.0.1:3001 {
+    header_up X-Forwarded-Proto https
+  }
+}
+EOF
+  fi
+fi
+caddy validate --config /etc/caddy/Caddyfile
+systemctl enable --now caddy
+
+cat > /usr/local/sbin/camelai-selfhost-compose <<'SCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+cd /srv/camelai/repo
+args=(--env-file .env.selfhost -f docker-compose.selfhost.yml)
+if grep -q '^SELFHOST_AUTH_MODE=bundled-pomerium$' .env.selfhost; then
+  args+=(-f docker-compose.selfhost.pomerium.yml)
+  if grep -q '^SELFHOST_POMERIUM_LOOPBACK_HTTPS=1$' .env.selfhost; then
+    args+=(-f docker-compose.selfhost.pomerium-loopback.yml)
+  fi
+fi
+exec /usr/bin/docker compose "$${args[@]}" "$@"
+SCRIPT
+chmod 0755 /usr/local/sbin/camelai-selfhost-compose
 
 cat > /etc/systemd/system/camelai-selfhost.service <<'EOF'
 [Unit]
-Description=camelAI self-host Docker Compose stack
+Description=camelAI self-host Docker Compose release
 After=docker.service network-online.target
 Wants=network-online.target
 Requires=docker.service
+
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-WorkingDirectory=/opt/camelai/selfhost
-ExecStartPre=/usr/bin/docker build -t project-runtime-basic:latest -f /srv/camelai/project-runtime/Dockerfile.sandbox /srv/camelai/project-runtime
-ExecStart=/usr/bin/docker compose --env-file .env.selfhost -f docker-compose.yml up -d
-ExecStop=/usr/bin/docker compose --env-file .env.selfhost -f docker-compose.yml down
-TimeoutStartSec=0
+WorkingDirectory=/srv/camelai/repo
+ExecStartPre=/usr/local/bin/bun run selfhost:configure
+ExecStartPre=/usr/local/sbin/camelai-selfhost-compose pull
+ExecStart=/usr/local/sbin/camelai-selfhost-compose up --detach --remove-orphans --wait --wait-timeout 900
+ExecReload=/usr/local/bin/bun run selfhost:configure
+ExecReload=/usr/local/sbin/camelai-selfhost-compose pull
+ExecReload=/usr/local/sbin/camelai-selfhost-compose up --detach --remove-orphans --wait --wait-timeout 900
+ExecStop=/usr/local/sbin/camelai-selfhost-compose stop
+TimeoutStartSec=1200
+TimeoutStopSec=120
+
 [Install]
 WantedBy=multi-user.target
 EOF
 
-cat > /usr/local/sbin/camelai-imds-firewall <<'EOF'
+cat > /usr/local/sbin/camelai-selfhost-upgrade <<'SCRIPT'
 #!/usr/bin/env bash
 set -euo pipefail
-iptables -N DOCKER-USER 2>/dev/null || true
-iptables -D DOCKER-USER -s 172.30.0.10/32 -d 169.254.169.254/32 -j RETURN 2>/dev/null || true
-iptables -D DOCKER-USER -d 169.254.169.254/32 -j REJECT 2>/dev/null || true
-iptables -I DOCKER-USER 1 -s 172.30.0.10/32 -d 169.254.169.254/32 -j RETURN
-iptables -I DOCKER-USER 2 -d 169.254.169.254/32 -j REJECT
-EOF
-chmod 755 /usr/local/sbin/camelai-imds-firewall
-cat > /etc/systemd/system/camelai-imds-firewall.service <<'EOF'
-[Unit]
-Description=Restrict EC2 IMDS access to the camelAI app container
-After=docker.service
-Requires=docker.service
-[Service]
-Type=oneshot
-ExecStart=/usr/local/sbin/camelai-imds-firewall
-RemainAfterExit=yes
-[Install]
-WantedBy=multi-user.target
-EOF
+cd /srv/camelai/repo
+exec /usr/local/bin/bun run selfhost:upgrade -- "$@"
+SCRIPT
+chmod 750 /usr/local/sbin/camelai-selfhost-upgrade
 
+bun run selfhost:doctor
 systemctl daemon-reload
-systemctl enable --now camelai-imds-firewall.service
-systemctl enable --now camelai-selfhost.service
+systemctl enable --now camelai-selfhost
 
-if [ "${enable_caddy}" = "true" ]; then
-  MAIN_HOST=$(printf '%s' "${public_base_url}" | sed -E 's#^https?://##; s#/.*$##')
-  if [ -n "$MAIN_HOST" ] && [ "$MAIN_HOST" != localhost ]; then
-    cat > /etc/caddy/Caddyfile <<EOF
-$MAIN_HOST {
-  reverse_proxy 127.0.0.1:3001
-}
-
-http://*.${app_vanity_domain} {
-  reverse_proxy 127.0.0.1:3001
-}
-EOF
-    systemctl reload caddy || systemctl restart caddy
+health_ready=0
+for _ in $(seq 1 90); do
+  if curl --fail --silent http://127.0.0.1:3001/api/selfhost/health >/dev/null; then
+    health_ready=1
+    break
   fi
+  sleep 10
+done
+
+if [ "$health_ready" -ne 1 ]; then
+  echo "camelAI health endpoint did not become ready" >&2
+  /usr/local/sbin/camelai-selfhost-compose ps >&2 || true
+  /usr/local/sbin/camelai-selfhost-compose logs --tail=200 app >&2 || true
+  exit 1
 fi
+
+# Compose health proves that services are configured and responding. These
+# deep smokes prove workerd can create and execute every attached runtime
+# through the production localDocker egress path.
+bun --env-file=.env.selfhost run selfhost:container:smoke:project
+bun --env-file=.env.selfhost run selfhost:container:smoke:analysis
+bun --env-file=.env.selfhost run selfhost:container:smoke:db-query
+
+rm -f "$BOOTSTRAP_STATUS_DIR/failed"
+touch "$BOOTSTRAP_STATUS_DIR/ready"
+BOOTSTRAP_SUCCEEDED=1
+trap - EXIT
+echo "camelAI self-host bootstrap and attached-runtime smokes completed"

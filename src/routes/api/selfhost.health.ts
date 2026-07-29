@@ -4,6 +4,7 @@ import {
   getSelfhostAiProviderStatus,
   isSelfhostRuntime,
 } from "@/lib/selfhost-ai-provider";
+import { getSelfhostCapabilityContract } from "@/lib/selfhost-capabilities";
 
 type HealthCheck = {
   name: string;
@@ -24,6 +25,9 @@ export async function loader({ context }: LoaderFunctionArgs) {
   checks.push(required("R2_BUCKET", env.R2_BUCKET));
   checks.push(required("APP_DB", env.APP_DB));
   checks.push(required("ARTIFACTS", env.ARTIFACTS));
+  checks.push(configuredComputeBinding("PROJECT_BUILD_SANDBOX", env.PROJECT_BUILD_SANDBOX));
+  checks.push(configuredComputeBinding("ANALYSIS_SANDBOX", env.ANALYSIS_SANDBOX));
+  checks.push(configuredComputeBinding("DB_QUERY_SANDBOX", env.DB_QUERY_SANDBOX));
   checks.push(requiredVar("WORKER_BASE_URL", env.WORKER_BASE_URL));
   checks.push(requiredVar("LOCAL_APP_VANITY_DOMAIN", env.LOCAL_APP_VANITY_DOMAIN));
   checks.push(requiredVar("LOCAL_APP_IFRAME_DOMAIN", env.LOCAL_APP_IFRAME_DOMAIN));
@@ -39,18 +43,6 @@ export async function loader({ context }: LoaderFunctionArgs) {
     checks.push({ name: "local-artifacts", status: "warn", message: "LOCAL_ARTIFACTS_BASE_URL is not configured" });
   }
 
-  checks.push({
-    name: "email",
-    status: env.EMAIL ? "ok" : "warn",
-    message: env.EMAIL ? undefined : "Cloudflare Email Sending is intentionally unsupported in self-host mode",
-  });
-
-  checks.push({
-    name: "publishing",
-    status: "ok",
-    message: "Self-host dynamic workerd publishing is enabled",
-  });
-
   const failed = checks.filter((check) => check.status === "fail").length;
   const warned = checks.filter((check) => check.status === "warn").length;
   return Response.json(
@@ -59,6 +51,11 @@ export async function loader({ context }: LoaderFunctionArgs) {
       mode: "selfhost",
       status: failed > 0 ? "fail" : warned > 0 ? "warn" : "ok",
       checks,
+      capabilities: getSelfhostCapabilityContract({
+        projectBuild: Boolean(env.PROJECT_BUILD_SANDBOX),
+        analysis: Boolean(env.ANALYSIS_SANDBOX),
+        databaseQuery: Boolean(env.DB_QUERY_SANDBOX),
+      }),
     },
     { status: failed > 0 ? 503 : 200 },
   );
@@ -71,6 +68,17 @@ function isSelfhost(env: ReturnType<typeof getEnv>): boolean {
 function required(name: string, value: unknown): HealthCheck {
   return value
     ? { name, status: "ok" }
+    : { name, status: "fail", message: "binding is not configured" };
+}
+
+function configuredComputeBinding(name: string, value: unknown): HealthCheck {
+  return value
+    ? {
+        name,
+        status: "ok",
+        message:
+          "namespace configured; Docker execution is verified separately by the self-host container smoke",
+      }
     : { name, status: "fail", message: "binding is not configured" };
 }
 
@@ -109,7 +117,7 @@ function checkAiProviderConfig(env: ReturnType<typeof getEnv>): HealthCheck {
     ? { name: "ai-provider", status: "ok" }
     : {
         name: "ai-provider",
-        status: "warn",
+        status: "fail",
         message:
           "No self-host AI provider is configured. Chat requires SELFHOST_AI_PROVIDER and SELFHOST_AI_API_KEY, or a hosted Cloudflare AI Gateway configuration.",
       };

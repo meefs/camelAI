@@ -5291,6 +5291,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         thread && threadWorkspaceId === context.workspaceId
           ? (thread as { model?: unknown }).model
           : undefined;
+      const selfhostRuntime = isSelfhostRuntime(this.env);
       const threadModel =
         storedThreadModel === CUSTOM_LLM_MODEL
           ? normalizeLlmModel(storedThreadModel, effectiveLlmProviderRecord?.provider, {
@@ -5298,7 +5299,17 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
               customModelId,
             })
           : storedThreadModel !== undefined
-            ? normalizeLlmModel(storedThreadModel)
+            ? selfhostRuntime
+              ? normalizeLlmModel(
+                  storedThreadModel,
+                  effectiveLlmProviderRecord?.provider,
+                  {
+                    customApi,
+                    customModelId,
+                    allowCamelCode: false,
+                  },
+                )
+              : normalizeLlmModel(storedThreadModel)
           : shouldDefaultToCamelCode
             ? CAMEL_CODE_LLM_MODEL
             : normalizeLlmModel(undefined, effectiveLlmProviderRecord?.provider, {
@@ -5963,7 +5974,12 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     context: ChatContextState,
     options: PiToolDefinitionOptions = {},
   ): AgentTool[] {
-    return createPiToolDefinitions(this.piToolSurfaceDeps(), context, options);
+    return createPiToolDefinitions(this.piToolSurfaceDeps(), context, {
+      ...options,
+      outboundEmailEnabled:
+        options.outboundEmailEnabled !== false &&
+        !isSelfhostRuntime(this.env),
+    });
   }
 
   private async runPiSubagentTool(

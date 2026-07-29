@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import net from "node:net";
+import { constants as fsConstants } from "node:fs";
+import fs from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import {
@@ -11,12 +13,25 @@ import {
   repoRoot,
   scriptEnv,
   volumeName,
-  volumeNames,
+  volumeNamesForEnv,
 } from "./selfhost-common.mjs";
+import { writePomeriumConfig } from "./selfhost-pomerium-config.mjs";
 
 const checks = [];
 const env = await readSelfhostEnv(false);
 const appPort = Number(env.SELFHOST_APP_PORT || process.env.SELFHOST_APP_PORT || 3001);
+const deploymentMode = (
+  env.SELFHOST_DEPLOYMENT_MODE ||
+  process.env.SELFHOST_DEPLOYMENT_MODE ||
+  "release"
+).trim();
+const effectiveEnv = scriptEnv({
+  ...env,
+  SELFHOST_DEPLOYMENT_MODE: deploymentMode,
+});
+const selectedVolumeNames = volumeNamesForEnv(env);
+const minimumAllocatedMemoryGiB = 8;
+const minimumUsableMemoryGiB = 7.5;
 let current;
 
 await check("env file", async () => {
@@ -40,8 +55,115 @@ await check("required CLIs", async () => {
 });
 
 await check("Docker daemon", async () => {
-  const result = await capture("docker", ["info"], { env: scriptEnv(env) });
+  const result = await capture("docker", ["info"], { env: effectiveEnv });
   if (result.code !== 0) fail(result.stderr.trim() || "docker info failed");
+});
+
+await check("deployment mode", async () => {
+  if (!new Set(["release", "source"]).has(deploymentMode)) {
+    fail(
+      `SELFHOST_DEPLOYMENT_MODE must be "release" or "source", got ${deploymentMode}`,
+    );
+  }
+  note(`SELFHOST_DEPLOYMENT_MODE: ${deploymentMode}`);
+});
+
+const imageKeys = [
+  "SELFHOST_APP_IMAGE",
+  "SELFHOST_LOCAL_ARTIFACTS_IMAGE",
+  "SELFHOST_PROJECT_BUILD_IMAGE",
+  "SELFHOST_ANALYSIS_IMAGE",
+  "SELFHOST_DB_QUERY_IMAGE",
+  "SELFHOST_CONTAINER_EGRESS_IMAGE",
+];
+
+await check("container images", async () => {
+  for (const key of imageKeys) {
+    const image = (effectiveEnv[key] || "").trim();
+    if (!image) fail(`missing ${key}`);
+    note(`${key}: ${image}`);
+  }
+
+  const unavailable = [];
+  for (const key of imageKeys) {
+    const image = effectiveEnv[key];
+    const result = await capture("docker", ["image", "inspect", image], {
+      env: effectiveEnv,
+    });
+    if (result.code !== 0) unavailable.push(key);
+  }
+  if (unavailable.length > 0) {
+    warn(
+      `${unavailable.length} configured image${
+        unavailable.length === 1 ? " is" : "s are"
+      } not local yet; selfhost:up will pull or build them`,
+    );
+    note(`not local: ${unavailable.join(", ")}`);
+  }
+});
+
+await check("Docker VM capacity", async () => {
+  const result = await capture(
+    "docker",
+    ["info", "--format", "{{json .}}"],
+    { env: effectiveEnv },
+  );
+  if (result.code !== 0) fail(result.stderr.trim() || "docker info failed");
+  const info = JSON.parse(result.stdout);
+  const warnings = [];
+  const architecture = String(info.Architecture || "");
+  const cpus = Number(info.NCPU || 0);
+  const memoryBytes = Number(info.MemTotal || 0);
+
+  note(`architecture: ${architecture || "unknown"}`);
+  note(`CPUs: ${cpus || "unknown"}`);
+  note(
+    `memory: ${
+      memoryBytes ? `${(memoryBytes / 1024 ** 3).toFixed(1)} GiB` : "unknown"
+    }`,
+  );
+  if (architecture !== "x86_64" && architecture !== "amd64") {
+    warnings.push(
+      `${architecture || "unknown"} Docker architecture may not run the analysis sandbox reliably; use x86_64 for full notebook support`,
+    );
+  }
+  if (cpus > 0 && cpus < 4) warnings.push("fewer than 4 Docker CPUs");
+  if (memoryBytes > 0 && memoryBytes < minimumUsableMemoryGiB * 1024 ** 3) {
+    warnings.push(
+      `less than ${minimumUsableMemoryGiB} GiB usable Docker memory ` +
+        `(allocate at least ${minimumAllocatedMemoryGiB} GiB to the VM)`,
+    );
+  }
+
+  const dockerRootDir = String(info.DockerRootDir || "").trim();
+  if (dockerRootDir) {
+    const disk = await capture("df", ["-Pk", dockerRootDir]);
+    if (disk.code === 0) {
+      const fields = disk.stdout.trim().split(/\r?\n/).at(-1)?.trim().split(/\s+/);
+      const freeKiB = Number(fields?.[3] || 0);
+      if (freeKiB > 0) {
+        const freeGiB = freeKiB / 1024 ** 2;
+        note(`Docker disk free: ${freeGiB.toFixed(1)} GiB`);
+        if (freeGiB < 20) warnings.push("less than 20 GiB free Docker disk");
+      }
+    } else {
+      note(
+        `Docker disk free: unavailable from host path ${dockerRootDir} (common with Docker Desktop)`,
+      );
+    }
+  }
+  if (warnings.length > 0) warn(warnings.join("; "));
+});
+
+await check("Docker socket", async () => {
+  const socketPath =
+    env.SELFHOST_DOCKER_SOCKET_PATH ||
+    process.env.SELFHOST_DOCKER_SOCKET_PATH ||
+    "/var/run/docker.sock";
+  await fs.access(socketPath, fsConstants.R_OK | fsConstants.W_OK).catch(() => {
+    fail(`Docker socket is not readable and writable: ${socketPath}`);
+  });
+  note(socketPath);
 });
 
 await check("self-host app domains", async () => {
@@ -62,6 +184,121 @@ await check("self-host app domains", async () => {
   }
 });
 
+await check("AI provider", async () => {
+  const provider = (env.SELFHOST_AI_PROVIDER || "").trim().toLowerCase();
+  const supported = new Set([
+    "anthropic",
+    "bedrock",
+    "custom",
+    "openai",
+    "openrouter",
+  ]);
+  if (!provider) {
+    fail("missing SELFHOST_AI_PROVIDER; chat cannot run without an AI provider");
+  }
+  if (!supported.has(provider)) {
+    fail(`unsupported SELFHOST_AI_PROVIDER=${provider}`);
+  }
+  if (!(env.SELFHOST_AI_API_KEY || "").trim()) {
+    fail("missing SELFHOST_AI_API_KEY");
+  }
+  if (provider === "custom") {
+    if (!(env.SELFHOST_AI_BASE_URL || "").trim()) {
+      fail("missing SELFHOST_AI_BASE_URL for custom provider");
+    }
+    if (!(env.SELFHOST_AI_MODEL || "").trim()) {
+      fail("missing SELFHOST_AI_MODEL for custom provider");
+    }
+  }
+  note(`SELFHOST_AI_PROVIDER: ${provider}`);
+});
+
+await check("network binding", async () => {
+  const bindAddress = (env.SELFHOST_BIND_ADDRESS || "127.0.0.1").trim();
+  if (bindAddress !== "127.0.0.1" && bindAddress !== "::1") {
+    fail(
+      "SELFHOST_BIND_ADDRESS must remain loopback; expose camelAI only through the configured reverse proxy",
+    );
+  }
+  note(`SELFHOST_BIND_ADDRESS: ${bindAddress}`);
+});
+
+await check("authentication", async () => {
+  const mode = (env.SELFHOST_AUTH_MODE || "").trim();
+  if (
+    !new Set([
+      "bundled-pomerium",
+      "external-pomerium",
+      "cloudflare-access",
+      "local",
+    ]).has(mode)
+  ) {
+    fail(
+      "SELFHOST_AUTH_MODE must be bundled-pomerium, external-pomerium, cloudflare-access, or local",
+    );
+  }
+
+  if (mode === "bundled-pomerium") {
+    if ((env.LOCAL_AUTH_BYPASS || "").trim()) {
+      fail("bundled Pomerium cannot be combined with LOCAL_AUTH_BYPASS");
+    }
+    if (!/@sha256:[0-9a-f]{64}$/i.test(env.SELFHOST_POMERIUM_IMAGE || "")) {
+      fail("SELFHOST_POMERIUM_IMAGE must be pinned by sha256 digest");
+    }
+    if (
+      !new Set(["0", "1"]).has(
+        (env.SELFHOST_POMERIUM_LOOPBACK_HTTPS || "1").trim(),
+      )
+    ) {
+      fail("SELFHOST_POMERIUM_LOOPBACK_HTTPS must be 0 or 1");
+    }
+    for (const key of [
+      "POMERIUM_ISSUER",
+      "POMERIUM_AUDIENCE",
+      "POMERIUM_DEFAULT_ORG_NAME",
+    ]) {
+      if (!(env[key] || "").trim()) fail(`missing ${key}`);
+    }
+    await writePomeriumConfig(env);
+    note("bundled Pomerium configuration rendered");
+    note(`TLS mode: ${env.SELFHOST_POMERIUM_TLS_MODE || "direct"}`);
+    return;
+  }
+  if (mode === "external-pomerium") {
+    for (const key of [
+      "POMERIUM_ISSUER",
+      "POMERIUM_AUDIENCE",
+      "POMERIUM_DEFAULT_ORG_NAME",
+    ]) {
+      if (!(env[key] || "").trim()) fail(`missing ${key}`);
+    }
+    if (
+      !(env.POMERIUM_JWKS_URL || "").trim() &&
+      !(env.POMERIUM_AUTHENTICATE_URL || "").trim()
+    ) {
+      fail("missing POMERIUM_JWKS_URL or POMERIUM_AUTHENTICATE_URL");
+    }
+    note("external Pomerium");
+    return;
+  }
+  if (mode === "cloudflare-access") {
+    for (const key of [
+      "CLOUDFLARE_ACCESS_TEAM_DOMAIN",
+      "CLOUDFLARE_ACCESS_AUD",
+      "CLOUDFLARE_ACCESS_DEFAULT_ORG_NAME",
+    ]) {
+      if (!(env[key] || "").trim()) fail(`missing ${key}`);
+    }
+    note("external Cloudflare Access");
+    return;
+  }
+
+  if (env.LOCAL_AUTH_BYPASS !== "1") {
+    fail("SELFHOST_AUTH_MODE=local requires LOCAL_AUTH_BYPASS=1");
+  }
+  warn("local authentication bypass is for smoke tests only");
+});
+
 await check("compose config", async () => {
   const result = await capture("docker", composeArgs(env, ["config", "--quiet"]), {
     env: scriptEnv(env),
@@ -70,7 +307,7 @@ await check("compose config", async () => {
 });
 
 await check("volume names", async () => {
-  for (const name of volumeNames) {
+  for (const name of selectedVolumeNames) {
     note(`${name}: ${volumeName(name, env)}`);
   }
 });

@@ -15,6 +15,7 @@ import {
 } from "../../../src/lib/model-picker-config.js";
 import { retryTransientDurableObjectRead } from "../../../src/lib/do-rpc-retry.server.js";
 import { getEffectiveLlmProviderConfig } from "../../../src/lib/selfhost-ai-provider.js";
+import { isSelfhostRuntime } from "../../../src/lib/selfhost-runtime.js";
 import type { LlmModel } from "../../../src/types.js";
 import type { Env } from "./types.js";
 import {
@@ -272,6 +273,7 @@ export async function resolveDefaultChannelThreadModel(
     orgProvider: effectiveLlmProviderConfig?.provider,
     customApi,
     customModelId,
+    allowCamelCode: !isSelfhostRuntime(env),
   });
   const model = resolveDefaultModelForChat({
     effectiveDefaultModel: effectiveConfig.default_model,

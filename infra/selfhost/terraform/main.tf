@@ -1,397 +1,343 @@
-locals {
-  app_image_registry             = split("/", var.app_image_uri)[0]
-  local_artifacts_image_registry = split("/", var.local_artifacts_image_uri)[0]
-  aws_ecr_login_registries = distinct([
-    for registry in [local.app_image_registry, local.local_artifacts_image_registry] : registry
-    if can(regex("^[0-9]+\\.dkr\\.ecr\\.[a-z0-9-]+\\.amazonaws\\.com$", registry))
-  ])
-  aws_registry_login_command = join("\n", [
-    for registry in local.aws_ecr_login_registries :
-    "aws ecr get-login-password --region ${regex("^[0-9]+\\.dkr\\.ecr\\.([a-z0-9-]+)\\.amazonaws\\.com$", registry)[0]} | docker login --username AWS --password-stdin ${registry}"
-  ])
-
-  user_data = templatefile("${path.module}/cloud-init.sh.tpl", {
-    ssh_user                                = var.ssh_user
-    app_image_uri                           = var.app_image_uri
-    local_artifacts_image_uri               = var.local_artifacts_image_uri
-    registry_login_command                  = var.registry_login_command != "" ? var.registry_login_command : (var.cloud_provider == "aws" ? local.aws_registry_login_command : "")
-    runtime_repository_url                  = var.runtime_repository_url
-    runtime_repository_ref                  = var.runtime_repository_ref
-    public_base_url                         = var.public_base_url
-    app_vanity_domain                       = var.app_vanity_domain
-    app_iframe_domain                       = var.app_iframe_domain
-    enable_caddy                            = tostring(var.enable_caddy)
-    cloudflared_tunnel_token                = var.cloudflared_tunnel_token
-    cloudflare_access_team_domain           = var.cloudflare_access_team_domain
-    cloudflare_access_aud                   = var.cloudflare_access_aud
-    cloudflare_access_default_org_name      = var.cloudflare_access_default_org_name
-    cloudflare_access_org_claims            = var.cloudflare_access_org_claims
-    cloudflare_access_required_email_domain = var.cloudflare_access_required_email_domain
-    pomerium_authenticate_url               = var.pomerium_authenticate_url
-    pomerium_jwks_url                       = var.pomerium_jwks_url
-    pomerium_issuer                         = var.pomerium_issuer
-    pomerium_audience                       = var.pomerium_audience
-    pomerium_default_org_name               = var.pomerium_default_org_name
-    pomerium_org_claims                     = var.pomerium_org_claims
-    pomerium_org_map                        = var.pomerium_org_map
-    pomerium_org_group_prefix               = var.pomerium_org_group_prefix
-    pomerium_admin_group_prefix             = var.pomerium_admin_group_prefix
-    pomerium_required_email_domain          = var.pomerium_required_email_domain
-    selfhost_ai_provider                    = var.selfhost_ai_provider != "" ? var.selfhost_ai_provider : (var.cloud_provider == "aws" ? "bedrock" : "")
-    selfhost_ai_api_key                     = var.selfhost_ai_api_key
-    selfhost_ai_base_url                    = var.selfhost_ai_base_url
-    selfhost_ai_model                       = var.selfhost_ai_model
-    selfhost_ai_aws_region                  = var.selfhost_ai_aws_region != "" ? var.selfhost_ai_aws_region : var.aws_region
-  })
+data "aws_vpc" "default" {
+  count   = var.vpc_id == "" ? 1 : 0
+  default = true
 }
 
-# AWS -------------------------------------------------------------------------
+locals {
+  vpc_id = var.vpc_id != "" ? var.vpc_id : data.aws_vpc.default[0].id
+}
+
+data "aws_subnets" "selected" {
+  count = var.subnet_id == "" ? 1 : 0
+  filter {
+    name   = "vpc-id"
+    values = [local.vpc_id]
+  }
+}
+
+locals {
+  subnet_id         = var.subnet_id != "" ? var.subnet_id : sort(data.aws_subnets.selected[0].ids)[0]
+  app_iframe_domain = var.app_iframe_domain != "" ? var.app_iframe_domain : var.app_vanity_domain
+  common_tags       = merge({ Name = var.name, Application = "camelAI", Deployment = "selfhost" }, var.tags)
+  secret_arns = compact([
+    var.selfhost_ai_api_key_secret_arn,
+    var.auth_provider == "bundled-pomerium" ? var.pomerium_idp_client_secret_arn : "",
+    var.tls_mode == "provided" ? var.tls_certificate_secret_arn : "",
+    var.tls_mode == "provided" ? var.tls_private_key_secret_arn : "",
+  ])
+}
+
+data "aws_subnet" "selected" {
+  id = local.subnet_id
+}
+
 data "aws_ami" "ubuntu" {
-  count       = var.cloud_provider == "aws" ? 1 : 0
   most_recent = true
   owners      = ["099720109477"]
+
   filter {
     name   = "name"
     values = ["ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"]
   }
+
+  filter {
+    name   = "architecture"
+    values = ["x86_64"]
+  }
+
   filter {
     name   = "virtualization-type"
     values = ["hvm"]
   }
 }
 
-data "aws_vpc" "default" {
-  count   = var.cloud_provider == "aws" && var.aws_vpc_id == "" ? 1 : 0
-  default = true
-}
-
-locals {
-  aws_vpc_id = var.aws_vpc_id != "" ? var.aws_vpc_id : try(data.aws_vpc.default[0].id, "")
-}
-
-data "aws_subnets" "default" {
-  count = var.cloud_provider == "aws" && var.aws_subnet_id == "" ? 1 : 0
-  filter {
-    name   = "vpc-id"
-    values = [local.aws_vpc_id]
+check "tls_secrets" {
+  assert {
+    condition = var.tls_mode != "provided" || (
+      var.tls_certificate_secret_arn != "" &&
+      var.tls_private_key_secret_arn != ""
+    )
+    error_message = "tls_certificate_secret_arn and tls_private_key_secret_arn are required when tls_mode=provided."
   }
 }
 
-locals {
-  aws_subnet_id = var.aws_subnet_id != "" ? var.aws_subnet_id : try(data.aws_subnets.default[0].ids[0], "")
+check "route53_zone" {
+  assert {
+    condition     = !var.create_route53_records || var.route53_zone_id != ""
+    error_message = "route53_zone_id is required when create_route53_records=true."
+  }
+}
+
+check "auth_configuration" {
+  assert {
+    condition = (
+      var.auth_provider == "cloudflare-access" &&
+      var.cloudflare_access_team_domain != "" &&
+      var.cloudflare_access_aud != ""
+      ) || (
+      var.auth_provider == "pomerium" &&
+      var.pomerium_authenticate_url != "" &&
+      var.pomerium_issuer != "" &&
+      var.pomerium_audience != ""
+      ) || (
+      var.auth_provider == "bundled-pomerium" &&
+      var.pomerium_authenticate_url == "https://${var.pomerium_authenticate_hostname}" &&
+      var.pomerium_authenticate_hostname != var.main_hostname &&
+      var.pomerium_idp_provider != "" &&
+      var.pomerium_idp_client_id != "" &&
+      var.pomerium_idp_client_secret_arn != "" &&
+      (var.pomerium_idp_provider != "oidc" || var.pomerium_idp_provider_url != "")
+    )
+    error_message = "Configure the selected identity mode. Bundled Pomerium requires a distinct authenticate hostname/URL, IdP settings, and client-secret ARN."
+  }
+}
+
+check "custom_ai_configuration" {
+  assert {
+    condition = var.selfhost_ai_provider != "custom" || (
+      var.selfhost_ai_base_url != "" &&
+      var.selfhost_ai_model != ""
+    )
+    error_message = "selfhost_ai_base_url and selfhost_ai_model are required for the custom AI provider."
+  }
 }
 
 resource "aws_security_group" "selfhost" {
-  count       = var.cloud_provider == "aws" ? 1 : 0
   name_prefix = "${var.name}-"
-  description = "camelAI self-host ingress"
-  vpc_id      = local.aws_vpc_id
+  description = "camelAI single-node self-host ingress"
+  vpc_id      = local.vpc_id
 
   dynamic "ingress" {
-    for_each = var.enable_public_ingress ? [80, 443] : []
+    for_each = var.web_ingress_cidrs
     content {
+      description = var.tls_mode == "provided" ? "HTTP redirect" : "HTTP origin for external TLS proxy"
       protocol    = "tcp"
-      from_port   = ingress.value
-      to_port     = ingress.value
-      cidr_blocks = ["0.0.0.0/0"]
+      from_port   = 80
+      to_port     = 80
+      cidr_blocks = [ingress.value]
     }
   }
+
   dynamic "ingress" {
-    for_each = var.ssh_cidr == "" ? [] : [var.ssh_cidr]
+    for_each = var.tls_mode == "provided" ? var.web_ingress_cidrs : []
     content {
+      description = "HTTPS"
+      protocol    = "tcp"
+      from_port   = 443
+      to_port     = 443
+      cidr_blocks = [ingress.value]
+    }
+  }
+
+  dynamic "ingress" {
+    for_each = var.ssh_ingress_cidrs
+    content {
+      description = "Optional break-glass SSH"
       protocol    = "tcp"
       from_port   = 22
       to_port     = 22
       cidr_blocks = [ingress.value]
     }
   }
+
   egress {
     protocol    = "-1"
     from_port   = 0
     to_port     = 0
     cidr_blocks = ["0.0.0.0/0"]
   }
+
+  tags = local.common_tags
 }
 
 resource "aws_iam_role" "selfhost" {
-  count = var.cloud_provider == "aws" ? 1 : 0
-  name  = var.name
+  name_prefix = "${var.name}-"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Action    = "sts:AssumeRole"
       Effect    = "Allow"
+      Action    = "sts:AssumeRole"
       Principal = { Service = "ec2.amazonaws.com" }
     }]
   })
+  tags = local.common_tags
 }
 
-resource "aws_iam_role_policy_attachment" "ecr_read_only" {
-  count      = var.cloud_provider == "aws" ? 1 : 0
-  role       = aws_iam_role.selfhost[0].name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
-}
-
-resource "aws_iam_role_policy_attachment" "ssm_managed_instance" {
-  count      = var.cloud_provider == "aws" ? 1 : 0
-  role       = aws_iam_role.selfhost[0].name
+resource "aws_iam_role_policy_attachment" "ssm" {
+  role       = aws_iam_role.selfhost.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
-resource "aws_iam_role_policy" "bedrock_inference" {
-  count = var.cloud_provider == "aws" ? 1 : 0
-  name  = "BedrockInference"
-  role  = aws_iam_role.selfhost[0].id
+resource "aws_iam_role_policy" "secrets" {
+  name = "ReadCamelAISelfhostSecrets"
+  role = aws_iam_role.selfhost.id
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect = "Allow"
-      Action = [
-        "bedrock:InvokeModel",
-        "bedrock:InvokeModelWithResponseStream",
-      ]
-      Resource = "*"
+      Effect   = "Allow"
+      Action   = ["secretsmanager:GetSecretValue"]
+      Resource = local.secret_arns
     }]
   })
 }
 
 resource "aws_iam_instance_profile" "selfhost" {
-  count = var.cloud_provider == "aws" ? 1 : 0
-  name  = var.name
-  role  = aws_iam_role.selfhost[0].name
+  name_prefix = "${var.name}-"
+  role        = aws_iam_role.selfhost.name
+  tags        = local.common_tags
 }
 
-resource "aws_instance" "selfhost" {
-  count                       = var.cloud_provider == "aws" ? 1 : 0
-  ami                         = data.aws_ami.ubuntu[0].id
-  instance_type               = var.aws_instance_type
-  subnet_id                   = local.aws_subnet_id
-  vpc_security_group_ids      = [aws_security_group.selfhost[0].id]
-  key_name                    = var.aws_key_name == "" ? null : var.aws_key_name
-  associate_public_ip_address = var.enable_public_ingress || var.associate_public_ip_for_outbound
-  iam_instance_profile        = aws_iam_instance_profile.selfhost[0].name
-  user_data                   = local.user_data
-  user_data_replace_on_change = true
-  depends_on = [
-    aws_iam_role_policy_attachment.ecr_read_only,
-    aws_iam_role_policy_attachment.ssm_managed_instance,
-    aws_iam_role_policy.bedrock_inference,
-  ]
-
-  metadata_options {
-    http_endpoint               = "enabled"
-    http_tokens                 = "optional"
-    http_put_response_hop_limit = 2
-  }
-
-  root_block_device {
-    volume_size           = var.volume_size_gb
-    volume_type           = "gp3"
-    delete_on_termination = false
-  }
-  tags = { Name = var.name }
-}
-
-resource "aws_eip" "selfhost" {
-  count    = var.cloud_provider == "aws" && var.enable_public_ingress ? 1 : 0
-  instance = aws_instance.selfhost[0].id
-  domain   = "vpc"
-  tags     = { Name = var.name }
-}
-
-# Azure -----------------------------------------------------------------------
-resource "azurerm_resource_group" "selfhost" {
-  count    = var.cloud_provider == "azure" && var.azure_resource_group_name == "" ? 1 : 0
-  name     = var.name
-  location = var.azure_location
+resource "aws_ebs_volume" "data" {
+  availability_zone = data.aws_subnet.selected.availability_zone
+  encrypted         = true
+  kms_key_id        = var.ebs_kms_key_id != "" ? var.ebs_kms_key_id : null
+  size              = var.data_volume_size_gb
+  type              = "gp3"
+  tags              = merge(local.common_tags, { Name = "${var.name}-data" })
 }
 
 locals {
-  azure_rg_name = var.azure_resource_group_name != "" ? var.azure_resource_group_name : try(azurerm_resource_group.selfhost[0].name, "")
+  cloud_init = templatefile("${path.module}/cloud-init.sh.tpl", {
+    data_volume_id_b64                 = base64encode(aws_ebs_volume.data.id)
+    repository_url_b64                 = base64encode(var.repository_url)
+    repository_ref_b64                 = base64encode(var.repository_ref)
+    app_image_b64                      = base64encode(var.app_image)
+    local_artifacts_image_b64          = base64encode(var.local_artifacts_image)
+    project_build_image_b64            = base64encode(var.project_build_image)
+    analysis_image_b64                 = base64encode(var.analysis_image)
+    db_query_image_b64                 = base64encode(var.db_query_image)
+    container_egress_image_b64         = base64encode(var.container_egress_image)
+    main_hostname_b64                  = base64encode(lower(var.main_hostname))
+    app_vanity_domain_b64              = base64encode(lower(var.app_vanity_domain))
+    app_iframe_domain_b64              = base64encode(lower(local.app_iframe_domain))
+    tls_mode_b64                       = base64encode(var.tls_mode)
+    tls_certificate_secret_arn_b64     = base64encode(var.tls_certificate_secret_arn)
+    tls_private_key_secret_arn_b64     = base64encode(var.tls_private_key_secret_arn)
+    auth_provider_b64                  = base64encode(var.auth_provider)
+    auth_default_org_name_b64          = base64encode(var.auth_default_org_name)
+    cloudflare_access_team_domain_b64  = base64encode(var.cloudflare_access_team_domain)
+    cloudflare_access_aud_b64          = base64encode(var.cloudflare_access_aud)
+    pomerium_authenticate_url_b64      = base64encode(var.pomerium_authenticate_url)
+    pomerium_authenticate_hostname_b64 = base64encode(var.pomerium_authenticate_hostname)
+    pomerium_image_b64                 = base64encode(var.pomerium_image)
+    pomerium_jwks_url_b64              = base64encode(var.pomerium_jwks_url)
+    pomerium_idp_provider_b64          = base64encode(var.pomerium_idp_provider)
+    pomerium_idp_provider_url_b64      = base64encode(var.pomerium_idp_provider_url)
+    pomerium_idp_client_id_b64         = base64encode(var.pomerium_idp_client_id)
+    pomerium_idp_client_secret_arn_b64 = base64encode(var.pomerium_idp_client_secret_arn)
+    pomerium_issuer_b64                = base64encode(var.pomerium_issuer)
+    pomerium_audience_b64              = base64encode(var.pomerium_audience)
+    selfhost_ai_provider_b64           = base64encode(var.selfhost_ai_provider)
+    selfhost_ai_api_key_secret_arn_b64 = base64encode(var.selfhost_ai_api_key_secret_arn)
+    selfhost_ai_aws_region_b64         = base64encode(var.selfhost_ai_aws_region)
+    selfhost_ai_base_url_b64           = base64encode(var.selfhost_ai_base_url)
+    selfhost_ai_model_b64              = base64encode(var.selfhost_ai_model)
+    selfhost_ai_name_b64               = base64encode(var.selfhost_ai_name)
+    selfhost_ai_api_b64                = base64encode(var.selfhost_ai_api)
+    selfhost_ai_auth_type_b64          = base64encode(var.selfhost_ai_auth_type)
+  })
 }
 
-resource "azurerm_virtual_network" "selfhost" {
-  count               = var.cloud_provider == "azure" ? 1 : 0
-  name                = "${var.name}-vnet"
-  location            = var.azure_location
-  resource_group_name = local.azure_rg_name
-  address_space       = ["10.40.0.0/16"]
-}
+resource "aws_instance" "selfhost" {
+  ami                         = data.aws_ami.ubuntu.id
+  instance_type               = var.instance_type
+  subnet_id                   = local.subnet_id
+  vpc_security_group_ids      = [aws_security_group.selfhost.id]
+  associate_public_ip_address = true
+  key_name                    = var.ssh_key_name != "" ? var.ssh_key_name : null
+  iam_instance_profile        = aws_iam_instance_profile.selfhost.name
+  # The bootstrap intentionally includes all deployment validation. Compress it
+  # so the decoded cloud-init payload stays within EC2's 16 KiB user-data limit.
+  user_data_base64            = base64gzip(local.cloud_init)
+  user_data_replace_on_change = true
 
-resource "azurerm_subnet" "selfhost" {
-  count                = var.cloud_provider == "azure" ? 1 : 0
-  name                 = "${var.name}-subnet"
-  resource_group_name  = local.azure_rg_name
-  virtual_network_name = azurerm_virtual_network.selfhost[0].name
-  address_prefixes     = ["10.40.1.0/24"]
-}
-
-resource "azurerm_public_ip" "selfhost" {
-  count               = var.cloud_provider == "azure" ? 1 : 0
-  name                = "${var.name}-pip"
-  location            = var.azure_location
-  resource_group_name = local.azure_rg_name
-  allocation_method   = "Static"
-  sku                 = "Standard"
-}
-
-resource "azurerm_network_security_group" "selfhost" {
-  count               = var.cloud_provider == "azure" ? 1 : 0
-  name                = "${var.name}-nsg"
-  location            = var.azure_location
-  resource_group_name = local.azure_rg_name
-
-  dynamic "security_rule" {
-    for_each = var.enable_public_ingress ? [
-      { name = "http", priority = 100, port = "80" },
-      { name = "https", priority = 101, port = "443" },
-    ] : []
-    content {
-      name                       = security_rule.value.name
-      priority                   = security_rule.value.priority
-      direction                  = "Inbound"
-      access                     = "Allow"
-      protocol                   = "Tcp"
-      source_port_range          = "*"
-      destination_port_range     = security_rule.value.port
-      source_address_prefix      = "*"
-      destination_address_prefix = "*"
-    }
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 1
   }
-  dynamic "security_rule" {
-    for_each = var.ssh_cidr == "" ? [] : [var.ssh_cidr]
-    content {
-      name                       = "ssh"
-      priority                   = 102
-      direction                  = "Inbound"
-      access                     = "Allow"
-      protocol                   = "Tcp"
-      source_port_range          = "*"
-      destination_port_range     = "22"
-      source_address_prefix      = security_rule.value
-      destination_address_prefix = "*"
-    }
+
+  root_block_device {
+    encrypted             = true
+    kms_key_id            = var.ebs_kms_key_id != "" ? var.ebs_kms_key_id : null
+    volume_size           = var.root_volume_size_gb
+    volume_type           = "gp3"
+    delete_on_termination = true
   }
+
+  tags = local.common_tags
+
+  depends_on = [
+    aws_iam_role_policy_attachment.ssm,
+    aws_iam_role_policy.secrets,
+  ]
 }
 
-resource "azurerm_network_interface" "selfhost" {
-  count               = var.cloud_provider == "azure" ? 1 : 0
-  name                = "${var.name}-nic"
-  location            = var.azure_location
-  resource_group_name = local.azure_rg_name
-  ip_configuration {
-    name                          = "primary"
-    subnet_id                     = azurerm_subnet.selfhost[0].id
-    private_ip_address_allocation = "Dynamic"
-    public_ip_address_id          = azurerm_public_ip.selfhost[0].id
-  }
+resource "aws_volume_attachment" "data" {
+  device_name = "/dev/sdf"
+  volume_id   = aws_ebs_volume.data.id
+  instance_id = aws_instance.selfhost.id
 }
 
-resource "azurerm_network_interface_security_group_association" "selfhost" {
-  count                     = var.cloud_provider == "azure" ? 1 : 0
-  network_interface_id      = azurerm_network_interface.selfhost[0].id
-  network_security_group_id = azurerm_network_security_group.selfhost[0].id
+resource "aws_ssm_association" "bootstrap_ready" {
+  name = "AWS-RunShellScript"
+
+  targets {
+    key    = "InstanceIds"
+    values = [aws_instance.selfhost.id]
+  }
+
+  parameters = {
+    commands = <<-COMMAND
+      deadline=$((SECONDS + 1800))
+      until test -f /var/lib/camelai-selfhost/ready; do
+        if test -f /var/lib/camelai-selfhost/failed; then
+          echo "camelAI bootstrap or attached-runtime smoke failed" >&2
+          exit 1
+        fi
+        if test "$SECONDS" -ge "$deadline"; then
+          echo "Timed out waiting for camelAI bootstrap readiness" >&2
+          exit 1
+        fi
+        sleep 5
+      done
+    COMMAND
+  }
+
+  wait_for_success_timeout_seconds = 2100
+
+  depends_on = [aws_volume_attachment.data]
 }
 
-resource "azurerm_linux_virtual_machine" "selfhost" {
-  count                           = var.cloud_provider == "azure" ? 1 : 0
-  name                            = var.name
-  location                        = var.azure_location
-  resource_group_name             = local.azure_rg_name
-  size                            = var.azure_vm_size
-  admin_username                  = var.ssh_user
-  disable_password_authentication = true
-  network_interface_ids           = [azurerm_network_interface.selfhost[0].id]
-  custom_data                     = base64encode(local.user_data)
-
-  admin_ssh_key {
-    username   = var.ssh_user
-    public_key = var.ssh_public_key
-  }
-  lifecycle {
-    precondition {
-      condition     = var.ssh_public_key != ""
-      error_message = "ssh_public_key is required when cloud_provider = \"azure\" because password authentication is disabled."
-    }
-  }
-  os_disk {
-    caching              = "ReadWrite"
-    storage_account_type = "Premium_LRS"
-    disk_size_gb         = var.volume_size_gb
-  }
-  source_image_reference {
-    publisher = "Canonical"
-    offer     = "ubuntu-24_04-lts"
-    sku       = "server"
-    version   = "latest"
-  }
+resource "aws_eip" "selfhost" {
+  domain   = "vpc"
+  instance = aws_instance.selfhost.id
+  tags     = local.common_tags
 }
 
-# GCP -------------------------------------------------------------------------
-resource "google_compute_network" "selfhost" {
-  count                   = var.cloud_provider == "gcp" ? 1 : 0
-  name                    = var.name
-  auto_create_subnetworks = false
+resource "aws_route53_record" "main" {
+  count   = var.create_route53_records ? 1 : 0
+  zone_id = var.route53_zone_id
+  name    = var.main_hostname
+  type    = "A"
+  ttl     = 60
+  records = [aws_eip.selfhost.public_ip]
 }
 
-resource "google_compute_subnetwork" "selfhost" {
-  count         = var.cloud_provider == "gcp" ? 1 : 0
-  name          = var.name
-  ip_cidr_range = "10.50.1.0/24"
-  region        = var.gcp_region
-  network       = google_compute_network.selfhost[0].id
+resource "aws_route53_record" "apps" {
+  count   = var.create_route53_records ? 1 : 0
+  zone_id = var.route53_zone_id
+  name    = "*.${var.app_vanity_domain}"
+  type    = "A"
+  ttl     = 60
+  records = [aws_eip.selfhost.public_ip]
 }
 
-resource "google_compute_firewall" "selfhost_web" {
-  count         = var.cloud_provider == "gcp" && var.enable_public_ingress ? 1 : 0
-  name          = "${var.name}-web"
-  network       = google_compute_network.selfhost[0].name
-  source_ranges = ["0.0.0.0/0"]
-  target_tags   = [var.name]
-  allow {
-    protocol = "tcp"
-    ports    = ["80", "443"]
-  }
-}
-
-resource "google_compute_firewall" "selfhost_ssh" {
-  count         = var.cloud_provider == "gcp" && var.ssh_cidr != "" ? 1 : 0
-  name          = "${var.name}-ssh"
-  network       = google_compute_network.selfhost[0].name
-  source_ranges = [var.ssh_cidr]
-  target_tags   = [var.name]
-  allow {
-    protocol = "tcp"
-    ports    = ["22"]
-  }
-}
-
-resource "google_compute_address" "selfhost" {
-  count  = var.cloud_provider == "gcp" ? 1 : 0
-  name   = var.name
-  region = var.gcp_region
-}
-
-resource "google_compute_instance" "selfhost" {
-  count        = var.cloud_provider == "gcp" ? 1 : 0
-  name         = var.name
-  machine_type = var.gcp_machine_type
-  zone         = var.gcp_zone
-  tags         = [var.name]
-
-  boot_disk {
-    initialize_params {
-      image = var.gcp_image
-      size  = var.volume_size_gb
-      type  = "pd-ssd"
-    }
-  }
-  network_interface {
-    subnetwork = google_compute_subnetwork.selfhost[0].id
-    access_config {
-      nat_ip = google_compute_address.selfhost[0].address
-    }
-  }
-  metadata                = var.ssh_public_key == "" ? {} : { ssh-keys = "${var.ssh_user}:${var.ssh_public_key}" }
-  metadata_startup_script = local.user_data
+resource "aws_route53_record" "pomerium_authenticate" {
+  count   = var.create_route53_records && var.auth_provider == "bundled-pomerium" ? 1 : 0
+  zone_id = var.route53_zone_id
+  name    = var.pomerium_authenticate_hostname
+  type    = "A"
+  ttl     = 60
+  records = [aws_eip.selfhost.public_ip]
 }

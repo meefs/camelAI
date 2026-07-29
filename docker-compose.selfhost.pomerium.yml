@@ -1,0 +1,37 @@
+services:
+  app:
+    depends_on:
+      pomerium:
+        condition: service_healthy
+
+  pomerium:
+    image: ${SELFHOST_POMERIUM_IMAGE:-pomerium/pomerium@sha256:aae6010af6ba4c864bbd3f748cf37843a140b1ddef74d7d2ac1aa87660f8da1f}
+    network_mode: host
+    restart: unless-stopped
+    cap_drop: ["ALL"]
+    # Pomerium's image runs as root, but dropping every capability also drops
+    # the ability to read operator-owned 0600 bind-mounted config and secrets
+    # on Linux. Restore only that access plus low-port binding.
+    cap_add: ["DAC_OVERRIDE", "NET_BIND_SERVICE"]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      AUTHENTICATE_SERVICE_URL: ${POMERIUM_AUTHENTICATE_URL:?Set POMERIUM_AUTHENTICATE_URL}
+      IDP_PROVIDER: ${POMERIUM_IDP_PROVIDER:-oidc}
+      IDP_PROVIDER_URL: ${POMERIUM_IDP_PROVIDER_URL:-}
+      IDP_CLIENT_ID: ${POMERIUM_IDP_CLIENT_ID:?Set POMERIUM_IDP_CLIENT_ID}
+      IDP_CLIENT_SECRET_FILE: /pomerium/secrets/idp-client-secret
+      COOKIE_SECRET_FILE: /pomerium/secrets/cookie-secret
+      SHARED_SECRET_FILE: /pomerium/secrets/shared-secret
+    volumes:
+      - ./.selfhost/pomerium:/pomerium:ro
+      - pomerium-data:/data
+    healthcheck:
+      test: ["CMD", "pomerium", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+volumes:
+  pomerium-data:
