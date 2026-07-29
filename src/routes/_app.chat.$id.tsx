@@ -31,7 +31,6 @@ import {
   getDevChatInitialError,
 } from "@/lib/chat-credit-status";
 import {
-  DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
   getDefaultLlmModel,
   getStoredCustomLlmProviderApi,
   getStoredCustomLlmProviderModelId,
@@ -622,7 +621,6 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       hostedCreditsPaused: null,
       modelPickerSettingsHref: "/settings/organization/models",
       allowOpenAiSubscription: false,
-      experimentalSettings: DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
       billingCreditStatus: null,
       initialChatError: null,
       hostname,
@@ -658,7 +656,6 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       hostedCreditsPaused: null,
       modelPickerSettingsHref: "/settings/organization/models",
       allowOpenAiSubscription: false,
-      experimentalSettings: DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
       billingCreditStatus: null,
       initialChatError: getDevChatInitialError(url.searchParams),
       hostname: undefined,
@@ -749,7 +746,6 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       orgId: authContext.currentOrg.id,
       orgBillingState: authContext.currentOrg,
       llmProviderConfig: authContext.currentOrgLlmProviderConfig,
-      experimentalSettings: authContext.currentOrgExperimentalSettings,
     })
     .catch((error) => {
       console.error("Failed to load model picker state:", error);
@@ -790,7 +786,6 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   if (!thread) {
     throw redirect("/chat");
   }
-  const experimentalSettings = authContext.currentOrgExperimentalSettings;
   const effectiveLlmProviderConfig = getEffectiveLlmProviderConfig(
     env,
     authContext.currentOrgLlmProviderConfig,
@@ -805,7 +800,6 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       customModelId,
     });
   const fallbackAllowedThreadModels = getVisibleLlmModelOptions(
-    experimentalSettings,
     fallbackThreadModel,
     {
       orgProvider: effectiveLlmProviderConfig?.provider,
@@ -939,8 +933,6 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       "/settings/organization/models",
     allowOpenAiSubscription:
       pausedPickerState?.allowOpenAiSubscription ?? false,
-    experimentalSettings:
-      pausedPickerState?.experimentalSettings ?? experimentalSettings,
     billingCreditStatus: applyDevBillingCreditStatusOverride(
       buildBillingCreditStatus(
         billingOverview,
@@ -983,7 +975,6 @@ export default function ChatPage() {
     hostedCreditsPaused,
     modelPickerSettingsHref,
     allowOpenAiSubscription,
-    experimentalSettings,
     billingCreditStatus,
     initialChatError,
     hostname,
@@ -1343,7 +1334,6 @@ export default function ChatPage() {
             hostedCreditsPaused={hostedCreditsPaused}
             modelPickerSettingsHref={modelPickerSettingsHref}
             allowOpenAiSubscription={allowOpenAiSubscription}
-            experimentalSettings={experimentalSettings}
             billingCreditStatus={billingCreditStatus}
             initialError={initialChatError ?? displayChatData.messagesError}
             initialPreviewTabs={displayChatData.previewTabs}

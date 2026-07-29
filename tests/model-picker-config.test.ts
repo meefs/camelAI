@@ -425,7 +425,7 @@ describe('provider model visibility', () => {
     'keeps camelCode visible with the %s provider configured',
     (orgProvider) => {
       expect(
-        getVisibleLlmModelOptions(null, null, { orgProvider }).map(
+        getVisibleLlmModelOptions(null, { orgProvider }).map(
           (option) => option.value,
         ),
       ).toContain(CAMEL_CODE_LLM_MODEL);

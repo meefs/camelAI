@@ -60,7 +60,6 @@ export interface CloudflareEnv {
   NEXTJS_ENV?: string;
   R2_BUCKET_NAME: string;
   R2_ACCOUNT_ID: string;
-  R2_MOUNT_DIR: string;
   R2_PARENT_ACCESS_KEY_ID: string;
   CF_ACCOUNT_ID: string;
   CF_GATEWAY_NAME?: string;

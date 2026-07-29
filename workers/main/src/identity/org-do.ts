@@ -38,7 +38,6 @@ import type {
   BillingStatus,
   User,
   Organization,
-  OrganizationExperimentalSettings,
   Workspace,
   WorkspaceAccessLevel,
   WorkspaceWithAccess,
@@ -49,15 +48,10 @@ import type {
 } from "../../../../src/types";
 import {
   CUSTOM_LLM_MODEL,
-  DEFAULT_CODEX_MODEL,
   DEFAULT_LLM_MODEL,
-  DEFAULT_ORG_EXPERIMENTAL_SETTINGS,
   getStoredCustomLlmProviderApi,
   getStoredCustomLlmProviderModelId,
-  isClaudeLlmModel,
-  isCodexLlmModel,
   normalizeLlmModel,
-  parseOrganizationExperimentalSettings,
   type LlmProviderConfigRecord,
 } from "../../../../src/lib/llm-provider-config";
 import {
@@ -108,7 +102,6 @@ import {
 // Re-export for consumers that import from this module
 export type { OrgRole, BillingStatus } from "../../../../src/types";
 
-const ORG_EXPERIMENTAL_SETTINGS_KEY = "experimental_settings";
 const ORG_MODEL_PICKER_CONFIG_KEY = "model_picker_config";
 const ORG_INDEX_PREFIX = "org_index:";
 const WORKSPACE_ORG_INDEX_PREFIX = "workspace_org:";
@@ -131,7 +124,6 @@ const THREAD_LIST_SELECT_COLUMN_NAMES = [
   "id",
   "workspace_id",
   "title",
-  "provider",
   "created_by",
   "model",
   "created_at",
@@ -241,18 +233,9 @@ function clampRetryAtMs(retryAtMs: number, nowMs: number): number {
   return Math.max(min, Math.min(max, Math.floor(retryAtMs)));
 }
 
-function normalizeThreadModelForStorage(
-  model: LlmModel | undefined,
-  provider?: "claude" | "codex",
-): LlmModel {
+function normalizeThreadModelForStorage(model: LlmModel | undefined): LlmModel {
   if (model === CUSTOM_LLM_MODEL) {
     return CUSTOM_LLM_MODEL;
-  }
-  if (provider === "claude") {
-    return isClaudeLlmModel(model) ? model : DEFAULT_LLM_MODEL;
-  }
-  if (provider === "codex") {
-    return isCodexLlmModel(model) ? model : DEFAULT_CODEX_MODEL;
   }
   return normalizeLlmModel(model);
 }
@@ -326,7 +309,6 @@ export interface OrgAuthContextBootstrap {
   member: OrgMember | null;
   workspaces: WorkspaceWithAccess[];
   llmProviderConfig: LlmProviderConfigRecord | null;
-  experimentalSettings: OrganizationExperimentalSettings;
 }
 
 export interface OrgWorkspaceAccessRow {
@@ -1615,16 +1597,6 @@ export class OrgDO extends DurableObject<DOEnv> {
     if (version < 21) {
       try {
         this.sql.exec(
-          "ALTER TABLE threads ADD COLUMN provider TEXT NOT NULL DEFAULT 'claude'",
-        );
-      } catch {}
-      try {
-        this.sql.exec(
-          "UPDATE threads SET provider = 'claude' WHERE provider IS NULL OR provider = ''",
-        );
-      } catch {}
-      try {
-        this.sql.exec(
           `ALTER TABLE threads ADD COLUMN model TEXT NOT NULL DEFAULT '${DEFAULT_LLM_MODEL}'`,
         );
       } catch {}
@@ -2010,7 +1982,19 @@ export class OrgDO extends DurableObject<DOEnv> {
       );
     }
 
-    const CURRENT_SCHEMA_VERSION = 50;
+    if (version < 51) {
+      const threadColumns = this.sql
+        .exec<{ name: string }>("PRAGMA table_info(threads)")
+        .toArray();
+      if (threadColumns.some((column) => column.name === "provider")) {
+        this.sql.exec("ALTER TABLE threads DROP COLUMN provider");
+      }
+      this.sql.exec(
+        "DELETE FROM org_info WHERE key = 'experimental_settings'",
+      );
+    }
+
+    const CURRENT_SCHEMA_VERSION = 51;
     if (version < CURRENT_SCHEMA_VERSION) {
       this.ctx.storage.kv.put("schemaVersion", CURRENT_SCHEMA_VERSION);
     }
@@ -2286,19 +2270,6 @@ export class OrgDO extends DurableObject<DOEnv> {
         try {
           this.sql.exec(
             "ALTER TABLE threads ADD COLUMN last_assistant_summary_status TEXT",
-          );
-        } catch {}
-      }
-
-      if (!names.has("provider")) {
-        try {
-          this.sql.exec(
-            "ALTER TABLE threads ADD COLUMN provider TEXT NOT NULL DEFAULT 'claude'",
-          );
-        } catch {}
-        try {
-          this.sql.exec(
-            "UPDATE threads SET provider = 'claude' WHERE provider IS NULL OR provider = ''",
           );
         } catch {}
       }
@@ -2682,26 +2653,6 @@ export class OrgDO extends DurableObject<DOEnv> {
       type: "org_upsert",
       payload: info,
     });
-  }
-
-  getExperimentalSettings(): OrganizationExperimentalSettings {
-    const rows = this.sql
-      .exec<{
-        value: string;
-      }>(
-        "SELECT value FROM org_info WHERE key = ?",
-        ORG_EXPERIMENTAL_SETTINGS_KEY,
-      )
-      .toArray();
-    if (rows.length === 0) {
-      return { ...DEFAULT_ORG_EXPERIMENTAL_SETTINGS };
-    }
-
-    try {
-      return parseOrganizationExperimentalSettings(JSON.parse(rows[0]!.value));
-    } catch {
-      return { ...DEFAULT_ORG_EXPERIMENTAL_SETTINGS };
-    }
   }
 
   claimSsoProvisioning(): string | null {
@@ -3282,23 +3233,6 @@ export class OrgDO extends DurableObject<DOEnv> {
       );
       return userId;
     });
-  }
-
-  setExperimentalSettings(
-    settings: Partial<OrganizationExperimentalSettings>,
-  ): OrganizationExperimentalSettings {
-    const nextSettings = parseOrganizationExperimentalSettings({
-      ...this.getExperimentalSettings(),
-      ...settings,
-    });
-
-    this.sql.exec(
-      "INSERT OR REPLACE INTO org_info (key, value) VALUES (?, ?)",
-      ORG_EXPERIMENTAL_SETTINGS_KEY,
-      JSON.stringify(nextSettings),
-    );
-
-    return nextSettings;
   }
 
   getModelPickerConfig(): OrgModelPickerConfig {
@@ -7133,25 +7067,17 @@ export class OrgDO extends DurableObject<DOEnv> {
   async getAuthContextBootstrap(
     userId: string,
   ): Promise<OrgAuthContextBootstrap> {
-    const [
-      info,
-      member,
-      workspaces,
-      llmProviderConfig,
-      experimentalSettings,
-    ] = await Promise.all([
+    const [info, member, workspaces, llmProviderConfig] = await Promise.all([
       this.getInfo(),
       this.getMember(userId),
       this.listUserWorkspaces(userId),
       this.getLlmProviderConfig(),
-      this.getExperimentalSettings(),
     ]);
     return {
       info,
       member,
       workspaces: workspaces.filter((workspace) => !workspace.archived),
       llmProviderConfig,
-      experimentalSettings,
     };
   }
 
@@ -7776,7 +7702,6 @@ export class OrgDO extends DurableObject<DOEnv> {
     createdBy?: string,
     firstUserMessage?: string,
     model?: LlmModel,
-    provider?: "claude" | "codex",
     options: CreateThreadOptions = {},
   ): OrgThread {
     const startedAt = Date.now();
@@ -7795,7 +7720,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     const msg = normalizedUserMessage;
     const lastUserMessage = normalizedUserMessage;
     const lastUserMessageAt = lastUserMessage ? now : null;
-    const normalizedModel = normalizeThreadModelForStorage(model, provider);
+    const normalizedModel = normalizeThreadModelForStorage(model);
     const source = options.source?.trim() || "web";
     const channelKind = options.channelKind?.trim() || null;
     const normalizedChannelKind = normalizeChannelIndicatorKind(channelKind);
@@ -7818,7 +7743,6 @@ export class OrgDO extends DurableObject<DOEnv> {
            workspace_id,
            title,
            title_search,
-           provider,
            created_by,
            model,
            created_at,
@@ -7834,12 +7758,11 @@ export class OrgDO extends DurableObject<DOEnv> {
            channel_message_id,
            model_history,
            last_model_changed_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         id,
         workspaceId,
         t,
         normalizeThreadSearchTitle(t),
-        "model",
         creator,
         normalizedModel,
         now,
@@ -7956,7 +7879,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       .toArray() as unknown as OrgThread[];
   }
 
-  // Test helper RPC: simulate a legacy thread schema before provider/model columns existed.
+  // Test helper RPC: simulate a legacy thread schema before model columns existed.
   async downgradeThreadSchemaForTest(): Promise<void> {
     this.ctx.storage.transactionSync(() => {
       this.sql.exec("DROP TABLE IF EXISTS threads_legacy_test");
@@ -8014,7 +7937,6 @@ export class OrgDO extends DurableObject<DOEnv> {
           id TEXT PRIMARY KEY,
           workspace_id TEXT NOT NULL,
           title TEXT NOT NULL,
-          provider TEXT NOT NULL DEFAULT 'claude',
           created_by TEXT NOT NULL,
           model TEXT NOT NULL DEFAULT '${DEFAULT_LLM_MODEL}',
           created_at INTEGER NOT NULL,
@@ -8038,7 +7960,6 @@ export class OrgDO extends DurableObject<DOEnv> {
           id,
           workspace_id,
           title,
-          provider,
           created_by,
           model,
           created_at,
@@ -8060,7 +7981,6 @@ export class OrgDO extends DurableObject<DOEnv> {
           id,
           workspace_id,
           title,
-          provider,
           created_by,
           model,
           created_at,

@@ -19,7 +19,7 @@ describe('parseFilePreviewPath', () => {
   });
 
   it('normalizes absolute workspace paths from known workspace roots', () => {
-    expect(parseFilePreviewPath('/home/claude/project/index.html')).toEqual({
+    expect(parseFilePreviewPath('/workspace/project/index.html')).toEqual({
       source: 'workspace',
       path: '/project/index.html',
       filename: 'index.html',
@@ -28,6 +28,6 @@ describe('parseFilePreviewPath', () => {
 
   it('rejects parent-directory traversal', () => {
     expect(parseFilePreviewPath('outputs/../secret.txt')).toBeNull();
-    expect(parseFilePreviewPath('/home/claude/../secret.txt')).toBeNull();
+    expect(parseFilePreviewPath('/workspace/../secret.txt')).toBeNull();
   });
 });

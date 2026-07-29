@@ -1,4 +1,4 @@
-import { Form, Link, useFetcher, useLoaderData, redirect } from "react-router";
+import { Link, useFetcher, useLoaderData, redirect } from "react-router";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import type { Route } from "./+types/_admin.orgs.$id";
@@ -205,7 +205,6 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     invitations,
     workspaces,
     recentActivity,
-    experimentalSettings,
     llmProvider,
     customDomainApps,
     [usageSpend, usageLog],
@@ -221,7 +220,6 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       appLimit: RECENT_APP_LIMIT,
       includeCounts: "cheap",
     }),
-    orgStub.getExperimentalSettings(),
     orgStub
       .getLlmProviderConfig()
       .then(async (record) => {
@@ -334,7 +332,6 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     recentApps: recentActivity.apps,
     threadCount: derivedThreadCount,
     appCount: recentActivity.appCount,
-    experimentalSettings,
     llmProviderConfig: llmProvider.config,
     llmProviderCreatedByUser: llmProvider.createdByUser,
     customDomainApps,
@@ -591,14 +588,6 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     await stub.updateName(name.trim(), "system-admin");
     await stub.updateBillingState({
       billing_status: billingStatus as BillingStatus,
-    });
-    return { success: true };
-  }
-
-  if (intent === "updateExperimentalSettings") {
-    const stub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
-    await stub.setExperimentalSettings({
-      claude_proxy_models: formData.get("claude_proxy_models") === "true",
     });
     return { success: true };
   }
@@ -1097,7 +1086,6 @@ export default function AdminOrgDetailPage() {
     recentApps,
     threadCount,
     appCount,
-    experimentalSettings,
     llmProviderConfig,
     llmProviderCreatedByUser,
     customDomainApps,
@@ -1242,74 +1230,6 @@ export default function AdminOrgDetailPage() {
               creditGrantsError={creditGrantsError}
               creditGrantUsers={creditGrantUsers}
             />
-
-            <Card>
-              <CardHeader>
-                <CardTitle>Model Access</CardTitle>
-                <CardDescription>
-                  Legacy April 2026 flag for default free-tier orgs on the
-                  camelAI proxy. It is still stored for compatibility but no
-                  longer gates new chat model access.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="space-y-2">
-                    <div className="flex items-center gap-2">
-                      <p className="text-sm font-medium">
-                        Legacy proxy model-access flag
-                      </p>
-                      <Badge
-                        variant={
-                          experimentalSettings.claude_proxy_models
-                            ? "default"
-                            : "outline"
-                        }
-                      >
-                        {experimentalSettings.claude_proxy_models
-                          ? "Allowed"
-                          : "Standard"}
-                      </Badge>
-                    </div>
-                    <p className="max-w-xl text-sm text-muted-foreground">
-                      Implemented in April 2026 as a temporary override. New
-                      proxy chats now show Claude by default without checking
-                      this flag, while BYOK orgs remain scoped to their selected
-                      provider. This control remains for admin/API
-                      compatibility.
-                    </p>
-                  </div>
-                  <Form method="post">
-                    <input
-                      type="hidden"
-                      name="intent"
-                      value="updateExperimentalSettings"
-                    />
-                    <input
-                      type="hidden"
-                      name="claude_proxy_models"
-                      value={
-                        experimentalSettings.claude_proxy_models
-                          ? "false"
-                          : "true"
-                      }
-                    />
-                    <Button
-                      type="submit"
-                      variant={
-                        experimentalSettings.claude_proxy_models
-                          ? "outline"
-                          : "default"
-                      }
-                    >
-                      {experimentalSettings.claude_proxy_models
-                        ? "Disable Legacy Flag"
-                        : "Enable Legacy Flag"}
-                    </Button>
-                  </Form>
-                </div>
-              </CardContent>
-            </Card>
 
             <AdminCustomDomainCard apps={customDomainApps} />
 

@@ -140,7 +140,6 @@ export interface ChatEnv extends WorkspaceFilesystemEnv {
   CF_DISPATCH_NAMESPACE?: string;
   EMAIL_TO_USER: KVNamespace;
   SESSIONS?: KVNamespace;
-  R2_MOUNT_DIR?: string;
   PLATFORM_SCRIPT_TOKENS?: KVNamespace;
   SANDBOX_PROXY_SECRET?: string;
   SANDBOX_DOCKER_PROXY_BASE_URL?: string;

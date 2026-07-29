@@ -25,7 +25,6 @@
  *   GET   /api/admin/discord/status       — Discord canary configuration and bridge health
  *   GET   /api/admin/threads               — All threads
  *   GET   /api/admin/threads/:id/messages  — Parsed thread messages
- *   PUT   /api/admin/orgs/:id/model-access — Update org model access
  *   POST  /api/admin/orgs/:id/credits      — Grant org credits manually
  *   POST  /api/admin/orgs/:id/custom-domain/refresh — Refresh org custom domain hostnames
  *   POST  /api/admin/orgs/:id/members      — Add member to org

@@ -51,7 +51,6 @@ import {
   UserSummarySchema,
   OrgMembershipSchema,
   OrgDetailSchema,
-  OrgModelAccessSchema,
   ThreadSchema,
   WorkspaceSchema,
   AppSchema,
@@ -63,7 +62,6 @@ import {
   RefreshOrgCustomDomainResponseSchema,
   GrantOrgCreditsBodySchema,
   GrantOrgCreditsResponseSchema,
-  UpdateOrgModelAccessBodySchema,
   UpdateThreadBodySchema,
   BlockSignupIpBodySchema,
   BlockedSignupIpSchema,
@@ -472,11 +470,7 @@ async function notifyThreadMetadataChange(
       env.CHAT_THREAD.idFromName(threadId),
     ) as unknown as {
       setTitle(title: string): Promise<void>;
-      setModel(
-        model: LlmModel,
-        provider?: "claude" | "codex",
-        updatedAt?: number,
-      ): Promise<void>;
+      setModel(model: LlmModel, updatedAt?: number): Promise<void>;
       refreshRunnerConfig(): Promise<void>;
     };
 
@@ -484,7 +478,7 @@ async function notifyThreadMetadataChange(
       await chatThread.setTitle(updates.title, updatedAt);
     }
     if (updates.model) {
-      await chatThread.setModel(updates.model, undefined, updatedAt);
+      await chatThread.setModel(updates.model, updatedAt);
       await chatThread.refreshRunnerConfig();
     }
   } catch (error) {
@@ -1537,42 +1531,6 @@ routes.get(
       apps: activity.apps,
       threadCount: activity.threadCount,
       appCount: activity.appCount,
-    });
-  },
-);
-
-// ---------------------------------------------------------------------------
-// PUT /orgs/:id/model-access
-// ---------------------------------------------------------------------------
-
-routes.put(
-  "/orgs/:id/model-access",
-  openApi({
-    summary: "Update org model access",
-    request: {
-      json: UpdateOrgModelAccessBodySchema,
-    },
-    responses: {
-      200: OrgModelAccessSchema,
-      404: ErrorSchema,
-    },
-  }),
-  async (c) => {
-    const orgId = c.req.param("id");
-    const body = c.req.valid("json");
-    const orgStub = getOrgStub(c.env, orgId);
-    const orgInfo = await orgStub.getInfo();
-    if (!orgInfo) {
-      return c.json({ error: "Organization not found" }, 404);
-    }
-
-    const settings = await orgStub.setExperimentalSettings({
-      claude_proxy_models: body.claude_proxy_models,
-    });
-
-    return c.json({
-      org_id: orgId,
-      claude_proxy_models: settings.claude_proxy_models,
     });
   },
 );

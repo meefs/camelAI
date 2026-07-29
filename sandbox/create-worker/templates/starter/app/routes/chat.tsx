@@ -60,7 +60,7 @@ type ChatAppLoadContext = AppLoadContext & {
 function getSessionsStub(context: ChatAppLoadContext): DurableObjectStub<ChatSessionsDO> {
   const { env, ownerId } = context.cloudflare;
   // Cast: CHAT_SESSIONS binding is commented out by default in wrangler.jsonc;
-  // it's only present when the AI chat feature is enabled (see CLAUDE.md).
+  // it's only present when the AI chat feature is enabled (see AGENTS.md).
   const binding = (env as unknown as { CHAT_SESSIONS: DurableObjectNamespace<ChatSessionsDO> }).CHAT_SESSIONS;
   const doId = binding.idFromName(ownerId);
   return binding.get(doId);

@@ -179,7 +179,6 @@ export async function requireWorkspaceAuth(
 
 /** Workspace root directory inside sandbox */
 const WORKSPACE_ROOT = '/workspace';
-const LEGACY_WORKSPACE_ROOT = '/home/claude';
 
 const NORMALIZABLE_WHITESPACE = /[ \u00A0\u2007\u202F]/;
 
@@ -232,12 +231,12 @@ export function toContainerPath(workspacePath: string): string {
 
 function toWorkspacePath(path: string): string {
   const normalized = normalizeWorkspacePath(path);
-  const root = [WORKSPACE_ROOT, LEGACY_WORKSPACE_ROOT].find((candidate) =>
-    normalized === candidate || normalized.startsWith(`${candidate}/`)
-  );
-  if (root) {
-    if (normalized === root) return '/';
-    return normalizeWorkspacePath(normalized.slice(root.length));
+  if (
+    normalized === WORKSPACE_ROOT ||
+    normalized.startsWith(`${WORKSPACE_ROOT}/`)
+  ) {
+    if (normalized === WORKSPACE_ROOT) return '/';
+    return normalizeWorkspacePath(normalized.slice(WORKSPACE_ROOT.length));
   }
   return normalized;
 }

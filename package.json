@@ -78,7 +78,7 @@
 		"eval:chat-group-icons:live": "bun scripts/evaluate-chat-group-icon-selection.mjs",
 		"test:workers": "vitest run --config vitest.workers.config.ts",
 		"test:discord-bridge": "vitest run --config vitest.discord-bridge.config.ts",
-		"test:workers:codex-web": "vitest run --config vitest.workers.config.ts workers/main/tests/web-codex-provider.test.ts",
+		"test:workers:web-model-provider": "vitest run --config vitest.workers.config.ts workers/main/tests/web-model-provider.test.ts",
 		"test:eval": "node scripts/run-agent-eval.mjs",
 		"test:eval:matrix": "node scripts/run-agent-eval-matrix.mjs",
 		"test:eval:dashboard": "node scripts/run-agent-eval.mjs dashboard-fake-data-live",

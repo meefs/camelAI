@@ -59,7 +59,7 @@ describe("ModelFallbackBanner OpenAI guidance", () => {
     ).toBeInTheDocument();
   });
 
-  it("does not offer OpenAI sign-in for other Codex-harness models", () => {
+  it("does not offer OpenAI sign-in for models outside the subscription", () => {
     renderBanner("grok-4.5");
 
     expect(

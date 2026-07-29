@@ -122,7 +122,6 @@ describe('handleWorkspaceEmailIngress channel enqueue', () => {
       getWorkspaceAccess: vi.fn().mockResolvedValue('full'),
       getThread: vi.fn().mockResolvedValue(null),
       getLlmProviderConfig: vi.fn().mockResolvedValue(null),
-      getExperimentalSettings: vi.fn().mockResolvedValue({ claude_proxy_models: false }),
       getModelPickerConfig: vi.fn().mockResolvedValue(defaultOrgModelPickerConfig()),
       createThread: vi.fn().mockResolvedValue({
         id: 'thread-1',

@@ -227,9 +227,6 @@ describe("channels", () => {
     const orgStub = {
       getThread: vi.fn().mockResolvedValue(null),
       getLlmProviderConfig: vi.fn().mockResolvedValue(null),
-      getExperimentalSettings: vi
-        .fn()
-        .mockResolvedValue({ claude_proxy_models: false }),
       getModelPickerConfig: vi.fn().mockResolvedValue(defaultOrgModelPickerConfig()),
       createThread: vi.fn().mockResolvedValue({
         id: "thread-2",
@@ -267,9 +264,6 @@ describe("channels", () => {
     const kv = createMockKvStore();
     const orgStub = {
       getLlmProviderConfig: vi.fn().mockResolvedValue(null),
-      getExperimentalSettings: vi
-        .fn()
-        .mockResolvedValue({ claude_proxy_models: false }),
       getModelPickerConfig: vi.fn().mockResolvedValue(defaultOrgModelPickerConfig()),
       createThread: vi.fn().mockResolvedValue({
         id: "thread-2",
@@ -308,7 +302,6 @@ describe("channels", () => {
       "telegram",
       "hello from Telegram",
       "sonnet",
-      "claude",
       expect.objectContaining({
         source: "channel",
         channelKind: "telegram",
@@ -329,9 +322,6 @@ describe("channels", () => {
     const longMessage = `${"x".repeat(700)} tail`;
     const orgStub = {
       getLlmProviderConfig: vi.fn().mockResolvedValue(null),
-      getExperimentalSettings: vi
-        .fn()
-        .mockResolvedValue({ claude_proxy_models: false }),
       getModelPickerConfig: vi.fn().mockResolvedValue(defaultOrgModelPickerConfig()),
       createThread: vi.fn().mockResolvedValue({
         id: "thread-long",
@@ -362,7 +352,6 @@ describe("channels", () => {
       "slack",
       longMessage,
       "sonnet",
-      "claude",
       expect.objectContaining({
         source: "channel",
         channelKind: "slack",

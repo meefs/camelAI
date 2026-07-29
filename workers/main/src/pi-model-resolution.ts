@@ -5,7 +5,7 @@
 // resolvePiRequestConfig, getCachedLlmProviderConfig, resolveCurrentByokCredentials)
 // remain on ChatThreadDO and call into a PiModelMapping instance.
 import {
-  DEFAULT_CODEX_MODEL,
+  DEFAULT_OPENAI_MODEL,
   DEFAULT_LLM_MODEL,
   normalizeLlmModel,
 } from "../../../src/lib/llm-provider-config";
@@ -71,7 +71,7 @@ export class PiModelMapping {
       case "gpt-5.6-terra-bedrock":
         return openAiReference("gpt-5.6-terra");
       case "custom":
-        return openAiReference(DEFAULT_CODEX_MODEL);
+        return openAiReference(DEFAULT_OPENAI_MODEL);
       case "kimi-k2.7-code":
         return openRouterReference("moonshotai/kimi-k2.7-code");
       case "grok-4.5":
@@ -120,7 +120,7 @@ export class PiModelMapping {
         if (normalizedModelId.includes("/")) {
           return openRouterReference(normalizedModelId);
         }
-        return openAiReference(DEFAULT_CODEX_MODEL);
+        return openAiReference(DEFAULT_OPENAI_MODEL);
     }
   }
 
@@ -186,7 +186,7 @@ export class PiModelMapping {
     });
     if (model === "custom" && customModelId?.trim()) {
       const lookupModel =
-        api === "anthropic-messages" ? DEFAULT_LLM_MODEL : DEFAULT_CODEX_MODEL;
+        api === "anthropic-messages" ? DEFAULT_LLM_MODEL : DEFAULT_OPENAI_MODEL;
       const lookupReference = this.resolvePiModelReference(lookupModel);
       return {
         provider: lookupReference.provider,

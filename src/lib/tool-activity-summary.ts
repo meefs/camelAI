@@ -592,7 +592,7 @@ export function getToolSummaryParts(
         if (!skill) return { action: 'Could not read instructions' };
         return { action: `Could not read instructions for ${skill}` };
       }
-      const path = skill ? `/workspace/.claude/skills/${skill}/SKILL.md` : '';
+      const path = skill ? `/workspace/.agents/skills/${skill}/SKILL.md` : '';
       return {
         action: 'Read instructions for',
         filename: skill || 'task',
@@ -744,73 +744,6 @@ export function getToolSummaryParts(
       if (isRunning) return { action: 'Checking background task...' };
       if (isError) return { action: 'Could not check background task' };
       return { action: 'Checked background task' };
-    case 'CodexFileChange': {
-      const changes = Array.isArray(inputRecord.changes) ? inputRecord.changes : [];
-      const firstPath = changes.find((change): change is { path: string } => (
-        Boolean(change) &&
-        typeof change === 'object' &&
-        typeof (change as { path?: unknown }).path === 'string'
-      ))?.path;
-      const filePreview = buildFilePreviewLinkTarget({
-        path: firstPath,
-        location: inputRecord.location,
-        project: inputRecord.project,
-        contentType: inputRecord.contentType,
-        content_type: inputRecord.content_type,
-      });
-      const fileParts = filePreview
-        ? { filename: filePreview.filename, path: firstPath, filePreview }
-        : firstPath
-          ? { filename: getFilename(firstPath) }
-          : {};
-      if (isRunning) {
-        return firstPath
-          ? { action: 'Updating', ...fileParts }
-          : { action: 'Applying file changes...' };
-      }
-      if (isError) {
-        return firstPath
-          ? { action: 'Failed to update', ...fileParts }
-          : { action: 'Failed to apply file changes' };
-      }
-      return firstPath
-        ? { action: 'Updated', ...fileParts }
-        : { action: 'Applied file changes' };
-    }
-    case 'CodexReviewMode':
-      if (isRunning) return { action: 'Starting code review...' };
-      if (isError) return { action: 'Could not update code review' };
-      return { action: 'Updated code review' };
-    case 'CodexContextCompaction':
-      if (isRunning) return { action: 'Cleaning up conversation history...' };
-      if (isError) return { action: 'Could not clean up conversation history' };
-      return { action: 'Cleaned up conversation history' };
-    case 'CodexImageView': {
-      const path = typeof inputRecord.path === 'string' ? inputRecord.path : '';
-      const filePreview = buildFilePreviewFromInput(inputRecord);
-      const fileParts = filePreview
-        ? { filename: filePreview.filename, path, filePreview }
-        : path
-          ? { filename: getFilename(path) }
-          : {};
-      if (isRunning) {
-        return path
-          ? { action: 'Viewing', ...fileParts }
-          : { action: 'Viewing image...' };
-      }
-      if (isError) {
-        return path
-          ? { action: 'Failed to view', ...fileParts }
-          : { action: 'Failed to view image' };
-      }
-      return path
-        ? { action: 'Viewed', ...fileParts }
-        : { action: 'Viewed image' };
-    }
-    case 'CodexImageGeneration':
-      if (isRunning) return { action: 'Generating image...' };
-      if (isError) return { action: 'Failed to generate image' };
-      return { action: 'Generated image' };
     default: {
       const displayName = humanizeToolName(summaryName || name || '');
       if (isRunning) return { action: `Using ${displayName}...` };

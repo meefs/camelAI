@@ -42,7 +42,7 @@ interface MarkdownRendererProps {
   annotatedMentions?: ReadonlyArray<AnnotatedMentionRef>;
 }
 
-const CODEX_CITATION_REGEX = /cite[^]+/g;
+const PROVIDER_CITATION_REGEX = /cite[^]+/g;
 // Notebook markdown follows Jupyter's "markdown plus safe HTML" behavior. The
 // sanitizer runs over the full markdown tree, so keep the default safe schema
 // for standard markdown output and add the inline tags needed by notebooks.
@@ -77,15 +77,15 @@ function isMarkdownHeadingNode(
   return new RegExp(`^ {0,3}${marker}(?:\\s|$)`).test(sourceAtNode);
 }
 
-export function normalizeCodexCitationMarkers(content: string): string {
+export function normalizeProviderCitationMarkers(content: string): string {
   if (!content.includes('cite')) {
     return content;
   }
 
-  // Codex app-server currently leaks raw web-search citation markers into visible
-  // text without the structured metadata needed to render real links. Strip the
+  // Some model transports leak raw web-search citation markers into visible text
+  // without the structured metadata needed to render real links. Strip the
   // markers so users do not see broken token artifacts like citeturn1search0.
-  return content.replace(CODEX_CITATION_REGEX, '');
+  return content.replace(PROVIDER_CITATION_REGEX, '');
 }
 
 function replaceWorkspaceIdPlaceholder(value: string | undefined, workspaceId?: string): string | undefined {
@@ -563,7 +563,7 @@ function MarkdownRendererBase({
 }: MarkdownRendererProps) {
   // Process content for streaming - auto-close unclosed code fences
   const processedContent = useMemo(() => {
-    const normalizedContent = normalizeCodexCitationMarkers(content);
+    const normalizedContent = normalizeProviderCitationMarkers(content);
     if (!isStreaming) return normalizedContent;
 
     // Count code fences to check if one is unclosed

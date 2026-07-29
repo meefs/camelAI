@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { logoRegistry } from '@/lib/integration-logo-registry';
-import { CODEX_LLM_MODEL_OPTIONS } from '@/lib/llm-provider-config';
+import { OPENAI_COMPATIBLE_LLM_MODEL_OPTIONS } from '@/lib/llm-provider-config';
 import {
   ALL_LLM_MODELS,
   COST_BUCKET_MAX,
@@ -105,7 +105,7 @@ describe('MODEL_CATALOG', () => {
   it('uses camelCode in both free-model label sources', () => {
     expect(MODEL_CATALOG['deepseek-v4-auto'].label).toBe('camelCode');
     expect(
-      CODEX_LLM_MODEL_OPTIONS.find(
+      OPENAI_COMPATIBLE_LLM_MODEL_OPTIONS.find(
         (option) => option.value === 'deepseek-v4-auto',
       )?.label,
     ).toBe('camelCode');

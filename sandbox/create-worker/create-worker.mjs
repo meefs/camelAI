@@ -357,9 +357,9 @@ Add shadcn components:
   bunx --bun shadcn@latest add button card input
 
 <system-reminder>
-IMPORTANT: Read \`${projectName}/CLAUDE.md\` for a quick reference on the template structure, key files, and how to enable features like Durable Objects and AI chat.
+IMPORTANT: Read \`${projectName}/AGENTS.md\` for a quick reference on the template structure, key files, and how to enable features like Durable Objects and AI chat.
 
-The template has pre-configured AI chat code that's commented out - CLAUDE.md explains what to uncomment.
+The template has pre-configured AI chat code that's commented out - AGENTS.md explains what to uncomment.
 
 For comprehensive examples, see the \`developing-software\` skill documentation.
 </system-reminder>

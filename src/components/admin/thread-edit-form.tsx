@@ -8,7 +8,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { getVisibleLlmModelOptions, THREAD_MODEL_LOCK_MESSAGE } from '@/lib/llm-provider-config';
-import type { LlmModel, OrganizationExperimentalSettings } from '@/types';
+import type { LlmModel } from '@/types';
 
 interface Thread {
   id: string;
@@ -22,10 +22,9 @@ interface Thread {
 interface ThreadEditFormProps {
   thread: Thread;
   orgId: string;
-  experimentalSettings: OrganizationExperimentalSettings;
 }
 
-export function ThreadEditForm({ thread, orgId, experimentalSettings }: ThreadEditFormProps) {
+export function ThreadEditForm({ thread, orgId }: ThreadEditFormProps) {
   const fetcher = useFetcher<{ success?: boolean; error?: string }>();
   const [title, setTitle] = useState(thread.title);
   const [model, setModel] = useState<LlmModel>(thread.model);
@@ -48,7 +47,7 @@ export function ThreadEditForm({ thread, orgId, experimentalSettings }: ThreadEd
     }
   }, [fetcher.state, fetcher.data]);
 
-  const modelOptions = getVisibleLlmModelOptions(experimentalSettings, thread.model);
+  const modelOptions = getVisibleLlmModelOptions(thread.model);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();

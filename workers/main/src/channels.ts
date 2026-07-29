@@ -4,11 +4,9 @@ import type {
 } from "./chat-thread-do.js";
 import { getOrgStub, getWorkspaceStub } from "./helpers/stubs.js";
 import {
-  CUSTOM_LLM_MODEL,
   getDefaultLlmModel,
   getStoredCustomLlmProviderApi,
   getStoredCustomLlmProviderModelId,
-  isCodexLlmModel,
 } from "../../../src/lib/llm-provider-config.js";
 import { resolveModelPickerCatalog } from "../../../src/lib/model-catalog.js";
 import {
@@ -245,20 +243,16 @@ export function buildChannelReplySystemMessage(
 export async function resolveDefaultChannelThreadModel(
   env: Env,
   args: { orgId: string; workspaceId: string },
-): Promise<{ model: LlmModel; provider?: "claude" | "codex" }> {
+): Promise<{ model: LlmModel }> {
   const orgStub = getOrgStub(env, args.orgId);
   const workspaceStub = getWorkspaceStub(env, args.workspaceId);
   const [
     llmProviderConfig,
-    experimentalSettings,
     orgPickerConfig,
     workspacePickerConfig,
   ] = await Promise.all([
     retryTransientDurableObjectRead("OrgDO.getLlmProviderConfig", () =>
       Promise.resolve(orgStub.getLlmProviderConfig()),
-    ),
-    retryTransientDurableObjectRead("OrgDO.getExperimentalSettings", () =>
-      Promise.resolve(orgStub.getExperimentalSettings()),
     ),
     getOrgModelPickerConfigCompat(orgStub),
     getWorkspaceModelPickerConfigCompat(workspaceStub),
@@ -275,7 +269,6 @@ export async function resolveDefaultChannelThreadModel(
   );
   const visibleCatalog = resolveModelPickerCatalog({
     effectiveConfig,
-    experimentalSettings,
     orgProvider: effectiveLlmProviderConfig?.provider,
     customApi,
     customModelId,
@@ -291,15 +284,7 @@ export async function resolveDefaultChannelThreadModel(
   if (!model) {
     throw new Error("No models are available");
   }
-  return {
-    model,
-    provider:
-      model === CUSTOM_LLM_MODEL
-        ? undefined
-        : isCodexLlmModel(model)
-          ? "codex"
-          : "claude",
-  };
+  return { model };
 }
 
 export async function getOrCreateChannelThread(
@@ -323,14 +308,13 @@ export async function getOrCreateChannelThread(
     await env.APP_KV.delete(mapKey);
   }
 
-  const { model, provider } = await resolveDefaultChannelThreadModel(env, input);
+  const { model } = await resolveDefaultChannelThreadModel(env, input);
   const thread = await getOrgStub(env, input.orgId).createThread(
     input.workspaceId,
     input.title.trim().slice(0, 100) || "Conversation",
     input.createdBy?.trim() || input.kind,
     input.firstUserMessage?.trim() || undefined,
     model,
-    provider,
     {
       source: "channel",
       channelKind: input.kind,

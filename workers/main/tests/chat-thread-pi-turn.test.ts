@@ -863,8 +863,8 @@ describe('ChatThreadDO Pi turn handling', () => {
 
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
-      { provider: 'claude', orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      { CHIRIDION_CLAUDE_MODEL: 'sonnet' },
+      { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      { CHIRIDION_MODEL: 'sonnet' },
       vi.fn(() => ({
         id: 'claude-sonnet-5',
         provider: 'anthropic',
@@ -906,8 +906,8 @@ describe('ChatThreadDO Pi turn handling', () => {
     const getModel = vi.fn(() => undefined);
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
-      { provider: 'claude', orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      { CHIRIDION_CLAUDE_MODEL: 'fable-5' },
+      { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      { CHIRIDION_MODEL: 'fable-5' },
       getModel,
     );
 
@@ -1897,7 +1897,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
       { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      { CHIRIDION_CODEX_MODEL: 'gpt-5.5' },
+      { CHIRIDION_MODEL: 'gpt-5.5' },
       vi.fn(() => ({
         id: 'gpt-5.5',
         provider: 'openai',
@@ -1980,7 +1980,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
       { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      { CHIRIDION_CODEX_MODEL: 'grok-4.5' },
+      { CHIRIDION_MODEL: 'grok-4.5' },
       vi.fn(() => ({
         id: 'x-ai/grok-4.5',
         provider: 'openrouter',
@@ -2020,7 +2020,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
       { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      { CHIRIDION_CODEX_MODEL: 'grok-4.5' },
+      { CHIRIDION_MODEL: 'grok-4.5' },
       getModel,
     );
 
@@ -2078,7 +2078,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
       { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      { CHIRIDION_CODEX_MODEL: 'deepseek-v4-auto' },
+      { CHIRIDION_MODEL: 'deepseek-v4-auto' },
       getModel,
     );
 
@@ -2139,7 +2139,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       return { creditChargeable: false, vllmPriority: '100' };
     });
     fake.fallbackThreadToFreeModel = vi.fn(async () => undefined);
-    const envVars = { CHIRIDION_CODEX_MODEL: 'gpt-5.5' };
+    const envVars = { CHIRIDION_MODEL: 'gpt-5.5' };
 
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
@@ -2155,8 +2155,7 @@ describe('ChatThreadDO Pi turn handling', () => {
 
     expect(envVars).toMatchObject({
       CHIRIDION_MODEL: 'deepseek-v4-auto',
-      CHIRIDION_CODEX_MODEL: 'deepseek-v4-auto',
-      CHIRIDION_CLAUDE_MODEL: 'deepseek-v4-auto',
+      CHIRIDION_MODEL: 'deepseek-v4-auto',
     });
     expect(fake.fallbackThreadToFreeModel).toHaveBeenCalledWith(
       expect.anything(),
@@ -2320,7 +2319,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
       { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      { CHIRIDION_CODEX_MODEL: 'deepseek-v4-pro' },
+      { CHIRIDION_MODEL: 'deepseek-v4-pro' },
       getModel,
     );
 
@@ -2360,7 +2359,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
       { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      { CHIRIDION_CODEX_MODEL: 'deepseek-v4-pro' },
+      { CHIRIDION_MODEL: 'deepseek-v4-pro' },
       vi.fn(() => ({
         id: 'deepseek/deepseek-v4-pro',
         provider: 'openrouter',
@@ -2408,7 +2407,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
       { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      { CHIRIDION_CODEX_MODEL: 'deepseek-v4-auto' },
+      { CHIRIDION_MODEL: 'deepseek-v4-auto' },
       vi.fn(() => ({
         id: 'deepseek/deepseek-v4-pro',
         provider: 'openrouter',
@@ -2455,7 +2454,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
       { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      { CHIRIDION_CODEX_MODEL: 'deepseek-v4-flash' },
+      { CHIRIDION_MODEL: 'deepseek-v4-flash' },
       getModel,
     );
 
@@ -2496,7 +2495,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
       { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      { CHIRIDION_CODEX_MODEL: 'deepseek-v4-flash' },
+      { CHIRIDION_MODEL: 'deepseek-v4-flash' },
       vi.fn(() => ({
         id: 'deepseek/deepseek-v4-flash',
         provider: 'openrouter',
@@ -2546,7 +2545,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       const model = await ChatThreadDO.prototype['resolvePiModel'].call(
         fake,
         { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-        { CHIRIDION_CODEX_MODEL: requestedModel },
+        { CHIRIDION_MODEL: requestedModel },
         getModel,
       );
 
@@ -2590,8 +2589,8 @@ describe('ChatThreadDO Pi turn handling', () => {
 
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
-      { provider: 'claude', orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      { CHIRIDION_CLAUDE_MODEL: 'sonnet' },
+      { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      { CHIRIDION_MODEL: 'sonnet' },
       vi.fn(() => ({
         id: 'claude-sonnet-5',
         provider: 'anthropic',
@@ -2626,8 +2625,8 @@ describe('ChatThreadDO Pi turn handling', () => {
 
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
-      { provider: 'claude', orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      { CHIRIDION_CLAUDE_MODEL: 'fable-5' },
+      { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      { CHIRIDION_MODEL: 'fable-5' },
       vi.fn(() => ({
         id: 'claude-fable-5',
         provider: 'anthropic',
@@ -2666,8 +2665,8 @@ describe('ChatThreadDO Pi turn handling', () => {
 
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
-      { provider: 'claude', orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      { CHIRIDION_CLAUDE_MODEL: 'sonnet' },
+      { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      { CHIRIDION_MODEL: 'sonnet' },
       vi.fn(() => ({
         id: 'claude-sonnet-5',
         provider: 'anthropic',
@@ -2703,8 +2702,8 @@ describe('ChatThreadDO Pi turn handling', () => {
 
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
-      { provider: 'claude', orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      { CHIRIDION_CLAUDE_MODEL: 'sonnet' },
+      { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      { CHIRIDION_MODEL: 'sonnet' },
       vi.fn(() => ({
         id: 'claude-sonnet-5',
         provider: 'anthropic',
@@ -2732,7 +2731,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       ChatThreadDO.prototype['resolvePiModel'].call(
         fake,
         { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-        { CHIRIDION_CLAUDE_MODEL: 'unknown/provider-model' },
+        { CHIRIDION_MODEL: 'unknown/provider-model' },
         vi.fn(),
       ),
     ).rejects.toThrow('Unsupported Pi model unknown/provider-model');
@@ -2774,8 +2773,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       expect.objectContaining({ threadId: 'thread1' }),
       expect.objectContaining({
         CHIRIDION_MODEL: 'sonnet',
-        CHIRIDION_CLAUDE_MODEL: 'sonnet',
-        CHIRIDION_CODEX_MODEL: 'sonnet',
+        CHIRIDION_MODEL: 'sonnet',
       }),
     );
   });
@@ -2822,8 +2820,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       expect.objectContaining({ threadId: 'thread1' }),
       expect.objectContaining({
         CHIRIDION_MODEL: 'custom',
-        CHIRIDION_CLAUDE_MODEL: 'custom',
-        CHIRIDION_CODEX_MODEL: 'custom',
+        CHIRIDION_MODEL: 'custom',
       }),
     );
   });
@@ -2864,8 +2861,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       expect.objectContaining({ threadId: 'thread1' }),
       expect.objectContaining({
         CHIRIDION_MODEL: 'sonnet',
-        CHIRIDION_CLAUDE_MODEL: 'sonnet',
-        CHIRIDION_CODEX_MODEL: 'sonnet',
+        CHIRIDION_MODEL: 'sonnet',
       }),
     );
   });
@@ -2884,7 +2880,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
       { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      { CHIRIDION_CODEX_MODEL: 'gpt-5.5' },
+      { CHIRIDION_MODEL: 'gpt-5.5' },
       vi.fn(() => ({
         id: 'gpt-5.5',
         provider: 'openai',
@@ -2922,7 +2918,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
       { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      { CHIRIDION_CODEX_MODEL: 'gpt-5.5' },
+      { CHIRIDION_MODEL: 'gpt-5.5' },
       vi.fn(() => ({
         id: 'gpt-5.5',
         provider: 'openai',
@@ -2986,7 +2982,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
       { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      { CHIRIDION_CODEX_MODEL: 'gpt-5.5' },
+      { CHIRIDION_MODEL: 'gpt-5.5' },
       vi.fn(() => ({
         id: 'gpt-5.5',
         provider: 'openai',
@@ -3019,7 +3015,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
       { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      { CHIRIDION_CODEX_MODEL: 'gpt-5.5' },
+      { CHIRIDION_MODEL: 'gpt-5.5' },
       vi.fn((provider, modelId) => ({
         id: modelId,
         provider,
@@ -3057,7 +3053,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
       { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      { CHIRIDION_CODEX_MODEL: 'gpt-5.6-terra' },
+      { CHIRIDION_MODEL: 'gpt-5.6-terra' },
       vi.fn(() => ({
         id: 'gpt-5.6-terra',
         provider: 'openai',
@@ -3098,8 +3094,8 @@ describe('ChatThreadDO Pi turn handling', () => {
 
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
-      { provider: 'claude', orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      { CHIRIDION_CLAUDE_MODEL: 'sonnet' },
+      { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      { CHIRIDION_MODEL: 'sonnet' },
       vi.fn(() => ({
         id: 'claude-sonnet-5',
         provider: 'anthropic',
@@ -3148,8 +3144,8 @@ describe('ChatThreadDO Pi turn handling', () => {
 
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
-      { provider: 'claude', orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      { CHIRIDION_CLAUDE_MODEL: 'sonnet' },
+      { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      { CHIRIDION_MODEL: 'sonnet' },
       getModel,
     );
 
@@ -3189,7 +3185,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
       { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      { CHIRIDION_CODEX_MODEL: 'custom' },
+      { CHIRIDION_MODEL: 'custom' },
       getModel,
     );
 
@@ -3228,7 +3224,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
       { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      { CHIRIDION_CODEX_MODEL: 'gpt-5.4' },
+      { CHIRIDION_MODEL: 'gpt-5.4' },
       getModel,
     );
 
@@ -3262,8 +3258,8 @@ describe('ChatThreadDO Pi turn handling', () => {
 
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
-      { provider: 'claude', orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      { CHIRIDION_CLAUDE_MODEL: 'sonnet' },
+      { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      { CHIRIDION_MODEL: 'sonnet' },
       getModel,
     );
 
@@ -3303,7 +3299,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
       { provider: 'pi', orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      { CHIRIDION_CODEX_MODEL: 'gpt-5.6-terra' },
+      { CHIRIDION_MODEL: 'gpt-5.6-terra' },
       getModel,
     );
 
@@ -3335,7 +3331,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     await expect(ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
       { provider: 'pi', orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      { CHIRIDION_CODEX_MODEL: 'gpt-5.6-sol' },
+      { CHIRIDION_MODEL: 'gpt-5.6-sol' },
       vi.fn((provider: string, id: string) => ({ id, provider, api: 'openai-responses' })),
     )).rejects.toThrow('OpenAI gpt-5.6-sol on Amazon Bedrock is not available in eu-west-1');
     expect(fake.checkHostedPiModelAccess).not.toHaveBeenCalled();
@@ -3356,8 +3352,8 @@ describe('ChatThreadDO Pi turn handling', () => {
 
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
-      { provider: 'claude', orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      { CHIRIDION_CLAUDE_MODEL: 'opus-4.8' },
+      { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      { CHIRIDION_MODEL: 'opus-4.8' },
       getModel,
     );
 
@@ -3392,8 +3388,8 @@ describe('ChatThreadDO Pi turn handling', () => {
 
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
-      { provider: 'claude', orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      { CHIRIDION_CLAUDE_MODEL: 'fable-5' },
+      { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+      { CHIRIDION_MODEL: 'fable-5' },
       getModel,
     );
 
@@ -6966,8 +6962,6 @@ describe('ChatThreadDO Pi turn handling', () => {
     const ordinaryFileCalls = [
       ['read', '/opt/chiridion-host-pi/skills/data-analysis/SKILL.md'],
       ['read', '.agents/skills/data-analysis/SKILL.md'],
-      ['read', '/workspace/.claude/skills/data-analysis/SKILL.md'],
-      ['read', '/home/claude/.agents/skills/data-analysis/SKILL.md'],
       ['ls', '/opt/chiridion-host-pi/skills'],
     ] as const;
     for (const [name, path] of ordinaryFileCalls) {

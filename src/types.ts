@@ -660,11 +660,6 @@ export interface WorkspaceModelPickerConfig extends OrgModelPickerConfig {
   use_org_defaults: boolean;
 }
 
-export interface OrganizationExperimentalSettings {
-  /** Internal allowlist for creating new Claude threads on the camelAI proxy. */
-  claude_proxy_models: boolean;
-}
-
 export interface LlmProviderConfigPublic {
   provider: LlmProvider;
   config: {

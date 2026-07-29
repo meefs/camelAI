@@ -83,21 +83,6 @@ describe('FileLink', () => {
   });
 
   describe('path normalization', () => {
-    it('strips /home/claude prefix from paths', () => {
-      mockUseAuthData.mockReturnValue({
-        currentWorkspace: { id: 'ws-456' },
-      });
-
-      render(<FileLink path="/home/claude/app/index.html" />);
-
-      const popover = screen.getByTestId('file-preview-popover');
-      const previewUrl = popover.getAttribute('data-preview-url');
-
-      expect(previewUrl).toBe('/api/workspaces/ws-456/fs/content/app/index.html');
-      expect(previewUrl).not.toContain('home');
-      expect(previewUrl).not.toContain('claude');
-    });
-
     it('strips /workspace prefix from paths', () => {
       mockUseAuthData.mockReturnValue({
         currentWorkspace: { id: 'ws-456' },

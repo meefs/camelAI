@@ -56,7 +56,7 @@ worker-side). There is no in-repo Go sandbox-host or data-proxy tree.
 - `tests/` - Vitest UI / `src/lib` unit tests (`vitest.config.ts`).
 - `workers/main/tests/` - Worker / Durable Object / Miniflare tests + `evals/` (`vitest.workers.config.ts`).
 - `e2e/` - Playwright end-to-end specs.
-- `.claude/skills/` - Agent skills for this repo (evals, shadcn, writing skills).
+- `.agents/skills/` - Agent skills for this repo (evals and shadcn).
 
 ### API routing
 

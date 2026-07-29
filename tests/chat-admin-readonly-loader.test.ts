@@ -101,7 +101,6 @@ describe('chat loader admin readonly mode', () => {
     getUiMessagesMock.mockResolvedValue([]);
     getWorkspaceModelPickerStateMock.mockResolvedValue({
       llmProvider: null,
-      experimentalSettings: { claude_proxy_models: false },
       allowedThreadModels: ['sonnet'],
       effectivePickerDefaultModel: 'sonnet',
       hasEffectivePickerDefault: true,
@@ -218,7 +217,6 @@ describe('chat loader workspace mismatch handling', () => {
     });
     getWorkspaceModelPickerStateMock.mockResolvedValue({
       llmProvider: null,
-      experimentalSettings: { claude_proxy_models: false },
       allowedThreadModels: ['sonnet'],
       effectivePickerDefaultModel: 'sonnet',
       hasEffectivePickerDefault: true,

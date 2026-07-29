@@ -82,11 +82,6 @@ describe('new chat loader sales prompt handling', () => {
         get: () => ({
           listWorkerScripts: async () => [],
           getLlmProviderConfig: async () => null,
-          getExperimentalSettings: async () => ({
-            providerType: 'claude',
-            enabledModelFamilies: [],
-            allowedModels: [],
-          }),
           getInfo: async () => ({ id: 'org_123' }),
         }),
       },
@@ -107,7 +102,6 @@ describe('new chat loader sales prompt handling', () => {
       currentWorkspace: { id: 'ws_123' },
       currentOrg: { id: 'org_123' },
       currentOrgLlmProviderConfig: null,
-      currentOrgExperimentalSettings: { claude_proxy_models: false },
       orgs: [{ org_id: 'org_123', role: 'admin' }],
       user: { id: 'user_123', name: 'Illiana' },
       onboarding: { completed_at: Date.now() },
@@ -115,7 +109,6 @@ describe('new chat loader sales prompt handling', () => {
     getRecentThreadsMock.mockResolvedValue([]);
     getWorkspaceModelPickerStateMock.mockResolvedValue({
       llmProvider: null,
-      experimentalSettings: { claude_proxy_models: false },
       allowedThreadModels: ['sonnet'],
       effectivePickerDefaultModel: 'sonnet',
       hasEffectivePickerDefault: true,
@@ -236,7 +229,6 @@ describe('new chat loader sales prompt handling', () => {
       currentWorkspace: { id: 'ws_123' },
       currentOrg: { id: 'org_123' },
       currentOrgLlmProviderConfig: { provider: 'openai' },
-      currentOrgExperimentalSettings: { claude_proxy_models: false },
       orgs: [{ org_id: 'org_123', role: 'admin' }],
       user: { id: 'user_123', name: 'Illiana' },
       onboarding: { completed_at: Date.now() },
@@ -250,9 +242,6 @@ describe('new chat loader sales prompt handling', () => {
           getLlmProviderConfig: async () => {
             throw new Error('unexpected provider config read');
           },
-          getExperimentalSettings: async () => ({
-            claude_proxy_models: false,
-          }),
           getInfo: async () => ({ id: 'org_123' }),
         }),
       },

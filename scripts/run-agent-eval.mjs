@@ -437,7 +437,9 @@ function stopDockerFuseProxy() {
   if (!fuseProxy) return;
   try {
     fuseProxy.kill("SIGTERM");
-  } catch {}
+  } catch {
+    // Best-effort cleanup during process shutdown.
+  }
   fuseProxy = undefined;
 }
 

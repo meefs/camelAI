@@ -148,7 +148,6 @@ function buildPickerRows(
   config: OrgModelPickerConfig,
   visibleModelIds: ReadonlySet<LlmModel>,
   options: {
-    experimentalSettings: import("@/types").OrganizationExperimentalSettings;
     llmProvider: string | null | undefined;
     customApi?: CustomLlmProviderApi | null;
     customModelId?: string | null;
@@ -158,7 +157,6 @@ function buildPickerRows(
 ): PickerModelRow[] {
   return resolveModelPickerCatalog({
     effectiveConfig: { ...config, source: "org" },
-    experimentalSettings: options.experimentalSettings,
     orgProvider: options.llmProvider,
     customApi: options.customApi,
     customModelId: options.customModelId,
@@ -239,7 +237,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     env,
     authContext.currentOrgLlmProviderConfig,
   );
-  const experimentalSettings = authContext.currentOrgExperimentalSettings;
   const customApi = getStoredCustomLlmProviderApi(effectiveLlmProviderConfig);
   const customModelId = getStoredCustomLlmProviderModelId(
     effectiveLlmProviderConfig,
@@ -247,7 +244,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const awsRegion = getStoredBedrockAwsRegion(effectiveLlmProviderConfig);
   const visibleModelIds = getVisibleModelIdsForSettings(
     effectiveLlmProviderConfig?.provider,
-    experimentalSettings,
     customApi,
     customModelId,
     awsRegion,
@@ -300,7 +296,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     visibleModelIds,
   );
   const pickerRows = buildPickerRows(displayConfig, visibleModelIds, {
-    experimentalSettings,
     llmProvider: effectiveLlmProviderConfig?.provider,
     customApi,
     customModelId,
@@ -356,12 +351,10 @@ async function loadActionTarget(args: {
     env,
     authContext.currentOrgLlmProviderConfig,
   );
-  const experimentalSettings = authContext.currentOrgExperimentalSettings;
   const allowOpenAiSubscription =
     (await orgStub.getOpenAiSubscription()) !== null;
   const visibleModelIds = getVisibleModelIdsForSettings(
     effectiveLlmProviderConfig?.provider,
-    experimentalSettings,
     getStoredCustomLlmProviderApi(effectiveLlmProviderConfig),
     getStoredCustomLlmProviderModelId(effectiveLlmProviderConfig),
     getStoredBedrockAwsRegion(effectiveLlmProviderConfig),
@@ -460,14 +453,13 @@ function visibleModelRows(
 
 function getVisibleModelIdsForSettings(
   llmProvider: string | null | undefined,
-  experimentalSettings: import("@/types").OrganizationExperimentalSettings,
   customApi?: CustomLlmProviderApi | null,
   customModelId?: string | null,
   awsRegion?: string | null,
   allowOpenAiSubscription?: boolean,
 ): Set<LlmModel> {
   return new Set(
-    getVisibleLlmModelOptions(experimentalSettings, null, {
+    getVisibleLlmModelOptions(null, {
       orgProvider: llmProvider,
       customApi,
       customModelId,

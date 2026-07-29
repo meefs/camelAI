@@ -331,8 +331,6 @@ export async function resolvePiModelConfig(
 ): Promise<PiResolvedModelConfig> {
   const requestedModelId =
     envVars.CHIRIDION_MODEL ||
-    envVars.CHIRIDION_CODEX_MODEL ||
-    envVars.CHIRIDION_CLAUDE_MODEL ||
     DEFAULT_LLM_MODEL;
   const modelId = deps.modelMapping.normalizePiModelId(requestedModelId);
   const resolved = deps.modelMapping.resolvePiModelReference(modelId);
@@ -361,8 +359,6 @@ export async function resolvePiModelConfig(
       const fallbackEnvVars = {
         ...envVars,
         CHIRIDION_MODEL: CAMEL_CODE_LLM_MODEL,
-        CHIRIDION_CODEX_MODEL: CAMEL_CODE_LLM_MODEL,
-        CHIRIDION_CLAUDE_MODEL: CAMEL_CODE_LLM_MODEL,
       };
       const fallback = await resolvePiModelConfig(
         deps,

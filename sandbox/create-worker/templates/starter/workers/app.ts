@@ -19,7 +19,7 @@ declare module "react-router" {
     cloudflare: {
       env: Env;
       ctx: ExecutionContext;
-      // Uncomment when enabling AI chat (see CLAUDE.md):
+      // Uncomment when enabling AI chat (see AGENTS.md):
       // ownerId: string;
     };
   }

@@ -18,7 +18,7 @@ export function SkillDetails({ tool, result, skillSheet }: SkillDetailsProps) {
   const input = tool?.input ?? {};
   const skillName = typeof input.skill === 'string' ? input.skill : '';
   const skillPath = skillName
-    ? `/workspace/.claude/skills/${skillName}/SKILL.md`
+    ? `/workspace/.agents/skills/${skillName}/SKILL.md`
     : '';
   const resultText = getResultText(result);
   const sheetText = skillSheet ?? '';

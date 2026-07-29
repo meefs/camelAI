@@ -85,16 +85,12 @@ export async function action({ request, context, params }: Route.ActionArgs) {
         env.CHAT_THREAD.idFromName(threadId)
       ) as unknown as {
         setTitle(title: string, updatedAt?: number): Promise<void>;
-        setModel(
-          model: string,
-          provider?: 'claude' | 'codex',
-          updatedAt?: number,
-        ): Promise<void>;
+        setModel(model: string, updatedAt?: number): Promise<void>;
         refreshRunnerConfig(): Promise<void>;
       };
       await chatThread.setTitle(title.trim(), updated?.updated_at);
       if (model !== null) {
-        await chatThread.setModel(model, undefined, updated?.updated_at);
+        await chatThread.setModel(model, updated?.updated_at);
         await chatThread.refreshRunnerConfig();
       }
     } catch (error) {
@@ -110,7 +106,6 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   await requireSuperuser(request, context);
 
   const { id } = params;
-  const authEnv = getAuthEnv(getEnv(context));
 
   const result = await authDO.adminGetThreadWithMessages(context, id);
   if (!result) {
@@ -118,10 +113,6 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   }
 
   const { thread, messages, org_id, org_name, workspace_id, workspace_name, preview_target } = result;
-  const experimentalSettings = await authEnv.ORG
-    .get(authEnv.ORG.idFromName(org_id))
-    .getExperimentalSettings();
-
   // Create plain object for Client Component
   const safeThread = {
     id: thread.id,
@@ -146,7 +137,6 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     workspace_id,
     workspace_name,
     preview_target,
-    experimentalSettings,
     vanityDomain,
     jsonlDownloadUrl,
   };
@@ -161,7 +151,6 @@ export default function AdminThreadDetailPage() {
     workspace_id,
     workspace_name,
     preview_target,
-    experimentalSettings,
     vanityDomain,
     jsonlDownloadUrl,
   } = useLoaderData<typeof loader>();
@@ -293,10 +282,10 @@ export default function AdminThreadDetailPage() {
             <Card>
               <CardHeader>
                 <CardTitle>Edit Thread</CardTitle>
-                <CardDescription>Update thread title and Claude model</CardDescription>
+                <CardDescription>Update thread title and chat model</CardDescription>
               </CardHeader>
               <CardContent>
-            <ThreadEditForm thread={thread} orgId={org_id} experimentalSettings={experimentalSettings} />
+            <ThreadEditForm thread={thread} orgId={org_id} />
               </CardContent>
             </Card>
 

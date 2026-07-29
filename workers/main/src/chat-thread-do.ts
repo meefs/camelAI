@@ -4341,10 +4341,10 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         totalBytes: 0,
         maxRowBytes: 0,
         stores: {
-          render: { rows: 0, bytes: 0, maxRowBytes: 0 },
-          pi: { rows: 0, bytes: 0, maxRowBytes: 0 },
-          journal: { rows: 0, bytes: 0, maxRowBytes: 0 },
-          stream: { rows: 0, bytes: 0, maxRowBytes: 0 },
+          render: { rows: 0, bytes: 0, maxRowBytes: 0, measured: false },
+          pi: { rows: 0, bytes: 0, maxRowBytes: 0, measured: false },
+          journal: { rows: 0, bytes: 0, maxRowBytes: 0, measured: false },
+          toolRuns: { rows: 0, bytes: 0, maxRowBytes: 0, measured: false },
         },
       };
     }
@@ -5320,8 +5320,6 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
           : this.currentThreadModelUpdatedAt;
       await this.ensurePiSession(context, {
         CHIRIDION_MODEL: threadModel,
-        CHIRIDION_CLAUDE_MODEL: threadModel,
-        CHIRIDION_CODEX_MODEL: threadModel,
       });
     });
   }
@@ -5742,8 +5740,6 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       context,
       {
         CHIRIDION_MODEL: modelId,
-        CHIRIDION_CODEX_MODEL: modelId,
-        CHIRIDION_CLAUDE_MODEL: modelId,
       },
       getModelFn,
       { sponsoredCapability: true },
@@ -5764,10 +5760,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   }
 
   private isCamelCodeActive(envVars?: Record<string, string>): boolean {
-    const requested =
-      envVars?.CHIRIDION_MODEL ||
-      envVars?.CHIRIDION_CODEX_MODEL ||
-      envVars?.CHIRIDION_CLAUDE_MODEL;
+    const requested = envVars?.CHIRIDION_MODEL;
     return (requested ?? this.currentThreadModel) === CAMEL_CODE_LLM_MODEL;
   }
 

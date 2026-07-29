@@ -10,7 +10,6 @@ import type { OrgAuthContextBootstrap } from "../../workers/main/src/auth";
 import type {
   Organization,
   OrgMembership,
-  OrganizationExperimentalSettings,
   Workspace,
   WorkspaceAccessLevel,
   WorkspaceWithAccess,
@@ -86,8 +85,6 @@ export interface AuthContext extends UserContext {
   emailVerification: { required: boolean; verified: boolean };
   /** Current org LLM provider config (bundled from OrgDO bootstrap) */
   currentOrgLlmProviderConfig: LlmProviderConfigRecord | null;
-  /** Current org experimental settings (bundled from OrgDO bootstrap) */
-  currentOrgExperimentalSettings: OrganizationExperimentalSettings;
   /** When set, the session cookie should be re-signed with this token (e.g. workspace fallback) */
   resignedSessionCookie?: string;
 }
@@ -652,7 +649,6 @@ async function getAuthContextUncached(
     member: currentOrgMember,
     workspaces: currentOrgWorkspaces,
     llmProviderConfig: currentOrgLlmProviderConfig,
-    experimentalSettings: currentOrgExperimentalSettings,
   } = currentOrgBootstrap;
   const profile = authBootstrap.profile;
   if (!profile) {
@@ -862,7 +858,6 @@ async function getAuthContextUncached(
     orgWorkspaceCount,
     emailVerification: authBootstrap.emailVerification,
     currentOrgLlmProviderConfig,
-    currentOrgExperimentalSettings,
     resignedSessionCookie,
   };
 }

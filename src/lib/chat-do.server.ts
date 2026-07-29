@@ -10,7 +10,6 @@ import type {
   LlmModel,
   Organization,
   OrgModelPickerConfig,
-  OrganizationExperimentalSettings,
   PreviewTarget,
   WorkspaceModelPickerConfig,
 } from "@/types";
@@ -101,7 +100,6 @@ interface KnownOrgOptions {
 
 interface ModelPickerStateOptions extends KnownOrgOptions {
   llmProviderConfig?: LlmProviderConfigRecord | null;
-  experimentalSettings?: OrganizationExperimentalSettings;
   orgBillingState?: Pick<
     Organization,
     | "billing_status"
@@ -182,7 +180,6 @@ export interface WorkspaceModelPickerState {
     OrgBillingAccessState,
     { kind: "ready" }
   >["mode"] | null;
-  experimentalSettings: import("@/types").OrganizationExperimentalSettings;
   modelOptions: ModelPickerOption[];
   allowedThreadModels: LlmModel[];
   effectivePickerDefaultModel: LlmModel | null;
@@ -307,21 +304,11 @@ async function getWorkspaceModelPickerStateForOrg(
             Promise.resolve(orgStub.getInfo()),
           )
         : Promise.resolve(null);
-  const [
-    llmProviderConfig,
-    experimentalSettings,
-    openAiSubscription,
-    orgInfo,
-  ] = await Promise.all([
+  const [llmProviderConfig, openAiSubscription, orgInfo] = await Promise.all([
     options.llmProviderConfig !== undefined
       ? Promise.resolve(options.llmProviderConfig)
       : retryTransientDurableObjectRead("OrgDO.getLlmProviderConfig", () =>
           Promise.resolve(orgStub.getLlmProviderConfig()),
-        ),
-    options.experimentalSettings !== undefined
-      ? Promise.resolve(options.experimentalSettings)
-      : retryTransientDurableObjectRead("OrgDO.getExperimentalSettings", () =>
-          Promise.resolve(orgStub.getExperimentalSettings()),
         ),
     typeof orgStub.getOpenAiSubscription === "function"
       ? Promise.resolve(orgStub.getOpenAiSubscription())
@@ -355,7 +342,6 @@ async function getWorkspaceModelPickerStateForOrg(
   const isFreeMode = billingAccessMode === "camel_free";
   const resolvedCatalog = resolveModelPickerCatalog({
     effectiveConfig,
-    experimentalSettings,
     orgProvider: effectiveLlmProviderConfig?.provider,
     customApi,
     customModelId,
@@ -434,7 +420,6 @@ async function getWorkspaceModelPickerStateForOrg(
     awsRegion,
     allowOpenAiSubscription,
     billingAccessMode,
-    experimentalSettings,
     modelOptions: visibleModelOptions,
     allowedThreadModels: selectableCatalog.map((entry) => entry.id),
     effectivePickerDefaultModel,
@@ -474,7 +459,6 @@ async function resolveCreateThreadModel(
     !isLlmModelAllowedForNewThread(
       selectedModel,
       pickerState.llmProvider,
-      pickerState.experimentalSettings,
       {
         customApi: pickerState.customApi,
         customModelId: pickerState.customModelId,
@@ -802,7 +786,6 @@ export async function updateThreadModel(
     !isLlmModelAllowedForNewThread(
       model,
       pickerState.llmProvider,
-      pickerState.experimentalSettings,
       {
         customApi: pickerState.customApi,
         customModelId: pickerState.customModelId,

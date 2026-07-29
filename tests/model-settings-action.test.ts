@@ -8,7 +8,6 @@ const listOrgWorkspacesMock = vi.fn();
 const orgGetModelPickerConfigMock = vi.fn();
 const orgSetModelPickerConfigMock = vi.fn();
 const orgGetLlmProviderConfigMock = vi.fn();
-const orgGetExperimentalSettingsMock = vi.fn();
 const orgGetOpenAiSubscriptionMock = vi.fn();
 const workspaceGetModelPickerConfigMock = vi.fn();
 const workspaceSetModelPickerConfigMock = vi.fn();
@@ -67,9 +66,6 @@ function mockAuthContext(
   requireAuthContextMock.mockResolvedValue({
     currentOrg: { id: 'org_123' },
     currentOrgLlmProviderConfig: null,
-    currentOrgExperimentalSettings: {
-      claude_proxy_models: false,
-    },
     user: { id: 'user_123' },
     ...overrides,
   });
@@ -88,7 +84,6 @@ describe('organization model settings actions', () => {
           getModelPickerConfig: orgGetModelPickerConfigMock,
           setModelPickerConfig: orgSetModelPickerConfigMock,
           getLlmProviderConfig: orgGetLlmProviderConfigMock,
-          getExperimentalSettings: orgGetExperimentalSettingsMock,
           getOpenAiSubscription: orgGetOpenAiSubscriptionMock,
         }),
       },
@@ -115,9 +110,6 @@ describe('organization model settings actions', () => {
     orgSetModelPickerConfigMock.mockImplementation(async (config) => config);
     orgGetLlmProviderConfigMock.mockRejectedValue(
       new Error('unexpected provider config read'),
-    );
-    orgGetExperimentalSettingsMock.mockRejectedValue(
-      new Error('unexpected experimental settings read'),
     );
     orgGetOpenAiSubscriptionMock.mockResolvedValue(null);
     workspaceGetModelPickerConfigMock.mockResolvedValue({
@@ -735,7 +727,6 @@ describe('organization model settings loader', () => {
         get: () => ({
           getModelPickerConfig: orgGetModelPickerConfigMock,
           getLlmProviderConfig: orgGetLlmProviderConfigMock,
-          getExperimentalSettings: orgGetExperimentalSettingsMock,
           getOpenAiSubscription: orgGetOpenAiSubscriptionMock,
         }),
       },
@@ -756,9 +747,6 @@ describe('organization model settings loader', () => {
     ]);
     orgGetLlmProviderConfigMock.mockRejectedValue(
       new Error('unexpected provider config read'),
-    );
-    orgGetExperimentalSettingsMock.mockRejectedValue(
-      new Error('unexpected experimental settings read'),
     );
     orgGetOpenAiSubscriptionMock.mockResolvedValue(null);
     workspaceGetModelPickerConfigMock.mockResolvedValue({

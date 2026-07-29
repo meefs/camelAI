@@ -292,7 +292,6 @@ describe('Auth flow (full-stack with DOs)', () => {
         userId,
         undefined,
         undefined,
-        undefined,
         { source: 'channel', channelKind: 'email' },
       );
       const stored = await orgStub.getThread(thread.id);
@@ -312,7 +311,6 @@ describe('Auth flow (full-stack with DOs)', () => {
         defaultWorkspaceId,
         'Slack thread',
         userId,
-        undefined,
         undefined,
         undefined,
         { source: 'channel', channelKind: 'slack' },
@@ -336,7 +334,6 @@ describe('Auth flow (full-stack with DOs)', () => {
         defaultWorkspaceId,
         'Email thread',
         userId,
-        undefined,
         undefined,
         undefined,
         { source: 'channel', channelKind: 'email' },
@@ -523,7 +520,6 @@ describe('Auth flow (full-stack with DOs)', () => {
         defaultWorkspaceId,
         'Channel merge',
         userId,
-        undefined,
         undefined,
         undefined,
         { source: 'channel', channelKind: 'email' },
@@ -895,7 +891,7 @@ describe('Auth flow (full-stack with DOs)', () => {
       expect(stored?.model).toBe('gpt-5.6-terra');
     });
 
-    it('maps retired Codex models when creating a thread without an explicit provider', async () => {
+    it('maps retired OpenAI models when creating a thread', async () => {
       const email = testEmail();
       const { userId } = await createUser(testEnv, email, 'password123', 'Thread Owner');
       const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Thread Org', userId);
@@ -903,7 +899,7 @@ describe('Auth flow (full-stack with DOs)', () => {
 
       const thread = await orgStub.createThread(
         defaultWorkspaceId,
-        'Codex model thread',
+        'OpenAI model thread',
         userId,
         undefined,
         'gpt-5.4',
@@ -966,11 +962,11 @@ describe('Auth flow (full-stack with DOs)', () => {
 
       try {
         dateNowSpy.mockReturnValue(now - 31 * 60 * 1000);
-        await orgStub.createThread(defaultWorkspaceId, 'stale codex', userId, undefined, 'gpt-5.4');
+        await orgStub.createThread(defaultWorkspaceId, 'stale OpenAI', userId, undefined, 'gpt-5.4');
 
         dateNowSpy.mockReturnValue(now);
-        await orgStub.createThread(defaultWorkspaceId, 'recent codex', userId, undefined, 'gpt-5.4');
-        await orgStub.createThread(defaultWorkspaceId, 'recent claude', userId, undefined, 'sonnet');
+        await orgStub.createThread(defaultWorkspaceId, 'recent OpenAI', userId, undefined, 'gpt-5.4');
+        await orgStub.createThread(defaultWorkspaceId, 'recent Anthropic', userId, undefined, 'sonnet');
       } finally {
         dateNowSpy.mockRestore();
       }
@@ -987,7 +983,7 @@ describe('Auth flow (full-stack with DOs)', () => {
       for (let index = 0; index < 101; index += 1) {
         await orgStub.createThread(
           defaultWorkspaceId,
-          `codex thread ${index}`,
+          `OpenAI thread ${index}`,
           userId,
           undefined,
           'gpt-5.4'

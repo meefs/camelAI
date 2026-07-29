@@ -69,9 +69,6 @@ test-results/
 playwright-report/
 playwright-report-staging-billing/
 
-# Claude Code worktrees
-.claude/worktrees
-
 # Swap files
 *.swp
 *.swo
@@ -110,11 +107,12 @@ desktop/build/icon.png
 workers/main/src/embedded-create-worker.ts
 workers/main/src/embedded-skills.ts
 
-# Local keys and state
+# Local keys, state, and agent-tool metadata
 .admin_key
 .bedrock_key
 .slack_token
 .claude/
+.codex/
 .selfhost/
 .env.selfhost
 

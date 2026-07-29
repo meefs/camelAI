@@ -16,7 +16,7 @@ export interface BuildFilePreviewTargetInput {
   content_type?: unknown;
 }
 
-const WORKSPACE_ROOT_PREFIXES = ["/home/claude", "/workspace", "/root"];
+const WORKSPACE_ROOT_PREFIX = "/workspace";
 
 type NormalizedPath = {
   absolutePath: string;
@@ -44,15 +44,10 @@ function normalizePathValue(value: unknown): NormalizedPath | null {
   const withLeadingSlash = normalized.startsWith("/") ? normalized : `/${normalized}`;
 
   normalized = withLeadingSlash;
-  for (const prefix of WORKSPACE_ROOT_PREFIXES) {
-    if (normalized === prefix) {
-      normalized = "/";
-      break;
-    }
-    if (normalized.startsWith(`${prefix}/`)) {
-      normalized = normalized.slice(prefix.length) || "/";
-      break;
-    }
+  if (normalized === WORKSPACE_ROOT_PREFIX) {
+    normalized = "/";
+  } else if (normalized.startsWith(`${WORKSPACE_ROOT_PREFIX}/`)) {
+    normalized = normalized.slice(WORKSPACE_ROOT_PREFIX.length) || "/";
   }
 
   const segments = normalized.split("/").filter((segment) => segment && segment !== ".");
