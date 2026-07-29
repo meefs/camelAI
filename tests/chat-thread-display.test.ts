@@ -30,6 +30,7 @@ function loaderData() {
     messages: [message("prev-1", "thread-prev")],
     messagesError: null as string | null,
     initialUiMessages: [uiMessage("prev-ui-1")],
+    olderUiMessagesCursor: "previous-thread-cursor",
     todos: [],
     previewTabs: [],
     activeTabId: "prev-tab",
@@ -78,6 +79,7 @@ describe("resolveDisplayChatData", () => {
     expect(merged.messages).toBe(snapshot.messages);
     expect(merged.todos).toBe(snapshot.todos);
     expect(merged.bridgedStreamingMessageId).toBeNull();
+    expect(merged.olderUiMessagesCursor).toBeNull();
 
     // Non-message fields still come from the loader payload.
     expect(merged.activeTabId).toBe("prev-tab");

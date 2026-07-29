@@ -51,6 +51,11 @@ import { extractThreadCompletionSummarySource } from '../../../src/lib/thread-co
 // the worker test-suite import time and time out unrelated slow tests.
 import type { UIMessage, UIMessageStreamWriter } from 'ai';
 import {
+  CHAT_RENDER_WINDOW_MAX_BYTES,
+  CHAT_RENDER_WINDOW_MAX_MESSAGES,
+  type ChatRenderHistoryPage,
+} from '../../../src/lib/chat-render-history';
+import {
   PiChunkEncoder,
   PI_ERROR_PART_ID,
   type PiRuntimeEvent,
@@ -580,6 +585,10 @@ const PI_STREAM_PRE_ATTACH_CHUNK_CAP = 5000;
 // canonical history and the Pi runtime owns the agent loop.
 export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState> {
   private static readonly CONNECTION_SETUP_TIMEOUT_MS = 30 * 60 * 1000;
+  static renderHistoryWindow = {
+    maxMessages: CHAT_RENDER_WINDOW_MAX_MESSAGES,
+    maxBytes: CHAT_RENDER_WINDOW_MAX_BYTES,
+  };
 
   private previewTarget: PreviewTarget | null = null;
   private previewTabs: PreviewTarget[] = [];
@@ -622,6 +631,8 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   private projectActivityInstance?: ChatThreadProjectActivity;
   private automationRunInstance?: ChatThreadAutomationRun;
   private uiMirrorInstance?: ChatThreadUiMirror;
+  private legacyUiMessageHealingPromise: Promise<void> | null = null;
+  private renderHistoryReconciliationPromise: Promise<void> | null = null;
   private piTurnJournalInstance?: PiTurnJournal;
   private chatAccessInstance?: ChatThreadAccess;
   private channelToolsInstance?: ChannelTools;
@@ -810,6 +821,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     callable()(this.prototype.submitConnectionSetupResponse, context);
     callable()(this.prototype.refreshModel, context);
     callable()(this.prototype.sendMessage, context);
+    callable()(this.prototype.getOlderUiMessages, context);
   }
 
   private agentState(
@@ -1401,9 +1413,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       // None of these repairs belongs on the HTTP 101 critical path. Run them in
       // order because the mirror top-up must precede legacy metadata healing.
       await this.sweepOrphanedActiveTurnMarker();
-      await this.topUpUiMessagesFromPiCore();
-      await this.healLegacyUiMessageTimes();
-      await this.healLegacyUiMessageAuthors();
+      await this.reconcileRenderHistory();
       // Repair path for the lake export: catches rows whose post-commit sync was
       // lost to an eviction or a stream failure, and backfills threads whose
       // history predates the export entirely.
@@ -3081,6 +3091,8 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         this.messages = messages;
       },
       persistRenderMessages: (messages) => this.persistMessages(messages),
+      getRenderHistoryPage: (beforeCursor) =>
+        this.getRenderHistoryPage({ beforeCursor }),
       clearPersistedRenderCache: () => {
         // Reaches ai-chat's private serialized-upsert cache; see the invariant
         // note in ChatThreadUiMirror.rebuildUiMessagesFromPiCore.
@@ -3092,6 +3104,8 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       activePiStreamTurnId: () => this.activePiStreamTurnId,
       getPiCoreRevision: () => this.piCoreStore.getPiCoreRevision(),
       getPiCoreParsedMessages: (threadId) => this.getPiCoreParsedMessages(threadId),
+      setRenderHistoryChronology: (id, createdAt) =>
+        this._setRenderHistoryChronology(id, createdAt),
       reloadAiChatMessagesOrdered: () => this.reloadAiChatMessagesOrdered(),
       topUpUiMessagesFromPiCore: (options) => this.topUpUiMessagesFromPiCore(options),
       withMemoryPhase: (operation, fn) => this.withChatMemoryPhase(operation, fn),
@@ -4010,8 +4024,6 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       return { status: "error", error: "Organization is blocked" };
     }
 
-    await this.ensurePiSessionReady();
-
     let attributedContent: string;
     const safeContent = injectFileSafetyMessage(rawContent);
     const mentionAugmented = await this.applyMentionsForTurn(safeContent);
@@ -4028,7 +4040,11 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     // single canonical timestamp shared by the message we persist below and the
     // one sendRunnerCommand prompts Pi with, so both carry the same
     // piCoreMessageKey and the turn-end commit dedups instead of double-storing.
-    const startsNewTurn = !this.piSession?.state.isStreaming;
+    const startsNewTurn =
+      options.persistUserMessageImmediately === true &&
+      (this.piSession
+        ? !this.piSession.state.isStreaming
+        : this.readPiActiveTurn() === null);
     const turnTimestamp = Date.now();
 
     let sent = false;
@@ -6613,14 +6629,19 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
 
   private sendRunnerCommand(message: Record<string, unknown>): boolean {
     const type = typeof message.type === "string" ? message.type : "unknown";
-    if (this.piSession) {
-      try {
-        if (type === "message") {
+    try {
+      if (type === "message") {
           const content = typeof message.content === "string" ? message.content : "";
           if (!content.trim()) {
             return false;
           }
-          const wasStreaming = this.piSession.state.isStreaming;
+          // Cold admission must not wait for Pi session construction. An
+          // existing marker means this message joins the recoverable in-flight
+          // turn; otherwise it opens a new journaled turn. A warm idle session
+          // retains the rapid-double-send FIFO behavior below.
+          const wasStreaming = this.piSession
+            ? this.piSession.state.isStreaming
+            : this.readPiActiveTurn() !== null;
           // Reuse the caller's timestamp when provided so a message persisted up
           // front (the new-turn path in enqueueRunnerUserMessage) shares its
           // piCoreMessageKey with the one Pi commits at turn end.
@@ -6782,7 +6803,8 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
               }),
           );
           return true;
-        }
+      }
+      if (this.piSession) {
         if (type === "stop") {
           this.piUserStopRequestedAtMs = Date.now();
           // A stop during a transient-retry backoff has no in-flight run to
@@ -6794,10 +6816,10 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         if (type === "question_response") {
           return true;
         }
-      } catch (error) {
-        console.error("[ChatThreadDO] send Pi command failed", error);
-        return false;
       }
+    } catch (error) {
+      console.error("[ChatThreadDO] send Pi command failed", error);
+      return false;
     }
 
     return false;
@@ -7700,23 +7722,51 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   }
 
   /**
-   * Render history for the live-user chat loader (commit 3b). Runs the pi_core →
-   * ai-chat top-up backfill first, then returns the full ai-chat message list.
+   * Render history for the live-user chat loader (commit 3b). Returns the
+   * resident window immediately and reconciles pi_core in background.
    * DO RPC only — intentionally NOT wired to any HTTP route (auth-sensitive; the
    * loader wiring is commit 4).
    */
   async getUiMessages(): Promise<UIMessage[]> {
+    return this.withChatMemoryPhase("render_rpc_return_full", async () => {
+      await this.sweepOrphanedActiveTurnMarker();
+      await this.reconcileRenderHistory();
+      return this.getRenderHistoryPage().messages;
+    });
+  }
+
+  async getUiMessagePage(): Promise<ChatRenderHistoryPage> {
     return this.withChatMemoryPhase("render_rpc_return", async () => {
     // The SSR loader is the first page-open touch (before the websocket
     // connects). Heal a provably-dead turn's stranded marker here so the load
-    // doesn't derive a busy indicator from it — and so the top-up below (which
-    // the marker gates) isn't skipped forever for a turn nothing will resume.
+    // doesn't derive a busy indicator from it.
     await this.sweepOrphanedActiveTurnMarker();
-    await this.topUpUiMessagesFromPiCore();
-    await this.healLegacyUiMessageTimes();
-    await this.healLegacyUiMessageAuthors();
-    return this.messages as UIMessage[];
+    // Pi top-up and legacy metadata repair can both walk a full old transcript.
+    // They are idempotent and websocket reconciliation broadcasts the converged
+    // resident window, so keep all unbounded work outside this first-page RPC.
+    this.ctx.waitUntil(
+      this.reconcileRenderHistory().catch((error) => {
+        console.error(
+          "[ChatThreadDO] background render-history reconciliation failed",
+          error,
+        );
+      }),
+    );
+    return this.getRenderHistoryPage();
     });
+  }
+
+  async getOlderUiMessages(beforeCursor: string): Promise<ChatRenderHistoryPage> {
+    if (
+      typeof beforeCursor !== "string" ||
+      beforeCursor.length === 0 ||
+      beforeCursor.length > 1024
+    ) {
+      throw new Error("A valid render-history cursor is required");
+    }
+    return this.withChatMemoryPhase("render_rpc_older_page", async () =>
+      this.getRenderHistoryPage({ beforeCursor }),
+    );
   }
 
   private healLegacyUiMessageTimes(): Promise<void> {
@@ -7725,6 +7775,42 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
 
   private healLegacyUiMessageAuthors(): Promise<void> {
     return this.uiMirror.healLegacyUiMessageAuthors();
+  }
+
+  private healLegacyUiMessageMetadata(): Promise<void> {
+    if (this.legacyUiMessageHealingPromise) {
+      return this.legacyUiMessageHealingPromise;
+    }
+    const healing = (async () => {
+      await this.healLegacyUiMessageTimes();
+      await this.healLegacyUiMessageAuthors();
+    })();
+    let guarded: Promise<void>;
+    guarded = healing.finally(() => {
+      if (this.legacyUiMessageHealingPromise === guarded) {
+        this.legacyUiMessageHealingPromise = null;
+      }
+    });
+    this.legacyUiMessageHealingPromise = guarded;
+    return guarded;
+  }
+
+  private reconcileRenderHistory(): Promise<void> {
+    if (this.renderHistoryReconciliationPromise) {
+      return this.renderHistoryReconciliationPromise;
+    }
+    const reconciliation = (async () => {
+      await this.topUpUiMessagesFromPiCore();
+      await this.healLegacyUiMessageMetadata();
+    })();
+    let guarded: Promise<void>;
+    guarded = reconciliation.finally(() => {
+      if (this.renderHistoryReconciliationPromise === guarded) {
+        this.renderHistoryReconciliationPromise = null;
+      }
+    });
+    this.renderHistoryReconciliationPromise = guarded;
+    return guarded;
   }
 
   /**
@@ -7738,7 +7824,12 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     messageCount: number;
   }> {
     await this.rebuildUiMessagesFromPiCore();
-    return { ok: true, messageCount: this.messages.length };
+    const row = this.ctx.storage.sql
+      .exec<{ count: number }>(
+        "SELECT COUNT(*) AS count FROM cf_ai_chat_agent_messages",
+      )
+      .toArray()[0];
+    return { ok: true, messageCount: Number(row?.count ?? 0) };
   }
 
   private topUpUiMessagesFromPiCore(
@@ -7752,7 +7843,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   private reloadAiChatMessagesOrdered(): void {
     const phase = this.startChatMemoryPhase("render_persist_reload");
     try {
-      this.uiMirror.reloadAiChatMessagesOrdered();
+      this.messages = this.getRenderHistoryPage().messages;
       this.endChatMemoryPhase(phase);
     } catch (error) {
       this.endChatMemoryPhase(phase, "error");

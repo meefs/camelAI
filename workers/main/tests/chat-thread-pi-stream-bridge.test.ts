@@ -71,6 +71,299 @@ function seedPiCoreRow(instance: any, idx: number, message: AnyRecord): void {
   instance['piCoreStore'].markPiCoreChanged(revision.count + 1);
 }
 
+describe('ChatThreadDO bounded render history', () => {
+  it('returns the first page without awaiting full-archive legacy repair', async () => {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    let finishTopUp: (() => void) | undefined;
+    const topUp = new Promise<void>((resolve) => {
+      finishTopUp = resolve;
+    });
+    let finishTimeRepair: (() => void) | undefined;
+    const timeRepair = new Promise<void>((resolve) => {
+      finishTimeRepair = resolve;
+    });
+    const background: Promise<unknown>[] = [];
+    fake.withChatMemoryPhase = vi.fn(
+      async (_operation: string, fn: () => Promise<unknown>) => fn(),
+    );
+    fake.sweepOrphanedActiveTurnMarker = vi.fn(async () => {});
+    fake.topUpUiMessagesFromPiCore = vi.fn(() => topUp);
+    fake.healLegacyUiMessageTimes = vi.fn(() => timeRepair);
+    fake.healLegacyUiMessageAuthors = vi.fn(async () => {});
+    fake.getRenderHistoryPage = vi.fn(() => ({
+      messages: [{ id: 'resident', role: 'user', parts: [] }],
+      nextCursor: 'cursor',
+      hasMore: true,
+    }));
+    fake.ctx = {
+      waitUntil: vi.fn((promise: Promise<unknown>) => background.push(promise)),
+    };
+
+    const page = await ChatThreadDO.prototype.getUiMessagePage.call(fake);
+
+    expect(page.messages.map((message: AnyRecord) => message.id)).toEqual([
+      'resident',
+    ]);
+    expect(fake.topUpUiMessagesFromPiCore).toHaveBeenCalledTimes(1);
+    expect(fake.healLegacyUiMessageTimes).not.toHaveBeenCalled();
+    expect(fake.healLegacyUiMessageAuthors).not.toHaveBeenCalled();
+    expect(background).toHaveLength(1);
+
+    finishTopUp?.();
+    await Promise.resolve();
+    expect(fake.healLegacyUiMessageTimes).toHaveBeenCalledTimes(1);
+    finishTimeRepair?.();
+    await Promise.all(background);
+    expect(fake.healLegacyUiMessageAuthors).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps only the resident window in memory while retaining and paging every durable row', async () => {
+    const stub = await newChatThreadStub('thread-bounded-render-history');
+    await runInDurableObject(stub, async (instance: any) => {
+      instance.chatContext = { threadId: 'thread-bounded-render-history' };
+      const messages = Array.from({ length: 75 }, (_, index) => ({
+        id: `message-${String(index).padStart(3, '0')}`,
+        role: index % 2 === 0 ? 'user' : 'assistant',
+        parts: [{ type: 'text', text: `message ${index}` }],
+      }));
+
+      await instance.persistMessages(messages);
+
+      const first = await instance.getUiMessagePage();
+      expect(first.messages).toHaveLength(50);
+      expect(first.messages[0].id).toBe('message-025');
+      expect(first.messages[49].id).toBe('message-074');
+      expect(first.hasMore).toBe(true);
+      expect(first.nextCursor).toEqual(expect.any(String));
+      expect(instance.messages).toHaveLength(50);
+      expect(
+        instance.ctx.storage.sql
+          .exec<{ count: number }>(
+            'SELECT COUNT(*) AS count FROM cf_ai_chat_agent_messages',
+          )
+          .one().count,
+      ).toBe(75);
+
+      // Appending after publishing a cursor cannot move the boundary it names.
+      await instance.persistMessages([
+        ...instance.messages,
+        {
+          id: 'message-075',
+          role: 'assistant',
+          parts: [{ type: 'text', text: 'newest' }],
+        },
+      ]);
+      const older = await instance.getOlderUiMessages(first.nextCursor);
+      expect(older.messages.map((message: AnyRecord) => message.id)).toEqual(
+        Array.from({ length: 26 }, (_, index) =>
+          `message-${String(index).padStart(3, '0')}`,
+        ),
+      );
+      expect(older.hasMore).toBe(false);
+      expect(older.nextCursor).toBeNull();
+      expect(
+        instance.ctx.storage.sql
+          .exec<{ count: number }>(
+            'SELECT COUNT(*) AS count FROM cf_ai_chat_agent_messages',
+          )
+          .one().count,
+      ).toBe(76);
+    });
+  });
+
+  it('returns one oversized row instead of producing an empty or skipping page', async () => {
+    const stub = await newChatThreadStub('thread-render-history-oversized-row');
+    await runInDurableObject(stub, async (instance: any) => {
+      await instance.persistMessages([
+        {
+          id: 'older',
+          role: 'user',
+          parts: [{ type: 'text', text: 'small' }],
+        },
+        {
+          id: 'newer-large',
+          role: 'assistant',
+          parts: [{ type: 'text', text: 'x'.repeat(2_000) }],
+        },
+      ]);
+
+      const page = instance.getRenderHistoryPage({ maxBytes: 100 });
+      expect(page.messages.map((message: AnyRecord) => message.id)).toEqual([
+        'newer-large',
+      ]);
+      expect(page.hasMore).toBe(true);
+      expect(page.nextCursor).toEqual(expect.any(String));
+      const older = instance.getRenderHistoryPage({
+        beforeCursor: page.nextCursor,
+        maxBytes: 100,
+      });
+      expect(older.messages.map((message: AnyRecord) => message.id)).toEqual([
+        'newer-large',
+      ]);
+      expect(older.hasMore).toBe(true);
+      const oldest = instance.getRenderHistoryPage({
+        beforeCursor: older.nextCursor,
+        maxBytes: 100,
+      });
+      expect(oldest.messages.map((message: AnyRecord) => message.id)).toEqual([
+        'older',
+      ]);
+      expect(oldest.hasMore).toBe(false);
+    });
+  });
+
+  it('migrates a genuine pre-column render table idempotently', async () => {
+    const stub = await newChatThreadStub('thread-render-history-metadata');
+    await runInDurableObject(stub, async (instance: any) => {
+      instance.ctx.storage.sql.exec(
+        'DROP TABLE cf_ai_chat_render_history_meta',
+      );
+      instance.ctx.storage.sql.exec('DROP TABLE cf_ai_chat_agent_messages');
+      instance.ctx.storage.sql.exec(
+        'CREATE TABLE cf_ai_chat_agent_messages (id TEXT PRIMARY KEY, message TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)',
+      );
+      instance.ctx.storage.sql.exec(
+        'INSERT INTO cf_ai_chat_agent_messages (id, message) VALUES (?, ?)',
+        'legacy-row',
+        JSON.stringify({
+          id: 'legacy-row',
+          role: 'user',
+          parts: [{ type: 'text', text: 'legacy' }],
+        }),
+      );
+
+      instance._ensureRenderHistoryMetadata();
+      const first = instance.ctx.storage.sql
+        .exec<{
+          render_seq: number | null;
+          serialized_bytes: number | null;
+          chronology_key: string | null;
+        }>(
+          'SELECT render_seq, serialized_bytes, chronology_key FROM cf_ai_chat_agent_messages WHERE id = ?',
+          'legacy-row',
+        )
+        .one();
+      expect(first.render_seq).toEqual(expect.any(Number));
+      expect(first.serialized_bytes).toBeGreaterThan(0);
+      expect(first.chronology_key).toEqual(expect.any(String));
+      expect(
+        instance.ctx.storage.sql
+          .exec<{ value: number }>(
+            "SELECT value FROM cf_ai_chat_render_history_meta WHERE key = 'metadata_v1'",
+          )
+          .one().value,
+      ).toBe(1);
+
+      instance._ensureRenderHistoryMetadata();
+      expect(
+        instance.ctx.storage.sql
+          .exec(
+            'SELECT render_seq, serialized_bytes, chronology_key FROM cf_ai_chat_agent_messages WHERE id = ?',
+            'legacy-row',
+          )
+          .one(),
+      ).toEqual(first);
+    });
+  });
+
+  it('heals timestamps across durable pages before setting the one-shot marker', async () => {
+    const stub = await newChatThreadStub('thread-render-history-time-heal-pages');
+    await runInDurableObject(stub, async (instance: any) => {
+      instance.chatContext = { threadId: 'thread-render-history-time-heal-pages' };
+      await instance.persistMessages(
+        Array.from({ length: 60 }, (_, index) => ({
+          id: `legacy-time-${String(index).padStart(3, '0')}`,
+          role: 'assistant',
+          parts: [{ type: 'text', text: `answer ${index}`, state: 'done' }],
+        })),
+      );
+
+      await instance.healLegacyUiMessageTimes();
+
+      const rows = instance.ctx.storage.sql
+        .exec<{ message: string }>(
+          'SELECT message FROM cf_ai_chat_agent_messages ORDER BY chronology_key',
+        )
+        .toArray();
+      expect(rows).toHaveLength(60);
+      expect(
+        rows.every((row: { message: string }) => {
+          const message = JSON.parse(row.message) as AnyRecord;
+          return typeof (message.metadata as AnyRecord | undefined)?.pi === 'object'
+            && typeof ((message.metadata as AnyRecord).pi as AnyRecord).createdAtMs === 'number';
+        }),
+      ).toBe(true);
+      expect(instance.ctx.storage.kv.get('uiMessagesTimeHealDone')).toBe(true);
+    });
+  });
+
+  it('heals author attribution on rows older than the resident window', async () => {
+    const stub = await newChatThreadStub('thread-render-history-author-heal-pages');
+    await runInDurableObject(stub, async (instance: any) => {
+      instance.chatContext = {
+        threadId: 'thread-render-history-author-heal-pages',
+      };
+      instance.ensurePiCoreTables();
+      const messages = Array.from({ length: 60 }, (_, index) => {
+        const timestamp = 10_000 + index;
+        const id = `legacy-author-${String(index).padStart(3, '0')}`;
+        seedPiCoreRow(instance, index, {
+          role: 'user',
+          content: `[web message from User ${index}]: canonical`,
+          timestamp,
+          uiMetadata: { renderMessageId: id },
+        });
+        return {
+          id,
+          role: 'user',
+          parts: [{ type: 'text', text: `raw ${index}`, state: 'done' }],
+          metadata: {
+            piCoreMessageKey: String(timestamp),
+            pi: { createdAtMs: timestamp },
+          },
+        };
+      });
+      await instance.persistMessages(messages);
+
+      await instance.healLegacyUiMessageAuthors();
+
+      const oldest = instance.ctx.storage.sql
+        .exec<{ message: string }>(
+          'SELECT message FROM cf_ai_chat_agent_messages WHERE id = ?',
+          'legacy-author-000',
+        )
+        .one();
+      expect(JSON.parse(oldest.message).metadata).toMatchObject({
+        authorDisplayName: 'User 0',
+        source: 'web',
+      });
+      expect(
+        instance.ctx.storage.kv.get('uiMessagesAuthorAttributionHealV1'),
+      ).toBe(true);
+    });
+  });
+
+  it('reports the total durable row count after a rebuild, not resident count', async () => {
+    const stub = await newChatThreadStub('thread-render-history-resync-count');
+    await runInDurableObject(stub, async (instance: any) => {
+      instance.chatContext = { threadId: 'thread-render-history-resync-count' };
+      instance.ensurePiCoreTables();
+      for (let index = 0; index < 60; index += 1) {
+        seedPiCoreRow(instance, index, {
+          role: 'user',
+          content: `question ${index}`,
+          timestamp: 20_000 + index,
+        });
+      }
+
+      const result = await instance.resyncUiMessagesFromPiCore();
+
+      expect(result).toEqual({ ok: true, messageCount: 60 });
+      expect(instance.messages).toHaveLength(50);
+    });
+  });
+});
+
 describe('ChatThreadDO native stream bridge (commit 3b)', () => {
   it('relays encoder chunks to the attached writer and feeds the eval collector', () => {
     const writes: AnyRecord[] = [];
@@ -363,6 +656,73 @@ describe('ChatThreadDO native stream bridge (commit 3b)', () => {
       expect(ids).toContain('pi_user_2000_2');
       expect(ids).toHaveLength(3);
       expect(instance.ctx.storage.kv.get('uiMessagesPiCoreHighWaterIdx')).toBe(3);
+    });
+  });
+
+  it('deduplicates legacy top-up identities across the full durable archive', async () => {
+    const stub = await newChatThreadStub('thread-legacy-archive-dedupe');
+    await runInDurableObject(stub, async (instance: any) => {
+      instance.chatContext = { threadId: 'thread-legacy-archive-dedupe' };
+      instance.ensurePiCoreTables();
+
+      const renderMessages: AnyRecord[] = [];
+      for (let turn = 0; turn < 30; turn += 1) {
+        const timestamp = 10_000 + turn;
+        renderMessages.push(
+          {
+            id: `live-user-${turn}`,
+            role: 'user',
+            parts: [{ type: 'text', text: `question ${turn}`, state: 'done' }],
+            metadata: { piCoreMessageKey: String(timestamp) },
+          },
+          {
+            id: `live-assistant-${turn}`,
+            role: 'assistant',
+            parts: [{ type: 'text', text: `answer ${turn}`, state: 'done' }],
+            metadata: { pi: { forkEntryId: `legacy-response-${turn}` } },
+          },
+        );
+        // These rows intentionally predate renderMessageId stamping.
+        seedPiCoreRow(instance, turn * 2, {
+          role: 'user',
+          content: `question ${turn}`,
+          timestamp,
+        });
+        seedPiCoreRow(instance, turn * 2 + 1, {
+          role: 'assistant',
+          content: [{ type: 'text', text: `answer ${turn}` }],
+          timestamp,
+          responseId: `legacy-response-${turn}`,
+        });
+      }
+      await instance.persistMessages(renderMessages);
+      expect(instance.messages).toHaveLength(50);
+      instance.ctx.storage.kv.delete('uiMessagesPiCoreHighWaterIdx');
+      instance.ctx.storage.kv.delete('uiMessagesPiCoreRevisionV1');
+
+      await instance.getUiMessages();
+
+      const durableRows = instance.ctx.storage.sql
+        .exec<{ count: number }>(
+          'SELECT COUNT(*) AS count FROM cf_ai_chat_agent_messages',
+        )
+        .one().count;
+      expect(durableRows).toBe(60);
+      const durableIds = instance.ctx.storage.sql
+        .exec<{ id: string }>(
+          'SELECT id FROM cf_ai_chat_agent_messages ORDER BY id',
+        )
+        .toArray()
+        .map((row: { id: string }) => row.id);
+      expect(durableIds.some((id: string) => id.startsWith('pi_user_'))).toBe(
+        false,
+      );
+      expect(
+        durableIds.some((id: string) => id.startsWith('legacy-response-')),
+      ).toBe(false);
+      expect(instance.ctx.storage.kv.get('uiMessagesPiCoreHighWaterIdx')).toBe(
+        60,
+      );
     });
   });
 
@@ -915,6 +1275,7 @@ describe('ChatThreadDO native stream bridge (commit 3b)', () => {
       );
       instance.reloadAiChatMessagesOrdered();
 
+      await instance.healLegacyUiMessageTimes();
       const messages = await instance.getUiMessages();
       const legacy = messages.find((m: AnyRecord) => m.id === 'legacy-1') as AnyRecord;
       const pi = (legacy.metadata as AnyRecord).pi as AnyRecord;

@@ -1,0 +1,293 @@
+diff --git a/dist/index.d.ts b/dist/index.d.ts
+index 4c78cfd00e1b7ac8df16f5b4b405e297d8aea9cc..b6f9dd3b8e8ce899d3bf3aa15df3160bf96208bb 100644
+--- a/dist/index.d.ts
++++ b/dist/index.d.ts
+@@ -51,6 +51,19 @@ type ChatRecoveryContinueData = {
+   lastClientTools?: ClientToolSchema$1[] | null;
+ };
+ type ChatMessage = UIMessage;
++type RenderHistoryWindowConfig = {
++  /** Maximum number of render messages kept resident in the Durable Object. */
++  maxMessages: number;
++  /** Maximum serialized message bytes kept resident in the Durable Object. */
++  maxBytes: number;
++};
++type RenderHistoryPage = {
++  /** Messages in oldest-to-newest render order. */
++  messages: UIMessage[];
++  /** Immutable chronology cursor; older pages overlap the boundary row. */
++  nextCursor: string | null;
++  hasMore: boolean;
++};
+ /**
+  * Options passed to the onChatMessage handler.
+  */
+@@ -263,6 +276,26 @@ declare class AIChatAgent<
+    * @internal
+    */
+   private _persistedMessageCache;
++  private _renderHistoryWindowConfig;
++  private _ensureRenderHistoryMetadata;
++  private _selectRenderHistoryRows;
++  private _parseRenderHistoryRows;
++  private _upsertRenderHistoryMessage;
++  /** Assign canonical chronology before a historical row becomes pageable. */
++  protected _setRenderHistoryChronology(id: string, createdAt: string): void;
++  /**
++   * Optional subclass-level resident render-history budget. This must be static
++   * because the base constructor loads history before subclass fields run.
++   * Durable rows outside the window remain in SQLite and are available through
++   * `getRenderHistoryPage`.
++   */
++  static renderHistoryWindow?: RenderHistoryWindowConfig;
++  /** Read a bounded cursor page without adding older rows to resident state. */
++  protected getRenderHistoryPage(options?: {
++    beforeCursor?: string | null;
++    maxMessages?: number;
++    maxBytes?: number;
++  }): RenderHistoryPage;
+   /**
+    * Shared auto-continuation barrier (#1649 / #1650): owns the coalesce timer
+    * and the double-fire guard. Parameterized by this agent's stream-active
+@@ -1600,6 +1633,8 @@ declare class AIChatAgent<
+ export {
+   AIChatAgent,
+   ChatMessage,
++  type RenderHistoryPage,
++  type RenderHistoryWindowConfig,
+   type ChatRecoveryConfig,
+   type ChatRecoveryContext,
+   type ChatRecoveryExhaustedContext,
+diff --git a/dist/index.js b/dist/index.js
+index 2aceaf4f6f9364cf972a6cfcb3c3446c35d37f03..0960378bc697beef2623c08d20102bcc71631193 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -187,8 +187,12 @@ var AIChatAgent = class AIChatAgent extends Agent {
+ 				this.sql`create table if not exists cf_ai_chat_agent_messages (
+               id text primary key,
+               message text not null,
+-              created_at datetime default current_timestamp
++              created_at datetime default current_timestamp,
++              render_seq integer,
++              serialized_bytes integer,
++              chronology_key text
+             )`;
++				if (this._renderHistoryWindowConfig()) this._ensureRenderHistoryMetadata();
+ 				this.sql`create table if not exists cf_ai_chat_request_context (
+               key text primary key,
+               value text not null
+@@ -881,8 +885,80 @@ var AIChatAgent = class AIChatAgent extends Agent {
+ 		});
+ 	}
+ 	_loadMessagesFromDb() {
+-		const rows = this.sql`select * from cf_ai_chat_agent_messages order by created_at` || [];
+-		this._persistedMessageCache.clear();
++		const limits = this._renderHistoryWindowConfig();
++		if (limits) return this._parseRenderHistoryRows(this._selectRenderHistoryRows(null, limits).rows, true);
++		const rows = this.sql`select id, message from cf_ai_chat_agent_messages order by created_at` || [];
++		return this._parseRenderHistoryRows(rows, true);
++	}
++	_renderHistoryWindowConfig() {
++		const config = this.constructor.renderHistoryWindow;
++		if (!config || !Number.isFinite(config.maxMessages) || !Number.isFinite(config.maxBytes)) return null;
++		return {
++			maxMessages: Math.max(1, Math.floor(config.maxMessages)),
++			maxBytes: Math.max(1, Math.floor(config.maxBytes))
++		};
++	}
++	_ensureRenderHistoryMetadata() {
++		this.sql`create table if not exists cf_ai_chat_render_history_meta (
++      key text primary key,
++      value integer not null
++    )`;
++		const migrated = (this.sql`select value from cf_ai_chat_render_history_meta where key = 'metadata_v1' limit 1` || [])[0];
++		if (migrated?.value === 1) return;
++		const columns = new Set((this.sql`pragma table_info(cf_ai_chat_agent_messages)` || []).map((row) => row.name));
++		if (!columns.has("render_seq")) this.sql`alter table cf_ai_chat_agent_messages add column render_seq integer`;
++		if (!columns.has("serialized_bytes")) this.sql`alter table cf_ai_chat_agent_messages add column serialized_bytes integer`;
++		if (!columns.has("chronology_key")) this.sql`alter table cf_ai_chat_agent_messages add column chronology_key text`;
++		this.sql`update cf_ai_chat_agent_messages set render_seq = rowid where render_seq is null`;
++		this.sql`update cf_ai_chat_agent_messages set serialized_bytes = length(cast(message as blob)) where serialized_bytes is null`;
++		this.sql`update cf_ai_chat_agent_messages set chronology_key = created_at || ':' || printf('%020d', render_seq) || ':' || id where chronology_key is null`;
++		this.sql`create unique index if not exists cf_ai_chat_agent_messages_render_seq on cf_ai_chat_agent_messages(render_seq)`;
++		this.sql`create unique index if not exists cf_ai_chat_agent_messages_chronology on cf_ai_chat_agent_messages(chronology_key)`;
++		this.sql`insert or replace into cf_ai_chat_render_history_meta (key, value) values ('metadata_v1', 1)`;
++	}
++	_selectRenderHistoryRows(beforeCursor, limits) {
++		const metadataLimit = limits.maxMessages + 1;
++		const encodedCursor = beforeCursor == null ? null : String(beforeCursor);
++		const cursorInclusive = encodedCursor?.startsWith("i:") === true;
++		const cursorKey = encodedCursor == null ? null : encodedCursor.startsWith("i:") || encodedCursor.startsWith("e:") ? encodedCursor.slice(2) : encodedCursor;
++		const metadata = (cursorKey == null ? this.sql`
++      select id, render_seq, chronology_key, coalesce(serialized_bytes, length(cast(message as blob))) as serialized_bytes
++      from cf_ai_chat_agent_messages
++      order by chronology_key desc
++      limit ${metadataLimit}
++    ` : cursorInclusive ? this.sql`
++      select id, render_seq, chronology_key, coalesce(serialized_bytes, length(cast(message as blob))) as serialized_bytes
++      from cf_ai_chat_agent_messages
++      where chronology_key <= ${cursorKey}
++      order by chronology_key desc
++      limit ${metadataLimit}
++    ` : this.sql`
++      select id, render_seq, chronology_key, coalesce(serialized_bytes, length(cast(message as blob))) as serialized_bytes
++      from cf_ai_chat_agent_messages
++      where chronology_key < ${cursorKey}
++      order by chronology_key desc
++      limit ${metadataLimit}
++    `) || [];
++		const selected = [];
++		let bytes = 0;
++		for (const row of metadata) {
++			const rowBytes = Math.max(0, Number(row.serialized_bytes) || 0);
++			if (selected.length > 0 && (selected.length >= limits.maxMessages || bytes + rowBytes > limits.maxBytes)) break;
++			selected.push(row);
++			bytes += rowBytes;
++		}
++		const rows = [];
++		for (const row of selected) {
++			const body = (this.sql`select id, message from cf_ai_chat_agent_messages where id = ${row.id} limit 1` || [])[0];
++			if (body) rows.push({ ...body, chronology_key: row.chronology_key });
++		}
++		rows.sort((a, b) => String(a.chronology_key).localeCompare(String(b.chronology_key)));
++		const hasMore = metadata.length > selected.length;
++		const nextCursor = hasMore && selected.length > 0 ? `${beforeCursor == null || selected.length > 1 ? "i" : "e"}:${String(selected[selected.length - 1].chronology_key)}` : null;
++		return { rows, nextCursor, hasMore };
++	}
++	_parseRenderHistoryRows(rows, populateCache) {
++		if (populateCache) this._persistedMessageCache.clear();
+ 		return rows.map((row) => {
+ 			try {
+ 				const messageStr = row.message;
+@@ -891,7 +967,7 @@ var AIChatAgent = class AIChatAgent extends Agent {
+ 					console.warn(`[AIChatAgent] Skipping invalid message ${row.id}: missing or malformed id, role, or parts`);
+ 					return null;
+ 				}
+-				this._persistedMessageCache.set(parsed.id, messageStr);
++				if (populateCache) this._persistedMessageCache.set(parsed.id, messageStr);
+ 				return parsed;
+ 			} catch (error) {
+ 				console.error(`Failed to parse message ${row.id}:`, error);
+@@ -899,6 +975,59 @@ var AIChatAgent = class AIChatAgent extends Agent {
+ 			}
+ 		}).filter((msg) => msg !== null);
+ 	}
++	getRenderHistoryPage(options = {}) {
++		const configured = this._renderHistoryWindowConfig();
++		if (!configured) {
++			const rows = this.sql`select id, message from cf_ai_chat_agent_messages order by created_at` || [];
++			return {
++				messages: autoTransformMessages(this._parseRenderHistoryRows(rows, false)),
++				nextCursor: null,
++				hasMore: false
++			};
++		}
++		const beforeCursor = options.beforeCursor == null ? null : String(options.beforeCursor);
++		const limits = {
++			maxMessages: Math.max(1, Math.min(configured.maxMessages, Math.floor(options.maxMessages ?? configured.maxMessages))),
++			maxBytes: Math.max(1, Math.min(configured.maxBytes, Math.floor(options.maxBytes ?? configured.maxBytes)))
++		};
++		const page = this._selectRenderHistoryRows(beforeCursor, limits);
++		return {
++			messages: autoTransformMessages(this._parseRenderHistoryRows(page.rows, false)),
++			nextCursor: page.nextCursor,
++			hasMore: page.hasMore
++		};
++	}
++	_upsertRenderHistoryMessage(id, json) {
++		if (!this._renderHistoryWindowConfig()) {
++			this.sql`
++        insert into cf_ai_chat_agent_messages (id, message)
++        values (${id}, ${json})
++        on conflict(id) do update set message = excluded.message
++      `;
++			return;
++		}
++		this.sql`
++      insert into cf_ai_chat_agent_messages (id, message, render_seq, serialized_bytes, chronology_key)
++      values (
++        ${id},
++        ${json},
++        (select coalesce(max(render_seq), 0) + 1 from cf_ai_chat_agent_messages),
++        length(cast(${json} as blob)),
++        current_timestamp || ':' || printf('%020d', (select coalesce(max(render_seq), 0) + 1 from cf_ai_chat_agent_messages)) || ':' || ${id}
++      )
++      on conflict(id) do update set
++        message = excluded.message,
++        serialized_bytes = excluded.serialized_bytes
++    `;
++	}
++	_setRenderHistoryChronology(id, createdAt) {
++		this.sql`
++      update cf_ai_chat_agent_messages
++      set created_at = ${createdAt},
++          chronology_key = ${createdAt} || ':' || printf('%020d', render_seq) || ':' || id
++      where id = ${id}
++    `;
++	}
+ 	async _tryCatchChat(fn) {
+ 		try {
+ 			return await fn();
+@@ -2894,20 +3023,17 @@ var AIChatAgent = class AIChatAgent extends Agent {
+ 			const safe = this._enforceRowSizeLimit(resolved);
+ 			const json = JSON.stringify(safe);
+ 			if (this._persistedMessageCache.get(safe.id) === json) continue;
+-			this.sql`
+-        insert into cf_ai_chat_agent_messages (id, message)
+-        values (${safe.id}, ${json})
+-        on conflict(id) do update set message = excluded.message
+-      `;
++			this._upsertRenderHistoryMessage(safe.id, json);
+ 			this._persistedMessageCache.set(safe.id, json);
+ 		}
+ 		if (options?._deleteStaleRows) {
+ 			const serverIds = new Set(this.messages.map((m) => m.id));
+ 			if (mergedMessages.every((m) => serverIds.has(m.id))) {
+ 				const keepIds = new Set(mergedMessages.map((m) => m.id));
+-				const staleIds = (this.sql`
++				const candidates = this._renderHistoryWindowConfig() ? this.messages.map((message) => message.id) : (this.sql`
+             select id from cf_ai_chat_agent_messages
+-          ` || []).map((row) => row.id).filter((id) => !keepIds.has(id));
++          ` || []).map((row) => row.id);
++				const staleIds = candidates.filter((id) => !keepIds.has(id));
+ 				this._deleteMessagesByIds(staleIds);
+ 			}
+ 		}
+@@ -2915,7 +3041,7 @@ var AIChatAgent = class AIChatAgent extends Agent {
+ 		const persisted = this._loadMessagesFromDb();
+ 		this.messages = autoTransformMessages(persisted);
+ 		this._broadcastChatMessage({
+-			messages: mergedMessages,
++			messages: this._renderHistoryWindowConfig() ? this.messages : mergedMessages,
+ 			type: MessageType.CF_AGENT_CHAT_MESSAGES
+ 		}, excludeBroadcastIds);
+ 	}
+@@ -3157,8 +3283,13 @@ var AIChatAgent = class AIChatAgent extends Agent {
+ 				});
+ 				const safe = this._enforceRowSizeLimit(updatedMessage);
+ 				const json = JSON.stringify(safe);
+-				this.sql`
+-          update cf_ai_chat_agent_messages 
++				if (this._renderHistoryWindowConfig()) this.sql`
++          update cf_ai_chat_agent_messages
++          set message = ${json}, serialized_bytes = length(cast(${json} as blob))
++          where id = ${message.id}
++        `;
++				else this.sql`
++          update cf_ai_chat_agent_messages
+           set message = ${json}
+           where id = ${message.id}
+         `;
+@@ -3376,11 +3507,7 @@ var AIChatAgent = class AIChatAgent extends Agent {
+ 					};
+ 					const sanitized = this._sanitizeMessageForPersistence(snapshot);
+ 					const json = JSON.stringify(sanitized);
+-					this.sql`
+-                INSERT INTO cf_ai_chat_agent_messages (id, message)
+-                VALUES (${sanitized.id}, ${json})
+-                ON CONFLICT(id) DO UPDATE SET message = excluded.message
+-              `;
++					this._upsertRenderHistoryMessage(sanitized.id, json);
+ 					this._approvalPersistedMessageId = sanitized.id;
+ 				}
+ 				if ((data.type === "tool-output-available" || data.type === "tool-output-error") && data.toolCallId) {

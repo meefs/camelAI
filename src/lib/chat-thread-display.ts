@@ -11,6 +11,7 @@ import type { Message } from "@/types";
 export interface DisplaySnapshotFields {
   messages: Message[];
   initialUiMessages: UIMessage[];
+  olderUiMessagesCursor?: string | null;
   todos: TodoItem[];
 }
 
@@ -48,6 +49,9 @@ export function resolveDisplayChatData<T extends DisplaySnapshotFields>(
           (message) => message.id !== streamingMessageId,
         )
       : cachedSnapshot.uiMessages,
+    // A snapshot only owns its resident window. The loader cursor may belong to
+    // a different thread while a tab switch is painting from cache.
+    olderUiMessagesCursor: null,
     todos: cachedSnapshot.todos,
     bridgedStreamingMessageId: streamingMessageId,
   };

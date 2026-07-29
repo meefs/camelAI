@@ -92,6 +92,9 @@
       },
     },
   },
+  "patchedDependencies": {
+    "@cloudflare/ai-chat@0.9.4": "patches/@cloudflare%2Fai-chat@0.9.4.patch",
+  },
   "overrides": {
     "picomatch": "4.0.4",
     "vite": "8.0.16",

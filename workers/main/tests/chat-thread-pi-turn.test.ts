@@ -935,7 +935,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(fake.piCurrentUsageProvider).toBe('openrouter');
   });
 
-  it('sends initial user messages after preparing the Pi session', async () => {
+  it('durably accepts initial user messages without preparing the Pi session in the RPC', async () => {
     const sentCommands: any[] = [];
     const fake = Object.create(ChatThreadDO.prototype) as any;
 
@@ -960,6 +960,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     fake.broadcastRunnerClients = vi.fn();
     fake.emitChatError = vi.fn();
     fake.ensurePiSessionReady = vi.fn(async () => undefined);
+    fake.readPiActiveTurn = vi.fn(() => null);
     fake.applyMentionsForTurn = vi.fn(async (content: string) => content);
     fake.updateThreadMetadataForUserMessage = vi.fn(async () => {});
     fake.warmWorkspaceContainerForTurn = vi.fn(async () => undefined);
@@ -985,7 +986,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
 
     expect(result).toEqual({ status: 'accepted' });
-    expect(fake.ensurePiSessionReady).toHaveBeenCalledTimes(1);
+    expect(fake.ensurePiSessionReady).not.toHaveBeenCalled();
     expect(fake.syncAgentState).toHaveBeenCalled();
     expect(fake.warmWorkspaceContainerForTurn).not.toHaveBeenCalled();
     expect(sentCommands).toHaveLength(1);
@@ -1044,6 +1045,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     fake.publishRunningUserMessageActivity = vi.fn();
     fake.updateActiveAutomationRun = vi.fn();
     fake.ensurePiSessionReady = vi.fn(async () => undefined);
+    fake.readPiActiveTurn = vi.fn(() => null);
     fake.applyMentionsForTurn = vi.fn(async (content: string) => content);
     fake.updateThreadMetadataForUserMessage = vi.fn(async () => {});
     fake.warmWorkspaceContainerForTurn = vi.fn(async () => undefined);
@@ -1154,6 +1156,42 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(fake.saveMessages).toHaveBeenCalledTimes(1);
     expect(fake.ctx.waitUntil).toHaveBeenCalledTimes(1);
 
+    await flushWaitUntil(fake);
+    expect(order).toEqual(['marker', 'journal', 'saveMessages']);
+  });
+
+  it('admits a cold fresh turn before Pi session construction', async () => {
+    const order: string[] = [];
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.piSession = null;
+    fake.ctx = { waitUntil: vi.fn() };
+    fake.pendingPiPromptQueue = [];
+    fake.readPiActiveTurn = vi.fn(() => null);
+    fake.openPiActiveTurnIfAbsent = vi.fn(() => order.push('marker'));
+    fake.recordPiTurnJournalUserMessage = vi.fn(() => order.push('journal'));
+    fake.buildUserUiSkeleton = vi.fn(() => ({
+      id: 'cold-user',
+      role: 'user',
+      parts: [],
+    }));
+    fake.saveMessages = vi.fn(async () => {
+      order.push('saveMessages');
+      return { status: 'completed' };
+    });
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+
+    const accepted = ChatThreadDO.prototype['sendRunnerCommand'].call(fake, {
+      type: 'message',
+      content: 'cold prompt',
+      rawContent: 'cold prompt',
+      clientMessageId: 'cold-user',
+      messageSource: 'web',
+    });
+
+    expect(accepted).toBe(true);
+    expect(order.slice(0, 2)).toEqual(['marker', 'journal']);
+    expect(fake.pendingPiPromptQueue).toHaveLength(1);
+    expect(fake.ctx.waitUntil).toHaveBeenCalledTimes(1);
     await flushWaitUntil(fake);
     expect(order).toEqual(['marker', 'journal', 'saveMessages']);
   });
@@ -1538,7 +1576,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
 
     expect(result).toEqual({ status: 'accepted' });
-    expect(fake.ensurePiSessionReady).toHaveBeenCalledTimes(1);
+    expect(fake.ensurePiSessionReady).not.toHaveBeenCalled();
     expect(fake.syncAgentState).toHaveBeenCalled();
     expect(fake.publishRunningUserMessageActivity).toHaveBeenCalledWith(
       'please also add tests',
@@ -1558,13 +1596,14 @@ describe('ChatThreadDO Pi turn handling', () => {
   it('keeps render attribution aligned with the context captured before awaits', async () => {
     const sentCommands: any[] = [];
     const fake = makeNewTurnEnqueueFake([]);
-    fake.ensurePiSessionReady = vi.fn(async () => {
+    fake.applyMentionsForTurn = vi.fn(async (content: string) => {
       fake.chatContext = {
         ...fake.chatContext,
         userId: 'other-user',
         userName: 'Other User',
         userEmail: 'other@example.com',
       };
+      return content;
     });
     fake.sendRunnerCommand = vi.fn((command: any) => {
       sentCommands.push(command);
@@ -1842,7 +1881,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     ).toBe(true);
   });
 
-  it('records enqueue stage exceptions before rethrowing', async () => {
+  it('does not invoke a failing Pi-session rebuild before durable admission', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     const error = new Error('runner unavailable');
     fake.chatContext = {
@@ -1861,6 +1900,14 @@ describe('ChatThreadDO Pi turn handling', () => {
     fake.ensurePiSessionReady = vi.fn(async () => {
       throw error;
     });
+    fake.applyMentionsForTurn = vi.fn(async (content: string) => content);
+    fake.readPiActiveTurn = vi.fn(() => null);
+    fake.setActiveTurnUserId = vi.fn();
+    fake.publishRunningUserMessageActivity = vi.fn();
+    fake.updateThreadMetadataForUserMessage = vi.fn(async () => {});
+    fake.sendRunnerCommand = vi.fn(() => true);
+    fake.syncAgentState = vi.fn();
+    fake.ctx = { waitUntil: vi.fn() };
 
     await expect(
       ChatThreadDO.prototype['enqueueRunnerUserMessage'].call(
@@ -1872,8 +1919,8 @@ describe('ChatThreadDO Pi turn handling', () => {
         },
         { sendAttemptId: 'client-msg-3', startedAt: Date.now() },
       ),
-    ).rejects.toThrow('runner unavailable');
-
+    ).resolves.toEqual({ status: 'accepted' });
+    expect(fake.ensurePiSessionReady).not.toHaveBeenCalled();
   });
 
   it('keeps hosted OpenAI models on Responses while routing through OpenRouter AI Gateway', async () => {

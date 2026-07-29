@@ -283,6 +283,7 @@ interface ChatData {
   // fetches this via getUiMessages(); useAgentChat mounts it as its initial
   // messages. The admin-readonly branch leaves it empty (it renders pi_core).
   initialUiMessages: UIMessage[];
+  olderUiMessagesCursor: string | null;
   todos: TodoItem[];
   previewTabs: PreviewTarget[];
   activeTabId: string | null;
@@ -294,6 +295,7 @@ const EMPTY_CHAT_DATA: ChatData = {
   messages: [],
   messagesError: null,
   initialUiMessages: [],
+  olderUiMessagesCursor: null,
   todos: [],
   previewTabs: [],
   activeTabId: null,
@@ -515,16 +517,27 @@ async function buildChatData(
   // rendering an empty thread.
   const uiMessagesPromise = options.loadUiMessages
     ? chatDO
-        .getUiMessages(context, threadId)
-        .then((uiMessages) => ({ uiMessages, uiMessagesError: null }))
+        .getUiMessagePage(context, threadId)
+        .then((page) => ({ page, uiMessagesError: null }))
         .catch((error) => {
           console.error("Failed to load ai-chat render history:", error);
           return {
-            uiMessages: [] as UIMessage[],
+            page: {
+              messages: [] as UIMessage[],
+              nextCursor: null,
+              hasMore: false,
+            },
             uiMessagesError: "Failed to load chat messages",
           };
         })
-    : Promise.resolve({ uiMessages: [] as UIMessage[], uiMessagesError: null });
+    : Promise.resolve({
+        page: {
+          messages: [] as UIMessage[],
+          nextCursor: null,
+          hasMore: false,
+        },
+        uiMessagesError: null,
+      });
   const todosPromise = chatDO
     .getTodoState(context, threadId)
     .catch(() => [] as unknown[]);
@@ -539,7 +552,10 @@ async function buildChatData(
     ...previewData,
     messages: messageData.messages,
     messagesError: messageData.messagesError ?? uiMessageData.uiMessagesError,
-    initialUiMessages: uiMessageData.uiMessages,
+    initialUiMessages: uiMessageData.page.messages,
+    olderUiMessagesCursor: uiMessageData.page.hasMore
+      ? uiMessageData.page.nextCursor
+      : null,
     todos: Array.isArray(todos) ? (todos as TodoItem[]) : [],
   };
 }
@@ -1322,6 +1338,7 @@ export default function ChatPage() {
             chatGroupId={liveActiveChatGroup?.id ?? resolvedActiveGroupId}
             initialMessages={displayChatData.messages}
             initialUiMessages={displayChatData.initialUiMessages}
+            olderUiMessagesCursor={displayChatData.olderUiMessagesCursor}
             bridgedStreamingMessageId={displayChatData.bridgedStreamingMessageId}
             initialTodos={displayChatData.todos}
             threadModel={displayThreadModel}

@@ -56,6 +56,14 @@ import { useFreeTierUpgradePrompt } from "@/hooks/use-free-tier-upgrade-prompt";
 import { useBillingDialogPresence } from "@/hooks/use-billing-dialog-presence";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { APP_BUILD_ID } from "@/lib/app-build-id";
+import {
+  appendEvictedRenderMessages,
+  classifyResidentRenderHistoryUpdate,
+  isCurrentRenderHistoryGeneration,
+  prependOlderRenderMessages,
+  shouldHydrateRenderHistoryCursor,
+  type ChatRenderHistoryPage,
+} from "@/lib/chat-render-history";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { PromptInput } from "@/components/prompt-input";
 import { FloatingTodoList, type TodoItem } from "@/components/floating-todo";
@@ -309,6 +317,8 @@ interface ChatProps {
    * (pi_core) directly.
    */
   initialUiMessages?: UIMessage[];
+  /** Cursor for fetching render messages older than the resident window. */
+  olderUiMessagesCursor?: string | null;
   initialTodos?: TodoItem[];
   threadModel?: LlmModel | null;
   llmProvider?: LlmProvider | null;
@@ -675,6 +685,7 @@ export default function Chat({
   workspaceId,
   initialMessages,
   initialUiMessages,
+  olderUiMessagesCursor = null,
   initialTodos = [],
   threadModel,
   llmProvider,
@@ -858,6 +869,59 @@ export default function Chat({
   });
   const piChatRef = useRef(piChat);
   piChatRef.current = piChat;
+  const [archivedUiMessages, setArchivedUiMessages] = useState<UIMessage[]>([]);
+  const [olderMessagesCursor, setOlderMessagesCursor] = useState<string | null>(
+    olderUiMessagesCursor,
+  );
+  const [isLoadingOlderMessages, setIsLoadingOlderMessages] = useState(false);
+  const [olderMessagesError, setOlderMessagesError] = useState<string | null>(
+    null,
+  );
+  const renderHistoryGenerationRef = useRef(0);
+  const lastHydratedCursorPropRef = useRef(olderUiMessagesCursor);
+  const residentUiMessagesRef = useRef<UIMessage[]>(
+    piChat.uiMessages.length > 0
+      ? piChat.uiMessages
+      : (initialUiMessages ?? []),
+  );
+  const observedLiveResidentRef = useRef(piChat.uiMessages.length > 0);
+  useEffect(() => {
+    // Cached tab data can mount before its loader page resolves. Accept a later
+    // cursor prop only during that initial generation; an authoritative
+    // replacement permanently retires the old boundary.
+    if (shouldHydrateRenderHistoryCursor(
+      renderHistoryGenerationRef.current,
+      lastHydratedCursorPropRef.current,
+      olderUiMessagesCursor,
+    )) {
+      lastHydratedCursorPropRef.current = olderUiMessagesCursor;
+      setOlderMessagesCursor(olderUiMessagesCursor);
+    }
+  }, [olderUiMessagesCursor]);
+  useLayoutEffect(() => {
+    const nextResident = piChat.uiMessages;
+    // Some hook versions briefly expose an empty live list before applying the
+    // loader seed. Do not mistake that hydration gap for an authoritative
+    // clear; after the first non-empty live state, empty is a real reset.
+    if (nextResident.length === 0 && !observedLiveResidentRef.current) return;
+    const update = classifyResidentRenderHistoryUpdate(
+      residentUiMessagesRef.current,
+      nextResident,
+    );
+    residentUiMessagesRef.current = nextResident;
+    observedLiveResidentRef.current = nextResident.length > 0;
+    if (update.kind === "replacement") {
+      renderHistoryGenerationRef.current += 1;
+      setArchivedUiMessages([]);
+      setOlderMessagesCursor(null);
+      setOlderMessagesError(null);
+      setIsLoadingOlderMessages(false);
+    } else if (update.evicted.length > 0) {
+      setArchivedUiMessages((current) =>
+        appendEvictedRenderMessages(current, update.evicted),
+      );
+    }
+  }, [piChat.uiMessages]);
   const isStreaming = piChat.isStreaming;
   const isStreamingRef = useRef(false);
   isStreamingRef.current = isStreaming;
@@ -1143,7 +1207,9 @@ export default function Chat({
     skillSheetsByToolId,
     visibleMessages,
   } = useChatTranscriptProjection({
+    archivedUiMessages,
     bridgedStreamingMessageId,
+    threadId,
     liveMessages: piChat.messages,
     liveUiMessages: piChat.uiMessages,
     optimisticMessages: messages,
@@ -1621,10 +1687,87 @@ export default function Chat({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const messageColumnRef = useRef<HTMLDivElement>(null);
+  const olderPageScrollAnchorRef = useRef<{
+    scrollHeight: number;
+    scrollTop: number;
+  } | null>(null);
   const initialScrollDoneRef = useRef(false);
   const stickToBottomRef = useRef(true);
   const forceScrollOnNextUpdate = useRef(false);
   const chatAgentRef = useRef<ChatAgentClient | null>(null);
+
+  const loadOlderMessages = useCallback(async () => {
+    const cursor = olderMessagesCursor;
+    if (!cursor || isLoadingOlderMessages) return;
+    const requestGeneration = renderHistoryGenerationRef.current;
+
+    setIsLoadingOlderMessages(true);
+    setOlderMessagesError(null);
+    try {
+      const page = (await agentSocket.call("getOlderUiMessages", [
+        cursor,
+      ])) as ChatRenderHistoryPage;
+      if (!page || !Array.isArray(page.messages)) {
+        throw new Error("Invalid render-history page");
+      }
+      if (
+        !isCurrentRenderHistoryGeneration(
+          requestGeneration,
+          renderHistoryGenerationRef.current,
+        )
+      ) {
+        return;
+      }
+
+      const container = scrollContainerRef.current;
+      if (container) {
+        olderPageScrollAnchorRef.current = {
+          scrollHeight: container.scrollHeight,
+          scrollTop: container.scrollTop,
+        };
+      }
+      setArchivedUiMessages((current) =>
+        prependOlderRenderMessages(current, page.messages),
+      );
+      setOlderMessagesCursor(
+        page.hasMore &&
+          typeof page.nextCursor === "string" &&
+          page.nextCursor.length > 0
+          ? page.nextCursor
+          : null,
+      );
+    } catch (error) {
+      if (
+        !isCurrentRenderHistoryGeneration(
+          requestGeneration,
+          renderHistoryGenerationRef.current,
+        )
+      ) {
+        return;
+      }
+      console.error("Failed to load earlier chat messages:", error);
+      setOlderMessagesError("Could not load earlier messages.");
+    } finally {
+      if (
+        isCurrentRenderHistoryGeneration(
+          requestGeneration,
+          renderHistoryGenerationRef.current,
+        )
+      ) {
+        setIsLoadingOlderMessages(false);
+      }
+    }
+  }, [agentSocket, isLoadingOlderMessages, olderMessagesCursor]);
+
+  useLayoutEffect(() => {
+    const anchor = olderPageScrollAnchorRef.current;
+    const container = scrollContainerRef.current;
+    if (!anchor || !container) return;
+    olderPageScrollAnchorRef.current = null;
+    container.scrollTop =
+      anchor.scrollTop + (container.scrollHeight - anchor.scrollHeight);
+  }, [archivedUiMessages]);
+
   const optimisticallyClearedConnectionSetupRequestIdRef = useRef<
     string | null
   >(null);
@@ -4372,6 +4515,28 @@ export default function Chat({
           ref={messageColumnRef}
           className="max-w-3xl mx-auto w-full px-4 md:px-6 pt-2 pb-6 flex flex-col"
         >
+          {!readOnly && (olderMessagesCursor || olderMessagesError) ? (
+            <div className="flex flex-col items-center gap-1 pb-2">
+              {olderMessagesCursor ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  disabled={isLoadingOlderMessages}
+                  onClick={() => void loadOlderMessages()}
+                >
+                  {isLoadingOlderMessages
+                    ? "Loading earlier messages…"
+                    : "Load earlier messages"}
+                </Button>
+              ) : null}
+              {olderMessagesError ? (
+                <p className="text-xs text-destructive" role="status">
+                  {olderMessagesError}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
           <ChatTranscriptErrorBoundary>
             <ChatMessagesView
               visibleMessages={visibleMessages}

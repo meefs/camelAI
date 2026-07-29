@@ -72,7 +72,9 @@ export function useInitialChatTranscript({
 }
 
 interface ChatTranscriptProjectionOptions {
+  archivedUiMessages?: UIMessage[];
   bridgedStreamingMessageId?: string | null;
+  threadId?: string;
   liveMessages: Message[];
   liveUiMessages: UIMessage[];
   optimisticMessages: Message[];
@@ -85,7 +87,9 @@ interface ChatTranscriptProjectionOptions {
  * bridge, optimistic overlays, and the normalization chain used by Chat.
  */
 export function useChatTranscriptProjection({
+  archivedUiMessages = EMPTY_UI_MESSAGES,
   bridgedStreamingMessageId,
+  threadId,
   liveMessages,
   liveUiMessages,
   optimisticMessages,
@@ -125,13 +129,24 @@ export function useChatTranscriptProjection({
     readOnly,
   ]);
 
-  const baseMessages = useMemo(() => {
+  const residentMessages = useMemo(() => {
     if (readOnly) return parsedInitialMessages;
     if (liveMessages.length === 0) return parsedInitialMessages;
     return bridgeMessages.length > 0
       ? [...liveMessages, ...bridgeMessages]
       : liveMessages;
   }, [bridgeMessages, liveMessages, parsedInitialMessages, readOnly]);
+
+  const baseMessages = useMemo(() => {
+    if (readOnly || archivedUiMessages.length === 0) return residentMessages;
+    const residentIds = new Set(residentMessages.map((message) => message.id));
+    const archived = archivedUiMessages
+      .filter((message) => !residentIds.has(message.id))
+      .map((message) => uiMessageToMessage(message, { threadId }));
+    return archived.length === 0
+      ? residentMessages
+      : [...archived, ...residentMessages];
+  }, [archivedUiMessages, readOnly, residentMessages, threadId]);
 
   const displayMessages = useMemo(() => {
     if (optimisticMessages.length === 0) return baseMessages;

@@ -13,6 +13,7 @@
 // `ChatThreadDO.prototype['method'].call(fake)` test seam that stubs a sibling
 // on the fake) behaves exactly as it did when the bodies lived on the DO.
 import type { UIMessage } from "ai";
+import type { ChatRenderHistoryPage } from "../../../../src/lib/chat-render-history";
 import { messageToUiMessage, uiMessageCreatedAtMs } from "../../../../src/lib/ui-message-adapter";
 import {
   parseMessageAuthor,
@@ -73,6 +74,8 @@ export interface ChatThreadUiMirrorDeps {
   setRenderMessages(messages: UIMessage[]): void;
   /** AIChatAgent#persistMessages: sanitize, upsert by id, refresh, broadcast. */
   persistRenderMessages(messages: UIMessage[]): Promise<void>;
+  /** Read one bounded durable render-history page without changing residency. */
+  getRenderHistoryPage(beforeCursor?: string | null): ChatRenderHistoryPage;
   /** Clear AIChatAgent's private serialized-upsert cache (`_persistedMessageCache`). */
   clearPersistedRenderCache(): void;
   // Sibling routing back through the owning DO's same-named delegates, so a
@@ -82,6 +85,7 @@ export interface ChatThreadUiMirrorDeps {
   activePiStreamTurnId(): string | null;
   getPiCoreRevision(): PiCoreRevision;
   getPiCoreParsedMessages(threadId: string): Promise<AgentEvalParsedMessage[]>;
+  setRenderHistoryChronology(id: string, createdAt: string): void;
   reloadAiChatMessagesOrdered(): void;
   topUpUiMessagesFromPiCore(options?: { force?: boolean }): Promise<void>;
   withMemoryPhase<T>(operation: string, fn: () => Promise<T>): Promise<T>;
@@ -98,6 +102,51 @@ export interface ChatThreadUiMirrorDeps {
 
 export class ChatThreadUiMirror {
   constructor(private readonly deps: ChatThreadUiMirrorDeps) {}
+
+  private async walkRenderHistoryPages(
+    visitor: (messages: UIMessage[]) => Promise<boolean | void>,
+  ): Promise<boolean> {
+    let previousPageIds = new Set<string>();
+    const seenCursors = new Set<string>();
+    let beforeCursor: string | null = null;
+
+    for (;;) {
+      if (
+        this.deps.readPiActiveTurn() ||
+        this.deps.activePiStreamTurnId() !== null
+      ) {
+        return false;
+      }
+      const page = this.deps.getRenderHistoryPage(beforeCursor);
+      const messages = page.messages.filter((message) => {
+        return !previousPageIds.has(message.id);
+      });
+      previousPageIds = new Set(page.messages.map((message) => message.id));
+      if ((await visitor(messages)) === false) return false;
+      if (
+        this.deps.readPiActiveTurn() ||
+        this.deps.activePiStreamTurnId() !== null
+      ) {
+        return false;
+      }
+      if (!page.hasMore) return true;
+      const nextCursor = page.nextCursor;
+      if (!nextCursor || seenCursors.has(nextCursor)) return false;
+      seenCursors.add(nextCursor);
+      beforeCursor = nextCursor;
+    }
+  }
+
+  private async persistHealedRenderMessages(
+    healed: UIMessage[],
+  ): Promise<void> {
+    if (healed.length === 0) return;
+    const merged = new Map(
+      this.deps.getRenderMessages().map((message) => [message.id, message]),
+    );
+    for (const message of healed) merged.set(message.id, message);
+    await this.deps.persistRenderMessages([...merged.values()]);
+  }
 
   /**
    * Build a native user render bubble for the linear ai-chat history (commit 3b).
@@ -154,39 +203,37 @@ export class ChatThreadUiMirror {
   async healLegacyUiMessageTimes(): Promise<void> {
     if (this.deps.kv().get<boolean>(UI_MESSAGES_TIME_HEAL_KEY)) return;
     if (this.deps.readPiActiveTurn() || this.deps.activePiStreamTurnId() !== null) return;
-    const missing = this.deps.getRenderMessages().filter(
-      (message) => uiMessageCreatedAtMs(message) === undefined,
-    );
-    if (missing.length > 0) {
-      const rows = this.deps.sql()
-        .exec<{ id: string; created_at: string }>(
-          "SELECT id, created_at FROM cf_ai_chat_agent_messages",
-        )
-        .toArray();
-      const createdById = new Map(rows.map((row) => [row.id, row.created_at]));
-      let changed = false;
-      const healed = this.deps.getRenderMessages().map((message) => {
-        if (uiMessageCreatedAtMs(message) !== undefined) return message;
-        const raw = createdById.get(message.id);
+    let changedCount = 0;
+    const completed = await this.walkRenderHistoryPages(async (messages) => {
+      const healed = messages.flatMap((message) => {
+        if (uiMessageCreatedAtMs(message) !== undefined) return [];
+        const row = this.deps.sql()
+          .exec<{ created_at: string }>(
+            "SELECT created_at FROM cf_ai_chat_agent_messages WHERE id = ?",
+            message.id,
+          )
+          .toArray()[0];
+        const raw = row?.created_at;
         // Column format is SQLite UTC "YYYY-MM-DD HH:MM:SS(.mmm)".
         const ms = raw ? Date.parse(`${raw.replace(" ", "T")}Z`) : Number.NaN;
-        if (!Number.isFinite(ms) || ms <= 0) return message;
+        if (!Number.isFinite(ms) || ms <= 0) return [];
         const metadata = (message.metadata ?? {}) as Record<string, unknown>;
         const pi = (metadata.pi && typeof metadata.pi === "object"
           ? { ...(metadata.pi as Record<string, unknown>) }
           : {}) as Record<string, unknown>;
         pi.createdAtMs = ms;
-        changed = true;
-        return { ...message, metadata: { ...metadata, pi } } as UIMessage;
+        changedCount += 1;
+        return [{ ...message, metadata: { ...metadata, pi } } as UIMessage];
       });
-      if (changed) {
-        await this.deps.persistRenderMessages(healed);
-        this.deps.recordChatThreadObservabilityEvent("pi_ui_message_times_healed", {
-          operation: "heal_legacy_ui_message_times",
-          status: "healed",
-          count: missing.length,
-        });
-      }
+      await this.persistHealedRenderMessages(healed);
+    });
+    if (!completed) return;
+    if (changedCount > 0) {
+      this.deps.recordChatThreadObservabilityEvent("pi_ui_message_times_healed", {
+        operation: "heal_legacy_ui_message_times",
+        status: "healed",
+        count: changedCount,
+      });
     }
     this.deps.kv().put(UI_MESSAGES_TIME_HEAL_KEY, true);
   }
@@ -213,63 +260,62 @@ export class ChatThreadUiMirror {
       return;
     }
 
-    const renderMessages = this.deps.getRenderMessages();
-    const candidates = renderMessages.filter((message) => {
-      if (message.role !== "user") return false;
-      const metadata = (message.metadata ?? {}) as Record<string, unknown>;
-      return (
-        !normalizedMetadataString(metadata.authorDisplayName) &&
-        typeof metadata.piCoreMessageKey === "string"
-      );
-    });
-
     let changedCount = 0;
-    if (candidates.length > 0) {
-      const threadId = this.deps.chatContext()?.threadId ?? "";
-      const parsedPiMessages = await this.deps.getPiCoreParsedMessages(threadId);
-      // The Pi read above can yield. If a turn started in that window, leave the
-      // repair unmarked so a later quiet history read can retry safely.
-      if (
-        this.deps.readPiActiveTurn() ||
-        this.deps.activePiStreamTurnId() !== null
-      ) {
-        return;
-      }
-      const piUsersByRenderMessageId = new Map<
-        string,
-        AgentEvalParsedMessage
-      >();
-      const piUsersByTimestamp = new Map<
-        string,
-        AgentEvalParsedMessage[]
-      >();
-      for (const message of parsedPiMessages) {
-        if (message.role !== "user") continue;
-        const renderMessageId = normalizedMetadataString(
-          message.renderMessageId,
+    let piUsersByRenderMessageId: Map<string, AgentEvalParsedMessage> | null =
+      null;
+    let piUsersByTimestamp: Map<string, AgentEvalParsedMessage[]> | null = null;
+    const completed = await this.walkRenderHistoryPages(async (messages) => {
+      const candidates = messages.filter((message) => {
+        if (message.role !== "user") return false;
+        const metadata = (message.metadata ?? {}) as Record<string, unknown>;
+        return (
+          !normalizedMetadataString(metadata.authorDisplayName) &&
+          typeof metadata.piCoreMessageKey === "string"
         );
-        if (renderMessageId) {
-          piUsersByRenderMessageId.set(renderMessageId, message);
+      });
+      if (candidates.length === 0) return;
+      if (!piUsersByRenderMessageId || !piUsersByTimestamp) {
+        const threadId = this.deps.chatContext()?.threadId ?? "";
+        const parsedPiMessages =
+          await this.deps.getPiCoreParsedMessages(threadId);
+        // The Pi read above can yield. If a turn started in that window, leave
+        // the repair unmarked so a later quiet history read retries safely.
+        if (
+          this.deps.readPiActiveTurn() ||
+          this.deps.activePiStreamTurnId() !== null
+        ) {
+          return false;
         }
-        const timestamp = String(message.created_at);
-        const timestampMatches = piUsersByTimestamp.get(timestamp) ?? [];
-        timestampMatches.push(message);
-        piUsersByTimestamp.set(timestamp, timestampMatches);
+        piUsersByRenderMessageId = new Map();
+        piUsersByTimestamp = new Map();
+        for (const message of parsedPiMessages) {
+          if (message.role !== "user") continue;
+          const renderMessageId = normalizedMetadataString(
+            message.renderMessageId,
+          );
+          if (renderMessageId) {
+            piUsersByRenderMessageId.set(renderMessageId, message);
+          }
+          const timestamp = String(message.created_at);
+          const timestampMatches =
+            piUsersByTimestamp.get(timestamp) ?? [];
+          timestampMatches.push(message);
+          piUsersByTimestamp.set(timestamp, timestampMatches);
+        }
       }
-
       const candidateIds = new Set(candidates.map((message) => message.id));
-      const healed = renderMessages.map((message) => {
-        if (!candidateIds.has(message.id)) return message;
+      const healed = messages.flatMap((message) => {
+        if (!candidateIds.has(message.id)) return [];
         const metadata = (message.metadata ?? {}) as Record<string, unknown>;
         const piCoreMessageKey = metadata.piCoreMessageKey;
-        if (typeof piCoreMessageKey !== "string") return message;
-        const exact = piUsersByRenderMessageId.get(message.id);
+        if (typeof piCoreMessageKey !== "string") return [];
+        const exact = piUsersByRenderMessageId?.get(message.id);
         const timestampMatches =
-          piUsersByTimestamp.get(piCoreMessageKey) ?? [];
+          piUsersByTimestamp?.get(piCoreMessageKey) ?? [];
         const canonical =
           exact ??
           (timestampMatches.length === 1 ? timestampMatches[0] : undefined);
-        if (!canonical) return message;
+        if (!canonical) return [];
 
         const canonicalContent = canonical.content;
         const parsed = typeof canonicalContent === "string"
@@ -277,35 +323,35 @@ export class ChatThreadUiMirror {
           : Array.isArray(canonicalContent)
             ? parseMessageAuthor(canonicalContent as ContentBlock[])
             : null;
-        if (!parsed) return message;
+        if (!parsed) return [];
 
         const authorDisplayName = parsed.author?.displayName ?? null;
         const source = normalizedMetadataString(parsed.source);
         const existingSource = normalizedMetadataString(metadata.source);
-        if (!authorDisplayName && (!source || existingSource)) return message;
+        if (!authorDisplayName && (!source || existingSource)) return [];
 
         changedCount += 1;
-        return {
+        return [{
           ...message,
           metadata: {
             ...metadata,
             ...(authorDisplayName ? { authorDisplayName } : {}),
             ...(!existingSource && source ? { source } : {}),
           },
-        } as UIMessage;
+        } as UIMessage];
       });
-
-      if (changedCount > 0) {
-        await this.deps.persistRenderMessages(healed);
-        this.deps.recordChatThreadObservabilityEvent(
-          "pi_ui_message_authors_healed",
-          {
-            operation: "heal_legacy_ui_message_authors",
-            status: "healed",
-            count: changedCount,
-          },
-        );
-      }
+      await this.persistHealedRenderMessages(healed);
+    });
+    if (!completed) return;
+    if (changedCount > 0) {
+      this.deps.recordChatThreadObservabilityEvent(
+        "pi_ui_message_authors_healed",
+        {
+          operation: "heal_legacy_ui_message_authors",
+          status: "healed",
+          count: changedCount,
+        },
+      );
     }
 
     this.deps.kv().put(UI_MESSAGES_AUTHOR_ATTRIBUTION_HEAL_KEY, true);
@@ -409,11 +455,12 @@ export class ChatThreadUiMirror {
     //    heuristics: fork-id and tool-call identity against existing messages.
     //    Delete this fallback once pre-stamp in-flight turns are gone.
     // The high-water mark still advances past skipped rows.
-    const existingIds = new Set<string>(this.deps.getRenderMessages().map((m) => m.id));
+    const existingIds = new Set<string>();
     const existingForkEntryIds = new Set<string>();
     const existingUserIdsByKey = new Map<string, string>();
     const existingToolCallIds = new Set<string>();
-    for (const existing of this.deps.getRenderMessages()) {
+    const indexExistingRenderMessage = (existing: UIMessage): void => {
+      existingIds.add(existing.id);
       const metadata = (existing as { metadata?: Record<string, unknown> })
         .metadata;
       if (metadata && typeof metadata === "object") {
@@ -441,6 +488,9 @@ export class ChatThreadUiMirror {
           }
         }
       }
+    };
+    for (const existing of this.deps.getRenderMessages()) {
+      indexExistingRenderMessage(existing);
     }
     const parsedAssistantToolCallIds = (content: unknown): string[] => {
       if (!Array.isArray(content)) return [];
@@ -453,6 +503,101 @@ export class ChatThreadUiMirror {
         }
       }
       return ids;
+    };
+    // Modern rows converge under their stamped render id and can use point
+    // lookups below. The legacy fallback relies on identity metadata, so only
+    // when this top-up actually contains unstamped rows do we transiently index
+    // the full durable archive. This preserves legacy dedupe outside the
+    // resident window without putting the archive back into long-lived state or
+    // scanning it on every ordinary new-turn top-up.
+    const neededLegacyUserKeys = new Set<string>();
+    const neededLegacyForkEntryIds = new Set<string>();
+    const neededLegacyToolCallIds = new Set<string>();
+    for (const row of newParsed) {
+      if (normalizedMetadataString(row.renderMessageId)) continue;
+      if (row.role === "user") {
+        neededLegacyUserKeys.add(String(row.created_at));
+      } else if (row.role === "assistant") {
+        const forkEntryId = normalizedMetadataString(row.forkEntryId);
+        if (forkEntryId) neededLegacyForkEntryIds.add(forkEntryId);
+        for (const toolCallId of parsedAssistantToolCallIds(row.content)) {
+          neededLegacyToolCallIds.add(toolCallId);
+        }
+      }
+    }
+    if (
+      neededLegacyUserKeys.size > 0 ||
+      neededLegacyForkEntryIds.size > 0 ||
+      neededLegacyToolCallIds.size > 0
+    ) {
+      const archiveIndexed = await this.walkRenderHistoryPages(
+        async (messages) => {
+          for (const existing of messages) {
+            const metadata = (existing.metadata ?? {}) as Record<
+              string,
+              unknown
+            >;
+            const userKey = normalizedMetadataString(
+              metadata.piCoreMessageKey,
+            );
+            if (userKey && neededLegacyUserKeys.has(userKey)) {
+              existingUserIdsByKey.set(userKey, existing.id);
+            }
+            const pi =
+              metadata.pi && typeof metadata.pi === "object"
+                ? (metadata.pi as {
+                    forkEntryId?: unknown;
+                    forkEntryIds?: unknown;
+                  })
+                : undefined;
+            const forkEntryIds = [
+              normalizedMetadataString(pi?.forkEntryId),
+              ...(Array.isArray(pi?.forkEntryIds)
+                ? pi.forkEntryIds.map(normalizedMetadataString)
+                : []),
+            ];
+            for (const forkEntryId of forkEntryIds) {
+              if (
+                forkEntryId &&
+                neededLegacyForkEntryIds.has(forkEntryId)
+              ) {
+                existingForkEntryIds.add(forkEntryId);
+              }
+            }
+            if (existing.role !== "assistant") continue;
+            for (const part of existing.parts) {
+              const toolCallId = normalizedMetadataString(
+                (part as { toolCallId?: unknown } | null)?.toolCallId,
+              );
+              if (
+                toolCallId &&
+                neededLegacyToolCallIds.has(toolCallId)
+              ) {
+                existingToolCallIds.add(toolCallId);
+              }
+            }
+          }
+        },
+      );
+      // A turn began while the bounded archive walk yielded. Leave the
+      // high-water mark untouched so the next quiet reconciliation retries.
+      if (!archiveIndexed) return;
+    }
+    const durableIdPresence = new Map<string, boolean>();
+    const hasDurableRenderId = (id: string): boolean => {
+      if (existingIds.has(id)) return true;
+      const cached = durableIdPresence.get(id);
+      if (cached !== undefined) return cached;
+      const exists =
+        this.deps.sql()
+          .exec<{ present: number }>(
+            "SELECT 1 AS present FROM cf_ai_chat_agent_messages WHERE id = ? LIMIT 1",
+            id,
+          )
+          .toArray().length > 0;
+      durableIdPresence.set(id, exists);
+      if (exists) existingIds.add(id);
+      return exists;
     };
 
     const convertedByIndex = new Map<number, UIMessage>();
@@ -516,7 +661,7 @@ export class ChatThreadUiMirror {
       for (const index of indexes) stampedAssistantIndexes.add(index);
       // The live stream already persisted the complete marked row. Every
       // assistant commit sharing its id is covered by that one exact-id skip.
-      if (existingIds.has(renderMessageId)) continue;
+      if (hasDurableRenderId(renderMessageId)) continue;
 
       const firstIndex = indexes[0];
       const parts: UIMessage["parts"] = [];
@@ -602,7 +747,7 @@ export class ChatThreadUiMirror {
         continue;
       } else {
         ui = convertAt(index);
-        if (existingIds.has(ui.id)) continue;
+        if (hasDurableRenderId(ui.id)) continue;
       }
 
       const baseMs =
@@ -618,14 +763,13 @@ export class ChatThreadUiMirror {
     if (uiMessages.length > 0) {
       // persistMessages sanitizes, upserts (idempotent by id), refreshes the
       // in-memory list, and broadcasts — but stamps created_at with the insert-
-      // time default, so overwrite it with the monotonic values and reload the
-      // in-memory order to match a fresh wake's `order by created_at`.
+      // time default, so overwrite it with the monotonic values and immutable
+      // chronology cursor before reloading the resident window.
       await this.deps.persistRenderMessages([...this.deps.getRenderMessages(), ...uiMessages]);
       for (const [id, createdAtMs] of createdAtById) {
-        this.deps.sql().exec(
-          "UPDATE cf_ai_chat_agent_messages SET created_at = ? WHERE id = ?",
-          formatAiChatCreatedAt(createdAtMs),
+        this.deps.setRenderHistoryChronology(
           id,
+          formatAiChatCreatedAt(createdAtMs),
         );
       }
       this.deps.reloadAiChatMessagesOrdered();

@@ -45,7 +45,7 @@ vi.mock('@/lib/chat-do.server', () => ({
   getThread: getThreadMock,
   getThreadPreviewState: getThreadPreviewStateMock,
   getTodoState: getTodoStateMock,
-  getUiMessages: getUiMessagesMock,
+  getUiMessagePage: getUiMessagesMock,
   getWorkspaceModelPickerState: getWorkspaceModelPickerStateMock,
 }));
 
@@ -98,7 +98,11 @@ describe('chat loader admin readonly mode', () => {
       version: 0,
     });
     getTodoStateMock.mockResolvedValue([]);
-    getUiMessagesMock.mockResolvedValue([]);
+    getUiMessagesMock.mockResolvedValue({
+      messages: [],
+      nextCursor: null,
+      hasMore: false,
+    });
     getWorkspaceModelPickerStateMock.mockResolvedValue({
       llmProvider: null,
       allowedThreadModels: ['sonnet'],
@@ -182,6 +186,7 @@ describe('chat loader admin readonly mode', () => {
       messages: [],
       messagesError: null,
       initialUiMessages: [],
+      olderUiMessagesCursor: null,
       todos: [],
       previewTabs: [],
       activeTabId: null,
@@ -208,7 +213,11 @@ describe('chat loader workspace mismatch handling', () => {
       version: 0,
     });
     getTodoStateMock.mockResolvedValue([]);
-    getUiMessagesMock.mockResolvedValue([]);
+    getUiMessagesMock.mockResolvedValue({
+      messages: [],
+      nextCursor: null,
+      hasMore: false,
+    });
     requireSessionWorkspaceAccessMock.mockResolvedValue({
       orgId: 'org_active',
       workspaceId: 'ws_active',
@@ -281,6 +290,7 @@ describe('chat loader workspace mismatch handling', () => {
       messages: [],
       messagesError: null,
       initialUiMessages: [],
+      olderUiMessagesCursor: null,
       todos: [],
       previewTabs: [],
       activeTabId: null,
@@ -376,8 +386,14 @@ describe('chat loader workspace mismatch handling', () => {
   });
 
   it('does not block existing-thread navigation on chat data resolution', async () => {
-    let resolveMessages: ((messages: []) => void) | undefined;
-    const pendingMessages = new Promise<[]>((resolve) => {
+    let resolveMessages:
+      | ((page: { messages: []; nextCursor: null; hasMore: false }) => void)
+      | undefined;
+    const pendingMessages = new Promise<{
+      messages: [];
+      nextCursor: null;
+      hasMore: false;
+    }>((resolve) => {
       resolveMessages = resolve;
     });
     requireAuthContextMock.mockResolvedValue({
@@ -408,11 +424,12 @@ describe('chat loader workspace mismatch handling', () => {
     await Promise.resolve();
     expect(chatDataResolved).toBe(false);
 
-    resolveMessages?.([]);
+    resolveMessages?.({ messages: [], nextCursor: null, hasMore: false });
     expect(await result.chatData).toEqual({
       messages: [],
       messagesError: null,
       initialUiMessages: [],
+      olderUiMessagesCursor: null,
       todos: [],
       previewTabs: [],
       activeTabId: null,

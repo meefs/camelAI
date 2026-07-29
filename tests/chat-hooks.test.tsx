@@ -28,6 +28,14 @@ function message(id: string, role: Message["role"] = "user"): Message {
   };
 }
 
+function uiMessage(id: string): UIMessage {
+  return {
+    id,
+    role: "assistant",
+    parts: [{ type: "text", text: `content-${id}` }],
+  };
+}
+
 afterEach(() => {
   vi.useRealTimers();
 });
@@ -80,6 +88,33 @@ describe("chat transcript hooks", () => {
       "server-1",
       "optimistic-pending",
     ]);
+  });
+
+  it("prepends render-only archived pages without replacing resident duplicate ids", () => {
+    const { result } = renderHook(() =>
+      useChatTranscriptProjection({
+        archivedUiMessages: [
+          uiMessage("older-1"),
+          uiMessage("boundary"),
+        ],
+        liveMessages: [
+          message("boundary", "assistant"),
+          message("resident", "assistant"),
+        ],
+        liveUiMessages: [uiMessage("boundary"), uiMessage("resident")],
+        optimisticMessages: [],
+        parsedInitialMessages: [],
+        readOnly: false,
+        threadId: "thread-1",
+      }),
+    );
+
+    expect(result.current.displayMessages.map(({ id }) => id)).toEqual([
+      "older-1",
+      "boundary",
+      "resident",
+    ]);
+    expect(result.current.displayMessages[0].thread_id).toBe("thread-1");
   });
 
   it("expires the snapshot bridge when a resumed stream never arrives", () => {

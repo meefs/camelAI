@@ -1,5 +1,6 @@
 import type { AppLoadContext } from "react-router";
 import type { UIMessage } from "ai";
+import type { ChatRenderHistoryPage } from "./chat-render-history";
 import { getEnv, type CloudflareEnv } from "./cloudflare.server";
 import type {
   Thread,
@@ -957,6 +958,13 @@ export async function getUiMessages(
   context: AppLoadContext,
   threadId: string,
 ): Promise<UIMessage[]> {
+  return (await getUiMessagePage(context, threadId)).messages;
+}
+
+export async function getUiMessagePage(
+  context: AppLoadContext,
+  threadId: string,
+): Promise<ChatRenderHistoryPage> {
   const env = getEnv(context);
   if (
     !env ||
@@ -967,14 +975,23 @@ export async function getUiMessages(
     throw new Error("CHAT_THREAD binding is not available");
   }
   const threadStub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
-  const messages = await Promise.resolve(
+  const page = await Promise.resolve(
     (
       threadStub as unknown as {
-        getUiMessages(): Promise<UIMessage[]> | UIMessage[];
+        getUiMessagePage():
+          | Promise<ChatRenderHistoryPage>
+          | ChatRenderHistoryPage;
       }
-    ).getUiMessages(),
+    ).getUiMessagePage(),
   );
-  return Array.isArray(messages) ? messages : [];
+  return {
+    messages: Array.isArray(page?.messages) ? page.messages : [],
+    nextCursor:
+      typeof page?.nextCursor === "string" && page.nextCursor
+        ? page.nextCursor
+        : null,
+    hasMore: page?.hasMore === true,
+  };
 }
 
 export async function getTodoState(

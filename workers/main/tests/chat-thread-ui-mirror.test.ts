@@ -58,12 +58,18 @@ function createHarness(options: {
       messages = next;
     },
     persistRenderMessages,
+    getRenderHistoryPage: () => ({
+      messages,
+      nextCursor: null,
+      hasMore: false,
+    }),
     clearPersistedRenderCache: vi.fn(),
     readPiActiveTurn: () =>
       activeTurn ? { turnId: 'turn-1', openedAt: 1 } : null,
     activePiStreamTurnId: () => (activeStream ? 'turn-1' : null),
     getPiCoreRevision: () => piRevision,
     getPiCoreParsedMessages,
+    setRenderHistoryChronology: vi.fn(),
     reloadAiChatMessagesOrdered: vi.fn(),
     topUpUiMessagesFromPiCore: vi.fn(async () => {}),
     withMemoryPhase: async (operation, fn) => {
