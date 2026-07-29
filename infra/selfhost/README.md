@@ -333,6 +333,9 @@ deployed app wildcard hostnames remain public and route separately.
 
 Pomerium is pinned by immutable digest. Its client, cookie, and shared secrets
 are passed through mounted files rather than container environment values.
+The container drops all Linux capabilities except `NET_BIND_SERVICE` and
+`DAC_OVERRIDE`; the latter is required for Pomerium to read the operator-owned
+`0600` bind mounts on Linux without making those files group- or world-readable.
 Backups include the `pomerium-data` volume, but `.env.selfhost` remains a
 separate operator-owned secret and must also be protected.
 

@@ -179,7 +179,9 @@ For direct Compose TLS, install a certificate chain and key at
 main hostname, authenticate hostname, and deployed-app wildcard domains.
 `selfhost:configure` writes Pomerium's Docker-mounted secret files with
 restrictive permissions so the client, cookie, and shared secrets are not
-visible in `docker inspect`.
+visible in `docker inspect`. The container retains only `NET_BIND_SERVICE` and
+`DAC_OVERRIDE`; the latter lets it read those operator-owned `0600` mounts on
+Linux without weakening their host permissions.
 
 Set `SELFHOST_POMERIUM_LOOPBACK_HTTPS=0` only when an external load balancer
 terminates TLS. In that mode, the VM must be able to reach its public camelAI
