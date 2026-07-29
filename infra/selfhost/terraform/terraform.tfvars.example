@@ -14,8 +14,8 @@ analysis_image        = "ghcr.io/qaml-ai/camelai-selfhost-analysis:selfhost-v0.1
 db_query_image        = "ghcr.io/qaml-ai/camelai-selfhost-db-query:selfhost-v0.1.0"
 container_egress_image = "ghcr.io/qaml-ai/camelai-selfhost-container-egress:selfhost-v0.1.0"
 
-# A certificate in tls_certificate_secret_arn must cover both names below:
-# camel.example.com and *.apps.example.com.
+# A certificate in tls_certificate_secret_arn must cover all three names below:
+# camel.example.com, authenticate.example.com, and *.apps.example.com.
 main_hostname     = "camel.example.com"
 app_vanity_domain = "apps.example.com"
 tls_mode          = "provided"
@@ -34,14 +34,25 @@ route53_zone_id        = "Z0123456789EXAMPLE"
 ssh_ingress_cidrs = []
 ssh_key_name      = ""
 
-# Cloudflare Access or Pomerium must front the public hostname to provision
-# users; outbound email is not part of the self-host stack.
-auth_provider         = "pomerium"
+# Bundled Pomerium is the turnkey default. Register this OIDC callback with the
+# identity provider:
+# https://authenticate.example.com/oauth2/callback
+auth_provider         = "bundled-pomerium"
 auth_default_org_name = "Example Corp"
-pomerium_authenticate_url = "https://authenticate.example.com"
-pomerium_issuer           = "camel.example.com"
-pomerium_audience         = "camel.example.com"
+pomerium_authenticate_hostname = "authenticate.example.com"
+pomerium_authenticate_url      = "https://authenticate.example.com"
+pomerium_image                 = "pomerium/pomerium@sha256:aae6010af6ba4c864bbd3f748cf37843a140b1ddef74d7d2ac1aa87660f8da1f"
+pomerium_idp_provider          = "oidc"
+pomerium_idp_provider_url      = "https://login.example.com/application/o/camelai/"
+pomerium_idp_client_id         = "camelai"
+pomerium_idp_client_secret_arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:camelai/pomerium-oidc-client-AbCdEf"
 
+# To use an existing Pomerium deployment instead:
+# auth_provider                 = "pomerium"
+# pomerium_authenticate_url     = "https://authenticate.example.com"
+# pomerium_issuer               = "camel.example.com"
+# pomerium_audience             = "camel.example.com"
+#
 # For Cloudflare Access instead:
 # auth_provider                  = "cloudflare-access"
 # auth_default_org_name          = "Example Corp"

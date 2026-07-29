@@ -10,15 +10,27 @@ export const sourceComposeFile = path.join(
   repoRoot,
   "docker-compose.selfhost.source.yml",
 );
+export const pomeriumComposeFile = path.join(
+  repoRoot,
+  "docker-compose.selfhost.pomerium.yml",
+);
+export const pomeriumLoopbackComposeFile = path.join(
+  repoRoot,
+  "docker-compose.selfhost.pomerium-loopback.yml",
+);
 export const envFile = path.resolve(
   repoRoot,
   process.env.SELFHOST_ENV_FILE || ".env.selfhost",
 );
 export const defaultProjectName = "camelai-selfhost";
-export const volumeNames = [
-  "app-state",
-  "local-artifacts-repos",
-];
+export const volumeNames = ["app-state", "local-artifacts-repos"];
+
+export function volumeNamesForEnv(env = {}) {
+  return (env.SELFHOST_AUTH_MODE || process.env.SELFHOST_AUTH_MODE) ===
+    "bundled-pomerium"
+    ? [...volumeNames, "pomerium-data"]
+    : volumeNames;
+}
 
 export async function readSelfhostEnv(required = false) {
   if (!existsSync(envFile)) {
@@ -65,6 +77,14 @@ export function composeArgs(env, args) {
   const sourceMode =
     (env.SELFHOST_DEPLOYMENT_MODE || process.env.SELFHOST_DEPLOYMENT_MODE) ===
     "source";
+  const bundledPomerium =
+    (env.SELFHOST_AUTH_MODE || process.env.SELFHOST_AUTH_MODE) ===
+    "bundled-pomerium";
+  const pomeriumLoopbackHttps =
+    bundledPomerium &&
+    (env.SELFHOST_POMERIUM_LOOPBACK_HTTPS ||
+      process.env.SELFHOST_POMERIUM_LOOPBACK_HTTPS ||
+      "1") !== "0";
   return [
     "compose",
     "--env-file",
@@ -72,6 +92,8 @@ export function composeArgs(env, args) {
     "-f",
     composeFile,
     ...(sourceMode ? ["-f", sourceComposeFile] : []),
+    ...(bundledPomerium ? ["-f", pomeriumComposeFile] : []),
+    ...(pomeriumLoopbackHttps ? ["-f", pomeriumLoopbackComposeFile] : []),
     ...args,
   ];
 }

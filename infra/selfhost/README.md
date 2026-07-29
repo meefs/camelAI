@@ -16,9 +16,10 @@ ghcr.io/qaml-ai/camelai-selfhost-db-query:<release>
 ghcr.io/qaml-ai/camelai-selfhost-container-egress:<release>
 ```
 
-Tags named `selfhost-v*` publish all six images and a release manifest through
-`.github/workflows/selfhost-images.yml`. Use all references from one manifest.
-Digest references are recommended for a production change window.
+Tags named `selfhost-v*` publish all six camelAI images and a release manifest
+through `.github/workflows/selfhost-images.yml`. The manifest also pins the
+tested upstream Pomerium image. Use all seven dependency references from one
+manifest.
 
 ## Capability status
 
@@ -53,11 +54,14 @@ loopback behind the reverse proxy.
 - Docker Engine and Compose v2
 - Git, Node.js 22, and Bun 1.3.14
 - outbound HTTPS to GHCR, the configured AI provider, and package registries
-- a main hostname plus wildcard app hostname
-- Cloudflare Access or Pomerium for a shared deployment
+- a main hostname, Pomerium authenticate hostname, and wildcard app hostname
+- an OIDC identity provider for bundled Pomerium, or an existing Cloudflare
+  Access/Pomerium deployment
 
-Keep the application and local-artifacts ports on loopback. Terminate TLS and
-identity at Caddy, another reverse proxy, or an upstream identity-aware proxy.
+Keep the application and local-artifacts ports on loopback. The bundled
+Pomerium overlay is the default identity-aware proxy. It can terminate TLS
+directly for a manual Compose deployment or listen only on loopback behind the
+AWS Caddy configuration.
 
 ## Manual release install
 
@@ -84,13 +88,46 @@ SELFHOST_DB_QUERY_IMAGE=ghcr.io/qaml-ai/camelai-selfhost-db-query:selfhost-vX.Y.
 SELFHOST_CONTAINER_EGRESS_IMAGE=ghcr.io/qaml-ai/camelai-selfhost-container-egress:selfhost-vX.Y.Z
 
 SELFHOST_PUBLIC_BASE_URL=https://camel.example.com
+SELFHOST_MAIN_HOSTNAME=camel.example.com
 LOCAL_APP_VANITY_DOMAIN=apps.example.com
 LOCAL_APP_IFRAME_DOMAIN=apps.example.com
+
+SELFHOST_AUTH_MODE=bundled-pomerium
+SELFHOST_POMERIUM_TLS_MODE=direct
+SELFHOST_POMERIUM_LOOPBACK_HTTPS=1
+POMERIUM_AUTHENTICATE_URL=https://authenticate.example.com
+POMERIUM_AUTHENTICATE_HOSTNAME=authenticate.example.com
+POMERIUM_ISSUER=camel.example.com
+POMERIUM_AUDIENCE=camel.example.com
+POMERIUM_DEFAULT_ORG_NAME=Example Corp
+POMERIUM_IDP_PROVIDER=oidc
+POMERIUM_IDP_PROVIDER_URL=https://idp.example.com/application/o/camelai/
+POMERIUM_IDP_CLIENT_ID=camelai
+POMERIUM_IDP_CLIENT_SECRET=...
 
 SELFHOST_AI_PROVIDER=bedrock
 SELFHOST_AI_API_KEY=bedrock-api-key-...
 SELFHOST_AI_AWS_REGION=us-east-1
 ```
+
+Register this callback URL with the OIDC provider:
+
+```text
+https://authenticate.example.com/oauth2/callback
+```
+
+Install an unencrypted PEM key and matching certificate chain:
+
+```bash
+install -d -m 0700 .selfhost/pomerium
+install -m 0600 /secure/path/tls.crt .selfhost/pomerium/tls.crt
+install -m 0600 /secure/path/tls.key .selfhost/pomerium/tls.key
+bun run selfhost:configure
+```
+
+The certificate must cover `camel.example.com`,
+`authenticate.example.com`, `*.apps.example.com`, and the separate iframe
+wildcard when configured.
 
 If the GHCR packages are private, authenticate Docker before starting:
 
@@ -103,6 +140,7 @@ Route the main hostname and wildcard app domain to the reverse proxy:
 
 ```text
 camel.example.com    A/AAAA  <VM address>
+authenticate.example.com A/AAAA  <VM address>
 *.apps.example.com   A/AAAA  <VM address>
 ```
 
@@ -113,16 +151,22 @@ bun run selfhost:doctor
 bun run selfhost:up
 ```
 
-For an operator-managed background service:
+The lifecycle scripts select the Pomerium and source-build overlays from
+`.env.selfhost`. For an operator-managed background service, use all selected
+files explicitly:
 
 ```bash
 docker compose \
   --env-file .env.selfhost \
   -f docker-compose.selfhost.yml \
+  -f docker-compose.selfhost.pomerium.yml \
+  -f docker-compose.selfhost.pomerium-loopback.yml \
   pull
 docker compose \
   --env-file .env.selfhost \
   -f docker-compose.selfhost.yml \
+  -f docker-compose.selfhost.pomerium.yml \
+  -f docker-compose.selfhost.pomerium-loopback.yml \
   up --detach --wait
 ```
 
@@ -140,9 +184,12 @@ contract. Both provision:
 - a security group exposing only Caddy plus optional break-glass SSH;
 - SSM Session Manager access;
 - least-privilege reads for the configured Secrets Manager entries;
-- an Elastic IP and optional Route53 main/wildcard records;
+- an Elastic IP and optional Route53 main/authenticate/wildcard records;
 - Caddy with either operator-provided PEM material or an external TLS origin;
-- a systemd unit that pulls the six images and starts canonical Compose; and
+- bundled Pomerium on a loopback-only listener, or an operator-managed
+  Cloudflare Access/Pomerium proxy;
+- a systemd unit that pulls the images and starts canonical Compose plus the
+  selected authentication overlay; and
 - upgrade and rollback commands.
 
 The instance type defaults to `t3a.xlarge`. The selected subnet and
@@ -153,13 +200,15 @@ CloudFormation `AvailabilityZone` must match. Prefer SSM and leave SSH disabled.
 Store each value as the raw `SecretString`, not a JSON object:
 
 - AI provider API key;
+- bundled Pomerium OIDC client secret;
 - PEM certificate chain; and
 - matching unencrypted PEM private key.
 
-The certificate must cover the main hostname and every configured wildcard app
-domain. The bootstrap writes `.env.selfhost` and TLS files with restrictive
-permissions. The AI key is not placed in CloudFormation parameters or Terraform
-state.
+For bundled Pomerium the certificate must cover the main hostname,
+authenticate hostname, and every configured wildcard app domain. The bootstrap
+writes `.env.selfhost`, Pomerium secret files, and TLS files with restrictive
+permissions. Secret values are read from Secrets Manager rather than placed in
+CloudFormation parameters or Terraform state.
 
 For `TlsMode=external`, port 80 is an origin port. Restrict
 `WebIngressCidr`/`web_ingress_cidrs` to the upstream proxy; never expose that
@@ -207,11 +256,14 @@ aws cloudformation deploy \
     ContainerEgressImage=ghcr.io/qaml-ai/camelai-selfhost-container-egress:selfhost-vX.Y.Z \
     MainHostname=camel.example.com \
     AppVanityDomain=apps.example.com \
-    AuthProvider=pomerium \
+    AuthProvider=bundled-pomerium \
     AuthDefaultOrgName='Example Corp' \
     PomeriumAuthenticateUrl=https://authenticate.example.com \
-    PomeriumIssuer=camel.example.com \
-    PomeriumAudience=camel.example.com \
+    PomeriumAuthenticateHostname=authenticate.example.com \
+    PomeriumIdpProvider=oidc \
+    PomeriumIdpProviderUrl=https://idp.example.com/application/o/camelai/ \
+    PomeriumIdpClientId=camelai \
+    PomeriumIdpClientSecretArn=arn:aws:secretsmanager:... \
     SelfhostAiApiKeySecretArn=arn:aws:secretsmanager:... \
     TlsCertificateSecretArn=arn:aws:secretsmanager:... \
     TlsPrivateKeySecretArn=arn:aws:secretsmanager:...
@@ -269,17 +321,42 @@ SELFHOST_AI_AUTH_TYPE=bearer
 Outbound email is not included, so a shared install should provision users from
 Cloudflare Access or Pomerium assertions.
 
+### Bundled Pomerium (recommended)
+
+`SELFHOST_AUTH_MODE=bundled-pomerium` adds the Pomerium overlay. When
+`SELFHOST_POMERIUM_LOOPBACK_HTTPS=1`, it also adds
+`docker-compose.selfhost.pomerium-loopback.yml` so the app retrieves signing
+keys through the VM's local HTTPS endpoint. Pomerium runs in all-in-one mode
+with a persistent file-backed databroker. The control-plane hostname requires
+an authenticated user and forwards a signed `X-Pomerium-Jwt-Assertion`;
+deployed app wildcard hostnames remain public and route separately.
+
+Pomerium is pinned by immutable digest. Its client, cookie, and shared secrets
+are passed through mounted files rather than container environment values.
+Backups include the `pomerium-data` volume, but `.env.selfhost` remains a
+separate operator-owned secret and must also be protected.
+
+For manual direct TLS use `SELFHOST_POMERIUM_TLS_MODE=direct`. AWS templates use
+`upstream`, where Caddy terminates TLS and Pomerium binds only to
+`127.0.0.1:5444`. Never expose that plaintext loopback listener.
+The AWS templates set `SELFHOST_POMERIUM_LOOPBACK_HTTPS=1` with
+operator-provided VM TLS and `0` when an external load balancer terminates TLS.
+External TLS must allow the VM to reach its public camelAI HTTPS hostname
+through that load balancer; the app uses that path to retrieve Pomerium's JWKS.
+
 Cloudflare Access minimum:
 
 ```dotenv
+SELFHOST_AUTH_MODE=cloudflare-access
 CLOUDFLARE_ACCESS_TEAM_DOMAIN=https://your-team.cloudflareaccess.com
 CLOUDFLARE_ACCESS_AUD=your-access-application-aud
 CLOUDFLARE_ACCESS_DEFAULT_ORG_NAME=Your Organization
 ```
 
-Pomerium minimum:
+External Pomerium minimum:
 
 ```dotenv
+SELFHOST_AUTH_MODE=external-pomerium
 POMERIUM_AUTHENTICATE_URL=https://authenticate.example.com
 POMERIUM_ISSUER=camel.example.com
 POMERIUM_AUDIENCE=camel.example.com
@@ -296,7 +373,11 @@ Health and logs:
 ```bash
 curl --fail http://127.0.0.1:3001/api/selfhost/health
 docker compose --env-file .env.selfhost -f docker-compose.selfhost.yml ps
-docker compose --env-file .env.selfhost -f docker-compose.selfhost.yml logs --tail=200 app
+docker compose --env-file .env.selfhost \
+  -f docker-compose.selfhost.yml \
+  -f docker-compose.selfhost.pomerium.yml \
+  -f docker-compose.selfhost.pomerium-loopback.yml \
+  logs --tail=200 app pomerium
 ```
 
 The health endpoint and Compose health checks verify configured dependencies,
@@ -340,15 +421,34 @@ bun run selfhost:upgrade -- \
   --manifest /secure/path/selfhost-release.json
 ```
 
+The same artifact includes a standalone `selfhost-upgrade-bootstrap.mjs`. Use it
+once for every installation whose checked-out upgrader predates the target-code
+handoff. This includes older upgraders that already recognize `--release` but
+continue running their own loaded code after checking out the target:
+
+```bash
+node /secure/path/selfhost-upgrade-bootstrap.mjs \
+  --repo "$PWD" \
+  --release selfhost-vX.Y.Z \
+  --manifest /secure/path/selfhost-release.json
+```
+
+The bootstrap validates the target ref against the manifest, backs up the old
+installation, snapshots its checkout and environment, then hands the apply
+phase to the target release's upgrader. Subsequent upgrades do this handoff
+automatically.
+
 The helper requires a clean tracked worktree. It verifies that the selected Git
-ref matches the manifest revision and that all six images are digest-pinned,
-backs up the durable volumes, and saves the previous checkout plus
-`.env.selfhost` under `.selfhost/releases/`. It then checks out the release,
-updates all six image references, pulls them, waits for Compose health, and runs
-the doctor plus all three attached-runtime smokes. A failed upgrade
-automatically restores the saved checkout and image configuration. The
-successful command prints the exact explicit rollback command, which has this
-form:
+ref matches the manifest revision and that all six camelAI images plus Pomerium
+are digest-pinned, backs up the durable volumes, and saves the previous checkout
+plus `.env.selfhost` under `.selfhost/releases/`. It then checks out the
+release, updates all seven dependency references, pulls them, waits for Compose
+health, and runs the doctor plus all three attached-runtime smokes. A failure
+before the new runtime starts automatically restores the saved checkout and
+image configuration. After startup begins, migrations may have run, so the
+helper leaves the new runtime configuration in place and tells the operator to
+restore the matching volume backup before rolling code back. A successful
+command prints the exact explicit rollback command, which has this form:
 
 ```bash
 bun run selfhost:upgrade -- --rollback .selfhost/releases/<timestamp>
@@ -362,23 +462,18 @@ AWS-provisioned hosts also install:
 
 ```bash
 sudo camelai-selfhost-upgrade \
-  selfhost-vX.Y.Z \
-  ghcr.io/qaml-ai/camelai-selfhost-app@sha256:... \
-  ghcr.io/qaml-ai/camelai-selfhost-local-artifacts@sha256:... \
-  ghcr.io/qaml-ai/camelai-selfhost-project-build@sha256:... \
-  ghcr.io/qaml-ai/camelai-selfhost-analysis@sha256:... \
-  ghcr.io/qaml-ai/camelai-selfhost-db-query@sha256:... \
-  ghcr.io/qaml-ai/camelai-selfhost-container-egress@sha256:...
-sudo camelai-selfhost-rollback
+  --release selfhost-vX.Y.Z \
+  --manifest /secure/path/selfhost-release.json
+
+# Use the exact rollback command printed by the successful upgrade:
+sudo camelai-selfhost-upgrade \
+  --rollback .selfhost/releases/<timestamp>
 ```
 
-Use the six digest values from one release manifest. The one-argument
-`camelai-selfhost-upgrade selfhost-vX.Y.Z` shorthand resolves mutable tags and
-is intended only for non-production testing.
-
-The AWS wrapper provides the release ref and preserves the previous checkout and
-image configuration itself. Runtime rollback does not reverse D1 migrations;
-restore the matching pre-upgrade volume backup when schema rollback is required.
+The AWS wrapper invokes the same verified repository helper; it does not offer
+a mutable-tag shorthand. Runtime rollback does not reverse D1 migrations;
+restore the matching pre-upgrade volume backup when schema rollback is
+required.
 
 ## Source-build developer mode
 

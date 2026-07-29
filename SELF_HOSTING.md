@@ -20,11 +20,13 @@ SELFHOST_PROJECT_BUILD_IMAGE=ghcr.io/your-org/camelai-selfhost-project-build@sha
 SELFHOST_ANALYSIS_IMAGE=ghcr.io/your-org/camelai-selfhost-analysis@sha256:...
 SELFHOST_DB_QUERY_IMAGE=ghcr.io/your-org/camelai-selfhost-db-query@sha256:...
 SELFHOST_CONTAINER_EGRESS_IMAGE=ghcr.io/your-org/camelai-selfhost-container-egress@sha256:...
+SELFHOST_POMERIUM_IMAGE=pomerium/pomerium@sha256:...
 ```
 
-Pin all six references from the same release. The container-egress wrapper is
-required for the known Docker 29 bridge-interception bug and is covered by the
-attached-container functional smoke.
+Pin all seven dependency references from the same release manifest. Six are
+camelAI images; Pomerium is the tested upstream image. The container-egress
+wrapper is required for the known Docker 29 bridge-interception bug and is
+covered by the attached-container functional smoke.
 
 Release mode does not build application code on the VM and does not mount a
 mutable repository checkout into the application container. This is the
@@ -45,9 +47,17 @@ Initialize and validate the installation with:
 
 ```bash
 bun run selfhost:init
+# Edit .env.selfhost and install the TLS certificate/key described below.
+bun run selfhost:configure
 bun run selfhost:doctor
 bun run selfhost:up
 ```
+
+`SELFHOST_AUTH_MODE=bundled-pomerium` is the default production path.
+`selfhost:up` automatically adds the Pomerium overlay and, when HTTPS
+terminates on the VM, its loopback-JWKS overlay.
+External Pomerium and Cloudflare Access remain supported for enterprises that
+already operate an identity-aware proxy.
 
 The application container has read-write access to the Docker socket so workerd
 can manage sandbox containers. Anyone who can control that container should be
@@ -144,9 +154,42 @@ Self-host mode has no outbound email transport. Setting
 `EMAIL_FROM_ADDRESS` or `WORKSPACE_EMAIL_DOMAIN` does not enable delivery, and
 there is no supported SMTP configuration today.
 
-Use Cloudflare Access or Pomerium as the enterprise identity provider.
-Password signup is rejected before creating a user because its verification
-email cannot be delivered. Verification-email resend and the email-backed help
+The recommended Compose deployment includes Pomerium Core in all-in-one mode:
+
+```dotenv
+SELFHOST_AUTH_MODE=bundled-pomerium
+SELFHOST_MAIN_HOSTNAME=camel.example.com
+SELFHOST_POMERIUM_TLS_MODE=direct
+SELFHOST_POMERIUM_LOOPBACK_HTTPS=1
+POMERIUM_AUTHENTICATE_URL=https://authenticate.example.com
+POMERIUM_AUTHENTICATE_HOSTNAME=authenticate.example.com
+POMERIUM_IDP_PROVIDER=oidc
+POMERIUM_IDP_PROVIDER_URL=https://idp.example.com/application/o/camelai/
+POMERIUM_IDP_CLIENT_ID=camelai
+POMERIUM_IDP_CLIENT_SECRET=...
+POMERIUM_DEFAULT_ORG_NAME=Your Organization
+POMERIUM_ISSUER=camel.example.com
+POMERIUM_AUDIENCE=camel.example.com
+```
+
+Register `https://authenticate.example.com/oauth2/callback` with the OIDC
+provider. The authenticate hostname must be distinct from the camelAI hostname.
+For direct Compose TLS, install a certificate chain and key at
+`.selfhost/pomerium/tls.crt` and `.selfhost/pomerium/tls.key`; it must cover the
+main hostname, authenticate hostname, and deployed-app wildcard domains.
+`selfhost:configure` writes Pomerium's Docker-mounted secret files with
+restrictive permissions so the client, cookie, and shared secrets are not
+visible in `docker inspect`.
+
+Set `SELFHOST_POMERIUM_LOOPBACK_HTTPS=0` only when an external load balancer
+terminates TLS. In that mode, the VM must be able to reach its public camelAI
+HTTPS hostname through the load balancer so the app can retrieve Pomerium's
+JWKS.
+
+Set `SELFHOST_AUTH_MODE=external-pomerium` or `cloudflare-access` to use an
+existing enterprise proxy instead. Password signup is rejected before creating
+a user because its verification email cannot be delivered.
+Verification-email resend and the email-backed help
 form return explicit unavailable errors. Organization invitations are still
 created so an administrator can copy and deliver the invitation URL through an
 approved channel; the API and UI report that the email itself was not sent.
@@ -199,13 +242,28 @@ bun run selfhost:upgrade -- \
   --manifest /secure/path/selfhost-release.json
 ```
 
+For every installation whose current upgrader predates the target-code handoff,
+use the `selfhost-upgrade-bootstrap.mjs` shipped beside the manifest once. This
+includes older upgraders that already recognize `--release` but do not
+re-execute the target release:
+
+```bash
+node /secure/path/selfhost-upgrade-bootstrap.mjs \
+  --repo "$PWD" \
+  --release selfhost-vX.Y.Z \
+  --manifest /secure/path/selfhost-release.json
+```
+
 The helper verifies the manifest against the selected checkout, backs up durable
-volumes, snapshots the previous checkout and `.env.selfhost`, and restores that
-runtime configuration automatically if the update fails. Before declaring
-success it waits for Compose health, runs the doctor, and executes the project,
-analysis, and database-query deep smokes. It prints an explicit rollback
-command after success. Runtime rollback cannot reverse D1 migrations; restore
-the matching pre-upgrade volume backup when a schema rollback is required.
+volumes, and snapshots the previous checkout and `.env.selfhost`. Failures
+before the new runtime starts restore that runtime configuration automatically.
+Once startup begins, D1 migrations may have run, so failures leave the new
+checkout and image configuration in place. Restore the matching pre-upgrade
+volume backup before using the printed explicit rollback command. Before
+declaring success the helper waits for Compose health, runs the doctor, and
+executes the project, analysis, and database-query deep smokes.
+Normal upgrades re-exec the target checkout's upgrader before applying images,
+so the target release owns its manifest and migration rules.
 
 The detailed Compose variables, reverse-proxy examples, backups, and provider
 configuration remain in [`infra/selfhost/README.md`](infra/selfhost/README.md).

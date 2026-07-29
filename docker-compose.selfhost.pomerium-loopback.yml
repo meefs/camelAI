@@ -1,0 +1,8 @@
+services:
+  app:
+    # When HTTPS terminates on this VM, keep JWKS fetches on loopback instead
+    # of relying on public-IP hairpin routing. TLS still verifies the public
+    # hostnames. Do not use this overlay with an external TLS terminator.
+    extra_hosts:
+      - "${SELFHOST_MAIN_HOSTNAME:?Set SELFHOST_MAIN_HOSTNAME}:127.0.0.1"
+      - "${POMERIUM_AUTHENTICATE_HOSTNAME:?Set POMERIUM_AUTHENTICATE_HOSTNAME}:127.0.0.1"

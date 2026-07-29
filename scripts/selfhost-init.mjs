@@ -10,6 +10,7 @@ import {
   repoRoot,
   writeEnvValue,
 } from "./selfhost-common.mjs";
+import { writePomeriumConfig } from "./selfhost-pomerium-config.mjs";
 
 const force = process.argv.includes("--force");
 
@@ -34,10 +35,16 @@ const values = {
     "camelai-selfhost-container-egress:0.12.0",
   SELFHOST_BIND_ADDRESS: "127.0.0.1",
   SELFHOST_APP_PORT: "3001",
-  SELFHOST_PUBLIC_BASE_URL: "http://localhost:3001",
+  SELFHOST_PUBLIC_BASE_URL: "https://camel.example.com",
   SELFHOST_INTERNAL_APP_URL: "http://127.0.0.1:3001",
-  LOCAL_APP_VANITY_DOMAIN: "",
-  LOCAL_APP_IFRAME_DOMAIN: "",
+  SELFHOST_AUTH_MODE: "bundled-pomerium",
+  SELFHOST_MAIN_HOSTNAME: "camel.example.com",
+  SELFHOST_POMERIUM_TLS_MODE: "direct",
+  SELFHOST_POMERIUM_LOOPBACK_HTTPS: "1",
+  SELFHOST_POMERIUM_IMAGE:
+    "pomerium/pomerium@sha256:aae6010af6ba4c864bbd3f748cf37843a140b1ddef74d7d2ac1aa87660f8da1f",
+  LOCAL_APP_VANITY_DOMAIN: "apps.example.com",
+  LOCAL_APP_IFRAME_DOMAIN: "apps.example.com",
   TURNSTILE_SITE_KEY: "",
   TURNSTILE_SECRET_KEY: "",
   LOCAL_AUTH_BYPASS: "",
@@ -54,9 +61,16 @@ const values = {
   CLOUDFLARE_ACCESS_DEFAULT_ORG_NAME: "",
   CLOUDFLARE_ACCESS_REQUIRED_EMAIL_DOMAIN: "",
   POMERIUM_JWKS_URL: "",
-  POMERIUM_AUTHENTICATE_URL: "",
-  POMERIUM_ISSUER: "",
-  POMERIUM_AUDIENCE: "",
+  POMERIUM_AUTHENTICATE_URL: "https://authenticate.example.com",
+  POMERIUM_AUTHENTICATE_HOSTNAME: "authenticate.example.com",
+  POMERIUM_ISSUER: "camel.example.com",
+  POMERIUM_AUDIENCE: "camel.example.com",
+  POMERIUM_IDP_PROVIDER: "oidc",
+  POMERIUM_IDP_PROVIDER_URL: "",
+  POMERIUM_IDP_CLIENT_ID: "",
+  POMERIUM_IDP_CLIENT_SECRET: "",
+  POMERIUM_COOKIE_SECRET: secretBase64(),
+  POMERIUM_SHARED_SECRET: secretBase64(),
   POMERIUM_ORG_MAP: "",
   POMERIUM_ORG_CLAIMS: "",
   POMERIUM_ORG_GROUP_PREFIX: "",
@@ -86,11 +100,18 @@ ${Object.entries(values)
 `;
 
 await fs.writeFile(envFile, content, { mode: 0o600 });
+await writePomeriumConfig(values, { strict: false });
 console.log(`Wrote ${path.relative(repoRoot, envFile)}.`);
 console.log("Next steps:");
+console.log("  Configure identity, DNS, TLS, and AI settings in .env.selfhost");
+console.log("  bun run selfhost:configure");
 console.log("  bun run selfhost:doctor");
 console.log("  bun run selfhost:up");
 
 function secret() {
   return randomBytes(32).toString("base64url");
+}
+
+function secretBase64() {
+  return randomBytes(32).toString("base64");
 }

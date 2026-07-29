@@ -12,6 +12,7 @@ import {
   scriptEnv,
   writeEnvValue,
 } from "./selfhost-common.mjs";
+import { writePomeriumConfig } from "./selfhost-pomerium-config.mjs";
 
 const IMAGE_ENV_BY_MANIFEST_KEY = {
   app: "SELFHOST_APP_IMAGE",
@@ -20,6 +21,7 @@ const IMAGE_ENV_BY_MANIFEST_KEY = {
   analysis: "SELFHOST_ANALYSIS_IMAGE",
   "db-query": "SELFHOST_DB_QUERY_IMAGE",
   "container-egress": "SELFHOST_CONTAINER_EGRESS_IMAGE",
+  pomerium: "SELFHOST_POMERIUM_IMAGE",
 };
 
 const args = parseArgs(process.argv.slice(2));
@@ -27,9 +29,16 @@ const skipBackup = args.flags.has("skip-backup");
 const releaseRef = args.values.get("release");
 const manifestArg = args.values.get("manifest");
 const rollbackArg = args.values.get("rollback");
+const resumeUpgradeArg = args.values.get("resume-upgrade");
 
 if (args.unknown.length > 0) {
   usage(`Unknown argument${args.unknown.length === 1 ? "" : "s"}: ${args.unknown.join(", ")}`);
+}
+if (
+  resumeUpgradeArg &&
+  (releaseRef || manifestArg || rollbackArg || skipBackup)
+) {
+  usage("--resume-upgrade is internal and cannot be combined with other arguments");
 }
 if (rollbackArg && (releaseRef || manifestArg)) {
   usage("--rollback cannot be combined with --release or --manifest");
@@ -38,7 +47,9 @@ if (Boolean(releaseRef) !== Boolean(manifestArg)) {
   usage("--release and --manifest must be provided together");
 }
 
-if (rollbackArg) {
+if (resumeUpgradeArg) {
+  await resumeReleaseUpgrade(path.resolve(repoRoot, resumeUpgradeArg));
+} else if (rollbackArg) {
   await rollbackRelease(path.resolve(repoRoot, rollbackArg), { skipBackup });
 } else if (releaseRef && manifestArg) {
   await upgradeRelease({
@@ -62,34 +73,29 @@ async function refreshCurrentRelease({ skipBackup: shouldSkipBackup }) {
 async function upgradeRelease({ releaseRef: targetRef, manifestPath, skipBackup: shouldSkipBackup }) {
   await assertCleanCheckout();
   const currentEnv = await readSelfhostEnv(true);
-  const manifest = await readReleaseManifest(manifestPath);
+  const expectedRevision = await readManifestRevision(manifestPath);
   const snapshotDir = await snapshotReleaseState();
+  const handoffPath = await writeUpgradeHandoff(snapshotDir, {
+    targetRef,
+    manifestPath,
+  });
 
   if (!shouldSkipBackup) await backup(currentEnv);
 
   let checkoutChanged = false;
   try {
     await run("git", ["fetch", "--force", "--tags", "origin"]);
-    checkoutChanged = true;
-    await run("git", ["checkout", "--detach", targetRef]);
-
-    const checkedOutCommit = await gitOutput(["rev-parse", "HEAD"]);
-    if (checkedOutCommit.toLowerCase() !== manifest.revision.toLowerCase()) {
+    const targetCommit = await gitOutput([
+      "rev-parse",
+      `${targetRef}^{commit}`,
+    ]);
+    if (targetCommit.toLowerCase() !== expectedRevision.toLowerCase()) {
       throw new Error(
-        `Release manifest revision ${manifest.revision} does not match ${targetRef} (${checkedOutCommit})`,
+        `Release manifest revision ${expectedRevision} does not match ${targetRef} (${targetCommit})`,
       );
     }
-
-    await run("bun", ["install", "--frozen-lockfile"]);
-    await updateReleaseEnvironment(manifest);
-    const releaseEnv = await readSelfhostEnv(true);
-    await applyCurrentConfig(releaseEnv);
-
-    console.log(`Self-host upgrade to ${targetRef} completed.`);
-    console.log(`Previous runtime configuration: ${path.relative(repoRoot, snapshotDir)}`);
-    console.log(
-      `Rollback command: bun run selfhost:upgrade -- --rollback ${path.relative(repoRoot, snapshotDir)}`,
-    );
+    checkoutChanged = true;
+    await run("git", ["checkout", "--detach", targetCommit]);
   } catch (error) {
     if (checkoutChanged) {
       console.error(`Upgrade failed: ${errorMessage(error)}`);
@@ -106,6 +112,66 @@ async function upgradeRelease({ releaseRef: targetRef, manifestPath, skipBackup:
     }
     throw error;
   }
+
+  // The current Node process still has the old checkout's module loaded.
+  // Re-exec the target release so its manifest schema, dependency mapping,
+  // migration boundary, and validation logic own the apply phase.
+  await run(process.execPath, [
+    "scripts/selfhost-upgrade.mjs",
+    "--resume-upgrade",
+    handoffPath,
+  ]);
+}
+
+async function resumeReleaseUpgrade(handoffPath) {
+  const { targetRef, manifestPath, snapshotDir } =
+    await readUpgradeHandoff(handoffPath);
+  let runtimeMayHaveMigrated = false;
+  try {
+    const manifest = await readReleaseManifest(manifestPath);
+    const checkedOutCommit = await gitOutput(["rev-parse", "HEAD"]);
+    if (checkedOutCommit.toLowerCase() !== manifest.revision.toLowerCase()) {
+      throw new Error(
+        `Release manifest revision ${manifest.revision} does not match ${targetRef} (${checkedOutCommit})`,
+      );
+    }
+
+    await run("bun", ["install", "--frozen-lockfile"]);
+    await updateReleaseEnvironment(manifest);
+    const releaseEnv = await readSelfhostEnv(true);
+    await applyCurrentConfig(releaseEnv, {
+      onRuntimeStart() {
+        runtimeMayHaveMigrated = true;
+      },
+    });
+
+    console.log(`Self-host upgrade to ${targetRef} completed.`);
+    console.log(`Previous runtime configuration: ${path.relative(repoRoot, snapshotDir)}`);
+    console.log(
+      `Rollback command: bun run selfhost:upgrade -- --rollback ${path.relative(repoRoot, snapshotDir)}`,
+    );
+  } catch (error) {
+    if (!runtimeMayHaveMigrated) {
+      console.error(`Upgrade failed: ${errorMessage(error)}`);
+      console.error("Restoring the previous checkout and image configuration.");
+      try {
+        await restoreReleaseState(snapshotDir);
+      } catch (rollbackError) {
+        throw new Error(
+          `Upgrade failed (${errorMessage(error)}) and automatic runtime rollback also failed (${errorMessage(
+            rollbackError,
+          )}). Restore ${path.relative(repoRoot, snapshotDir)} manually and use the pre-upgrade volume backup.`,
+        );
+      }
+    } else {
+      console.error(`Upgrade failed after the new runtime started: ${errorMessage(error)}`);
+      console.error(
+        "Automatic code rollback is disabled because D1 migrations may already have run. " +
+          `The new checkout and image configuration were left in place. Restore the pre-upgrade volume backup before using bun run selfhost:upgrade -- --rollback ${path.relative(repoRoot, snapshotDir)}.`,
+      );
+    }
+    throw error;
+  }
 }
 
 async function rollbackRelease(snapshotDir, { skipBackup: shouldSkipBackup }) {
@@ -119,11 +185,12 @@ async function rollbackRelease(snapshotDir, { skipBackup: shouldSkipBackup }) {
   console.log(`Self-host runtime configuration restored from ${path.relative(repoRoot, snapshotDir)}.`);
 }
 
-async function applyCurrentConfig(env) {
+async function applyCurrentConfig(env, { onRuntimeStart } = {}) {
   const sourceMode =
     (env.SELFHOST_DEPLOYMENT_MODE || process.env.SELFHOST_DEPLOYMENT_MODE) ===
     "source";
   const effectiveEnv = scriptEnv(env);
+  await writePomeriumConfig(env);
 
   await run(
     "docker",
@@ -136,6 +203,7 @@ async function applyCurrentConfig(env) {
   if (sourceMode) {
     await run("docker", composeArgs(env, ["build"]), { env: effectiveEnv });
   }
+  onRuntimeStart?.();
   await run(
     "docker",
     composeArgs(env, [
@@ -177,6 +245,45 @@ async function snapshotReleaseState() {
   return snapshotDir;
 }
 
+async function writeUpgradeHandoff(snapshotDir, { targetRef, manifestPath }) {
+  const copiedManifest = path.join(snapshotDir, "target-manifest.json");
+  await fs.copyFile(manifestPath, copiedManifest);
+  await fs.chmod(copiedManifest, 0o600);
+  const handoffPath = path.join(snapshotDir, "upgrade-handoff.json");
+  await fs.writeFile(
+    handoffPath,
+    `${JSON.stringify(
+      {
+        schema: 1,
+        targetRef,
+        manifestFile: path.basename(copiedManifest),
+      },
+      null,
+      2,
+    )}\n`,
+    { mode: 0o600 },
+  );
+  return handoffPath;
+}
+
+async function readUpgradeHandoff(handoffPath) {
+  const metadata = JSON.parse(await fs.readFile(handoffPath, "utf8"));
+  if (
+    metadata.schema !== 1 ||
+    typeof metadata.targetRef !== "string" ||
+    !metadata.targetRef.trim() ||
+    metadata.manifestFile !== "target-manifest.json"
+  ) {
+    throw new Error(`Invalid upgrade handoff metadata: ${handoffPath}`);
+  }
+  const snapshotDir = path.dirname(handoffPath);
+  return {
+    targetRef: metadata.targetRef,
+    manifestPath: path.join(snapshotDir, metadata.manifestFile),
+    snapshotDir,
+  };
+}
+
 async function restoreReleaseState(snapshotDir) {
   const metadataPath = path.join(snapshotDir, "runtime.json");
   const metadata = JSON.parse(await fs.readFile(metadataPath, "utf8"));
@@ -195,6 +302,7 @@ async function restoreReleaseState(snapshotDir) {
   await run("bun", ["install", "--frozen-lockfile"]);
 
   const restoredEnv = await readSelfhostEnv(true);
+  await writePomeriumConfig(restoredEnv);
   const pull = await capture("docker", composeArgs(restoredEnv, ["pull"]), {
     env: scriptEnv(restoredEnv),
   });
@@ -277,6 +385,17 @@ async function readReleaseManifest(manifestPath) {
   return manifest;
 }
 
+async function readManifestRevision(manifestPath) {
+  const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"));
+  if (
+    typeof manifest.revision !== "string" ||
+    !/^[0-9a-f]{40}$/i.test(manifest.revision)
+  ) {
+    throw new Error(`Invalid self-host release manifest: ${manifestPath}`);
+  }
+  return manifest.revision;
+}
+
 async function backup(env) {
   await run(process.execPath, ["scripts/selfhost-backup.mjs"], {
     env: scriptEnv(env),
@@ -310,12 +429,12 @@ function parseArgs(argv) {
       flags.add("skip-backup");
       continue;
     }
-    const inline = /^--(release|manifest|rollback)=(.+)$/.exec(arg);
+    const inline = /^--(release|manifest|rollback|resume-upgrade)=(.+)$/.exec(arg);
     if (inline) {
       values.set(inline[1], inline[2]);
       continue;
     }
-    const named = /^--(release|manifest|rollback)$/.exec(arg);
+    const named = /^--(release|manifest|rollback|resume-upgrade)$/.exec(arg);
     if (named && argv[index + 1] && !argv[index + 1].startsWith("--")) {
       values.set(named[1], argv[index + 1]);
       index += 1;

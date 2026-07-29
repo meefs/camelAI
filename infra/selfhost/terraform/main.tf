@@ -21,6 +21,7 @@ locals {
   common_tags       = merge({ Name = var.name, Application = "camelAI", Deployment = "selfhost" }, var.tags)
   secret_arns = compact([
     var.selfhost_ai_api_key_secret_arn,
+    var.auth_provider == "bundled-pomerium" ? var.pomerium_idp_client_secret_arn : "",
     var.tls_mode == "provided" ? var.tls_certificate_secret_arn : "",
     var.tls_mode == "provided" ? var.tls_private_key_secret_arn : "",
   ])
@@ -78,8 +79,16 @@ check "auth_configuration" {
       var.pomerium_authenticate_url != "" &&
       var.pomerium_issuer != "" &&
       var.pomerium_audience != ""
+      ) || (
+      var.auth_provider == "bundled-pomerium" &&
+      var.pomerium_authenticate_url == "https://${var.pomerium_authenticate_hostname}" &&
+      var.pomerium_authenticate_hostname != var.main_hostname &&
+      var.pomerium_idp_provider != "" &&
+      var.pomerium_idp_client_id != "" &&
+      var.pomerium_idp_client_secret_arn != "" &&
+      (var.pomerium_idp_provider != "oidc" || var.pomerium_idp_provider_url != "")
     )
-    error_message = "Configure the selected identity proxy's required URL, issuer/audience, and Access AUD inputs."
+    error_message = "Configure the selected identity mode. Bundled Pomerium requires a distinct authenticate hostname/URL, IdP settings, and client-secret ARN."
   }
 }
 
@@ -209,7 +218,13 @@ locals {
     cloudflare_access_team_domain_b64  = base64encode(var.cloudflare_access_team_domain)
     cloudflare_access_aud_b64          = base64encode(var.cloudflare_access_aud)
     pomerium_authenticate_url_b64      = base64encode(var.pomerium_authenticate_url)
+    pomerium_authenticate_hostname_b64 = base64encode(var.pomerium_authenticate_hostname)
+    pomerium_image_b64                 = base64encode(var.pomerium_image)
     pomerium_jwks_url_b64              = base64encode(var.pomerium_jwks_url)
+    pomerium_idp_provider_b64          = base64encode(var.pomerium_idp_provider)
+    pomerium_idp_provider_url_b64      = base64encode(var.pomerium_idp_provider_url)
+    pomerium_idp_client_id_b64         = base64encode(var.pomerium_idp_client_id)
+    pomerium_idp_client_secret_arn_b64 = base64encode(var.pomerium_idp_client_secret_arn)
     pomerium_issuer_b64                = base64encode(var.pomerium_issuer)
     pomerium_audience_b64              = base64encode(var.pomerium_audience)
     selfhost_ai_provider_b64           = base64encode(var.selfhost_ai_provider)
@@ -231,7 +246,9 @@ resource "aws_instance" "selfhost" {
   associate_public_ip_address = true
   key_name                    = var.ssh_key_name != "" ? var.ssh_key_name : null
   iam_instance_profile        = aws_iam_instance_profile.selfhost.name
-  user_data                   = local.cloud_init
+  # The bootstrap intentionally includes all deployment validation. Compress it
+  # so the decoded cloud-init payload stays within EC2's 16 KiB user-data limit.
+  user_data_base64            = base64gzip(local.cloud_init)
   user_data_replace_on_change = true
 
   metadata_options {
@@ -311,6 +328,15 @@ resource "aws_route53_record" "apps" {
   count   = var.create_route53_records ? 1 : 0
   zone_id = var.route53_zone_id
   name    = "*.${var.app_vanity_domain}"
+  type    = "A"
+  ttl     = 60
+  records = [aws_eip.selfhost.public_ip]
+}
+
+resource "aws_route53_record" "pomerium_authenticate" {
+  count   = var.create_route53_records && var.auth_provider == "bundled-pomerium" ? 1 : 0
+  zone_id = var.route53_zone_id
+  name    = var.pomerium_authenticate_hostname
   type    = "A"
   ttl     = 60
   records = [aws_eip.selfhost.public_ip]

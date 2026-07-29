@@ -188,11 +188,12 @@ variable "route53_zone_id" {
 }
 
 variable "auth_provider" {
-  description = "Identity-aware proxy that provisions users. Public cloud installs require Cloudflare Access or Pomerium because email delivery is unavailable."
+  description = "Authentication mode. bundled-pomerium is the turnkey default; pomerium and cloudflare-access use an operator-managed identity proxy."
   type        = string
+  default     = "bundled-pomerium"
   validation {
-    condition     = contains(["cloudflare-access", "pomerium"], var.auth_provider)
-    error_message = "auth_provider must be cloudflare-access or pomerium."
+    condition     = contains(["bundled-pomerium", "pomerium", "cloudflare-access"], var.auth_provider)
+    error_message = "auth_provider must be bundled-pomerium, pomerium, or cloudflare-access."
   }
 }
 
@@ -219,8 +220,54 @@ variable "pomerium_authenticate_url" {
   default     = ""
 }
 
+variable "pomerium_authenticate_hostname" {
+  description = "Pomerium authenticate hostname without scheme. Required for bundled Pomerium and must match pomerium_authenticate_url."
+  type        = string
+  default     = ""
+  validation {
+    condition = var.pomerium_authenticate_hostname == "" || can(
+      regex("^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$", lower(var.pomerium_authenticate_hostname))
+    )
+    error_message = "pomerium_authenticate_hostname must be a DNS hostname without a scheme or path."
+  }
+}
+
+variable "pomerium_image" {
+  description = "Immutable Pomerium Core image reference used by the bundled mode."
+  type        = string
+  default     = "pomerium/pomerium@sha256:aae6010af6ba4c864bbd3f748cf37843a140b1ddef74d7d2ac1aa87660f8da1f"
+  validation {
+    condition     = can(regex("@sha256:[0-9a-f]{64}$", var.pomerium_image))
+    error_message = "pomerium_image must be pinned by sha256 digest."
+  }
+}
+
 variable "pomerium_jwks_url" {
   description = "Optional explicit Pomerium JWKS URL."
+  type        = string
+  default     = ""
+}
+
+variable "pomerium_idp_provider" {
+  description = "Pomerium identity provider type. Use oidc for a generic OpenID Connect provider."
+  type        = string
+  default     = "oidc"
+}
+
+variable "pomerium_idp_provider_url" {
+  description = "OIDC issuer URL used by bundled Pomerium."
+  type        = string
+  default     = ""
+}
+
+variable "pomerium_idp_client_id" {
+  description = "OIDC client id used by bundled Pomerium."
+  type        = string
+  default     = ""
+}
+
+variable "pomerium_idp_client_secret_arn" {
+  description = "Secrets Manager ARN whose SecretString is the OIDC client secret used by bundled Pomerium."
   type        = string
   default     = ""
 }

@@ -19,6 +19,31 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run selfhost:init
       - run: docker compose --env-file .env.selfhost -f docker-compose.selfhost.yml config --quiet
+      - name: Validate bundled Pomerium overlay
+        run: |
+          {
+            echo "SELFHOST_POMERIUM_TLS_MODE=upstream"
+            echo "POMERIUM_IDP_PROVIDER_URL=https://accounts.example.com"
+            echo "POMERIUM_IDP_CLIENT_ID=ci-client"
+            echo "POMERIUM_IDP_CLIENT_SECRET=ci-secret"
+          } >> .env.selfhost
+          bun run selfhost:configure
+          docker compose --env-file .env.selfhost \
+            -f docker-compose.selfhost.yml \
+            -f docker-compose.selfhost.pomerium.yml \
+            config --quiet
+          docker compose --env-file .env.selfhost \
+            -f docker-compose.selfhost.yml \
+            -f docker-compose.selfhost.pomerium.yml \
+            up --detach --wait pomerium
+          docker compose --env-file .env.selfhost \
+            -f docker-compose.selfhost.yml \
+            -f docker-compose.selfhost.pomerium.yml \
+            exec -T pomerium pomerium health
+          docker compose --env-file .env.selfhost \
+            -f docker-compose.selfhost.yml \
+            -f docker-compose.selfhost.pomerium.yml \
+            down --volumes
       - run: bun run test:selfhost
 
   selfhost-runtime:

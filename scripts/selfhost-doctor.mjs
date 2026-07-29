@@ -13,8 +13,9 @@ import {
   repoRoot,
   scriptEnv,
   volumeName,
-  volumeNames,
+  volumeNamesForEnv,
 } from "./selfhost-common.mjs";
+import { writePomeriumConfig } from "./selfhost-pomerium-config.mjs";
 
 const checks = [];
 const env = await readSelfhostEnv(false);
@@ -28,6 +29,7 @@ const effectiveEnv = scriptEnv({
   ...env,
   SELFHOST_DEPLOYMENT_MODE: deploymentMode,
 });
+const selectedVolumeNames = volumeNamesForEnv(env);
 let current;
 
 await check("env file", async () => {
@@ -206,6 +208,92 @@ await check("AI provider", async () => {
   note(`SELFHOST_AI_PROVIDER: ${provider}`);
 });
 
+await check("network binding", async () => {
+  const bindAddress = (env.SELFHOST_BIND_ADDRESS || "127.0.0.1").trim();
+  if (bindAddress !== "127.0.0.1" && bindAddress !== "::1") {
+    fail(
+      "SELFHOST_BIND_ADDRESS must remain loopback; expose camelAI only through the configured reverse proxy",
+    );
+  }
+  note(`SELFHOST_BIND_ADDRESS: ${bindAddress}`);
+});
+
+await check("authentication", async () => {
+  const mode = (env.SELFHOST_AUTH_MODE || "").trim();
+  if (
+    !new Set([
+      "bundled-pomerium",
+      "external-pomerium",
+      "cloudflare-access",
+      "local",
+    ]).has(mode)
+  ) {
+    fail(
+      "SELFHOST_AUTH_MODE must be bundled-pomerium, external-pomerium, cloudflare-access, or local",
+    );
+  }
+
+  if (mode === "bundled-pomerium") {
+    if ((env.LOCAL_AUTH_BYPASS || "").trim()) {
+      fail("bundled Pomerium cannot be combined with LOCAL_AUTH_BYPASS");
+    }
+    if (!/@sha256:[0-9a-f]{64}$/i.test(env.SELFHOST_POMERIUM_IMAGE || "")) {
+      fail("SELFHOST_POMERIUM_IMAGE must be pinned by sha256 digest");
+    }
+    if (
+      !new Set(["0", "1"]).has(
+        (env.SELFHOST_POMERIUM_LOOPBACK_HTTPS || "1").trim(),
+      )
+    ) {
+      fail("SELFHOST_POMERIUM_LOOPBACK_HTTPS must be 0 or 1");
+    }
+    for (const key of [
+      "POMERIUM_ISSUER",
+      "POMERIUM_AUDIENCE",
+      "POMERIUM_DEFAULT_ORG_NAME",
+    ]) {
+      if (!(env[key] || "").trim()) fail(`missing ${key}`);
+    }
+    await writePomeriumConfig(env);
+    note("bundled Pomerium configuration rendered");
+    note(`TLS mode: ${env.SELFHOST_POMERIUM_TLS_MODE || "direct"}`);
+    return;
+  }
+  if (mode === "external-pomerium") {
+    for (const key of [
+      "POMERIUM_ISSUER",
+      "POMERIUM_AUDIENCE",
+      "POMERIUM_DEFAULT_ORG_NAME",
+    ]) {
+      if (!(env[key] || "").trim()) fail(`missing ${key}`);
+    }
+    if (
+      !(env.POMERIUM_JWKS_URL || "").trim() &&
+      !(env.POMERIUM_AUTHENTICATE_URL || "").trim()
+    ) {
+      fail("missing POMERIUM_JWKS_URL or POMERIUM_AUTHENTICATE_URL");
+    }
+    note("external Pomerium");
+    return;
+  }
+  if (mode === "cloudflare-access") {
+    for (const key of [
+      "CLOUDFLARE_ACCESS_TEAM_DOMAIN",
+      "CLOUDFLARE_ACCESS_AUD",
+      "CLOUDFLARE_ACCESS_DEFAULT_ORG_NAME",
+    ]) {
+      if (!(env[key] || "").trim()) fail(`missing ${key}`);
+    }
+    note("external Cloudflare Access");
+    return;
+  }
+
+  if (env.LOCAL_AUTH_BYPASS !== "1") {
+    fail("SELFHOST_AUTH_MODE=local requires LOCAL_AUTH_BYPASS=1");
+  }
+  warn("local authentication bypass is for smoke tests only");
+});
+
 await check("compose config", async () => {
   const result = await capture("docker", composeArgs(env, ["config", "--quiet"]), {
     env: scriptEnv(env),
@@ -214,7 +302,7 @@ await check("compose config", async () => {
 });
 
 await check("volume names", async () => {
-  for (const name of volumeNames) {
+  for (const name of selectedVolumeNames) {
     note(`${name}: ${volumeName(name, env)}`);
   }
 });

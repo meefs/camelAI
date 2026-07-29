@@ -10,12 +10,13 @@ import {
   run,
   scriptEnv,
   volumeName,
-  volumeNames,
+  volumeNamesForEnv,
 } from "./selfhost-common.mjs";
 
 const env = await readSelfhostEnv(true);
 const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
 const backupDir = path.resolve(repoRoot, process.argv[2] || `.selfhost/backups/${timestamp}`);
+const selectedVolumeNames = volumeNamesForEnv(env);
 
 await fs.mkdir(backupDir, { recursive: true });
 
@@ -26,7 +27,7 @@ if (ps.code === 0 && ps.stdout.trim()) {
   console.warn("[selfhost:backup] If the stack is running, this is a live backup. Stop the stack for the most consistent snapshot.");
 }
 
-for (const name of volumeNames) {
+for (const name of selectedVolumeNames) {
   const dockerVolume = volumeName(name, env);
   await backupVolume(dockerVolume, `${name}.tgz`);
 }
@@ -36,7 +37,7 @@ await fs.writeFile(
   JSON.stringify({
     createdAt: new Date().toISOString(),
     composeProject: env.COMPOSE_PROJECT_NAME,
-    volumes: volumeNames.map((name) => ({
+    volumes: selectedVolumeNames.map((name) => ({
       name,
       dockerVolume: volumeName(name, env),
       archive: `${name}.tgz`,
@@ -55,8 +56,9 @@ async function backupVolume(dockerVolume, archiveName) {
     env: scriptEnv(env),
   });
   if (inspect.code !== 0) {
-    console.warn(`[selfhost:backup] Skipping missing volume ${dockerVolume}.`);
-    return;
+    throw new Error(
+      `[selfhost:backup] Required volume ${dockerVolume} does not exist. No successful backup manifest was written.`,
+    );
   }
 
   await run("docker", [
@@ -75,4 +77,3 @@ async function backupVolume(dockerVolume, archiveName) {
     ".",
   ], { env: scriptEnv(env) });
 }
-

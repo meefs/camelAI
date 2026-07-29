@@ -52,9 +52,15 @@ Metadata:
           - CloudflareAccessTeamDomain
           - CloudflareAccessAudience
           - PomeriumAuthenticateUrl
+          - PomeriumAuthenticateHostname
           - PomeriumJwksUrl
           - PomeriumIssuer
           - PomeriumAudience
+          - PomeriumImage
+          - PomeriumIdpProvider
+          - PomeriumIdpProviderUrl
+          - PomeriumIdpClientId
+          - PomeriumIdpClientSecretArn
       - Label:
           default: AI provider
         Parameters:
@@ -192,9 +198,11 @@ Parameters:
 
   AuthProvider:
     Type: String
+    Default: bundled-pomerium
     AllowedValues:
       - cloudflare-access
       - pomerium
+      - bundled-pomerium
     Description: Public installs require an identity-aware proxy.
   AuthDefaultOrgName:
     Type: String
@@ -211,6 +219,30 @@ Parameters:
     Type: String
     Default: ""
     AllowedPattern: "(|https://[^\\s']+)"
+  PomeriumAuthenticateHostname:
+    Type: String
+    Default: ""
+    AllowedPattern: "[A-Za-z0-9.-]*"
+  PomeriumImage:
+    Type: String
+    Default: pomerium/pomerium@sha256:aae6010af6ba4c864bbd3f748cf37843a140b1ddef74d7d2ac1aa87660f8da1f
+    AllowedPattern: "[A-Za-z0-9._/-]+@sha256:[a-f0-9]{64}"
+  PomeriumIdpProvider:
+    Type: String
+    Default: oidc
+    AllowedPattern: "[A-Za-z0-9._-]+"
+  PomeriumIdpProviderUrl:
+    Type: String
+    Default: ""
+    AllowedPattern: "(|https://[^\\s']+)"
+  PomeriumIdpClientId:
+    Type: String
+    Default: ""
+    AllowedPattern: "[A-Za-z0-9._:/-]*"
+  PomeriumIdpClientSecretArn:
+    Type: String
+    Default: ""
+    AllowedPattern: "(|arn:[A-Za-z0-9-]+:secretsmanager:[A-Za-z0-9-]+:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+)"
   PomeriumJwksUrl:
     Type: String
     Default: ""
@@ -218,7 +250,7 @@ Parameters:
   PomeriumIssuer:
     Type: String
     Default: ""
-    AllowedPattern: "(|https://[^\\s']+)"
+    AllowedPattern: "[A-Za-z0-9._:/-]*"
   PomeriumAudience:
     Type: String
     Default: ""
@@ -299,6 +331,21 @@ Rules:
         AssertDescription: PomeriumIssuer is required.
       - Assert: !Not [!Equals [!Ref PomeriumAudience, ""]]
         AssertDescription: PomeriumAudience is required.
+  BundledPomeriumRequiresSettings:
+    RuleCondition: !Equals [!Ref AuthProvider, bundled-pomerium]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref PomeriumAuthenticateUrl, ""]]
+        AssertDescription: PomeriumAuthenticateUrl is required.
+      - Assert: !Not [!Equals [!Ref PomeriumAuthenticateHostname, ""]]
+        AssertDescription: PomeriumAuthenticateHostname is required.
+      - Assert: !Or
+          - !Not [!Equals [!Ref PomeriumIdpProvider, oidc]]
+          - !Not [!Equals [!Ref PomeriumIdpProviderUrl, ""]]
+        AssertDescription: PomeriumIdpProviderUrl is required for generic OIDC.
+      - Assert: !Not [!Equals [!Ref PomeriumIdpClientId, ""]]
+        AssertDescription: PomeriumIdpClientId is required.
+      - Assert: !Not [!Equals [!Ref PomeriumIdpClientSecretArn, ""]]
+        AssertDescription: PomeriumIdpClientSecretArn is required.
 
 Conditions:
   HasKmsKey: !Not [!Equals [!Ref EbsKmsKeyId, ""]]
@@ -306,6 +353,10 @@ Conditions:
   HasKeyName: !Not [!Equals [!Ref KeyName, ""]]
   HasSeparateIframeDomain: !Not [!Equals [!Ref AppIframeDomain, ""]]
   IsProvidedTls: !Equals [!Ref TlsMode, provided]
+  IsBundledPomerium: !Equals [!Ref AuthProvider, bundled-pomerium]
+  CreateBundledPomeriumDns: !And
+    - !Condition CreateDns
+    - !Condition IsBundledPomerium
   CreateDns: !Equals [!Ref CreateRoute53Records, "true"]
   CreateSeparateIframeDns: !And
     - !Condition CreateDns
@@ -363,6 +414,12 @@ Resources:
               - Effect: Allow
                 Action: secretsmanager:GetSecretValue
                 Resource: !Ref SelfhostAiApiKeySecretArn
+              - !If
+                - IsBundledPomerium
+                - Effect: Allow
+                  Action: secretsmanager:GetSecretValue
+                  Resource: !Sub "${PomeriumIdpClientSecretArn}*"
+                - !Ref AWS::NoValue
               - !If
                 - IsProvidedTls
                 - Effect: Allow
@@ -482,6 +539,18 @@ Resources:
               - !Ref CloudflareAccessAudience
               - "'\nPOMERIUM_AUTHENTICATE_URL='"
               - !Ref PomeriumAuthenticateUrl
+              - "'\nPOMERIUM_AUTHENTICATE_HOSTNAME='"
+              - !Ref PomeriumAuthenticateHostname
+              - "'\nPOMERIUM_IMAGE='"
+              - !Ref PomeriumImage
+              - "'\nPOMERIUM_IDP_PROVIDER='"
+              - !Ref PomeriumIdpProvider
+              - "'\nPOMERIUM_IDP_PROVIDER_URL='"
+              - !Ref PomeriumIdpProviderUrl
+              - "'\nPOMERIUM_IDP_CLIENT_ID='"
+              - !Ref PomeriumIdpClientId
+              - "'\nPOMERIUM_IDP_CLIENT_SECRET_ARN='"
+              - !Ref PomeriumIdpClientSecretArn
               - "'\nPOMERIUM_JWKS_URL='"
               - !Ref PomeriumJwksUrl
               - "'\nPOMERIUM_ISSUER='"
@@ -557,11 +626,22 @@ Resources:
                 [ -n "$SELFHOST_AI_API_KEY" ] && [ "$SELFHOST_AI_API_KEY" != None ]
                 [[ "$SELFHOST_AI_API_KEY" != *$'\n'* ]] || { echo "AI API key secret must be one line" >&2; exit 1; }
 
+                POMERIUM_IDP_CLIENT_SECRET=""
+                if [ "$AUTH_PROVIDER" = bundled-pomerium ]; then
+                  POMERIUM_IDP_CLIENT_SECRET=$(aws secretsmanager get-secret-value --secret-id "$POMERIUM_IDP_CLIENT_SECRET_ARN" --query SecretString --output text)
+                  [ -n "$POMERIUM_IDP_CLIENT_SECRET" ] && [ "$POMERIUM_IDP_CLIENT_SECRET" != None ]
+                  [[ "$POMERIUM_IDP_CLIENT_SECRET" != *$'\n'* ]] || { echo "Pomerium IdP client secret must be one line" >&2; exit 1; }
+                fi
+
                 export APP_IMAGE LOCAL_ARTIFACTS_IMAGE PROJECT_BUILD_IMAGE ANALYSIS_IMAGE DB_QUERY_IMAGE CONTAINER_EGRESS_IMAGE
                 export MAIN_HOSTNAME APP_VANITY_DOMAIN APP_IFRAME_DOMAIN SELFHOST_AI_PROVIDER SELFHOST_AI_API_KEY
                 export SELFHOST_AI_AWS_REGION SELFHOST_AI_BASE_URL SELFHOST_AI_MODEL SELFHOST_AI_NAME SELFHOST_AI_API SELFHOST_AI_AUTH_TYPE
                 export AUTH_PROVIDER AUTH_DEFAULT_ORG_NAME CLOUDFLARE_ACCESS_TEAM_DOMAIN CLOUDFLARE_ACCESS_AUD
-                export POMERIUM_AUTHENTICATE_URL POMERIUM_JWKS_URL POMERIUM_ISSUER POMERIUM_AUDIENCE
+                export POMERIUM_AUTHENTICATE_URL POMERIUM_AUTHENTICATE_HOSTNAME POMERIUM_JWKS_URL POMERIUM_ISSUER POMERIUM_AUDIENCE
+                export POMERIUM_IMAGE POMERIUM_IDP_PROVIDER POMERIUM_IDP_PROVIDER_URL POMERIUM_IDP_CLIENT_ID POMERIUM_IDP_CLIENT_SECRET
+                POMERIUM_LOOPBACK_HTTPS=0
+                [ "$TLS_MODE" = provided ] && POMERIUM_LOOPBACK_HTTPS=1
+                export POMERIUM_LOOPBACK_HTTPS
                 node <<'NODE'
                 import fs from "node:fs";
                 const e = process.env;
@@ -574,6 +654,11 @@ Resources:
                   SELFHOST_DB_QUERY_IMAGE: e.DB_QUERY_IMAGE,
                   SELFHOST_CONTAINER_EGRESS_IMAGE: e.CONTAINER_EGRESS_IMAGE,
                   SELFHOST_PUBLIC_BASE_URL: `https://${e.MAIN_HOSTNAME}`,
+                  SELFHOST_MAIN_HOSTNAME: e.MAIN_HOSTNAME,
+                  SELFHOST_AUTH_MODE: e.AUTH_PROVIDER === "pomerium" ? "external-pomerium" : e.AUTH_PROVIDER,
+                  SELFHOST_POMERIUM_TLS_MODE: "upstream",
+                  SELFHOST_POMERIUM_LOOPBACK_HTTPS: e.POMERIUM_LOOPBACK_HTTPS,
+                  SELFHOST_POMERIUM_IMAGE: e.POMERIUM_IMAGE,
                   LOCAL_APP_VANITY_DOMAIN: e.APP_VANITY_DOMAIN,
                   LOCAL_APP_IFRAME_DOMAIN: e.APP_IFRAME_DOMAIN,
                   SELFHOST_AI_PROVIDER: e.SELFHOST_AI_PROVIDER,
@@ -594,11 +679,16 @@ Resources:
                   CLOUDFLARE_ACCESS_TEAM_DOMAIN: e.AUTH_PROVIDER === "cloudflare-access" ? e.CLOUDFLARE_ACCESS_TEAM_DOMAIN : "",
                   CLOUDFLARE_ACCESS_AUD: e.AUTH_PROVIDER === "cloudflare-access" ? e.CLOUDFLARE_ACCESS_AUD : "",
                   CLOUDFLARE_ACCESS_DEFAULT_ORG_NAME: e.AUTH_PROVIDER === "cloudflare-access" ? e.AUTH_DEFAULT_ORG_NAME : "",
-                  POMERIUM_AUTHENTICATE_URL: e.AUTH_PROVIDER === "pomerium" ? e.POMERIUM_AUTHENTICATE_URL : "",
-                  POMERIUM_JWKS_URL: e.AUTH_PROVIDER === "pomerium" ? e.POMERIUM_JWKS_URL : "",
-                  POMERIUM_ISSUER: e.AUTH_PROVIDER === "pomerium" ? e.POMERIUM_ISSUER : "",
-                  POMERIUM_AUDIENCE: e.AUTH_PROVIDER === "pomerium" ? e.POMERIUM_AUDIENCE : "",
-                  POMERIUM_DEFAULT_ORG_NAME: e.AUTH_PROVIDER === "pomerium" ? e.AUTH_DEFAULT_ORG_NAME : "",
+                  POMERIUM_AUTHENTICATE_URL: e.AUTH_PROVIDER.includes("pomerium") ? e.POMERIUM_AUTHENTICATE_URL : "",
+                  POMERIUM_AUTHENTICATE_HOSTNAME: e.AUTH_PROVIDER === "bundled-pomerium" ? e.POMERIUM_AUTHENTICATE_HOSTNAME : "",
+                  POMERIUM_JWKS_URL: e.AUTH_PROVIDER === "bundled-pomerium" ? `https://${e.MAIN_HOSTNAME}/.well-known/pomerium/jwks.json` : e.AUTH_PROVIDER === "pomerium" ? e.POMERIUM_JWKS_URL : "",
+                  POMERIUM_ISSUER: e.AUTH_PROVIDER === "bundled-pomerium" ? e.MAIN_HOSTNAME : e.AUTH_PROVIDER === "pomerium" ? e.POMERIUM_ISSUER : "",
+                  POMERIUM_AUDIENCE: e.AUTH_PROVIDER === "bundled-pomerium" ? e.MAIN_HOSTNAME : e.AUTH_PROVIDER === "pomerium" ? e.POMERIUM_AUDIENCE : "",
+                  POMERIUM_DEFAULT_ORG_NAME: e.AUTH_PROVIDER.includes("pomerium") ? e.AUTH_DEFAULT_ORG_NAME : "",
+                  POMERIUM_IDP_PROVIDER: e.AUTH_PROVIDER === "bundled-pomerium" ? e.POMERIUM_IDP_PROVIDER : "",
+                  POMERIUM_IDP_PROVIDER_URL: e.AUTH_PROVIDER === "bundled-pomerium" ? e.POMERIUM_IDP_PROVIDER_URL : "",
+                  POMERIUM_IDP_CLIENT_ID: e.AUTH_PROVIDER === "bundled-pomerium" ? e.POMERIUM_IDP_CLIENT_ID : "",
+                  POMERIUM_IDP_CLIENT_SECRET: e.AUTH_PROVIDER === "bundled-pomerium" ? e.POMERIUM_IDP_CLIENT_SECRET : "",
                 };
                 const path = ".env.selfhost";
                 let text = fs.readFileSync(path, "utf8");
@@ -610,10 +700,13 @@ Resources:
                 }
                 fs.writeFileSync(path, text, { mode: 0o600 });
                 NODE
-                unset SELFHOST_AI_API_KEY
+                unset SELFHOST_AI_API_KEY POMERIUM_IDP_CLIENT_SECRET
                 chmod 600 .env.selfhost
+                bun run selfhost:configure
 
                 install -d -m 0700 /etc/camelai
+                http_sites="http://*.$APP_VANITY_DOMAIN"
+                [ "$APP_IFRAME_DOMAIN" = "$APP_VANITY_DOMAIN" ] || http_sites="$http_sites, http://*.$APP_IFRAME_DOMAIN"
                 if [ "$TLS_MODE" = provided ]; then
                   aws secretsmanager get-secret-value --secret-id "$TLS_CERTIFICATE_SECRET_ARN" --query SecretString --output text > /etc/camelai/tls.crt
                   aws secretsmanager get-secret-value --secret-id "$TLS_PRIVATE_KEY_SECRET_ARN" --query SecretString --output text > /etc/camelai/tls.key
@@ -621,28 +714,72 @@ Resources:
                   chown root:caddy /etc/camelai/tls.crt /etc/camelai/tls.key
                   app_sites="https://*.$APP_VANITY_DOMAIN"
                   [ "$APP_IFRAME_DOMAIN" = "$APP_VANITY_DOMAIN" ] || app_sites="$app_sites, https://*.$APP_IFRAME_DOMAIN"
+                  main_upstream=127.0.0.1:3001
+                  auth_http_site=""
+                  if [ "$AUTH_PROVIDER" = bundled-pomerium ]; then
+                    main_upstream=127.0.0.1:5444
+                    auth_http_site=", http://$POMERIUM_AUTHENTICATE_HOSTNAME"
+                  fi
                   cat > /etc/caddy/Caddyfile <<CADDY
-                http://$MAIN_HOSTNAME, http://*.$APP_VANITY_DOMAIN, http://*.$APP_IFRAME_DOMAIN {
+                http://$MAIN_HOSTNAME, $http_sites$auth_http_site {
                   redir https://{host}{uri} permanent
                 }
                 https://$MAIN_HOSTNAME {
                   tls /etc/camelai/tls.crt /etc/camelai/tls.key
-                  reverse_proxy 127.0.0.1:3001
+                  reverse_proxy $main_upstream
                 }
                 $app_sites {
                   tls /etc/camelai/tls.crt /etc/camelai/tls.key
                   reverse_proxy 127.0.0.1:3001
                 }
                 CADDY
-                else
-                  cat > /etc/caddy/Caddyfile <<CADDY
-                http://$MAIN_HOSTNAME, http://*.$APP_VANITY_DOMAIN, http://*.$APP_IFRAME_DOMAIN {
-                  reverse_proxy 127.0.0.1:3001
+                  if [ "$AUTH_PROVIDER" = bundled-pomerium ]; then
+                    cat >> /etc/caddy/Caddyfile <<CADDY
+                https://$POMERIUM_AUTHENTICATE_HOSTNAME {
+                  tls /etc/camelai/tls.crt /etc/camelai/tls.key
+                  reverse_proxy 127.0.0.1:5444
                 }
                 CADDY
+                  fi
+                else
+                  if [ "$AUTH_PROVIDER" = bundled-pomerium ]; then
+                    cat > /etc/caddy/Caddyfile <<CADDY
+                http://$MAIN_HOSTNAME, http://$POMERIUM_AUTHENTICATE_HOSTNAME {
+                  reverse_proxy 127.0.0.1:5444 {
+                    header_up X-Forwarded-Proto https
+                  }
+                }
+                $http_sites {
+                  reverse_proxy 127.0.0.1:3001 {
+                    header_up X-Forwarded-Proto https
+                  }
+                }
+                CADDY
+                  else
+                    cat > /etc/caddy/Caddyfile <<CADDY
+                http://$MAIN_HOSTNAME, $http_sites {
+                  reverse_proxy 127.0.0.1:3001 {
+                    header_up X-Forwarded-Proto https
+                  }
+                }
+                CADDY
+                  fi
                 fi
                 caddy validate --config /etc/caddy/Caddyfile
                 systemctl enable --now caddy
+
+                cat > /usr/local/sbin/camelai-selfhost-compose <<'COMPOSE'
+                #!/usr/bin/env bash
+                set -Eeuo pipefail
+                cd /srv/camelai/repo
+                args=(--env-file .env.selfhost -f docker-compose.selfhost.yml)
+                if grep -q '^SELFHOST_AUTH_MODE=bundled-pomerium$' .env.selfhost; then
+                  args+=(-f docker-compose.selfhost.pomerium.yml)
+                  grep -q '^SELFHOST_POMERIUM_LOOPBACK_HTTPS=1$' .env.selfhost && args+=(-f docker-compose.selfhost.pomerium-loopback.yml)
+                fi
+                exec /usr/bin/docker compose "${args[@]}" "$@"
+                COMPOSE
+                chmod 0755 /usr/local/sbin/camelai-selfhost-compose
 
                 cat > /etc/systemd/system/camelai-selfhost.service <<'UNIT'
                 [Unit]
@@ -655,9 +792,10 @@ Resources:
                 Type=oneshot
                 RemainAfterExit=yes
                 WorkingDirectory=/srv/camelai/repo
-                ExecStart=/usr/bin/docker compose --env-file .env.selfhost -f docker-compose.selfhost.yml pull
-                ExecStart=/usr/bin/docker compose --env-file .env.selfhost -f docker-compose.selfhost.yml up --detach --wait
-                ExecStop=/usr/bin/docker compose --env-file .env.selfhost -f docker-compose.selfhost.yml down
+                ExecStartPre=/usr/local/bin/bun run selfhost:configure
+                ExecStartPre=/usr/local/sbin/camelai-selfhost-compose pull
+                ExecStart=/usr/local/sbin/camelai-selfhost-compose up --detach --remove-orphans --wait --wait-timeout 900
+                ExecStop=/usr/local/sbin/camelai-selfhost-compose down
                 TimeoutStartSec=1200
 
                 [Install]
@@ -667,83 +805,10 @@ Resources:
                 cat > /usr/local/sbin/camelai-selfhost-upgrade <<'UPGRADE'
                 #!/usr/bin/env bash
                 set -Eeuo pipefail
-                if [ "$#" -ne 1 ] && [ "$#" -ne 7 ]; then
-                  echo "usage: camelai-selfhost-upgrade <release-ref> [app-image local-artifacts-image project-build-image analysis-image db-query-image container-egress-image]" >&2
-                  exit 2
-                fi
-                ref=$1
-                if [ "$#" -eq 1 ]; then
-                  release_app_image="ghcr.io/qaml-ai/camelai-selfhost-app:$ref"
-                  release_artifacts_image="ghcr.io/qaml-ai/camelai-selfhost-local-artifacts:$ref"
-                  release_build_image="ghcr.io/qaml-ai/camelai-selfhost-project-build:$ref"
-                  release_analysis_image="ghcr.io/qaml-ai/camelai-selfhost-analysis:$ref"
-                  release_query_image="ghcr.io/qaml-ai/camelai-selfhost-db-query:$ref"
-                  release_egress_image="ghcr.io/qaml-ai/camelai-selfhost-container-egress:$ref"
-                else
-                  release_app_image=$2
-                  release_artifacts_image=$3
-                  release_build_image=$4
-                  release_analysis_image=$5
-                  release_query_image=$6
-                  release_egress_image=$7
-                fi
                 cd /srv/camelai/repo
-                bun run selfhost:backup
-                cp -p .env.selfhost /srv/camelai/.env.selfhost.previous
-                git rev-parse HEAD > /srv/camelai/repository-ref.previous
-                git fetch --tags --force origin
-                git checkout --detach "$ref"
-                bun install --frozen-lockfile
-                export RELEASE_APP_IMAGE="$release_app_image"
-                export RELEASE_ARTIFACTS_IMAGE="$release_artifacts_image"
-                export RELEASE_BUILD_IMAGE="$release_build_image"
-                export RELEASE_ANALYSIS_IMAGE="$release_analysis_image"
-                export RELEASE_QUERY_IMAGE="$release_query_image"
-                export RELEASE_EGRESS_IMAGE="$release_egress_image"
-                node <<'NODE'
-                import fs from "node:fs";
-                const images = {
-                  SELFHOST_DEPLOYMENT_MODE: "release",
-                  SELFHOST_APP_IMAGE: process.env.RELEASE_APP_IMAGE,
-                  SELFHOST_LOCAL_ARTIFACTS_IMAGE: process.env.RELEASE_ARTIFACTS_IMAGE,
-                  SELFHOST_PROJECT_BUILD_IMAGE: process.env.RELEASE_BUILD_IMAGE,
-                  SELFHOST_ANALYSIS_IMAGE: process.env.RELEASE_ANALYSIS_IMAGE,
-                  SELFHOST_DB_QUERY_IMAGE: process.env.RELEASE_QUERY_IMAGE,
-                  SELFHOST_CONTAINER_EGRESS_IMAGE: process.env.RELEASE_EGRESS_IMAGE,
-                };
-                let text = fs.readFileSync(".env.selfhost", "utf8");
-                for (const [key, value] of Object.entries(images)) {
-                  const line = `${key}=${value}`;
-                  text = new RegExp(`^${key}=.*$`, "m").test(text)
-                    ? text.replace(new RegExp(`^${key}=.*$`, "m"), line)
-                    : `${text.trimEnd()}\n${line}\n`;
-                }
-                fs.writeFileSync(".env.selfhost", text, { mode: 0o600 });
-                NODE
-                if ! bun run selfhost:upgrade -- --skip-backup; then
-                  cp -p /srv/camelai/.env.selfhost.previous .env.selfhost
-                  git checkout --detach "$(cat /srv/camelai/repository-ref.previous)"
-                  bun install --frozen-lockfile
-                  docker compose --env-file .env.selfhost -f docker-compose.selfhost.yml pull
-                  docker compose --env-file .env.selfhost -f docker-compose.selfhost.yml up --detach --wait
-                  exit 1
-                fi
+                exec /usr/local/bin/bun run selfhost:upgrade -- "$@"
                 UPGRADE
                 chmod 0750 /usr/local/sbin/camelai-selfhost-upgrade
-
-                cat > /usr/local/sbin/camelai-selfhost-rollback <<'ROLLBACK'
-                #!/usr/bin/env bash
-                set -Eeuo pipefail
-                cd /srv/camelai/repo
-                [ -f /srv/camelai/.env.selfhost.previous ] && [ -f /srv/camelai/repository-ref.previous ]
-                cp -p /srv/camelai/.env.selfhost.previous .env.selfhost
-                git checkout --detach "$(cat /srv/camelai/repository-ref.previous)"
-                bun install --frozen-lockfile
-                docker compose --env-file .env.selfhost -f docker-compose.selfhost.yml pull
-                docker compose --env-file .env.selfhost -f docker-compose.selfhost.yml up --detach --wait
-                echo "Runtime rolled back. D1 migrations are forward-only; restore a backup if schema rollback is required."
-                ROLLBACK
-                chmod 0750 /usr/local/sbin/camelai-selfhost-rollback
 
                 systemctl daemon-reload
                 systemctl enable --now camelai-selfhost
@@ -811,6 +876,17 @@ Resources:
       ResourceRecords:
         - !GetAtt ElasticIp.PublicIp
 
+  PomeriumAuthenticateDnsRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: CreateBundledPomeriumDns
+    Properties:
+      HostedZoneId: !Ref Route53HostedZoneId
+      Name: !Ref PomeriumAuthenticateHostname
+      Type: A
+      TTL: "60"
+      ResourceRecords:
+        - !GetAtt ElasticIp.PublicIp
+
   IframeWildcardDnsRecord:
     Type: AWS::Route53::RecordSet
     Condition: CreateSeparateIframeDns
@@ -837,4 +913,6 @@ Outputs:
     Value: !Sub >-
       aws ssm send-command --instance-ids ${Instance}
       --document-name AWS-RunShellScript
-      --parameters commands='sudo camelai-selfhost-upgrade selfhost-vX.Y.Z'
+      --parameters commands='sudo camelai-selfhost-upgrade
+      --release selfhost-vX.Y.Z
+      --manifest /secure/path/selfhost-release.json'
