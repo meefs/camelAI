@@ -68,3 +68,15 @@ export async function validateAndConsumeIntegrationOAuthState(
 
   return data;
 }
+
+/**
+ * Read an OAuth state without consuming it. This is only for provider-denied
+ * callbacks that need to return to the originating UI while leaving the setup
+ * request retryable; successful/token callbacks must use the single-use helper.
+ */
+export async function readIntegrationOAuthState(
+  kv: KVNamespace,
+  state: string,
+): Promise<IntegrationOAuthState | null> {
+  return (await kv.get(stateKey(state), 'json')) as IntegrationOAuthState | null;
+}

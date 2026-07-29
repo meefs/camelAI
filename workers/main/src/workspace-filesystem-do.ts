@@ -9,8 +9,7 @@ import {
   type TextEditDetails,
 } from "./text-edit";
 
-const LEGACY_WORKSPACE_ROOT = "/home/claude";
-const WORKSPACE_ROOT_ALIASES = [LEGACY_WORKSPACE_ROOT, "/workspace"];
+const WORKSPACE_ROOT = "/workspace";
 const DEFAULT_INLINE_THRESHOLD = 1_500_000;
 
 /**
@@ -1453,11 +1452,10 @@ export class ProjectFilesystemClient implements WorkspaceFileStoreLike {
 export function normalizeWorkspacePath(value: unknown, fallback = "/"): string {
   if (typeof value !== "string" || !value.trim()) return fallback;
   let raw = value.trim().replace(/\\/g, "/");
-  if (raw === "~" || WORKSPACE_ROOT_ALIASES.includes(raw)) return "/";
+  if (raw === "~" || raw === WORKSPACE_ROOT) return "/";
   if (raw.startsWith("~/")) raw = raw.slice(2);
-  const rootAlias = WORKSPACE_ROOT_ALIASES.find((alias) => raw.startsWith(`${alias}/`));
-  if (rootAlias) {
-    raw = raw.slice(rootAlias.length + 1);
+  if (raw.startsWith(`${WORKSPACE_ROOT}/`)) {
+    raw = raw.slice(WORKSPACE_ROOT.length + 1);
   }
   if (!raw.startsWith("/")) raw = `/${raw}`;
 

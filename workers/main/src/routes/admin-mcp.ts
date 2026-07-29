@@ -52,7 +52,6 @@ const TOOL_SEARCH_USERS = "search_users";
 const TOOL_GET_USER_ORGS = "get_user_orgs";
 const TOOL_SEARCH_ORGS = "search_orgs";
 const TOOL_GET_ORG_DETAIL = "get_org_detail";
-const TOOL_UPDATE_ORG_MODEL_ACCESS = "update_org_model_access";
 const TOOL_SEARCH_THREADS = "search_threads";
 const TOOL_QUERY_CHAT_ERRORS = "query_chat_errors";
 const TOOL_GET_THREAD_MESSAGES = "get_thread_messages";
@@ -264,19 +263,6 @@ function adminTools() {
         type: "object",
         properties: { org_id: { type: "string" } },
         required: ["org_id"],
-        additionalProperties: false,
-      },
-    },
-    {
-      name: TOOL_UPDATE_ORG_MODEL_ACCESS,
-      description: "Enable or disable Claude proxy model access for an organization.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          org_id: { type: "string" },
-          claude_proxy_models: { type: "boolean" },
-        },
-        required: ["org_id", "claude_proxy_models"],
         additionalProperties: false,
       },
     },
@@ -2308,15 +2294,6 @@ async function callTool(
     return fetchAdminApiTool(req, env, grant, {
       method: "GET",
       path: `/api/admin/orgs/${encodeURIComponent(orgId)}`,
-    });
-  }
-  if (name === TOOL_UPDATE_ORG_MODEL_ACCESS) {
-    const orgId = requiredStringArg(input, "org_id");
-    if (typeof orgId !== "string") return toolText(orgId, true);
-    return fetchAdminApiTool(req, env, grant, {
-      method: "PUT",
-      path: `/api/admin/orgs/${encodeURIComponent(orgId)}/model-access`,
-      body: pickBody(input, ["claude_proxy_models"]),
     });
   }
   if (name === TOOL_SEARCH_THREADS) {

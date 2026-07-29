@@ -502,7 +502,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
         orgId: authContext.currentOrg.id,
         orgBillingState: authContext.currentOrg,
         llmProviderConfig: authContext.currentOrgLlmProviderConfig,
-        experimentalSettings: authContext.currentOrgExperimentalSettings,
       }).catch(
         (error) => {
           console.error("Failed to load model picker state:", error);
@@ -542,9 +541,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
             : null,
         )
       : null;
-    const experimentalSettings =
-      pausedPickerState?.experimentalSettings ??
-      authContext.currentOrgExperimentalSettings;
     const effectiveLlmProviderConfig = getEffectiveLlmProviderConfig(
       env,
       authContext.currentOrgLlmProviderConfig,
@@ -569,7 +565,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       },
     );
     const fallbackAllowedThreadModels = getVisibleLlmModelOptions(
-      experimentalSettings,
       fallbackThreadModel,
       {
         orgProvider: effectiveLlmProviderConfig?.provider,
@@ -612,7 +607,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
         url.searchParams,
       ),
       llmProvider,
-      experimentalSettings,
       salesPrompt: await salesPromptPromise,
       activeChatGroup,
       moveChatGroups,
@@ -1098,7 +1092,6 @@ function ChatWelcomeContent({
     salesPrompt,
     activeChatGroup,
     moveChatGroups,
-    experimentalSettings,
   } = interactive;
   const navigate = useNavigate();
   const revalidator = useRevalidator();
@@ -1279,7 +1272,6 @@ function ChatWelcomeContent({
             renderedAt,
             group: groupWelcomeData,
           }}
-          experimentalSettings={experimentalSettings}
           llmProvider={llmProvider}
           threadModel={threadModel}
           allowedThreadModels={allowedThreadModels}

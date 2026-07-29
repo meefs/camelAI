@@ -26,6 +26,7 @@ import { IntegrationIcon, hasIntegrationIcon, resolveLogoType } from "@/lib/inte
 import { cn } from "@/lib/utils";
 import {
   canReconnectConnection,
+  getChannelAttentionBadge,
   panelItemConnection,
   panelItemName,
   type ConnectionListItem,
@@ -75,8 +76,19 @@ export function ConnectionActionsMenu({
   const isEmail = item.kind === "channel" && item.channel === "email";
   const showRecordActions = Boolean(connection && isAdmin);
   const showReconnect = Boolean(connection && isAdmin && canReconnectConnection(connection));
-  const showClone = Boolean(connection && isAdmin && otherWorkspacesCount > 0);
+  const showClone = Boolean(
+    connection &&
+    isAdmin &&
+    otherWorkspacesCount > 0 &&
+    connection.integration_type !== "telegram" &&
+    connection.integration_type !== "discord_channel",
+  );
   const showVerify = Boolean(connection);
+  const showConfigure = Boolean(
+    connection &&
+    showRecordActions &&
+    connection.integration_type !== "discord_channel",
+  );
   const hasActions = isEmail || showVerify || showRecordActions || showReconnect || showClone;
 
   if (!hasActions) return null;
@@ -161,17 +173,19 @@ export function ConnectionActionsMenu({
               </MenuItemIcon>
               Rename
             </DropdownMenuItem>
-            <DropdownMenuItem
-              onSelect={(event) => {
-                event.stopPropagation();
-                onConfigure(connection);
-              }}
-            >
-              <MenuItemIcon>
-                <Settings />
-              </MenuItemIcon>
-              Configure
-            </DropdownMenuItem>
+            {showConfigure ? (
+              <DropdownMenuItem
+                onSelect={(event) => {
+                  event.stopPropagation();
+                  onConfigure(connection);
+                }}
+              >
+                <MenuItemIcon>
+                  <Settings />
+                </MenuItemIcon>
+                Configure
+              </DropdownMenuItem>
+            ) : null}
             {showReconnect ? (
               <DropdownMenuItem
                 onSelect={(event) => {
@@ -182,7 +196,9 @@ export function ConnectionActionsMenu({
                 <MenuItemIcon>
                   <RefreshCw />
                 </MenuItemIcon>
-                Reconnect
+                {connection.integration_type === "discord_channel"
+                  ? "Reinstall bot"
+                  : "Reconnect"}
               </DropdownMenuItem>
             ) : null}
             {showClone ? (
@@ -271,6 +287,10 @@ export function ConnectionRow({
   onManageEmailSettings,
 }: ConnectionRowProps) {
   const displayName = panelItemName(item);
+  const connection = panelItemConnection(item);
+  const attentionBadge = connection
+    ? getChannelAttentionBadge(connection)
+    : null;
 
   return (
     <div
@@ -305,6 +325,19 @@ export function ConnectionRow({
             <TooltipContent side="top">
               Your plan does not enable email. Upgrade for access
             </TooltipContent>
+          </Tooltip>
+        ) : null}
+        {attentionBadge ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Badge
+                variant="secondary"
+                className="shrink-0 cursor-default font-normal"
+              >
+                {attentionBadge.label}
+              </Badge>
+            </TooltipTrigger>
+            <TooltipContent side="top">{attentionBadge.tooltip}</TooltipContent>
           </Tooltip>
         ) : null}
       </div>

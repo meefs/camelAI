@@ -1,14 +1,19 @@
 export type RuntimeCallArtifactKind =
   | "outbound_email"
   | "outbound_slack_message"
-  | "outbound_telegram_message";
+  | "outbound_telegram_message"
+  | "outbound_discord_message";
 
 export type RuntimeCallArtifactStatus = "sent" | "failed";
 
 export interface RuntimeCallArtifact {
   id: string;
   kind: RuntimeCallArtifactKind;
-  toolName: "send_email" | "send_slack_message" | "send_telegram_message";
+  toolName:
+    | "send_email"
+    | "send_slack_message"
+    | "send_telegram_message"
+    | "send_discord_message";
   status: RuntimeCallArtifactStatus;
   title: string;
   subtitle?: string;

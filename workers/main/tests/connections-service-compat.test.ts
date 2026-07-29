@@ -46,4 +46,38 @@ describe('ConnectionsService compatibility', () => {
       },
     });
   });
+
+  it('routes other.fetch through invoke and reconstructs a Response', async () => {
+    const invoke = vi.fn(async () => ({
+      status: 200,
+      statusText: 'OK',
+      headers: { 'content-type': 'application/json' },
+      bodyText: '{"ok":true}',
+      truncated: false,
+    }));
+    const binding = { invoke };
+    const connections = createConnections({ CONNECTIONS: binding as any });
+
+    const response = await (connections as any).otherCloudflareAnalyticsReadOnly.fetch(
+      '/client/v4/accounts/example/storage/kv/namespaces/example/keys',
+      {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+      },
+    );
+
+    expect(invoke).toHaveBeenCalledWith({
+      connection: 'otherCloudflareAnalyticsReadOnly',
+      method: 'fetch',
+      input: {
+        input: '/client/v4/accounts/example/storage/kv/namespaces/example/keys',
+        init: {
+          method: 'GET',
+          headers: { accept: 'application/json' },
+        },
+      },
+    });
+    expect(response).toBeInstanceOf(Response);
+    await expect(response.json()).resolves.toEqual({ ok: true });
+  });
 });

@@ -33,7 +33,6 @@
     "OPENAI_CODEX_PROXY_BASE_URL": "https://codex-egress-staging.camelai.dev/backend-api/codex",
     "R2_BUCKET_NAME": "chiridion-sandbox",
     "R2_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
-    "R2_MOUNT_DIR": "/home/claude",
     "R2_PARENT_ACCESS_KEY_ID": "4f8fdc386b4ccb9f4a2bea3c77c8ad95",
     "CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
     "ARTIFACTS_NAMESPACE": "staging",
@@ -42,6 +41,8 @@
     "WORKER_BASE_URL": "https://staging.camelai.dev",
     "EMAIL_FROM_ADDRESS": "agent-staging@camelai.dev",
     "WORKSPACE_EMAIL_DOMAIN": "camelai.dev",
+    "DISCORD_CHANNEL_ENABLED": "false",
+    "DISCORD_CLIENT_ID": "1531378050447704264",
     "STRIPE_MODE": "test",
     "STRIPE_SUBSCRIPTION_PRICE_ID": "price_1TtBYWGvliMKf4vH0F0649xi",
     "STRIPE_STARTER_PRICE_ID": "price_1TtBYWGvliMKf4vH0F0649xi",
@@ -141,6 +142,19 @@
     "consumers": [
       { "queue": "chiridion-app-screenshots-staging" },
       { "queue": "chiridion-app-slack-events-staging" },
+      {
+        "queue": "chiridion-app-discord-events-staging",
+        "max_batch_size": 10,
+        "max_batch_timeout": 1,
+        "max_retries": 5,
+        "dead_letter_queue": "chiridion-app-discord-events-dlq-staging"
+      },
+      {
+        "queue": "chiridion-app-discord-events-dlq-staging",
+        "max_batch_size": 10,
+        "max_batch_timeout": 1,
+        "max_retries": 3
+      },
     ],
   },
   "services": [
@@ -148,7 +162,8 @@
     {
       "binding": "DISPATCHER",
       "service": "chiridion-dispatcher-staging"
-    }
+    },
+    { "binding": "DISCORD_BRIDGE", "service": "chiridion-discord-bridge-staging" }
   ],
   "durable_objects": {
     "bindings": [

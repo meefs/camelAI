@@ -4,11 +4,9 @@ import type {
 } from "./chat-thread-do.js";
 import { getOrgStub, getWorkspaceStub } from "./helpers/stubs.js";
 import {
-  CUSTOM_LLM_MODEL,
   getDefaultLlmModel,
   getStoredCustomLlmProviderApi,
   getStoredCustomLlmProviderModelId,
-  isCodexLlmModel,
 } from "../../../src/lib/llm-provider-config.js";
 import { resolveModelPickerCatalog } from "../../../src/lib/model-catalog.js";
 import {
@@ -25,7 +23,7 @@ import {
   getWorkspaceModelPickerConfigCompat,
 } from "./model-picker-config-compat.js";
 
-export type ChannelKind = "email" | "slack" | "telegram" | (string & {});
+export type ChannelKind = "email" | "slack" | "telegram" | "discord" | (string & {});
 
 export interface ChannelAddress {
   kind: ChannelKind;
@@ -68,6 +66,7 @@ const CHANNEL_REPLY_TOOLS: Record<string, string> = {
   email: "send_email",
   slack: "send_slack_message",
   telegram: "send_telegram_message",
+  discord: "send_discord_message",
 };
 const MAX_CHANNEL_KEY_PART_LENGTH = 96;
 
@@ -228,7 +227,7 @@ export function buildChannelReplySystemMessage(
       ? ` The sender email is ${request.userEmail.trim()}; use it as the to value if replying to the sender.`
       : "";
   const routingHint =
-    safeKind === "slack" || safeKind === "telegram"
+    safeKind === "slack" || safeKind === "telegram" || safeKind === "discord"
       ? " You do not need to provide the channel/chat id because the tool is already scoped to the originating conversation."
       : "";
   const replyInstruction = toolName
@@ -245,20 +244,16 @@ export function buildChannelReplySystemMessage(
 export async function resolveDefaultChannelThreadModel(
   env: Env,
   args: { orgId: string; workspaceId: string },
-): Promise<{ model: LlmModel; provider?: "claude" | "codex" }> {
+): Promise<{ model: LlmModel }> {
   const orgStub = getOrgStub(env, args.orgId);
   const workspaceStub = getWorkspaceStub(env, args.workspaceId);
   const [
     llmProviderConfig,
-    experimentalSettings,
     orgPickerConfig,
     workspacePickerConfig,
   ] = await Promise.all([
     retryTransientDurableObjectRead("OrgDO.getLlmProviderConfig", () =>
       Promise.resolve(orgStub.getLlmProviderConfig()),
-    ),
-    retryTransientDurableObjectRead("OrgDO.getExperimentalSettings", () =>
-      Promise.resolve(orgStub.getExperimentalSettings()),
     ),
     getOrgModelPickerConfigCompat(orgStub),
     getWorkspaceModelPickerConfigCompat(workspaceStub),
@@ -275,7 +270,6 @@ export async function resolveDefaultChannelThreadModel(
   );
   const visibleCatalog = resolveModelPickerCatalog({
     effectiveConfig,
-    experimentalSettings,
     orgProvider: effectiveLlmProviderConfig?.provider,
     customApi,
     customModelId,
@@ -292,15 +286,7 @@ export async function resolveDefaultChannelThreadModel(
   if (!model) {
     throw new Error("No models are available");
   }
-  return {
-    model,
-    provider:
-      model === CUSTOM_LLM_MODEL
-        ? undefined
-        : isCodexLlmModel(model)
-          ? "codex"
-          : "claude",
-  };
+  return { model };
 }
 
 export async function getOrCreateChannelThread(
@@ -324,14 +310,13 @@ export async function getOrCreateChannelThread(
     await env.APP_KV.delete(mapKey);
   }
 
-  const { model, provider } = await resolveDefaultChannelThreadModel(env, input);
+  const { model } = await resolveDefaultChannelThreadModel(env, input);
   const thread = await getOrgStub(env, input.orgId).createThread(
     input.workspaceId,
     input.title.trim().slice(0, 100) || "Conversation",
     input.createdBy?.trim() || input.kind,
     input.firstUserMessage?.trim() || undefined,
     model,
-    provider,
     {
       source: "channel",
       channelKind: input.kind,

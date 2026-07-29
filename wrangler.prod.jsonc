@@ -34,7 +34,6 @@
     "OPENAI_CODEX_PROXY_BASE_URL": "https://codex-egress.camelai.dev/backend-api/codex",
     "R2_BUCKET_NAME": "chiridion-sandbox",
     "R2_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
-    "R2_MOUNT_DIR": "/home/claude",
     "R2_PARENT_ACCESS_KEY_ID": "4f8fdc386b4ccb9f4a2bea3c77c8ad95",
     "CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
     "ARTIFACTS_NAMESPACE": "prod",
@@ -43,6 +42,8 @@
     "WORKER_BASE_URL": "https://camelai.dev",
     "EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com",
     "WORKSPACE_EMAIL_DOMAIN": "camelai.dev",
+    "DISCORD_CHANNEL_ENABLED": "false",
+    "DISCORD_CLIENT_ID": "1531387078808436787",
     "STRIPE_MODE": "live",
     "STRIPE_SUBSCRIPTION_PRICE_ID": "price_1TtCX7GvliMKf4vHRVJ6LKLl",
     "STRIPE_STARTER_PRICE_ID": "price_1TtCX7GvliMKf4vHRVJ6LKLl",
@@ -149,6 +150,19 @@
     "consumers": [
       { "queue": "chiridion-app-screenshots" },
       { "queue": "chiridion-app-slack-events" },
+      {
+        "queue": "chiridion-app-discord-events",
+        "max_batch_size": 10,
+        "max_batch_timeout": 1,
+        "max_retries": 5,
+        "dead_letter_queue": "chiridion-app-discord-events-dlq"
+      },
+      {
+        "queue": "chiridion-app-discord-events-dlq",
+        "max_batch_size": 10,
+        "max_batch_timeout": 1,
+        "max_retries": 3
+      },
     ],
   },
   "services": [
@@ -156,7 +170,8 @@
     {
       "binding": "DISPATCHER",
       "service": "chiridion-dispatcher"
-    }
+    },
+    { "binding": "DISCORD_BRIDGE", "service": "chiridion-discord-bridge" }
   ],
   "durable_objects": {
     "bindings": [

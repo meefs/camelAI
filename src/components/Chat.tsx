@@ -31,7 +31,6 @@ import type {
   Integration,
   PreviewTarget,
   PreviewTab,
-  OrganizationExperimentalSettings,
   ChatGroupView,
   CondensedTranscript,
   GroupNewChatAttachmentCard,
@@ -327,7 +326,6 @@ interface ChatProps {
   billingCreditStatus?: BillingCreditStatus | null;
   initialError?: string | null;
   newChatActionError?: string | null;
-  experimentalSettings?: OrganizationExperimentalSettings | null;
   initialPreviewTabs?: PreviewTarget[];
   initialActiveTabId?: string | null;
   /** Hostname from server for consistent URL generation (avoids hydration mismatch) */
@@ -694,7 +692,6 @@ export default function Chat({
   billingCreditStatus,
   initialError,
   newChatActionError,
-  experimentalSettings,
   initialPreviewTabs,
   initialActiveTabId,
   hostname,
@@ -1306,7 +1303,6 @@ export default function Chat({
     }
 
     const options = getVisibleLlmModelOptions(
-      experimentalSettings,
       threadModel ?? getDefaultLlmModel(llmProvider),
       {
         orgProvider: llmProvider,
@@ -1317,7 +1313,6 @@ export default function Chat({
   }, [
     allowedThreadModels,
     allowOpenAiSubscription,
-    experimentalSettings,
     llmProvider,
     modelOptions,
     threadModel,

@@ -152,7 +152,6 @@ describe('handleWorkspaceEmailIngress', () => {
       getWorkspaceAccess: vi.fn().mockResolvedValue('full'),
       getThread: vi.fn().mockResolvedValue(null),
       getLlmProviderConfig: vi.fn().mockResolvedValue(null),
-      getExperimentalSettings: vi.fn().mockResolvedValue({ claude_proxy_models: false }),
       getModelPickerConfig: vi.fn().mockResolvedValue({
         use_platform_defaults: true,
         models: [],
@@ -245,7 +244,6 @@ describe('handleWorkspaceEmailIngress', () => {
       getWorkspaceAccess: vi.fn().mockResolvedValue('full'),
       getThread: vi.fn().mockResolvedValue(null),
       getLlmProviderConfig: vi.fn().mockResolvedValue(null),
-      getExperimentalSettings: vi.fn().mockResolvedValue({ claude_proxy_models: false }),
       getModelPickerConfig: vi
         .fn()
         .mockRejectedValueOnce(
@@ -286,7 +284,6 @@ describe('handleWorkspaceEmailIngress', () => {
       'user-1',
       'Please help',
       'sonnet',
-      'claude',
       expect.objectContaining({
         source: 'channel',
         channelKind: 'email',
@@ -330,7 +327,6 @@ describe('handleWorkspaceEmailIngress', () => {
       getWorkspaceAccess: vi.fn().mockResolvedValue('full'),
       getThread: vi.fn().mockResolvedValue(null),
       getLlmProviderConfig: vi.fn().mockResolvedValue(null),
-      getExperimentalSettings: vi.fn().mockResolvedValue({ claude_proxy_models: false }),
       getModelPickerConfig: vi.fn().mockResolvedValue({
         use_platform_defaults: true,
         models: [],
@@ -366,7 +362,6 @@ describe('handleWorkspaceEmailIngress', () => {
       'user-1',
       'Please help',
       'sonnet',
-      'claude',
       expect.objectContaining({
         source: 'channel',
         channelKind: 'email',
@@ -458,7 +453,6 @@ describe('handleWorkspaceEmailIngress', () => {
       getWorkspaceAccess: vi.fn().mockResolvedValue('full'),
       getThread: vi.fn().mockResolvedValue(null),
       getLlmProviderConfig: vi.fn().mockResolvedValue(null),
-      getExperimentalSettings: vi.fn().mockResolvedValue({ claude_proxy_models: false }),
       getModelPickerConfig: vi.fn().mockResolvedValue({
         use_platform_defaults: true,
         models: [],
@@ -512,7 +506,6 @@ describe('handleWorkspaceEmailIngress', () => {
       getWorkspaceAccess: vi.fn().mockResolvedValue('full'),
       getThread: vi.fn().mockResolvedValue(null),
       getLlmProviderConfig: vi.fn().mockResolvedValue(null),
-      getExperimentalSettings: vi.fn().mockResolvedValue({ claude_proxy_models: false }),
       getModelPickerConfig: vi.fn().mockResolvedValue({
         use_platform_defaults: true,
         models: [],

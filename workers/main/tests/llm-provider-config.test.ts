@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { encryptCredentials } from "../../../src/lib/integration-crypto";
 import {
-  DEFAULT_CODEX_MODEL,
+  DEFAULT_OPENAI_MODEL,
   DEFAULT_OPENROUTER_MODEL,
   buildPublicLlmProviderConfig,
   DEFAULT_LLM_MODEL,
@@ -10,7 +10,6 @@ import {
   getVisibleLlmModelOptions,
   isLlmModel,
   isLlmModelAllowedForNewThread,
-  parseOrganizationExperimentalSettings,
   normalizeLlmModel,
   parseStoredLlmProviderConfig,
   stringifyStoredLlmProviderConfig,
@@ -18,7 +17,7 @@ import {
 
 const CAMEL_CODE_MODEL = "deepseek-v4-auto" as const;
 
-const CODEX_MODELS = [
+const OPENAI_COMPATIBLE_MODELS = [
   "gpt-5.6-sol",
   "gpt-5.6-terra",
   "gpt-5.6-luna",
@@ -32,7 +31,7 @@ const CODEX_MODELS = [
   "glm-5.2",
 ] as const;
 
-const CLAUDE_MODELS = [
+const ANTHROPIC_MODELS = [
   "opus-4.8",
   "fable-5",
   "sonnet",
@@ -41,8 +40,8 @@ const CLAUDE_MODELS = [
 
 const PINNED_HOSTED_MODELS = [
   CAMEL_CODE_MODEL,
-  ...CLAUDE_MODELS,
-  ...CODEX_MODELS.filter((model) => model !== CAMEL_CODE_MODEL),
+  ...ANTHROPIC_MODELS,
+  ...OPENAI_COMPATIBLE_MODELS.filter((model) => model !== CAMEL_CODE_MODEL),
 ] as const;
 
 const OPENROUTER_ONLY_MODELS = [
@@ -55,7 +54,7 @@ const OPENROUTER_ONLY_MODELS = [
   "glm-5.2",
 ] as const;
 
-const OPENROUTER_CODEX_MODELS = [
+const OPENROUTER_OPENAI_COMPATIBLE_MODELS = [
   "gpt-5.6-sol",
   "gpt-5.6-terra",
   "gpt-5.6-luna",
@@ -71,8 +70,8 @@ const OPENROUTER_CODEX_MODELS = [
 
 const PINNED_OPENROUTER_MODELS = [
   CAMEL_CODE_MODEL,
-  ...CLAUDE_MODELS,
-  ...OPENROUTER_CODEX_MODELS.filter((model) => model !== CAMEL_CODE_MODEL),
+  ...ANTHROPIC_MODELS,
+  ...OPENROUTER_OPENAI_COMPATIBLE_MODELS.filter((model) => model !== CAMEL_CODE_MODEL),
 ] as const;
 
 const CAMELAI_HOSTED_ONLY_MODELS = [CAMEL_CODE_MODEL] as const;
@@ -85,14 +84,14 @@ const BEDROCK_OPENAI_MODELS = [
 describe("llm provider config helpers", () => {
   it("defaults missing thread model to sonnet", () => {
     expect(normalizeLlmModel(undefined)).toBe(DEFAULT_LLM_MODEL);
-    expect(normalizeLlmModel(undefined, "openai")).toBe(DEFAULT_CODEX_MODEL);
+    expect(normalizeLlmModel(undefined, "openai")).toBe(DEFAULT_OPENAI_MODEL);
     expect(normalizeLlmModel(undefined, "openrouter")).toBe(DEFAULT_OPENROUTER_MODEL);
     expect(getDefaultLlmModel("anthropic")).toBe(DEFAULT_LLM_MODEL);
-    expect(getDefaultLlmModel("openai")).toBe(DEFAULT_CODEX_MODEL);
+    expect(getDefaultLlmModel("openai")).toBe(DEFAULT_OPENAI_MODEL);
     expect(getDefaultLlmModel("openrouter")).toBe(DEFAULT_OPENROUTER_MODEL);
     expect(
       getDefaultLlmModel("custom", { customApi: "openai-responses" }),
-    ).toBe(DEFAULT_CODEX_MODEL);
+    ).toBe(DEFAULT_OPENAI_MODEL);
     expect(
       getDefaultLlmModel("custom", { customApi: "anthropic-messages" }),
     ).toBe(DEFAULT_LLM_MODEL);
@@ -107,7 +106,7 @@ describe("llm provider config helpers", () => {
 
   it("returns provider-specific model options", () => {
     expect(getLlmModelOptions("anthropic").map((option) => option.value)).toEqual([
-      ...CLAUDE_MODELS,
+      ...ANTHROPIC_MODELS,
       CAMEL_CODE_MODEL,
     ]);
     expect(getLlmModelOptions("openai").map((option) => option.value)).toEqual([
@@ -117,12 +116,12 @@ describe("llm provider config helpers", () => {
       CAMEL_CODE_MODEL,
     ]);
     expect(getLlmModelOptions("openrouter").map((option) => option.value)).toEqual([
-      ...CLAUDE_MODELS,
-      ...OPENROUTER_CODEX_MODELS,
+      ...ANTHROPIC_MODELS,
+      ...OPENROUTER_OPENAI_COMPATIBLE_MODELS,
     ]);
     expect(getLlmModelOptions(null).map((option) => option.value)).toEqual([
-      ...CLAUDE_MODELS,
-      ...CODEX_MODELS,
+      ...ANTHROPIC_MODELS,
+      ...OPENAI_COMPATIBLE_MODELS,
     ]);
     expect(
       getLlmModelOptions("custom", { customApi: "openai-responses" }).map(
@@ -138,14 +137,14 @@ describe("llm provider config helpers", () => {
       getLlmModelOptions("custom", { customApi: "anthropic-messages" }).map(
         (option) => option.value,
       ),
-    ).toEqual([...CLAUDE_MODELS, CAMEL_CODE_MODEL]);
+    ).toEqual([...ANTHROPIC_MODELS, CAMEL_CODE_MODEL]);
     expect(
       getLlmModelOptions("custom", {
         customApi: "openai-responses",
         customModelId: "pi-custom-model",
       }).map((option) => option.value),
     ).toEqual(["custom"]);
-    for (const model of CODEX_MODELS) {
+    for (const model of OPENAI_COMPATIBLE_MODELS) {
       expect(isLlmModel(model)).toBe(true);
     }
     expect(isLlmModel("gemini-3.1-pro-preview")).toBe(false);
@@ -164,7 +163,7 @@ describe("llm provider config helpers", () => {
     );
     expect(
       normalizeLlmModel("sonnet", "custom", { customApi: "openai-completions" }),
-    ).toBe(DEFAULT_CODEX_MODEL);
+    ).toBe(DEFAULT_OPENAI_MODEL);
     expect(
       normalizeLlmModel("gpt-5.4", "custom", { customApi: "anthropic-messages" }),
     ).toBe(DEFAULT_LLM_MODEL);
@@ -177,11 +176,8 @@ describe("llm provider config helpers", () => {
   });
 
   it("keeps BYOK models provider-scoped while camelCode stays global", () => {
-    expect(parseOrganizationExperimentalSettings(null)).toEqual({
-      claude_proxy_models: false,
-    });
     expect(
-      getVisibleLlmModelOptions({ claude_proxy_models: false }, null, {
+      getVisibleLlmModelOptions(null, {
         orgProvider: "openai",
       }).map((option) => option.value),
     ).toEqual([
@@ -191,47 +187,45 @@ describe("llm provider config helpers", () => {
       "gpt-5.6-luna",
     ]);
     expect(
-      getVisibleLlmModelOptions({ claude_proxy_models: false }).map(
-        (option) => option.value,
-      ),
+      getVisibleLlmModelOptions().map((option) => option.value),
     ).toEqual([...PINNED_HOSTED_MODELS]);
     expect(
-      getVisibleLlmModelOptions({ claude_proxy_models: false }, null, {
+      getVisibleLlmModelOptions(null, {
         orgProvider: "openrouter",
       }).map((option) => option.value),
     ).toEqual([...PINNED_OPENROUTER_MODELS]);
     expect(
-      getVisibleLlmModelOptions({ claude_proxy_models: false }, null, {
+      getVisibleLlmModelOptions(null, {
         orgProvider: "anthropic",
       }).map((option) => option.value),
-    ).toEqual([CAMEL_CODE_MODEL, ...CLAUDE_MODELS]);
+    ).toEqual([CAMEL_CODE_MODEL, ...ANTHROPIC_MODELS]);
     expect(
-      getVisibleLlmModelOptions({ claude_proxy_models: false }, null, {
+      getVisibleLlmModelOptions(null, {
         orgProvider: "bedrock",
       }).map((option) => option.value),
     ).toEqual([
       CAMEL_CODE_MODEL,
-      ...CLAUDE_MODELS,
+      ...ANTHROPIC_MODELS,
       ...BEDROCK_OPENAI_MODELS,
     ]);
     expect(
-      getVisibleLlmModelOptions({ claude_proxy_models: false }, null, {
+      getVisibleLlmModelOptions(null, {
         orgProvider: "bedrock",
         awsRegion: "us-west-2",
       }).map((option) => option.value),
     ).toEqual([
       CAMEL_CODE_MODEL,
-      ...CLAUDE_MODELS,
+      ...ANTHROPIC_MODELS,
       "gpt-5.6-terra-bedrock",
     ]);
     expect(
-      getVisibleLlmModelOptions({ claude_proxy_models: false }, null, {
+      getVisibleLlmModelOptions(null, {
         orgProvider: "bedrock",
         awsRegion: "eu-west-1",
       }).map((option) => option.value),
-    ).toEqual([CAMEL_CODE_MODEL, ...CLAUDE_MODELS]);
+    ).toEqual([CAMEL_CODE_MODEL, ...ANTHROPIC_MODELS]);
     expect(
-      getVisibleLlmModelOptions({ claude_proxy_models: false }, null, {
+      getVisibleLlmModelOptions(null, {
         orgProvider: null,
       }).map((option) => option.value),
     ).toEqual([...PINNED_HOSTED_MODELS]);
@@ -239,41 +233,33 @@ describe("llm provider config helpers", () => {
 
   it("keeps camelCode visible in hosted model options", () => {
     expect(
-      getVisibleLlmModelOptions({ claude_proxy_models: false }, null, {
+      getVisibleLlmModelOptions(null, {
         orgProvider: null,
       }).map((option) => option.value),
     ).toContain("deepseek-v4-auto");
-    expect(
-      isLlmModelAllowedForNewThread("deepseek-v4-auto", null, {
-        claude_proxy_models: false,
-      }),
-    ).toBe(true);
+    expect(isLlmModelAllowedForNewThread("deepseek-v4-auto", null)).toBe(true);
   });
 
   it("can exclude gateway-only camelCode from self-host model options", () => {
     expect(
-      getVisibleLlmModelOptions({ claude_proxy_models: false }, null, {
+      getVisibleLlmModelOptions(null, {
         orgProvider: "bedrock",
         awsRegion: "us-east-1",
         allowCamelCode: false,
       }).map((option) => option.value),
-    ).toEqual([...CLAUDE_MODELS, ...BEDROCK_OPENAI_MODELS]);
+    ).toEqual([...ANTHROPIC_MODELS, ...BEDROCK_OPENAI_MODELS]);
   });
 
   it("shows only policy-allowed model families for new chats", () => {
     expect(
-      getVisibleLlmModelOptions(
-        { claude_proxy_models: true },
-        null,
-        { orgProvider: null },
-      ).map((option) => option.value),
+      getVisibleLlmModelOptions(null, { orgProvider: null }).map(
+        (option) => option.value,
+      ),
     ).toEqual([...PINNED_HOSTED_MODELS]);
     expect(
-      getVisibleLlmModelOptions(
-        { claude_proxy_models: true },
-        null,
-        { orgProvider: "openai" },
-      ).map((option) => option.value),
+      getVisibleLlmModelOptions(null, { orgProvider: "openai" }).map(
+        (option) => option.value,
+      ),
     ).toEqual([
       CAMEL_CODE_MODEL,
       "gpt-5.6-sol",
@@ -281,65 +267,44 @@ describe("llm provider config helpers", () => {
       "gpt-5.6-luna",
     ]);
     expect(
-      getVisibleLlmModelOptions(
-        { claude_proxy_models: true },
-        null,
-        { orgProvider: "openrouter" },
-      ).map((option) => option.value),
+      getVisibleLlmModelOptions(null, { orgProvider: "openrouter" }).map(
+        (option) => option.value,
+      ),
     ).toEqual([...PINNED_OPENROUTER_MODELS]);
     expect(
-      getVisibleLlmModelOptions(
-        { claude_proxy_models: false },
-        null,
-        { orgProvider: "anthropic" },
-      ).map((option) => option.value),
-    ).toEqual([CAMEL_CODE_MODEL, ...CLAUDE_MODELS]);
+      getVisibleLlmModelOptions(null, { orgProvider: "anthropic" }).map(
+        (option) => option.value,
+      ),
+    ).toEqual([CAMEL_CODE_MODEL, ...ANTHROPIC_MODELS]);
   });
 
   it("keeps the current model visible for existing locked threads regardless of new-chat policy", () => {
     expect(
-      getVisibleLlmModelOptions(
-        { claude_proxy_models: false },
-        "sonnet",
-      ).map((option) => option.value),
+      getVisibleLlmModelOptions("sonnet").map((option) => option.value),
     ).toEqual([...PINNED_HOSTED_MODELS]);
   });
 
-  it("validates new thread models against BYOK and proxy policy", () => {
+  it("validates new thread models against provider policy", () => {
     expect(
-      isLlmModelAllowedForNewThread("gpt-5.6-terra", null, {
-        claude_proxy_models: false,
-      }),
+      isLlmModelAllowedForNewThread("gpt-5.6-terra", null),
     ).toBe(true);
     expect(
-      isLlmModelAllowedForNewThread("sonnet", null, {
-        claude_proxy_models: false,
-      }),
+      isLlmModelAllowedForNewThread("sonnet", null),
     ).toBe(true);
     expect(
-      isLlmModelAllowedForNewThread("sonnet", "anthropic", {
-        claude_proxy_models: false,
-      }),
+      isLlmModelAllowedForNewThread("sonnet", "anthropic"),
     ).toBe(true);
     expect(
-      isLlmModelAllowedForNewThread("gpt-5.4", "anthropic", {
-        claude_proxy_models: false,
-      }),
+      isLlmModelAllowedForNewThread("gpt-5.4", "anthropic"),
     ).toBe(false);
     expect(
-      isLlmModelAllowedForNewThread("gpt-5.4", "openai", {
-        claude_proxy_models: true,
-      }),
+      isLlmModelAllowedForNewThread("gpt-5.4", "openai"),
     ).toBe(false);
     expect(
-      isLlmModelAllowedForNewThread("gpt-5.4", "bedrock", {
-        claude_proxy_models: true,
-      }),
+      isLlmModelAllowedForNewThread("gpt-5.4", "bedrock"),
     ).toBe(false);
     expect(
-      isLlmModelAllowedForNewThread("gpt-5.6-terra-bedrock", "bedrock", {
-        claude_proxy_models: true,
-      }),
+      isLlmModelAllowedForNewThread("gpt-5.6-terra-bedrock", "bedrock"),
     ).toBe(true);
     expect(normalizeLlmModel("gpt-5.4", "bedrock")).toBe(
       "gpt-5.6-terra-bedrock",
@@ -348,53 +313,35 @@ describe("llm provider config helpers", () => {
       "gpt-5.6-terra-bedrock",
     );
     expect(
-      isLlmModelAllowedForNewThread("sonnet", "openai", {
-        claude_proxy_models: true,
-      }),
+      isLlmModelAllowedForNewThread("sonnet", "openai"),
     ).toBe(false);
     expect(
-      isLlmModelAllowedForNewThread("gpt-5.4-mini", "openrouter", {
-        claude_proxy_models: true,
-      }),
+      isLlmModelAllowedForNewThread("gpt-5.4-mini", "openrouter"),
     ).toBe(false);
     for (const model of OPENROUTER_ONLY_MODELS) {
       expect(
-        isLlmModelAllowedForNewThread(model, "openrouter", {
-          claude_proxy_models: true,
-        }),
+        isLlmModelAllowedForNewThread(model, "openrouter"),
       ).toBe(true);
       expect(
-        isLlmModelAllowedForNewThread(model, null, {
-          claude_proxy_models: false,
-        }),
+        isLlmModelAllowedForNewThread(model, null),
       ).toBe(true);
       expect(
-        isLlmModelAllowedForNewThread(model, "openai", {
-          claude_proxy_models: true,
-        }),
+        isLlmModelAllowedForNewThread(model, "openai"),
       ).toBe(false);
     }
     for (const model of CAMELAI_HOSTED_ONLY_MODELS) {
       expect(
-        isLlmModelAllowedForNewThread(model, null, {
-          claude_proxy_models: false,
-        }),
+        isLlmModelAllowedForNewThread(model, null),
       ).toBe(true);
       expect(
-        isLlmModelAllowedForNewThread(model, "openrouter", {
-          claude_proxy_models: true,
-        }),
+        isLlmModelAllowedForNewThread(model, "openrouter"),
       ).toBe(true);
       expect(
-        isLlmModelAllowedForNewThread(model, "openai", {
-          claude_proxy_models: true,
-        }),
+        isLlmModelAllowedForNewThread(model, "openai"),
       ).toBe(true);
     }
     expect(
-      isLlmModelAllowedForNewThread("haiku", "openrouter", {
-        claude_proxy_models: true,
-      }),
+      isLlmModelAllowedForNewThread("haiku", "openrouter"),
     ).toBe(true);
   });
 
@@ -425,8 +372,8 @@ describe("llm provider config helpers", () => {
       custom_model_id: "claude-custom",
     });
     expect(getLlmModelOptions("custom").map((option) => option.value)).toEqual([
-      ...CLAUDE_MODELS,
-      ...OPENROUTER_CODEX_MODELS,
+      ...ANTHROPIC_MODELS,
+      ...OPENROUTER_OPENAI_COMPATIBLE_MODELS,
     ]);
   });
 

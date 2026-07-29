@@ -14,7 +14,6 @@ const getUsageSpendMock = vi.fn();
 const getUsageLogMock = vi.fn();
 const getUsageLogSumMock = vi.fn();
 const listManualCreditGrantsMock = vi.fn();
-const getExperimentalSettingsMock = vi.fn();
 const getLlmProviderConfigMock = vi.fn();
 const listWorkerScriptsMock = vi.fn();
 const getProfileMock = vi.fn();
@@ -100,7 +99,6 @@ describe("/qaml-backdoor/orgs/:id credit grants", () => {
       getUsageLog: getUsageLogMock,
       getUsageLogSum: getUsageLogSumMock,
       listManualCreditGrants: listManualCreditGrantsMock,
-      getExperimentalSettings: getExperimentalSettingsMock,
       getLlmProviderConfig: getLlmProviderConfigMock,
       listWorkerScripts: listWorkerScriptsMock,
       applyManualCreditGrant: applyManualCreditGrantMock,
@@ -129,9 +127,6 @@ describe("/qaml-backdoor/orgs/:id credit grants", () => {
       apps: [],
       threadCount: 0,
       appCount: 0,
-    });
-    getExperimentalSettingsMock.mockResolvedValue({
-      claude_proxy_models: false,
     });
     getLlmProviderConfigMock.mockResolvedValue(null);
     listWorkerScriptsMock.mockResolvedValue([]);

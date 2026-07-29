@@ -140,7 +140,6 @@ export interface ChatEnv extends WorkspaceFilesystemEnv {
   CF_DISPATCH_NAMESPACE?: string;
   EMAIL_TO_USER: KVNamespace;
   SESSIONS?: KVNamespace;
-  R2_MOUNT_DIR?: string;
   PLATFORM_SCRIPT_TOKENS?: KVNamespace;
   SANDBOX_PROXY_SECRET?: string;
   SANDBOX_DOCKER_PROXY_BASE_URL?: string;
@@ -159,6 +158,8 @@ export interface ChatEnv extends WorkspaceFilesystemEnv {
   EMAIL_FROM_ADDRESS?: string;
   EMAIL?: CloudflareEmailSender;
   TELEGRAM_BOT_TOKEN?: string;
+  DISCORD_BRIDGE?: import("../discord-types.js").DiscordBridgeFetcher;
+  DISCORD_CHANNEL_ENABLED?: string;
   NEXTJS_ENV?: string;
   FIRECRAWL_API_KEY?: string;
   FIRECRAWL_BASE_URL?: string;

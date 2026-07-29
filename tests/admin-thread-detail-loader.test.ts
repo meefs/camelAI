@@ -7,7 +7,6 @@ const adminGetThreadWithMessagesMock = vi.fn();
 const getVanityDomainMock = vi.fn();
 const orgIdFromNameMock = vi.fn((id: string) => `org-id:${id}`);
 const orgGetMock = vi.fn();
-const getExperimentalSettingsMock = vi.fn();
 
 vi.mock('@/lib/auth.server', () => ({
   requireSuperuser: requireSuperuserMock,
@@ -34,8 +33,6 @@ describe('admin thread detail loader', () => {
 
     const env = { TEST_ENV: true };
     getEnvMock.mockReturnValue(env);
-    getExperimentalSettingsMock.mockResolvedValue({ claude_proxy_models: true });
-    orgGetMock.mockReturnValue({ getExperimentalSettings: getExperimentalSettingsMock });
     getAuthEnvMock.mockReturnValue({
       ORG: {
         idFromName: orgIdFromNameMock,
@@ -45,7 +42,7 @@ describe('admin thread detail loader', () => {
     getVanityDomainMock.mockResolvedValue('camelai.dev');
   });
 
-  it('loads org experimental settings through authEnv and preserves thread provider', async () => {
+  it('loads thread details without provider compatibility metadata', async () => {
     requireSuperuserMock.mockResolvedValue({
       user: { is_superuser: true },
     });
@@ -82,17 +79,11 @@ describe('admin thread detail loader', () => {
     } as never);
 
     expect(requireSuperuserMock).toHaveBeenCalledTimes(1);
-    expect(getEnvMock).toHaveBeenCalledWith(context);
-    expect(getAuthEnvMock).toHaveBeenCalledWith({ TEST_ENV: true });
     expect(adminGetThreadWithMessagesMock).toHaveBeenCalledWith(context, 'thread_123');
-    expect(orgIdFromNameMock).toHaveBeenCalledWith('org_123');
-    expect(orgGetMock).toHaveBeenCalledWith('org-id:org_123');
-    expect(getExperimentalSettingsMock).toHaveBeenCalledTimes(1);
     expect(result.thread).toMatchObject({
       id: 'thread_123',
       model: 'gpt-5.2',
     });
-    expect(result.experimentalSettings).toEqual({ claude_proxy_models: true });
     expect(result.jsonlDownloadUrl).toBe(
       '/api/admin/threads/thread_123/jsonl?orgId=org_123&workspaceId=ws_123',
     );
@@ -165,7 +156,6 @@ describe('admin thread detail loader', () => {
     );
     expect(setModelMock).toHaveBeenCalledWith(
       'sonnet',
-      undefined,
       1_710_000_200_000,
     );
     expect(refreshRunnerConfigMock).toHaveBeenCalledTimes(1);

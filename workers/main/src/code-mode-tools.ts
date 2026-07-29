@@ -619,6 +619,24 @@ const SEND_TELEGRAM_MESSAGE_TOOL = codeModeTool(
     externalDelivery: true,
   },
 );
+const SEND_DISCORD_MESSAGE_TOOL = codeModeTool(
+  "send_discord_message",
+  "Send a Discord message through the workspace's native Discord channel. This tool is available only inside js_exec as tools.send_discord_message(...) or deterministic workflows as this.env.TOOLS.send_discord_message(...); it is not a top-level tool. In a Discord-originated thread, routing is fixed to that Camel-created Discord thread. Outside Discord threads, integration_id is optional only when exactly one active Discord channel exists. Do not invent server, channel, or thread ids. Arguments: { text?, integration_id?, attachments? }.",
+  Type.Object({
+    text: Type.Optional(Type.String()),
+    integration_id: Type.Optional(Type.String()),
+    attachments: CHANNEL_ATTACHMENT_PARAMETERS,
+  }),
+  {
+    category: "communication",
+    examples: [
+      `await tools.send_discord_message({ integration_id: "discord_team", text: "Here is the update." })`,
+      `await tools.send_discord_message({ integration_id: "discord_team", text: "Attached.", attachments: [{ path: "uploads/report.pdf" }] })`,
+    ],
+    sideEffect: true,
+    externalDelivery: true,
+  },
+);
 const WEB_SEARCH_TOOL = codeModePassthroughTool(
   "WebSearch",
   "Search the web. Arguments: { query, numResults?, maxCharacters? }. In js_exec, result.data is an array of { title?, url?, snippet? } results.",
@@ -840,6 +858,7 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   SEND_EMAIL_TOOL,
   SEND_SLACK_MESSAGE_TOOL,
   SEND_TELEGRAM_MESSAGE_TOOL,
+  SEND_DISCORD_MESSAGE_TOOL,
   codeModePassthroughTool(
     "TodoWrite",
     "Update the visible task list in the chat UI. Arguments: { todos: [{ content, status, activeForm? }] }. Status is pending, in_progress, or completed.",
@@ -1730,6 +1749,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     send_email: (binding, args) => binding.sendEmail(args),
     send_slack_message: (binding, args) => binding.sendSlackMessage(args),
     send_telegram_message: (binding, args) => binding.sendTelegramMessage(args),
+    send_discord_message: (binding, args) => binding.sendDiscordMessage(args),
     get_custom_domain: (binding) => binding.getCustomDomain(),
     set_custom_domain: (binding, args) => binding.setCustomDomain(args),
     remove_custom_domain: (binding, args) => binding.removeCustomDomain(args),
@@ -1762,6 +1782,8 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       input: args.input,
     }),
   };
+
+  private discordSendInvocationCount = 0;
 
   private get workspaceFs(): WorkspaceFilesystemClient {
     const { workspaceId } = this.ctx.props;
@@ -3146,6 +3168,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       send_email: "outbound_email",
       send_slack_message: "outbound_slack_message",
       send_telegram_message: "outbound_telegram_message",
+      send_discord_message: "outbound_discord_message",
     };
     const kind = kindByTool[name];
     if (!kind) return null;
@@ -3157,6 +3180,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       outbound_email: status === "sent" ? "Email sent" : "Email failed",
       outbound_slack_message: status === "sent" ? "Slack message sent" : "Slack message failed",
       outbound_telegram_message: status === "sent" ? "Telegram message sent" : "Telegram message failed",
+      outbound_discord_message: status === "sent" ? "Discord message sent" : "Discord message failed",
     };
     return {
       id: `${this.ctx.props.parentToolUseId}:${name}:${crypto.randomUUID()}`,
@@ -3209,6 +3233,13 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
           textPreview: text ? this.truncateArtifactPreviewText(text) : undefined,
           attachmentCount,
         };
+      case "send_discord_message":
+        return {
+          integrationId: typeof args.integration_id === "string" ? args.integration_id : undefined,
+          hasText: text.length > 0,
+          textPreview: text ? this.truncateArtifactPreviewText(text) : undefined,
+          attachmentCount,
+        };
       default:
         return { attachmentCount };
     }
@@ -3233,6 +3264,10 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     if (kind === "outbound_slack_message") {
       const channelId = typeof result.channelId === "string" ? result.channelId : summary.channelId;
       return typeof channelId === "string" && channelId ? `Channel ${channelId}` : undefined;
+    }
+    if (kind === "outbound_discord_message") {
+      const threadId = typeof result.threadId === "string" ? result.threadId : undefined;
+      return threadId ? `Thread ${threadId}` : undefined;
     }
     const chatId = typeof result.chatId === "string" ? result.chatId : summary.chatId;
     return typeof chatId === "string" && chatId ? `Chat ${chatId}` : undefined;
@@ -3776,7 +3811,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     return this.integrations.list(args);
   }
 
-  private listIntegrationTypes(args: Record<string, unknown>): unknown {
+  private listIntegrationTypes(args: Record<string, unknown>): Promise<unknown> {
     return this.integrations.listTypes(args);
   }
 
@@ -4513,6 +4548,19 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
 
   private async sendTelegramMessage(args: Record<string, unknown>): Promise<unknown> {
     return this.channelTools.sendChannelTelegramMessageTool(this.chatContextFromProps(), args);
+  }
+
+  private async sendDiscordMessage(args: Record<string, unknown>): Promise<unknown> {
+    this.discordSendInvocationCount += 1;
+    const parentToolUseId = this.ctx.props.parentToolUseId?.trim();
+    const operationId = parentToolUseId
+      ? `discord-tool:${parentToolUseId}:${this.discordSendInvocationCount}`
+      : `discord-tool-fallback:${crypto.randomUUID()}`;
+    return this.channelTools.sendChannelDiscordMessageTool(
+      this.chatContextFromProps(),
+      args,
+      { operationId },
+    );
   }
 
   private get customDomains(): CodeModeCustomDomains {

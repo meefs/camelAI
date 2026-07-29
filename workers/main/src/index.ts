@@ -22,6 +22,11 @@ import type { Env, Route } from './types.js';
 import { handleSlackEventsQueue } from './slack-events-queue.js';
 import type { AppScreenshotJob } from './screenshot-queue.js';
 import type { SlackEventQueueMessage } from './slack-types.js';
+import type { DiscordEventQueueMessage } from './discord-types.js';
+import {
+  handleDiscordEventsDeadLetterQueue,
+  handleDiscordEventsQueue,
+} from './discord-events-queue.js';
 
 // Route handlers
 import { handleCfProxy } from './routes/cf-proxy.js';
@@ -44,6 +49,10 @@ import {
   handleGoogleAnalyticsOAuthStart,
   handleGoogleAnalyticsOAuthCallback,
 } from './routes/integrations.js';
+import {
+  handleDiscordOAuthCallback,
+  handleDiscordOAuthStart,
+} from './routes/discord-integrations.js';
 import { handleWorkspaceStatusWebSocket } from './routes/websocket.js';
 import { handleLogsWebSocket } from './routes/logs-websocket.js';
 import { handleOAuthMetadata, handleResourceMetadata } from './routes/well-known.js';
@@ -244,6 +253,8 @@ const routes: Route[] = [
   // Integration OAuth
   { method: 'GET', path: /^\/api\/integrations\/slack\/oauth$/, handler: handleSlackOAuthStart },
   { method: 'GET', path: /^\/api\/integrations\/slack\/callback$/, handler: handleSlackOAuthCallback },
+  { method: 'GET', path: /^\/api\/integrations\/discord\/oauth$/, handler: handleDiscordOAuthStart },
+  { method: 'GET', path: /^\/api\/integrations\/discord\/callback$/, handler: handleDiscordOAuthCallback },
   { method: 'POST', path: /^\/api\/integrations\/slack\/events$/, handler: handleSlackEvents },
   { method: 'POST', path: /^\/api\/integrations\/telegram\/webhook$/, handler: handleTelegramWebhook },
   { method: 'GET', path: /^\/api\/integrations\/notion\/oauth$/, handler: handleNotionOAuthStart },
@@ -438,7 +449,10 @@ export default {
     await (await loadEmailIngressModule()).handleWorkspaceEmailIngress(message, env);
   },
 
-  async queue(batch: MessageBatch<AppScreenshotJob | SlackEventQueueMessage>, env: Env): Promise<void> {
+  async queue(
+    batch: MessageBatch<AppScreenshotJob | SlackEventQueueMessage | DiscordEventQueueMessage>,
+    env: Env,
+  ): Promise<void> {
     if (batch.queue.startsWith('chiridion-app-screenshots')) {
       return (await loadScreenshotQueueModule()).handleScreenshotQueue(
         batch as MessageBatch<AppScreenshotJob>,
@@ -447,6 +461,18 @@ export default {
     }
     if (batch.queue.startsWith('chiridion-app-slack-events')) {
       return handleSlackEventsQueue(batch as MessageBatch<SlackEventQueueMessage>, env);
+    }
+    if (batch.queue.startsWith('chiridion-app-discord-events-dlq')) {
+      return handleDiscordEventsDeadLetterQueue(
+        batch as MessageBatch<DiscordEventQueueMessage>,
+        env,
+      );
+    }
+    if (batch.queue.startsWith('chiridion-app-discord-events')) {
+      return handleDiscordEventsQueue(
+        batch as MessageBatch<DiscordEventQueueMessage>,
+        env,
+      );
     }
 
     console.warn('[queue] unhandled queue batch', { queue: batch.queue, size: batch.messages.length });

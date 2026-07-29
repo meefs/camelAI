@@ -4,7 +4,7 @@ export interface ParsedFilePreviewPath {
   filename: string;
 }
 
-const WORKSPACE_ROOT_PREFIXES = ['/home/claude', '/workspace', '/root'];
+const WORKSPACE_ROOT_PREFIX = '/workspace';
 const R2_PREVIEW_PREFIXES = [
   { prefix: 'uploads/', source: 'upload' as const },
   { prefix: 'outputs/', source: 'output' as const },
@@ -52,17 +52,12 @@ export function parseFilePreviewPath(rawPath: string): ParsedFilePreviewPath | n
 
   const absoluteInput = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
   let workspacePath = absoluteInput;
-  for (const prefix of WORKSPACE_ROOT_PREFIXES) {
-    if (workspacePath === prefix) {
-      workspacePath = '/';
-      break;
-    }
-    if (workspacePath.startsWith(`${prefix}/`)) {
-      workspacePath = workspacePath.slice(prefix.length);
-      if (!workspacePath.startsWith('/')) {
-        workspacePath = `/${workspacePath}`;
-      }
-      break;
+  if (workspacePath === WORKSPACE_ROOT_PREFIX) {
+    workspacePath = '/';
+  } else if (workspacePath.startsWith(`${WORKSPACE_ROOT_PREFIX}/`)) {
+    workspacePath = workspacePath.slice(WORKSPACE_ROOT_PREFIX.length);
+    if (!workspacePath.startsWith('/')) {
+      workspacePath = `/${workspacePath}`;
     }
   }
 

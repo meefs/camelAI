@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { createElement } from 'react';
 
-import { MarkdownRenderer, normalizeCodexCitationMarkers } from '@/components/markdown-renderer';
+import { MarkdownRenderer, normalizeProviderCitationMarkers } from '@/components/markdown-renderer';
 import { ReportMarkdownCell } from '@/components/chat-file-preview/notebook-preview/report-markdown-cell';
 import type { AtMentionConnection, Integration } from '@/types';
 
@@ -20,15 +20,15 @@ function integration(fields: Pick<Integration, 'id' | 'integration_type' | 'name
   };
 }
 
-describe('normalizeCodexCitationMarkers', () => {
+describe('normalizeProviderCitationMarkers', () => {
   it('leaves normal markdown unchanged', () => {
     const input = 'Use [OpenAI](https://openai.com) for details.';
-    expect(normalizeCodexCitationMarkers(input)).toBe(input);
+    expect(normalizeProviderCitationMarkers(input)).toBe(input);
   });
 
-  it('strips leaked Codex web-search citation markers', () => {
+  it('strips leaked provider web-search citation markers', () => {
     expect(
-      normalizeCodexCitationMarkers(
+      normalizeProviderCitationMarkers(
         'Web search is working. citeturn1search0',
       ),
     ).toBe('Web search is working. ');
@@ -36,7 +36,7 @@ describe('normalizeCodexCitationMarkers', () => {
 
   it('strips multiple leaked citation markers', () => {
     expect(
-      normalizeCodexCitationMarkers(
+      normalizeProviderCitationMarkers(
         'First citeturn1search0 and second citeturn1search1 done.',
       ),
     ).toBe('First  and second  done.');

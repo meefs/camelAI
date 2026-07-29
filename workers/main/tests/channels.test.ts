@@ -155,7 +155,7 @@ describe("channels", () => {
     expect(getChannelReplyToolName("email")).toBe("send_email");
     expect(getChannelReplyToolName("slack")).toBe("send_slack_message");
     expect(getChannelReplyToolName("telegram")).toBe("send_telegram_message");
-    expect(getChannelReplyToolName("discord")).toBeNull();
+    expect(getChannelReplyToolName("discord")).toBe("send_discord_message");
 
     const message = buildChannelReplySystemMessage("email", {
       userEmail: "user@example.com",
@@ -174,6 +174,16 @@ describe("channels", () => {
     });
 
     expect(message).toContain("await tools.send_telegram_message");
+    expect(message).toContain("do not need to provide the channel/chat id");
+    expect(message).toContain("originating conversation");
+  });
+
+  it("tells Discord replies to use the scoped js_exec provider tool", () => {
+    const message = buildChannelReplySystemMessage("discord", {
+      userEmail: null,
+    });
+
+    expect(message).toContain("await tools.send_discord_message");
     expect(message).toContain("do not need to provide the channel/chat id");
     expect(message).toContain("originating conversation");
   });
@@ -217,9 +227,6 @@ describe("channels", () => {
     const orgStub = {
       getThread: vi.fn().mockResolvedValue(null),
       getLlmProviderConfig: vi.fn().mockResolvedValue(null),
-      getExperimentalSettings: vi
-        .fn()
-        .mockResolvedValue({ claude_proxy_models: false }),
       getModelPickerConfig: vi.fn().mockResolvedValue(defaultOrgModelPickerConfig()),
       createThread: vi.fn().mockResolvedValue({
         id: "thread-2",
@@ -257,9 +264,6 @@ describe("channels", () => {
     const kv = createMockKvStore();
     const orgStub = {
       getLlmProviderConfig: vi.fn().mockResolvedValue(null),
-      getExperimentalSettings: vi
-        .fn()
-        .mockResolvedValue({ claude_proxy_models: false }),
       getModelPickerConfig: vi.fn().mockResolvedValue(defaultOrgModelPickerConfig()),
       createThread: vi.fn().mockResolvedValue({
         id: "thread-2",
@@ -298,7 +302,6 @@ describe("channels", () => {
       "telegram",
       "hello from Telegram",
       "sonnet",
-      "claude",
       expect.objectContaining({
         source: "channel",
         channelKind: "telegram",
@@ -319,9 +322,6 @@ describe("channels", () => {
     const longMessage = `${"x".repeat(700)} tail`;
     const orgStub = {
       getLlmProviderConfig: vi.fn().mockResolvedValue(null),
-      getExperimentalSettings: vi
-        .fn()
-        .mockResolvedValue({ claude_proxy_models: false }),
       getModelPickerConfig: vi.fn().mockResolvedValue(defaultOrgModelPickerConfig()),
       createThread: vi.fn().mockResolvedValue({
         id: "thread-long",
@@ -352,7 +352,6 @@ describe("channels", () => {
       "slack",
       longMessage,
       "sonnet",
-      "claude",
       expect.objectContaining({
         source: "channel",
         channelKind: "slack",

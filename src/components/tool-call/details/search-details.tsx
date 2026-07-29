@@ -38,7 +38,7 @@ type ParsedLine = {
   raw: string;
 };
 
-const VM_PROJECT_ROOT_PREFIXES = ['/workspace', '/home/claude', '/root'];
+const WORKSPACE_ROOT_PREFIX = '/workspace';
 
 function isSearchNoResultLine(line: string): boolean {
   return /^No files found/i.test(line) || /^No matches found/i.test(line);
@@ -84,15 +84,10 @@ function normalizeVmProjectPath(path: string): string | null {
   let normalized = rawPath.replace(/\\/g, '/').replace(/\/+/g, '/');
   normalized = normalized.startsWith('/') ? normalized : `/${normalized}`;
 
-  for (const prefix of VM_PROJECT_ROOT_PREFIXES) {
-    if (normalized === prefix) {
-      normalized = '/';
-      break;
-    }
-    if (normalized.startsWith(`${prefix}/`)) {
-      normalized = normalized.slice(prefix.length) || '/';
-      break;
-    }
+  if (normalized === WORKSPACE_ROOT_PREFIX) {
+    normalized = '/';
+  } else if (normalized.startsWith(`${WORKSPACE_ROOT_PREFIX}/`)) {
+    normalized = normalized.slice(WORKSPACE_ROOT_PREFIX.length) || '/';
   }
 
   const segments: string[] = [];

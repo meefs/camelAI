@@ -1,7 +1,6 @@
 import type {
   LlmModel,
   LlmProvider,
-  OrganizationExperimentalSettings,
 } from "../types";
 import {
   CUSTOM_LLM_MODEL,
@@ -294,7 +293,6 @@ export function compareModelCatalogEntries(
 
 export function resolveModelPickerCatalog(args: {
   effectiveConfig: EffectiveModelPickerConfig;
-  experimentalSettings?: OrganizationExperimentalSettings | null;
   orgProvider?: LlmProvider | string | null;
   customApi?: CustomLlmProviderApi | null;
   customModelId?: string | null;
@@ -303,7 +301,7 @@ export function resolveModelPickerCatalog(args: {
   allowCamelCode?: boolean;
 }): ResolvedModelCatalogEntry[] {
   const visibleModelIds = new Set(
-    getVisibleLlmModelOptions(args.experimentalSettings, null, {
+    getVisibleLlmModelOptions(null, {
       orgProvider: args.orgProvider,
       customApi: args.customApi,
       customModelId: args.customModelId,

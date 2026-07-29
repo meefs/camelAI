@@ -32,7 +32,9 @@ export default [
 			"**/*.min.js",
 			// Legacy local host checkout dir (in-repo sandbox-host was removed).
 			".sandbox-host/**",
+			".selfhost/**",
 			".claude/**",
+			".codex/**",
 			"**/public/**",
 			"**/coverage/**",
 			"**/test-results/**",

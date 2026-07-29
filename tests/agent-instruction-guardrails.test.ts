@@ -29,4 +29,18 @@ describe("agent instruction guardrails", () => {
     expect(chat).not.toContain("VM checkout at /workspace");
     expect(chat).not.toContain("look for either wrangler.toml or wrangler.jsonc");
   });
+
+  it("keeps deployed connection calls on the invoke-backed proxy", async () => {
+    const reference = await readRepoFile(
+      "sandbox/skills/developing-software/CONNECTIONS-AND-STORAGE.md",
+    );
+
+    expect(reference).toContain('import { createConnections } from "~/lib/connections"');
+    expect(reference).toContain("const connections = createConnections(context.cloudflare.env)");
+    expect(reference).toContain("const response = await connections[custom.alias].fetch");
+    expect(reference).not.toContain("context.cloudflare.env.CONNECTIONS[stripe.alias]");
+    expect(reference).toContain(
+      "Cloudflare RPC interprets the alias as an RPC method name",
+    );
+  });
 });

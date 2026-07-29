@@ -289,15 +289,6 @@ export const OrgDetailSchema = z.object({
   appCount: z.number().int().nullable(),
 });
 
-export const UpdateOrgModelAccessBodySchema = z.object({
-  claude_proxy_models: z.boolean(),
-});
-
-export const OrgModelAccessSchema = z.object({
-  org_id: z.string(),
-  claude_proxy_models: z.boolean(),
-});
-
 export const GrantOrgCreditsBodySchema = z.object({
   amount_cents: z.number().int().positive(),
   reason: z.string().trim().min(1).max(500).optional(),

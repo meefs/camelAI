@@ -180,8 +180,7 @@ describe("ChatThreadDO hosted billing access", () => {
       expect.objectContaining({ threadId: "thread_free" }),
       expect.objectContaining({
         CHIRIDION_MODEL: "deepseek-v4-auto",
-        CHIRIDION_CLAUDE_MODEL: "deepseek-v4-auto",
-        CHIRIDION_CODEX_MODEL: "deepseek-v4-auto",
+        CHIRIDION_MODEL: "deepseek-v4-auto",
       }),
     );
   });

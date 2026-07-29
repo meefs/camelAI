@@ -107,6 +107,7 @@ function getArtifactDestination(artifact: RuntimeCallArtifact): string {
     summary.channelId,
     summary.chatTitle,
     summary.chatId,
+    summary.threadId,
   ];
   const destination = candidates.find((value) => typeof value === 'string' && value.trim());
   return typeof destination === 'string' ? destination : '';
@@ -120,6 +121,8 @@ function getArtifactToolLabel(toolName: RuntimeCallArtifact['toolName']): string
       return 'Slack';
     case 'send_telegram_message':
       return 'Telegram';
+    case 'send_discord_message':
+      return 'Discord';
   }
 }
 
@@ -131,6 +134,8 @@ function getArtifactIcon(kind: RuntimeCallArtifact['kind']) {
       return MessageCircle;
     case 'outbound_telegram_message':
       return Send;
+    case 'outbound_discord_message':
+      return MessageCircle;
   }
 }
 

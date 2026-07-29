@@ -8,7 +8,6 @@ export function normalizeAutomationVirtualPath(rawPath: string): string | null {
   if (!trimmed) return null;
   const aliases = [
     AUTOMATIONS_VIRTUAL_ROOT,
-    "/home/claude/.camelai/automations",
     ".camelai/automations",
     "~/.camelai/automations",
   ];

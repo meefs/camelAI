@@ -416,9 +416,6 @@ describe('Auth context building (parallel DO calls)', () => {
         defaultWorkspaceId,
       );
       expect(bootstrap.llmProviderConfig).toBeNull();
-      expect(bootstrap.experimentalSettings).toEqual({
-        claude_proxy_models: false,
-      });
     });
 
     it('loads workspace summary counts from OrgDO without route-level workspace fanout', async () => {

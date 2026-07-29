@@ -4,6 +4,49 @@ import { describe, expect, it, vi } from "vitest";
 import { ConnectionSetupPrompt } from "@/components/connection-setup-prompt";
 
 describe("ConnectionSetupPrompt", () => {
+  it("requires delegated-workspace acknowledgement before Discord authorization", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    const onCancel = vi.fn();
+    const { rerender } = render(
+      <ConnectionSetupPrompt
+        data={{
+          requestId: "setup-discord",
+          integrationType: "discord_channel",
+          suggestedName: "Support Discord",
+        }}
+        onSubmit={onSubmit}
+        onCancel={onCancel}
+      />,
+    );
+
+    expect(screen.getByText(/channel participants can instruct Camel/i)).toBeInTheDocument();
+    expect(
+      screen.getByText("Discord members can instruct this workspace"),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/workspace's files, connected services, credits, and deploy/i))
+      .toBeInTheDocument();
+    expect(screen.queryByLabelText(/^Name/)).not.toBeInTheDocument();
+    const connect = screen.getByRole("button", { name: /connect discord/i });
+    expect(connect).toBeDisabled();
+
+    await user.click(screen.getByRole("checkbox"));
+    expect(connect).toBeEnabled();
+
+    rerender(
+      <ConnectionSetupPrompt
+        data={{
+          requestId: "setup-discord-next",
+          integrationType: "discord_channel",
+          suggestedName: "Support Discord",
+        }}
+        onSubmit={onSubmit}
+        onCancel={onCancel}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /connect discord/i })).toBeDisabled();
+  });
+
   it("uses a textarea for BigQuery service account JSON and submits the entered connection", async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn().mockResolvedValue(undefined);

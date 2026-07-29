@@ -15,24 +15,26 @@ describe("channel indicator helpers", () => {
     expect(normalizeChannelIndicatorKind(" Email ")).toBe("email");
     expect(normalizeChannelIndicatorKind("SLACK")).toBe("slack");
     expect(normalizeChannelIndicatorKind("telegram")).toBe("telegram");
+    expect(normalizeChannelIndicatorKind("discord")).toBe("discord");
     expect(normalizeChannelIndicatorKind("web")).toBeNull();
     expect(normalizeChannelIndicatorKind("scheduled")).toBeNull();
     expect(normalizeChannelIndicatorKind(null)).toBeNull();
-    expect(normalizeChannelIndicatorKind("discord")).toBeNull();
   });
 
   it("returns branding for known channels only", () => {
     expect(getChannelBrand("email")?.label).toBe("Email");
     expect(getChannelBrand("slack")?.logoType).toBe("slack");
     expect(getChannelBrand("telegram")?.logoType).toBe("telegram");
+    expect(getChannelBrand("discord")?.logoType).toBe("discord");
     expect(getChannelBrand("web")).toBeNull();
     expect(getChannelBrand(null)).toBeNull();
   });
 
   it("parses stored channel kind JSON defensively", () => {
-    expect(parseChannelIndicatorKindsJson('["slack","email","web"]')).toEqual([
+    expect(parseChannelIndicatorKindsJson('["discord","slack","email","web"]')).toEqual([
       "email",
       "slack",
+      "discord",
     ]);
     expect(parseChannelIndicatorKindsJson('"slack"')).toBeNull();
     expect(parseChannelIndicatorKindsJson("{")).toBeNull();
@@ -42,10 +44,10 @@ describe("channel indicator helpers", () => {
 
   it("orders and dedupes channel brands canonically", () => {
     expect(
-      orderedChannelBrands(["telegram", "slack", "email", "slack", "web"]).map(
+      orderedChannelBrands(["discord", "telegram", "slack", "email", "slack", "web"]).map(
         (brand) => brand.kind,
       ),
-    ).toEqual(["email", "slack", "telegram"]);
+    ).toEqual(["email", "slack", "telegram", "discord"]);
   });
 });
 
@@ -53,7 +55,7 @@ describe("ChannelLogoStack", () => {
   it("renders known channels in canonical order with per-channel labels", () => {
     const { container } = render(
       <ChannelLogoStack
-        channels={["telegram", "unknown", "email", "slack", "email"]}
+        channels={["discord", "telegram", "unknown", "email", "slack", "email"]}
         tooltipFor={(label) => `Contains messages sent via ${label}`}
       />,
     );
@@ -65,6 +67,7 @@ describe("ChannelLogoStack", () => {
       "Contains messages sent via Email",
       "Contains messages sent via Slack",
       "Contains messages sent via Telegram",
+      "Contains messages sent via Discord",
     ]);
   });
 });

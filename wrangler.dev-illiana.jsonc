@@ -23,7 +23,6 @@
 		"AI_VIRTUAL_MODEL": "dynamic/auto",
 			"R2_BUCKET_NAME": "chiridion-sandbox",
 			"R2_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
-			"R2_MOUNT_DIR": "/home/claude",
 			"R2_PARENT_ACCESS_KEY_ID": "4f8fdc386b4ccb9f4a2bea3c77c8ad95",
 			"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
 			"ARTIFACTS_NAMESPACE": "dev-illiana",
@@ -32,6 +31,8 @@
 			"WORKER_BASE_URL": "https://dev-illiana.camelai.dev",
 				"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com",
 				"WORKSPACE_EMAIL_DOMAIN": "camelai.dev",
+				"DISCORD_CHANNEL_ENABLED": "true",
+				"DISCORD_CLIENT_ID": "1529210284898779277",
 				"CF_WORKER_NAME": "chiridion-app-dev-illiana",
 			"TAIL_WORKER_NAME": "chiridion-user-logs-tail-dev-illiana",
 		},
@@ -96,7 +97,20 @@
 		],
 		"consumers": [
 			{ "queue": "chiridion-app-screenshots-dev-illiana" },
-			{ "queue": "chiridion-app-slack-events-dev-illiana" }
+			{ "queue": "chiridion-app-slack-events-dev-illiana" },
+			{
+				"queue": "chiridion-app-discord-events-dev-illiana",
+				"max_batch_size": 10,
+				"max_batch_timeout": 1,
+				"max_retries": 5,
+				"dead_letter_queue": "chiridion-app-discord-events-dlq-dev-illiana"
+			},
+			{
+				"queue": "chiridion-app-discord-events-dlq-dev-illiana",
+				"max_batch_size": 10,
+				"max_batch_timeout": 1,
+				"max_retries": 3
+			}
 		]
 	},
 	"services": [
@@ -104,7 +118,8 @@
 		{
 			"binding": "DISPATCHER",
 			"service": "chiridion-dispatcher-dev-illiana"
-		}
+		},
+		{ "binding": "DISCORD_BRIDGE", "service": "chiridion-discord-bridge-dev-illiana" }
 	],
 	"durable_objects": {
 		"bindings": [

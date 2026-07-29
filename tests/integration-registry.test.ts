@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   INTEGRATION_REGISTRY,
+  getAllIntegrations,
   type IntegrationDefinition,
   filterVisibleCredentials,
   isCredentialFieldRequired,
@@ -30,6 +31,26 @@ describe('integration registry credential storage', () => {
 
   it('labels Telegram as bot setup instead of API key setup', () => {
     expect(getIntegrationAuthLabel(INTEGRATION_REGISTRY.telegram)).toBe('Bot setup');
+  });
+
+  it('offers native Discord while keeping the legacy token definition readable', () => {
+    expect(INTEGRATION_REGISTRY.discord_channel).toMatchObject({
+      displayName: 'Discord',
+      authMethod: 'oauth2',
+      credentialSchema: [],
+    });
+    expect(INTEGRATION_REGISTRY.discord).toMatchObject({
+      displayName: 'Discord bot token (legacy)',
+      deprecated: {
+        hiddenFromCreate: true,
+        replacementType: 'discord_channel',
+      },
+    });
+    expect(getAllIntegrations().map((definition) => definition.type)).not.toContain('discord_channel');
+    expect(getAllIntegrations({ includeFeatureGated: true }).map((definition) => definition.type))
+      .toContain('discord_channel');
+    expect(getAllIntegrations().map((definition) => definition.type)).not.toContain('discord');
+    expect(getIntegrationAuthLabel(INTEGRATION_REGISTRY.discord_channel)).toBe('Discord install');
   });
 
   it('keeps credential-backed integrations labeled as API key', () => {

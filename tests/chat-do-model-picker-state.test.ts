@@ -46,9 +46,6 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     };
     const orgStub = {
       getLlmProviderConfig: vi.fn().mockResolvedValue(null),
-      getExperimentalSettings: vi
-        .fn()
-        .mockResolvedValue({ claude_proxy_models: false }),
       getModelPickerConfig: vi.fn().mockResolvedValue({
         use_platform_defaults: true,
         models: [],
@@ -88,9 +85,6 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     };
     const orgStub = {
       getLlmProviderConfig: vi.fn().mockResolvedValue(null),
-      getExperimentalSettings: vi
-        .fn()
-        .mockResolvedValue({ claude_proxy_models: false }),
       getModelPickerConfig: vi
         .fn()
         .mockRejectedValueOnce(
@@ -146,9 +140,6 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
         billing_credit_grant_total_cents: 0,
       }),
       getLlmProviderConfig: vi.fn().mockResolvedValue(null),
-      getExperimentalSettings: vi
-        .fn()
-        .mockResolvedValue({ claude_proxy_models: false }),
       getModelPickerConfig: vi.fn().mockResolvedValue({
         use_platform_defaults: true,
         models: [],
@@ -192,9 +183,6 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
         billing_credit_grant_total_cents: 0,
       }),
       getLlmProviderConfig: vi.fn().mockResolvedValue(null),
-      getExperimentalSettings: vi
-        .fn()
-        .mockResolvedValue({ claude_proxy_models: false }),
       getModelPickerConfig: vi.fn().mockResolvedValue({
         use_platform_defaults: true,
         models: [],
@@ -258,9 +246,6 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
         billing_credit_grant_total_cents: 0,
       }),
       getLlmProviderConfig: vi.fn().mockResolvedValue(null),
-      getExperimentalSettings: vi
-        .fn()
-        .mockResolvedValue({ claude_proxy_models: false }),
       getModelPickerConfig: vi.fn().mockResolvedValue({
         use_platform_defaults: true,
         models: [],
@@ -309,9 +294,6 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
           billing_credit_grant_total_cents: 0,
         }),
         getLlmProviderConfig: vi.fn().mockResolvedValue(null),
-        getExperimentalSettings: vi
-          .fn()
-          .mockResolvedValue({ claude_proxy_models: false }),
         getOpenAiSubscription: vi.fn().mockResolvedValue(openAiSubscription),
         getModelPickerConfig: vi.fn().mockResolvedValue(
           usePlatformDefaults
@@ -429,7 +411,6 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
       awsRegion: null,
       allowOpenAiSubscription: false,
       billingAccessMode: 'subscription',
-      experimentalSettings: { claude_proxy_models: false },
       modelOptions: [
         MODEL_CATALOG[CAMEL_CODE_LLM_MODEL],
         MODEL_CATALOG.sonnet,
@@ -635,7 +616,6 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
       return getWorkspaceModelPickerState({}, 'ws_123', {
         orgId: 'org_123',
         llmProviderConfig,
-        experimentalSettings: { claude_proxy_models: false },
         orgBillingState: {
           billing_status: args.billingStatus ?? 'inactive',
           billing_credit_purchase_total_cents: args.purchasedCredits ?? 0,
@@ -686,9 +666,6 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     };
     const orgStub = {
       getLlmProviderConfig: vi.fn().mockResolvedValue(null),
-      getExperimentalSettings: vi
-        .fn()
-        .mockResolvedValue({ claude_proxy_models: false }),
       getModelPickerConfig: vi.fn().mockRejectedValue(storageError),
     };
 
@@ -719,9 +696,6 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     };
     const orgStub = {
       getLlmProviderConfig: vi.fn().mockResolvedValue(null),
-      getExperimentalSettings: vi
-        .fn()
-        .mockResolvedValue({ claude_proxy_models: false }),
       getModelPickerConfig: vi.fn().mockResolvedValue({
         use_platform_defaults: false,
         models: [{ id: 'sonnet', added_at: 1 }],
@@ -775,9 +749,6 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     };
     const orgStub = {
       getLlmProviderConfig: vi.fn().mockResolvedValue(null),
-      getExperimentalSettings: vi
-        .fn()
-        .mockResolvedValue({ claude_proxy_models: false }),
       getModelPickerConfig: vi.fn().mockResolvedValue({
         use_platform_defaults: true,
         models: [
@@ -884,9 +855,6 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     };
     const orgStub = {
       getLlmProviderConfig: vi.fn().mockResolvedValue(null),
-      getExperimentalSettings: vi
-        .fn()
-        .mockResolvedValue({ claude_proxy_models: false }),
       getModelPickerConfig: vi.fn().mockResolvedValue({
         use_platform_defaults: false,
         models: [{ id: 'sonnet', added_at: 1 }],
@@ -931,9 +899,6 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     };
     const orgStub = {
       getLlmProviderConfig: vi.fn().mockResolvedValue(null),
-      getExperimentalSettings: vi
-        .fn()
-        .mockResolvedValue({ claude_proxy_models: false }),
       getModelPickerConfig: vi.fn().mockResolvedValue({
         use_platform_defaults: true,
         models: [
@@ -1010,9 +975,6 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     };
     const orgStub = {
       getLlmProviderConfig: vi.fn().mockResolvedValue(null),
-      getExperimentalSettings: vi
-        .fn()
-        .mockResolvedValue({ claude_proxy_models: false }),
       getModelPickerConfig: vi.fn().mockResolvedValue({
         use_platform_defaults: false,
         models: [{ id: 'fable-5', added_at: 1 }],
@@ -1068,9 +1030,6 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     };
     const orgStub = {
       getLlmProviderConfig: vi.fn().mockResolvedValue(null),
-      getExperimentalSettings: vi
-        .fn()
-        .mockResolvedValue({ claude_proxy_models: false }),
       getModelPickerConfig: vi.fn().mockResolvedValue({
         use_platform_defaults: false,
         models: [
@@ -1120,7 +1079,7 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     expect(orgStub.updateThreadModel).toHaveBeenCalledWith('thread_123', 'fable-5');
   });
 
-  it('normalizes legacy stored thread models and ignores legacy providers before returning them to React', async () => {
+  it('normalizes legacy stored thread models before returning them to React', async () => {
     const workspaceStub = {
       getInfo: vi.fn().mockResolvedValue({ org_id: 'org_123' }),
     };
@@ -1130,7 +1089,6 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
         workspace_id: 'ws_123',
         title: 'Legacy Gemini thread',
         created_by: 'user_123',
-        provider: 'claude',
         model: 'gemini-3.1-pro-preview',
         created_at: 1,
         updated_at: 2,
@@ -1163,7 +1121,6 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
       workspace_id: 'ws_123',
       title: 'Long prompt thread',
       created_by: 'user_123',
-      provider: 'claude',
       model: 'sonnet',
       created_at: 1,
       updated_at: 2,
@@ -1223,9 +1180,6 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
       getLlmProviderConfig: vi.fn(async () => {
         throw new Error('unexpected provider config read');
       }),
-      getExperimentalSettings: vi.fn(async () => {
-        throw new Error('unexpected experimental settings read');
-      }),
       getModelPickerConfig: vi.fn().mockResolvedValue({
         use_platform_defaults: true,
         models: [],
@@ -1259,13 +1213,11 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
         created_at: 1,
         updated_at: 1,
       },
-      experimentalSettings: { claude_proxy_models: false },
     });
 
     expect(workspaceStub.getInfo).not.toHaveBeenCalled();
     expect(orgStub.getInfo).not.toHaveBeenCalled();
     expect(orgStub.getLlmProviderConfig).not.toHaveBeenCalled();
-    expect(orgStub.getExperimentalSettings).not.toHaveBeenCalled();
     expect(state?.orgId).toBe('org_123');
     expect(state?.llmProvider).toBe('openai');
     expect(state?.allowedThreadModels).toContain('gpt-5.6-terra');
@@ -1296,9 +1248,6 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
       }),
       getLlmProviderConfig: vi.fn(async () => {
         throw new Error('unexpected provider config read');
-      }),
-      getExperimentalSettings: vi.fn(async () => {
-        throw new Error('unexpected experimental settings read');
       }),
       getModelPickerConfig: vi.fn().mockResolvedValue({
         use_platform_defaults: false,
@@ -1344,13 +1293,11 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
           created_at: 1,
           updated_at: 1,
         },
-        experimentalSettings: { claude_proxy_models: false },
       },
     );
 
     expect(workspaceStub.getInfo).not.toHaveBeenCalled();
     expect(orgStub.getLlmProviderConfig).not.toHaveBeenCalled();
-    expect(orgStub.getExperimentalSettings).not.toHaveBeenCalled();
     expect(orgStub.updateThreadModel).toHaveBeenCalledWith(
       'thread_123',
       'gpt-5.6-terra',

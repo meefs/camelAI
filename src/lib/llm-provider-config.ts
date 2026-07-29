@@ -2,12 +2,11 @@ import type {
   LlmModel,
   LlmProvider,
   LlmProviderConfigPublic,
-  OrganizationExperimentalSettings,
 } from "../types";
 import { decryptCredentials } from "./integration-crypto";
 
 export const DEFAULT_LLM_MODEL: LlmModel = "sonnet";
-export const DEFAULT_CODEX_MODEL: LlmModel = "gpt-5.6-terra";
+export const DEFAULT_OPENAI_MODEL: LlmModel = "gpt-5.6-terra";
 export const DEFAULT_OPENROUTER_MODEL: LlmModel = "kimi-k2.7-code";
 export const CUSTOM_LLM_MODEL: LlmModel = "custom";
 export const THREAD_MODEL_LOCK_MESSAGE =
@@ -25,7 +24,7 @@ const STORED_LLM_MODEL_REPLACEMENTS: Readonly<Record<string, LlmModel>> = {
 
 // When adding a model here, also add it to the picker catalog at
 // src/lib/model-catalog.ts and the pricing table at src/lib/usage-pricing.ts.
-export const CLAUDE_LLM_MODEL_OPTIONS: ReadonlyArray<{
+export const ANTHROPIC_LLM_MODEL_OPTIONS: ReadonlyArray<{
   value: LlmModel;
   label: string;
   description: string;
@@ -48,7 +47,7 @@ export const CLAUDE_LLM_MODEL_OPTIONS: ReadonlyArray<{
   { value: "haiku", label: "Haiku 4.5", description: "Faster and cheaper" },
 ];
 
-export const CODEX_LLM_MODEL_OPTIONS: ReadonlyArray<{
+export const OPENAI_COMPATIBLE_LLM_MODEL_OPTIONS: ReadonlyArray<{
   value: LlmModel;
   label: string;
   description: string;
@@ -137,12 +136,12 @@ export const LLM_MODEL_OPTIONS: ReadonlyArray<{
   label: string;
   description: string;
 }> = [
-  ...CLAUDE_LLM_MODEL_OPTIONS,
-  ...CODEX_LLM_MODEL_OPTIONS,
+  ...ANTHROPIC_LLM_MODEL_OPTIONS,
+  ...OPENAI_COMPATIBLE_LLM_MODEL_OPTIONS,
   ...CUSTOM_LLM_MODEL_OPTIONS,
 ];
 
-const OPENROUTER_ONLY_CODEX_MODELS = new Set<LlmModel>([
+const OPENROUTER_ONLY_MODELS = new Set<LlmModel>([
   "kimi-k2.7-code",
   "grok-4.5",
   "glm-5.2",
@@ -152,7 +151,7 @@ const OPENROUTER_ONLY_CODEX_MODELS = new Set<LlmModel>([
   "deepseek-v4-flash",
 ]);
 
-const CAMELAI_HOSTED_ONLY_CODEX_MODELS = new Set<LlmModel>([
+const CAMELAI_HOSTED_ONLY_MODELS = new Set<LlmModel>([
   "deepseek-v4-auto",
 ]);
 
@@ -182,7 +181,7 @@ function sortVisibleLlmModelOptions<
   );
 }
 
-const BEDROCK_ONLY_CODEX_MODELS = new Set<LlmModel>([
+const BEDROCK_ONLY_OPENAI_MODELS = new Set<LlmModel>([
   "gpt-5.6-sol-bedrock",
   "gpt-5.6-terra-bedrock",
 ]);
@@ -223,41 +222,17 @@ interface LlmProviderModelOptions {
   allowCamelCode?: boolean;
 }
 
-export const DEFAULT_ORG_EXPERIMENTAL_SETTINGS: OrganizationExperimentalSettings =
-  {
-    claude_proxy_models: false,
-  };
-
-export function parseOrganizationExperimentalSettings(
-  raw: unknown,
-): OrganizationExperimentalSettings {
-  if (!raw || typeof raw !== "object") {
-    return { ...DEFAULT_ORG_EXPERIMENTAL_SETTINGS };
-  }
-
-  const settings = raw as Record<string, unknown>;
-  return {
-    claude_proxy_models: settings.claude_proxy_models === true,
-  };
-}
-
-export function isClaudeProxyModelsEnabled(
-  settings: OrganizationExperimentalSettings | null | undefined,
-): boolean {
-  return Boolean(settings?.claude_proxy_models);
-}
-
 export function getDefaultLlmModel(
   orgProvider?: string | null,
   options?: LlmProviderModelOptions,
 ): LlmModel {
-  if (orgProvider === "openai") return DEFAULT_CODEX_MODEL;
+  if (orgProvider === "openai") return DEFAULT_OPENAI_MODEL;
   if (orgProvider === "openrouter") return DEFAULT_OPENROUTER_MODEL;
   if (orgProvider === "custom" && hasCustomModelId(options?.customModelId)) {
     return CUSTOM_LLM_MODEL;
   }
   if (orgProvider === "custom" && isOpenAiCompatibleCustomApi(options?.customApi)) {
-    return DEFAULT_CODEX_MODEL;
+    return DEFAULT_OPENAI_MODEL;
   }
   return DEFAULT_LLM_MODEL;
 }
@@ -278,27 +253,26 @@ export function getLlmModelOptions(
   );
 }
 
-export function isClaudeLlmModel(model: unknown): model is LlmModel {
-  return CLAUDE_LLM_MODEL_OPTIONS.some((option) => option.value === model);
+export function isAnthropicLlmModel(model: unknown): model is LlmModel {
+  return ANTHROPIC_LLM_MODEL_OPTIONS.some((option) => option.value === model);
 }
 
-export function isCodexLlmModel(model: unknown): model is LlmModel {
-  return CODEX_LLM_MODEL_OPTIONS.some((option) => option.value === model);
+export function isOpenAiCompatibleLlmModel(model: unknown): model is LlmModel {
+  return OPENAI_COMPATIBLE_LLM_MODEL_OPTIONS.some((option) => option.value === model);
 }
 
 export function isLlmModelCoveredByOpenAiSubscription(
   model: LlmModel,
 ): boolean {
   return (
-    isCodexLlmModel(model) &&
-    !OPENROUTER_ONLY_CODEX_MODELS.has(model) &&
-    !BEDROCK_ONLY_CODEX_MODELS.has(model) &&
-    !CAMELAI_HOSTED_ONLY_CODEX_MODELS.has(model)
+    isOpenAiCompatibleLlmModel(model) &&
+    !OPENROUTER_ONLY_MODELS.has(model) &&
+    !BEDROCK_ONLY_OPENAI_MODELS.has(model) &&
+    !CAMELAI_HOSTED_ONLY_MODELS.has(model)
   );
 }
 
 export function getVisibleLlmModelOptions(
-  _experimentalSettings?: OrganizationExperimentalSettings | null,
   includeModel?: LlmModel | null,
   options?: {
     orgProvider?: string | null;
@@ -330,8 +304,8 @@ export function getVisibleLlmModelOptions(
   }
 
   const fallbackOption = [
-    ...CODEX_LLM_MODEL_OPTIONS,
-    ...CLAUDE_LLM_MODEL_OPTIONS,
+    ...OPENAI_COMPATIBLE_LLM_MODEL_OPTIONS,
+    ...ANTHROPIC_LLM_MODEL_OPTIONS,
   ].find((option) => option.value === includeModel);
 
   return fallbackOption
@@ -342,7 +316,6 @@ export function getVisibleLlmModelOptions(
 export function isLlmModelAllowedForNewThread(
   value: unknown,
   orgProvider: string | null | undefined,
-  _experimentalSettings?: OrganizationExperimentalSettings | null,
   options?: LlmProviderModelOptions,
 ): value is LlmModel {
   return (
@@ -353,8 +326,8 @@ export function isLlmModelAllowedForNewThread(
 
 export function isLlmModel(value: unknown): value is LlmModel {
   return (
-    isCodexLlmModel(value) ||
-    isClaudeLlmModel(value) ||
+    isOpenAiCompatibleLlmModel(value) ||
+    isAnthropicLlmModel(value) ||
     value === CUSTOM_LLM_MODEL
   );
 }
@@ -373,20 +346,20 @@ export function isLlmModelAllowedForOrgProvider(
   if (model === CAMEL_CODE_LLM_MODEL) {
     return options?.allowCamelCode !== false;
   }
-  if (CAMELAI_HOSTED_ONLY_CODEX_MODELS.has(model) && orgProvider) {
+  if (CAMELAI_HOSTED_ONLY_MODELS.has(model) && orgProvider) {
     return false;
   }
   if (orgProvider === "openai") {
-    return isCodexLlmModel(model) &&
-      !OPENROUTER_ONLY_CODEX_MODELS.has(model) &&
-      !BEDROCK_ONLY_CODEX_MODELS.has(model);
+    return isOpenAiCompatibleLlmModel(model) &&
+      !OPENROUTER_ONLY_MODELS.has(model) &&
+      !BEDROCK_ONLY_OPENAI_MODELS.has(model);
   }
   if (orgProvider === "anthropic") {
-    return isClaudeLlmModel(model);
+    return isAnthropicLlmModel(model);
   }
   if (orgProvider === "bedrock") {
-    return isClaudeLlmModel(model) ||
-      BEDROCK_ONLY_CODEX_MODELS.has(model) &&
+    return isAnthropicLlmModel(model) ||
+      BEDROCK_ONLY_OPENAI_MODELS.has(model) &&
         isBedrockOpenAiModelAllowedInRegion(model, options?.awsRegion);
   }
   if (orgProvider === "custom") {
@@ -394,19 +367,19 @@ export function isLlmModelAllowedForOrgProvider(
       return hasCustomModelId(options?.customModelId);
     }
     if (options?.customApi === "anthropic-messages") {
-      return isClaudeLlmModel(model);
+      return isAnthropicLlmModel(model);
     }
     if (isOpenAiCompatibleCustomApi(options?.customApi)) {
-      return isCodexLlmModel(model) &&
-        !OPENROUTER_ONLY_CODEX_MODELS.has(model) &&
-        !BEDROCK_ONLY_CODEX_MODELS.has(model);
+      return isOpenAiCompatibleLlmModel(model) &&
+        !OPENROUTER_ONLY_MODELS.has(model) &&
+        !BEDROCK_ONLY_OPENAI_MODELS.has(model);
     }
-    return !BEDROCK_ONLY_CODEX_MODELS.has(model);
+    return !BEDROCK_ONLY_OPENAI_MODELS.has(model);
   }
-  if (OPENROUTER_ONLY_CODEX_MODELS.has(model)) {
+  if (OPENROUTER_ONLY_MODELS.has(model)) {
     return orgProvider !== "openai";
   }
-  if (BEDROCK_ONLY_CODEX_MODELS.has(model)) return false;
+  if (BEDROCK_ONLY_OPENAI_MODELS.has(model)) return false;
   if (model === CUSTOM_LLM_MODEL) return false;
   return true;
 }
@@ -419,17 +392,17 @@ export function isLlmModelCoveredByByokProvider(
   if (!model) return true;
   if (provider === "openrouter") return true;
   if (provider === "anthropic") {
-    return isClaudeLlmModel(model);
+    return isAnthropicLlmModel(model);
   }
   if (provider === "bedrock") {
-    return isClaudeLlmModel(model) ||
-      BEDROCK_ONLY_CODEX_MODELS.has(model) &&
+    return isAnthropicLlmModel(model) ||
+      BEDROCK_ONLY_OPENAI_MODELS.has(model) &&
         isBedrockOpenAiModelAllowedInRegion(model, undefined);
   }
   if (provider === "openai") {
-    return isCodexLlmModel(model) &&
-      !OPENROUTER_ONLY_CODEX_MODELS.has(model) &&
-      !BEDROCK_ONLY_CODEX_MODELS.has(model);
+    return isOpenAiCompatibleLlmModel(model) &&
+      !OPENROUTER_ONLY_MODELS.has(model) &&
+      !BEDROCK_ONLY_OPENAI_MODELS.has(model);
   }
   if (provider === "custom") return true;
   return false;
@@ -459,11 +432,11 @@ export function resolveStoredLlmModel(
   } else if (value === "gpt-5.5" || value === "gpt-5.4") {
     replacement = orgProvider === "bedrock"
       ? "gpt-5.6-terra-bedrock"
-      : DEFAULT_CODEX_MODEL;
+      : DEFAULT_OPENAI_MODEL;
   } else if (value === "gpt-5.5-bedrock" || value === "gpt-5.4-bedrock") {
     replacement = "gpt-5.6-terra-bedrock";
   } else if (value === "gpt-5.4-mini") {
-    replacement = DEFAULT_CODEX_MODEL;
+    replacement = DEFAULT_OPENAI_MODEL;
   }
 
   return isLlmModel(replacement) &&
