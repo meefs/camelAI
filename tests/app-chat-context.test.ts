@@ -6,7 +6,7 @@ describe("app chat context", () => {
   it("points linked apps at durable project discovery", () => {
     const message = buildAppWorkSystemMessage({
       scriptName: "orders-app",
-      appUrl: "https://orders-app.camelai.app",
+      appUrl: "https://orders-app-acme85.camelai.app",
       projectId: "project-123",
     });
 
@@ -18,7 +18,7 @@ describe("app chat context", () => {
   it("uses project and app metadata when a source link is missing", () => {
     const message = buildAppWorkSystemMessage({
       scriptName: "legacy-name",
-      appUrl: "https://legacy-name.camelai.app",
+      appUrl: "https://existing-name-acme85.camelai.app",
     });
 
     expect(message).toContain("list_projects");

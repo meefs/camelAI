@@ -437,26 +437,6 @@ describe('text preview route integration', () => {
     expect(projectReadFileStreamMock).not.toHaveBeenCalled();
   });
 
-  it('returns an archived error for legacy VM-backed projects', async () => {
-    workspaceGetProjectByNameMock.mockResolvedValue({
-      id: 'project-1',
-      name: 'app',
-      backend: 'vm',
-    });
-    const response = await expectJsonError(
-      loadTextPreviewResponse({
-        request: textPreviewRequest('source=project&project=app&path=/app/main.ts'),
-        context: {},
-        workspaceId: 'ws_123',
-      }),
-      404
-    );
-    await expect(response.json()).resolves.toEqual({
-      error: 'This legacy project was archived when camelAI retired project VMs.',
-    });
-    expect(projectReadFileStreamMock).not.toHaveBeenCalled();
-  });
-
   it('loads workspace streams through WorkspaceFilesystemClient', async () => {
     const data = await loadTextPreviewResponse({
       request: textPreviewRequest('source=workspace&path=/notes.txt&mode=initial&maxLines=1000'),

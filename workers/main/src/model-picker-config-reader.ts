@@ -14,7 +14,7 @@ interface WorkspaceModelPickerConfigReader {
     | WorkspaceModelPickerConfig;
 }
 
-export async function getOrgModelPickerConfigCompat(
+export async function readOrgModelPickerConfig(
   orgStub: OrgModelPickerConfigReader,
 ): Promise<OrgModelPickerConfig> {
   return retryTransientDurableObjectRead("OrgDO.getModelPickerConfig", () =>
@@ -22,7 +22,7 @@ export async function getOrgModelPickerConfigCompat(
   );
 }
 
-export async function getWorkspaceModelPickerConfigCompat(
+export async function readWorkspaceModelPickerConfig(
   workspaceStub: WorkspaceModelPickerConfigReader,
 ): Promise<WorkspaceModelPickerConfig> {
   return retryTransientDurableObjectRead(

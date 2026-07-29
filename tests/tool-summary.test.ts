@@ -720,7 +720,7 @@ describe('getToolSummaryParts set-preview MCP tools', () => {
       success: true,
       app: {
         name: 'my-todo-app',
-        url: 'https://my-todo-app.camelai.app',
+        url: 'https://my-todo-app-acme85.camelai.app',
         is_public: true,
       },
     }));

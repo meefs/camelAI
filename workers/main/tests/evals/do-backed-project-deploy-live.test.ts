@@ -363,7 +363,7 @@ describe("DO-backed project deploy agent eval", () => {
             label: "Agent created a DO-backed project",
             passed: project?.backend === "do-r2",
             reason: project
-              ? `Project backend was ${project.backend ?? "vm"}`
+              ? `Project backend was ${project.backend}`
               : `No project named ${PROJECT_NAME} was created.`,
             details: { project },
           }),

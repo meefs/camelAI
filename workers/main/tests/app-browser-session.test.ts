@@ -23,7 +23,7 @@ interface FakeCall {
 function createFakePage(overrides: Partial<Record<string, unknown>> = {}) {
   const calls: FakeCall[] = [];
   const listeners = new Map<string, Listener[]>();
-  let currentUrl = 'https://my-app.camelai.app/';
+  let currentUrl = 'https://my-app-acme85.camelai.app/';
   const record = (method: string, ...args: unknown[]) => {
     calls.push({ method, args });
   };
@@ -136,7 +136,7 @@ async function captureRejection(promise: Promise<unknown>): Promise<string> {
 
 const HOST_INDEX: WorkspaceAppHostIndex = {
   routesByHostname: new Map(),
-  hostnames: new Set(['other-app.camelai.app']),
+  hostnames: new Set(['other-app-beta99.camelai.app']),
 };
 
 function createSession(
@@ -147,7 +147,7 @@ function createSession(
   return new AppBrowserSession({
     browser: fakeBrowser.browser,
     page: fakePage.page,
-    baseUrl: new URL('https://my-app.camelai.app/'),
+    baseUrl: new URL('https://my-app-acme85.camelai.app/'),
     hostIndex: HOST_INDEX,
     logContext: { scriptName: 'my-app' },
     ...init,
@@ -162,7 +162,7 @@ describe('AppBrowserSession', () => {
     expect(result.status).toBe(200);
     expect(fakePage.calls[0]).toMatchObject({
       method: 'goto',
-      args: ['https://my-app.camelai.app/dashboard?tab=1', expect.anything()],
+      args: ['https://my-app-acme85.camelai.app/dashboard?tab=1', expect.anything()],
     });
     // Single committed navigation (no networkidle wait / no re-navigation).
     expect(fakePage.calls.filter((call) => call.method === 'goto')).toHaveLength(1);
@@ -173,7 +173,7 @@ describe('AppBrowserSession', () => {
   it('allows absolute URLs on workspace app hosts and rejects external hosts', async () => {
     const fakePage = createFakePage();
     const session = createSession(fakePage, createFakeBrowser());
-    await session.goto('https://other-app.camelai.app/page');
+    await session.goto('https://other-app-beta99.camelai.app/page');
     expect(await captureRejection(session.goto('https://evil.example.com/'))).toMatch(
       /workspace's app hosts/,
     );
@@ -193,7 +193,7 @@ describe('AppBrowserSession', () => {
       /workspace's app hosts/,
     );
     // A protocol-relative path to an allowed workspace host is still fine.
-    const ok = await session.goto('//other-app.camelai.app/page');
+    const ok = await session.goto('//other-app-beta99.camelai.app/page');
     expect(ok.status).toBe(200);
     await session.close();
   });
@@ -315,16 +315,16 @@ describe('AppBrowserSession', () => {
     fakePage.emit('pageerror', new Error('ReferenceError: x is not defined'));
     fakePage.emit('response', {
       status: () => 500,
-      url: () => 'https://my-app.camelai.app/api/data',
+      url: () => 'https://my-app-acme85.camelai.app/api/data',
       request: () => ({ method: () => 'GET' }),
     });
     fakePage.emit('response', {
       status: () => 200,
-      url: () => 'https://my-app.camelai.app/ok',
+      url: () => 'https://my-app-acme85.camelai.app/ok',
       request: () => ({ method: () => 'GET' }),
     });
     fakePage.emit('requestfailed', {
-      url: () => 'https://my-app.camelai.app/broken',
+      url: () => 'https://my-app-acme85.camelai.app/broken',
       method: () => 'POST',
       failure: () => ({ errorText: 'net::ERR_FAILED' }),
     });
@@ -332,8 +332,8 @@ describe('AppBrowserSession', () => {
     expect(logs.console).toEqual([{ type: 'error', text: 'boom' }]);
     expect(logs.pageErrors).toEqual(['ReferenceError: x is not defined']);
     expect(logs.requestFailures).toEqual([
-      { url: 'https://my-app.camelai.app/api/data', method: 'GET', status: 500 },
-      { url: 'https://my-app.camelai.app/broken', method: 'POST', error: 'net::ERR_FAILED' },
+      { url: 'https://my-app-acme85.camelai.app/api/data', method: 'GET', status: 500 },
+      { url: 'https://my-app-acme85.camelai.app/broken', method: 'POST', error: 'net::ERR_FAILED' },
     ]);
     expect(logs.truncated).toBe(false);
     await session.close();

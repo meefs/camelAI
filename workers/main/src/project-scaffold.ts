@@ -407,7 +407,7 @@ function defaultDataAnalysisScaffoldFiles(projectName: string): ProjectScaffoldF
         `- Charts: prefer Altair — Vega-Lite outputs render natively with light/dark theme support (Plotly and PNG outputs also render). Do not set chart backgrounds or hardcode text colors.`,
         `- Tables: output plain pandas DataFrames, not \`df.style\` or hand-built HTML \`<table>\` markup, so they render with theme-aware styling, sorting, and CSV export.`,
         ``,
-        `This project holds analysis deliverables; there is no build step (\`build_project\` does not apply — \`deploy_project\` publishes the notebook directly only with explicit user publication intent).`,
+        `This project holds analysis deliverables; there is no build step — \`deploy_project\` publishes the notebook directly only with explicit user publication intent.`,
       ].join("\n") + "\n",
     },
   ];
@@ -1069,7 +1069,7 @@ function defaultReactRouterScaffoldFiles(projectName: string, scriptName: string
         "- `bun run typecheck` regenerates React Router route types and checks TypeScript.",
         "- `bun run build` typechecks first (`react-router typegen && tsc --noEmit`), then runs `react-router build`, bundles a Cloudflare Worker wrapper, and writes `build/server/wrangler.json` for `deploy_project`. Type errors fail the build — fix them rather than loosening tsconfig.",
         "- `bun run deploy` is included for compatibility; camelAI's `deploy_project` uses the platform direct-deploy path.",
-        "- In camelAI chat, call `deploy_project({ project: \"<project>\" })` once to build, publish, return the live URL, and open the app in preview. Use `dry_run: true` only for build validation without publishing. No manual `set_preview` or `list_apps` call is needed after deploy; `set_preview` remains available for an explicit preview switch. The hidden `build_project` name is compatibility-only.",
+        "- In camelAI chat, call `deploy_project({ project: \"<project>\" })` once to build, publish, return the live URL, and open the app in preview. Use `dry_run: true` only for build validation without publishing. No manual `set_preview` or `list_apps` call is needed after deploy; `set_preview` remains available for an explicit preview switch.",
         "- In camelAI chat, add bundled shadcn/ui components or full blocks (login pages, sidebar layouts, dashboards) with `add_shadcn_component({ project: \"<project>\", components: [\"accordion\", \"chart\", \"login-03\"] })` — the whole shadcn catalog is bundled, dependencies resolve automatically, and needed npm packages are added to package.json. Block pages land under `app/blocks/<name>/page.tsx`; register them in `app/routes.ts`. For local development outside camelAI, use `bunx --bun shadcn@latest add <component> --yes`. `components.json`, `app/app.css`, and `~/lib/utils` are already configured.",
         ``,
         "Build scripts must declare every CLI they use in `dependencies` or `devDependencies`; package scripts can then resolve those binaries from `node_modules/.bin`.",

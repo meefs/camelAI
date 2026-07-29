@@ -253,7 +253,7 @@ export function applyHostedCreditPause(
   };
 }
 
-async function getOrgModelPickerConfigCompat(
+async function readOrgModelPickerConfig(
   orgStub: OrgDO,
 ): Promise<OrgModelPickerConfig> {
   return retryTransientDurableObjectRead("OrgDO.getModelPickerConfig", () =>
@@ -261,7 +261,7 @@ async function getOrgModelPickerConfigCompat(
   );
 }
 
-async function getWorkspaceModelPickerConfigCompat(
+async function readWorkspaceModelPickerConfig(
   wsStub: WorkspaceDO,
 ): Promise<WorkspaceModelPickerConfig> {
   return retryTransientDurableObjectRead(
@@ -325,8 +325,8 @@ async function getWorkspaceModelPickerStateForOrg(
   const customModelId = getStoredCustomLlmProviderModelId(effectiveLlmProviderConfig);
   const awsRegion = getStoredBedrockAwsRegion(effectiveLlmProviderConfig);
   const [orgPickerConfig, workspacePickerConfig] = await Promise.all([
-    getOrgModelPickerConfigCompat(orgStub),
-    getWorkspaceModelPickerConfigCompat(wsStub),
+    readOrgModelPickerConfig(orgStub),
+    readWorkspaceModelPickerConfig(wsStub),
   ]);
   const effectiveConfig = resolveEffectivePickerConfig(
     orgPickerConfig,

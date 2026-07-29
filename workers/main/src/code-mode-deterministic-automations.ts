@@ -45,11 +45,7 @@ interface DeterministicAutomationRecord {
 }
 
 function getWorkflowId(args: Record<string, unknown>): string {
-  const value = typeof args.workflow_id === "string"
-    ? args.workflow_id
-    : typeof args.automation_id === "string"
-      ? args.automation_id
-      : "";
+  const value = typeof args.workflow_id === "string" ? args.workflow_id : "";
   return value.trim();
 }
 
@@ -60,7 +56,6 @@ export function formatDeterministicAutomation(
   return {
     id: automation.id,
     workflow_id: automation.id,
-    automation_id: automation.id,
     name: automation.name,
     description: automation.description,
     ...(includeSource ? { source: automation.source } : {}),
@@ -101,7 +96,6 @@ export class CodeModeDeterministicAutomations {
       count: automations.length,
       timezone: "UTC",
       workflows,
-      automations: workflows,
     };
   }
 
@@ -136,7 +130,6 @@ export class CodeModeDeterministicAutomations {
       success: true,
       timezone: "UTC",
       workflow: formatDeterministicAutomation(created, true),
-      automation: formatDeterministicAutomation(created, true),
       message: `Created workflow "${created.name}"`,
     };
   }
@@ -173,7 +166,6 @@ export class CodeModeDeterministicAutomations {
       success: true,
       timezone: "UTC",
       workflow: formatDeterministicAutomation(updated, true),
-      automation: formatDeterministicAutomation(updated, true),
       message: `Updated workflow "${updated.name}"`,
     };
   }
@@ -233,7 +225,6 @@ export class CodeModeDeterministicAutomations {
       success: true,
       timezone: "UTC",
       workflow,
-      automation: workflow,
       run: {
         status: result.dispatch.status,
         instance_id: result.dispatch.instance_id,

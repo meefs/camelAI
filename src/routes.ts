@@ -175,7 +175,6 @@ export default [
     "routes/api/billing.chat-credit-status.ts",
   ),
   route("api/billing/credit-packs", "routes/api/billing.credit-packs.ts"),
-  route("api/legacy-banner/dismiss", "routes/api/legacy-banner.dismiss.ts"),
   route("api/client-errors", "routes/api/client-errors.ts"),
   route("api/version", "routes/api/version.ts"),
   route("api/help", "routes/api/help.ts"),

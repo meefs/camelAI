@@ -20,7 +20,6 @@ function workspaceHostIndex() {
         scriptName: 'water-tracker',
         orgSlug: 'ms-workspace-d05',
         dispatchScriptName: 'water-tracker--ms-workspace-d05',
-        legacyDispatchScriptName: 'water-tracker',
         workspaceId: 'workspace1',
         orgId: 'org1',
         isPublic: false,

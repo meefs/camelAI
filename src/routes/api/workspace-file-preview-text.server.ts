@@ -172,12 +172,6 @@ async function resolvePreviewStream({
     if (!projectRecord) {
       throw Response.json({ error: 'Project not found' }, { status: 404 });
     }
-    if ((projectRecord.backend ?? 'vm') !== 'do-r2') {
-      throw Response.json(
-        { error: 'This legacy project was archived when camelAI retired project VMs.' },
-        { status: 404 },
-      );
-    }
     const projectFs = new ProjectFilesystemClient(env as never, projectRecord.id);
     const result = await projectFs.readFileStream(projectPath);
     if (!result.success || !result.stream) {

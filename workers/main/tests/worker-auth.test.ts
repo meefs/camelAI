@@ -27,12 +27,12 @@ function constraints(expiresAt: number | null = Date.now() + 60 * 60 * 1000) {
 describe("private-app constrained sessions", () => {
   it("binds one-time tokens to the exact dispatcher callback origin", () => {
     expect(isWorkerAuthCallbackOriginValid(
-      "https://private-app.camelai.app",
-      "https://private-app.camelai.app/__chiridion_auth/callback",
+      "https://private-app-acme85.camelai.app",
+      "https://private-app-acme85.camelai.app/__chiridion_auth/callback",
     )).toBe(true);
     expect(isWorkerAuthCallbackOriginValid(
-      "https://private-app.camelai.app",
-      "https://private-app.apps.camelai.dev/__chiridion_auth/callback",
+      "https://private-app-acme85.camelai.app",
+      "https://private-app-acme85.apps.camelai.dev/__chiridion_auth/callback",
     )).toBe(false);
   });
 
@@ -42,14 +42,14 @@ describe("private-app constrained sessions", () => {
       org_id: "org-1",
       state: "state-1",
       script_name: "private-app",
-      callback_origin: "https://private-app.camelai.app",
+      callback_origin: "https://private-app-acme85.camelai.app",
       ...constraints(),
     });
     await expect(validateAndConsumeAuthToken(testEnv.APP_KV, token)).resolves.toMatchObject({
       security_version: 1,
       user_id: "user-1",
       org_id: "org-1",
-      callback_origin: "https://private-app.camelai.app",
+      callback_origin: "https://private-app-acme85.camelai.app",
       auth_source: "enterprise_oidc",
       sso_connection_id: "connection-1",
       sso_config_version: 3,

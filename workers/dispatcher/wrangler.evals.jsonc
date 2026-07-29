@@ -13,11 +13,9 @@
 	"vars": {
 		"AI_VIRTUAL_MODEL": "dynamic/auto",
 		"MAIN_APP_URL": "https://staging.camelai.dev",
-		// Testing-grounds apps are deployed from in-process evals whose deploy side effects
-		// (the APP_KV `script:` access entries) land in the eval worker's local KV, not this
-		// dispatcher's KV. "open" serves any script present in the dispatch namespace as public
-		// so eval apps are usable without a real registry entry.
-		"DISPATCHER_MISSING_REGISTRY_MODE": "open"
+		// The testing-grounds namespace contains only eval apps and has no shared
+		// production identity or registry state.
+		"SKIP_AUTH": "true"
 	},
 	"routes": [
 		{ "pattern": "*.apps.evals.camelai.dev/*", "zone_name": "camelai.dev" },

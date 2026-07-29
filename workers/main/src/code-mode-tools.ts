@@ -138,10 +138,9 @@ interface CodeModeToolDefinition {
   sideEffect: boolean;
   externalDelivery: boolean;
   /**
-   * Callable but not discoverable: the tool stays on js_exec's `tools` object
-   * (source compat for old transcripts/snippets) but is dropped from every
-   * discovery surface — tools.help()/search()/describe(), the js_exec prompt
-   * inventory, and Pi top-level registration. Used for deprecated alias names.
+   * Callable but not discoverable: retained compatibility tools stay on the
+   * js_exec `tools` object while being omitted from help, search, prompt
+   * inventories, and Pi top-level registration.
    */
   hidden: boolean;
 }
@@ -162,8 +161,8 @@ type CodeModeToolCategory =
   | "web"
   | "agents"
   // Notebook/python/shell execution in the analysis sandbox. Split out of
-  // "connections" so the primary data-analysis path is not filed under, and
-  // hidden with, the connection-management long tail.
+  // "connections" so the primary data-analysis path is not filed under the
+  // connection-management long tail.
   | "analysis"
   | "connections";
 
@@ -726,7 +725,7 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModePassthroughTool(
     "list_projects",
-    "List known projects for this workspace as a nested tree, including each project's backend. Use location='project' and platform build/deploy actions for backend='do-r2' projects. Includes project descriptions. Top-level rows are source projects; clone projects are nested under each source project's clones[] with cloneCount. Arguments: {}.",
+    "List known projects for this workspace as a nested tree, including descriptions. Top-level rows are source projects; clone projects are nested under each source project's clones[] with cloneCount. Arguments: {}.",
   ),
   codeModePassthroughTool(
     "create_project",
@@ -756,15 +755,6 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
     {
       sideEffect: true,
     },
-  ),
-  codeModeTool(
-    "build_project",
-    "Deprecated compatibility alias for deploy_project({ dry_run: true }).",
-    Type.Object({
-      project: Type.String(),
-      timeoutMs: Type.Optional(Type.Number()),
-    }, { additionalProperties: false }),
-    { category: "workspace", sideEffect: true, hidden: true },
   ),
   codeModeTool(
     "add_dependency",
@@ -1021,9 +1011,8 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
       category: "connections",
     },
   ),
-  // Source-compat aliases for the pre-merge warehouse tool names: callable from
-  // js_exec (old transcripts/snippets keep working) but hidden from every
-  // discovery surface. New code uses run_code / analysis_list_connections.
+  // Customer compatibility aliases. They remain callable from persisted
+  // workflows and old js_exec snippets but are hidden from agent discovery.
   codeModePassthroughTool(
     "warehouse_run_code",
     "Deprecated alias for run_code. Arguments: { code, params? }.",
@@ -1430,7 +1419,7 @@ function isProjectBuildServiceUnavailableError(error: unknown): boolean {
 }
 
 async function withProjectBuildServiceErrorMapping<T>(
-  operationName: "build_project" | "add_dependency" | "deploy_project",
+  operationName: "add_dependency" | "deploy_project",
   operation: () => Promise<T>,
 ): Promise<T> {
   for (let attempt = 0; ; attempt += 1) {
@@ -1660,7 +1649,7 @@ function projectForAgent(project: WorkspaceProject): Record<string, unknown> {
     name: project.name,
     description: project.description,
     kind: project.kind,
-    backend: project.backend ?? "vm",
+    backend: "do-r2",
     defaultVmId: project.defaultVmId,
     cloneSource: project.cloneSource
       ? {
@@ -1682,7 +1671,7 @@ function projectCloneForAgent(project: WorkspaceProjectCloneSummary): Record<str
   return {
     name: project.name,
     description: project.description,
-    backend: project.backend ?? "vm",
+    backend: "do-r2",
     defaultVmId: project.defaultVmId,
     artifactRemote: project.artifactRemote,
     artifactStatus: project.artifactStatus,
@@ -1718,7 +1707,6 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     add_python_dependency: (binding, args) => binding.analysisAddDependency(args),
     add_shadcn_component: (binding, args) => binding.addShadcnComponent(args),
     analysis_list_connections: (binding) => binding.analysisListConnections(),
-    // Source-compat aliases onto the unified analysis tier.
     warehouse_run_code: (binding, args) => binding.analysisRunCode(args),
     warehouse_list_connections: (binding) => binding.analysisListConnections(),
     list_scheduled_prompts: (binding) => binding.listScheduledPrompts(),
@@ -1733,12 +1721,6 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     delete_workflow: (binding, args) => binding.deleteDeterministicAutomation(args),
     run_workflow_now: (binding, args) => binding.runDeterministicAutomationNow(args),
     get_workflow_run: (binding, args) => binding.getDeterministicAutomationRuns(args),
-    list_deterministic_automations: (binding) => binding.listDeterministicAutomations(),
-    validate_deterministic_automation: (binding, args) => binding.validateDeterministicAutomation(args),
-    create_deterministic_automation: (binding, args) => binding.createDeterministicAutomation(args),
-    update_deterministic_automation: (binding, args) => binding.updateDeterministicAutomation(args),
-    delete_deterministic_automation: (binding, args) => binding.deleteDeterministicAutomation(args),
-    run_deterministic_automation_now: (binding, args) => binding.runDeterministicAutomationNow(args),
     workspace_info: (binding) => binding.getWorkspaceRuntimeInfo(),
     list_integrations: (binding, args) => binding.listIntegrations(args),
     list_integration_types: (binding, args) => binding.listIntegrationTypes(args),
@@ -1810,9 +1792,6 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     if (!name) throw new Error("project is required for location='project'");
     const project = await this.workspaceFs.getProjectByName(name);
     if (!project) throw new Error(`Project not found: ${name}`);
-    if ((project.backend ?? "vm") !== "do-r2") {
-      throw new Error(`This legacy project was archived when camelAI retired project VMs and its files are no longer available.`);
-    }
     return new ProjectFilesystemClient(this.env, project.id);
   }
 
@@ -1841,22 +1820,13 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   }
 
   private async resolveDoBackedProjectForAction(args: Record<string, unknown>, _action: string): Promise<WorkspaceProject> {
-    const project = await this.resolveProjectForAction(args);
-    if ((project.backend ?? "vm") !== "do-r2") {
-      throw new Error(
-        `This legacy project was archived when camelAI retired project VMs and its files are no longer available.`,
-      );
-    }
-    return project;
+    return this.resolveProjectForAction(args);
   }
 
   private async writeProjectScaffold(
     project: WorkspaceProject,
     options: { template?: unknown; force?: boolean } = {},
   ): Promise<ProjectScaffoldResult> {
-    if ((project.backend ?? "vm") !== "do-r2") {
-      throw new Error(`Project "${project.name}" is not DO-backed; scaffolds can only be seeded into do-r2 projects`);
-    }
     const template = normalizeProjectScaffoldTemplate(options.template);
     const files = defaultProjectScaffoldFiles(project.name, template, normalizeDeployScriptName(project.name));
     const fileStore = new ProjectFilesystemClient(this.env, project.id);
@@ -1881,7 +1851,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     // Validate before creating: js_exec calls skip schema validation, and an
     // invalid template must not leave behind an empty registered project.
     const template = normalizeProjectScaffoldTemplate(args.template);
-    const project = await this.workspaceFs.createProject({ ...args, backend: "do-r2" });
+    const project = await this.workspaceFs.createProject(args);
     const scaffold = await this.writeProjectScaffold(project, { template });
     return { ...projectForAgent(project), scaffold };
   }
@@ -2767,7 +2737,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       const message = error instanceof Error && error.message ? error.message : String(error);
       this.recordCodeModeToolCall(name, startedAtMs, false, message, undefined);
       const props = this.ctx?.props;
-      if (name === "build_project" || name === "deploy_project") {
+      if (name === "deploy_project") {
         console.error("[code-mode] project tool call failed", {
           toolName: name,
           origin: "tool",
@@ -2957,9 +2927,6 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
 
         case "set_project_description":
           return projectForAgent(await this.workspaceFs.setProjectDescription(args));
-
-        case "build_project":
-          return this.buildProject(args);
 
         case "add_dependency":
           return this.addDependency(args);
@@ -3868,10 +3835,6 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     };
   }
 
-  private async buildProject(args: Record<string, unknown>): Promise<unknown> {
-    return this.deployProject({ ...args, dry_run: true });
-  }
-
   private async addDependency(args: Record<string, unknown>): Promise<unknown> {
     return withProjectBuildServiceErrorMapping("add_dependency", async () => {
       const project = await this.resolveDoBackedProjectForAction(args, "add_dependency");
@@ -3886,7 +3849,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       return {
         ...result,
         project: project.name,
-        backend: project.backend ?? "vm",
+        backend: "do-r2",
       };
     });
   }
@@ -3902,7 +3865,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     return {
       ...result,
       project: project.name,
-      backend: project.backend ?? "vm",
+      backend: "do-r2",
     };
   }
 
@@ -4019,12 +3982,12 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       const deployArgs: Record<string, unknown> = { project: project.name };
       if (typeof args.script_name === "string" && args.script_name.trim()) deployArgs.script_name = args.script_name.trim();
       const deploy = await this.deployProject(deployArgs);
-      return { success: true, project: project.name, backend: project.backend ?? "vm", restored, deploy };
+      return { success: true, project: project.name, backend: "do-r2", restored, deploy };
     }
     return {
       success: true,
       project: project.name,
-      backend: project.backend ?? "vm",
+      backend: "do-r2",
       restored,
       message: "Source restored. The deployed app is unchanged until you call deploy_project (or pass deploy=true).",
     };
@@ -4036,7 +3999,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     const snapshots = await new ProjectFilesystemClient(this.env, project.id).listSourceSnapshots(limit);
     return {
       project: project.name,
-      backend: project.backend ?? "vm",
+      backend: "do-r2",
       count: snapshots.length,
       commits: snapshots.map((snapshot) => ({
         snapshot_id: snapshot.id,
@@ -4095,7 +4058,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
           dryRun: true,
           stage: "build",
           project: project.name,
-          backend: project.backend ?? "vm",
+          backend: "do-r2",
           message: "Build validation passed; nothing was deployed and preview was unchanged.",
         };
       }
@@ -4465,22 +4428,17 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       };
     }
 
-    const doBackedTargets = confirmedTargets.filter((project) => project.backend === "do-r2");
-
     const deletedNames: string[] = [];
 
     let deletedFileEntries = 0;
     let deletedSourceSnapshots = 0;
     let deletedSourceSnapshotBlobs = 0;
-    for (const project of doBackedTargets) {
+    for (const project of confirmedTargets) {
       const cleanup = await this.deleteDoBackedProjectFiles(project);
       deletedFileEntries += cleanup.fileEntries;
       deletedSourceSnapshots += cleanup.sourceSnapshots;
       deletedSourceSnapshotBlobs += cleanup.sourceSnapshotBlobs;
     }
-    // Remove every confirmed target from the registry. Legacy (non-do-r2) rows
-    // are archived tombstones with no project files, so registry removal is all
-    // that remains for them.
     const cleanup = confirmedTargets.length > 0
       ? await this.workspaceFs.removeProjects(confirmedTargets.map((project) => project.id))
       : { deleted: [] };

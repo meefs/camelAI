@@ -732,9 +732,8 @@ function createToolDescribe(allTools) {
 // The runner also emits compact completion evidence and stops equivalent retry
 // loops; those controls are more reliable than asking the model to infer state
 // from prose or repeatedly rediscover the same contract.
-const OPERATIONAL_OUTCOME_TOOLS = new Set(["build_project", "deploy_project", "run_notebook"]);
+const OPERATIONAL_OUTCOME_TOOLS = new Set(["deploy_project", "run_notebook"]);
 const COMPLETION_EVIDENCE_TOOLS = new Set([
-  "build_project",
   "deploy_project",
   "run_notebook",
   "send_email",
@@ -786,9 +785,6 @@ function completionEvidenceFor(name, envelope) {
     return url
       ? { tool: name, status: "succeeded", supportedClaims: ["deployed", "published"], target: url, instruction: "Publication is proven; feature correctness and live-data quality are not." }
       : { tool: name, status: "partial", supportedClaims: [], unsupportedClaims: ["deployed", "published", "live"], instruction: "No live URL was returned; do not claim deployment." };
-  }
-  if (name === "build_project") {
-    return { tool: name, status: "succeeded", supportedClaims: ["build validated"], unsupportedClaims: ["deployed", "published"] };
   }
   if (name === "run_notebook") {
     const clean = data.ok !== false && (!data.validation || data.validation.clean !== false);
@@ -1277,8 +1273,8 @@ export class CodeModeRunner extends WorkerEntrypoint {
       sideEffect: Boolean(tool.sideEffect),
       externalDelivery: Boolean(tool.externalDelivery),
     })));
-    // Hidden tools (deprecated aliases) stay callable on the tools object below
-    // but are dropped from every discovery surface: help, search, and describe.
+    // Compatibility aliases stay callable on the tools object but do not appear in
+    // help, search, or describe results.
     const ALL_TOOLS = Object.freeze([
       TOOL_HELP_DEFINITION,
       TOOL_SEARCH_DEFINITION,

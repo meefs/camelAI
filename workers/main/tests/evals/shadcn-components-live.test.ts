@@ -295,7 +295,6 @@ describe("shadcn components agent eval", () => {
         ]),
         usedAddShadcnComponent: usedTool(result.events, "add_shadcn_component"),
         usedAnalysisExec: usedTool(result.events, "analysis_exec"),
-        usedBuildProject: usedTool(result.events, "build_project"),
         usedDeployProject: usedTool(result.events, "deploy_project"),
         legacyFailures: legacyDeployPathEvidence(result.events),
         usedShadcnAddCommand: commandAndCodeEvidence.some(commandOrCodeMentionsShadcnAdd),
@@ -306,18 +305,14 @@ describe("shadcn components agent eval", () => {
       };
       const finalMentionsMethodAndValidation = /shadcn|accordion|tabs|progress/i.test(result.result ?? "") &&
         /build|typecheck|validat|success|passed/i.test(result.result ?? "");
-      // "Validated" must mean validation SUCCEEDED. usedTool/command-text
-      // evidence is satisfied by a build that FAILED, so a broken build pipeline
-      // silently counted as validation — the eval could not detect the very
-      // regression it is meant to guard. Require a successful build/typecheck
-      // run: build_project completing, or an analysis_exec/js_exec that both
-      // mentions a build and succeeded.
-      const succeededBuildProject = succeededWithTool(result.events, "build_project");
+      // "Validated" must mean validation SUCCEEDED. Command-text evidence is
+      // satisfied by a build that failed, so require an analysis_exec/js_exec
+      // that both mentions a build and succeeded.
       const succeededBuildCommand =
         (succeededWithTool(result.events, "analysis_exec") ||
           succeededWithTool(result.events, "js_exec")) &&
         runtimeAssertions.usedBuildOrTypecheckCommand;
-      const validatedProject = succeededBuildProject || succeededBuildCommand;
+      const validatedProject = succeededBuildCommand;
 
       const evaluation = buildEvalCriteriaSummary({
         passFail: [
@@ -327,7 +322,7 @@ describe("shadcn components agent eval", () => {
             label: "Agent created a DO-backed React Router project",
             passed: project?.backend === "do-r2" && runtimeAssertions.usedCreateProject,
             reason: project
-              ? `Project backend was ${project.backend ?? "vm"}, create_project=${runtimeAssertions.usedCreateProject}`
+              ? `Project backend was ${project.backend}, create_project=${runtimeAssertions.usedCreateProject}`
               : `No project named ${PROJECT_NAME} was created.`,
             details: { project, runtimeAssertions },
           }),
@@ -374,7 +369,7 @@ describe("shadcn components agent eval", () => {
               runtimeAssertions.legacyFailures.length === 0
                 ? undefined
                 : [
-                    validatedProject ? "" : "no build_project or build/typecheck command evidence",
+                    validatedProject ? "" : "no successful build/typecheck command evidence",
                     runtimeAssertions.usedDeployProject ? "used deploy_project" : "",
                     ...runtimeAssertions.legacyFailures,
                   ].filter(Boolean).join("; "),

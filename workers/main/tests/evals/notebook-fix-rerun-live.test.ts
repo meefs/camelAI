@@ -281,7 +281,6 @@ describe("notebook fix and rerun agent eval", () => {
         usedCreateProject: usedTool(result.events, "create_project"),
         usedRunNotebook: usedTool(result.events, "run_notebook"),
         successfulNotebookRun: hasSuccessfulNotebookRun(result.events, "analysis.ipynb"),
-        usedBuildProject: usedTool(result.events, "build_project"),
         usedDeployProject: usedTool(result.events, "deploy_project"),
         legacyFailures,
         evidence: collectRuntimeEvidence(result.events),
@@ -348,16 +347,13 @@ describe("notebook fix and rerun agent eval", () => {
             id: "avoided_web_deploy_path",
             label: "Agent avoided web deploy and legacy scaffold/deploy paths",
             passed:
-              !runtimeAssertions.usedBuildProject &&
               !runtimeAssertions.usedDeployProject &&
               legacyFailures.length === 0,
             reason:
-              !runtimeAssertions.usedBuildProject &&
               !runtimeAssertions.usedDeployProject &&
               legacyFailures.length === 0
                 ? undefined
                 : [
-                    runtimeAssertions.usedBuildProject ? "used build_project" : "",
                     runtimeAssertions.usedDeployProject ? "used deploy_project" : "",
                     ...legacyFailures,
                   ].filter(Boolean).join("; "),

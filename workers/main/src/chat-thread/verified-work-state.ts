@@ -13,7 +13,6 @@ export interface VerifiedWorkEvidence {
 
 const TRACKED_TOOL_CLAIMS: Record<string, string[]> = {
   deploy_project: ["deployed", "published"],
-  build_project: ["build validated"],
   run_notebook: ["notebook executed", "notebook validated"],
   send_email: ["email sent"],
   send_slack_message: ["Slack message sent"],
@@ -46,7 +45,7 @@ function failedResult(result: unknown, isError: boolean): boolean {
 
 function safeTarget(toolName: string, args: unknown, details: Record<string, unknown>): string | undefined {
   const input = objectRecord(args) ?? {};
-  if (toolName === "deploy_project" || toolName === "build_project") {
+  if (toolName === "deploy_project") {
     return typeof input.project === "string" ? input.project.slice(0, 160) : undefined;
   }
   if (toolName === "run_notebook") {

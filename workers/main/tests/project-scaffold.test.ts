@@ -61,7 +61,7 @@ describe("defaultProjectScaffoldFiles", () => {
     expect(readme).toContain('deploy_project({ project: "<project>" })');
     expect(readme).toContain("return the live URL, and open the app in preview");
     expect(readme).toContain("dry_run: true");
-    expect(readme).toContain("hidden `build_project` name is compatibility-only");
+    expect(readme).toContain("Use `dry_run: true` only for build validation");
     expect(readme).toContain("`set_preview` remains available for an explicit preview switch");
     expect(bunLock).toMatchObject({ lockfileVersion: 1, configVersion: 1 });
     expect(bunLock.workspaces[""].dependencies).toEqual(packageJson.dependencies);
@@ -263,7 +263,7 @@ describe("defaultProjectScaffoldFiles", () => {
     expect(files.map((file) => file.path)).toEqual(["/analysis.ipynb", "/README.md"]);
 
     // Data-analysis projects are notebook deliverables, not deployable apps: no
-    // package.json/wrangler config means build_project/deploy_project fail loudly.
+    // Missing package.json/wrangler config means deploy_project fails loudly.
     expect(files.map((file) => file.path)).not.toContain("/package.json");
     expect(files.map((file) => file.path)).not.toContain("/wrangler.jsonc");
 

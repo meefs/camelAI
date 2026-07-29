@@ -234,7 +234,6 @@ Do not deploy or use wrangler for this notebook-only project. Reply with the fou
           );
         })
       );
-      const usedBuild = usedTool(result.events, "build_project");
       const usedDeploy = usedTool(result.events, "deploy_project");
       const legacyFailures = legacyDeployPathEvidence(result.events);
       const finalResult = result.result ?? "";
@@ -252,7 +251,7 @@ Do not deploy or use wrangler for this notebook-only project. Reply with the fou
           passFailCriterion({ id: "key_findings_present", label: "Exact ## Key Findings section contains all four lines", passed: keyFindingsPresent, reason: keyFindingsPresent ? undefined : keyFindingsSection === undefined ? "The exact ## Key Findings heading was missing." : "One or more Key Findings lines were missing from that section.", details: { markdown, keyFindingsSection } }),
           passFailCriterion({ id: "findings_match_ground_truth", label: "All four findings match harness-computed ground truth", passed: findingFailures.length === 0, reason: findingFailures.length ? findingFailures.join("; ") : undefined, details: { expected: EXPECTED_FINDINGS, extracted, failures: findingFailures } }),
           passFailCriterion({ id: "notebook_auto_previewed", label: "Successful run_notebook opened analysis.ipynb in preview", passed: successfulNotebookRun, reason: successfulNotebookRun ? undefined : "No successful run_notebook result referenced analysis.ipynb.", details: { successfulNotebookRun } }),
-          passFailCriterion({ id: "avoided_web_deploy_path", label: "Notebook flow avoided build_project, deploy_project, and web deploy commands", passed: !usedBuild && !usedDeploy && legacyFailures.length === 0, reason: !usedBuild && !usedDeploy && legacyFailures.length === 0 ? undefined : [usedBuild ? "used build_project" : "", usedDeploy ? "used deploy_project" : "", ...legacyFailures].filter(Boolean).join("; "), details: { usedBuild, usedDeploy, legacyFailures } }),
+          passFailCriterion({ id: "avoided_web_deploy_path", label: "Notebook flow avoided deploy_project and web deploy commands", passed: !usedDeploy && legacyFailures.length === 0, reason: !usedDeploy && legacyFailures.length === 0 ? undefined : [usedDeploy ? "used deploy_project" : "", ...legacyFailures].filter(Boolean).join("; "), details: { usedDeploy, legacyFailures } }),
           passFailCriterion({ id: "final_response_has_findings", label: "Final response contains all four exact finding tokens", passed: finalHasFindings, reason: finalHasFindings ? undefined : "Final response omitted or changed one or more exact finding tokens.", details: { finalResult, expected: EXPECTED_FINDINGS } }),
           buildNoAssistantErrorCriterion(result),
           buildRuntimeEventsCriterion(result),

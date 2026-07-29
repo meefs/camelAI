@@ -1720,19 +1720,16 @@ export interface WorkerScriptAccess {
 
 // KV key prefixes
 const SCRIPT_PREFIX = "script:";
-const SCRIPT_ORG_PREFIX_LEGACY = "script_org:";
 
 /**
  * Get worker access info by dispatch script name.
- * Tries new format first, falls back to legacy.
+ * Reads the canonical org-scoped registry entry.
  */
 export async function getWorkerAccessInfo(
   env: AuthEnv,
   dispatchScriptName: string,
-  legacyScriptName?: string,
 ): Promise<WorkerScriptAccess | null> {
-  // Try new format first: script:{script-name}--{org-slug}
-  let data = await env.APP_KV.get(`${SCRIPT_PREFIX}${dispatchScriptName}`);
+  const data = await env.APP_KV.get(`${SCRIPT_PREFIX}${dispatchScriptName}`);
   if (data) {
     const { org_id, is_public } = JSON.parse(data) as {
       org_id: string;
@@ -1744,25 +1741,6 @@ export async function getWorkerAccessInfo(
       org_id,
       is_public,
     };
-  }
-
-  // Fall back to legacy format: script_org:{script-name}
-  if (legacyScriptName) {
-    data = await env.APP_KV.get(
-      `${SCRIPT_ORG_PREFIX_LEGACY}${legacyScriptName}`,
-    );
-    if (data) {
-      const { org_id, is_public } = JSON.parse(data) as {
-        org_id: string;
-        is_public: boolean;
-      };
-      return {
-        script_name: legacyScriptName,
-        workspace_id: "", // Not needed for access check, avoids DO lookup
-        org_id,
-        is_public,
-      };
-    }
   }
 
   return null;
@@ -1826,8 +1804,6 @@ export async function deleteWorkerScript(
       // Remove from new format KV index
       await env.APP_KV.delete(`${SCRIPT_PREFIX}${dispatchScriptName}`);
     }
-    // Also remove legacy format for backwards compatibility
-    await env.APP_KV.delete(`${SCRIPT_ORG_PREFIX_LEGACY}${scriptName}`);
   }
   return result;
 }
@@ -1861,11 +1837,6 @@ export async function setWorkerScriptPublic(
         }),
       );
     }
-    // Also update legacy format for backwards compatibility
-    await env.APP_KV.put(
-      `${SCRIPT_ORG_PREFIX_LEGACY}${scriptName}`,
-      JSON.stringify({ org_id: orgId, is_public: script.is_public }),
-    );
   }
   return script;
 }

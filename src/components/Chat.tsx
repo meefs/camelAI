@@ -1887,7 +1887,7 @@ export default function Chat({
   const IFRAME_MAX_RETRIES = 3;
   const IFRAME_RETRY_DELAY_MS = 2000;
   useEffect(() => {
-    const canMatchAppOrigin = Boolean(hostname);
+    const appOriginContext = hostname && orgSlug ? { hostname, orgSlug } : null;
 
     function handlePreviewError(event: MessageEvent) {
       if (
@@ -1901,12 +1901,12 @@ export default function Chat({
 
       // Match the message origin to an app tab
       const tabs = previewTabsRef.current;
-      const matchedTab = canMatchAppOrigin
+      const matchedTab = appOriginContext
         ? tabs.find((tab) => {
             if (tab.target.kind !== "app") return false;
             const s = tab.target.scriptName;
             const expectedOrigin = new URL(
-              getAppIframeUrl(s, hostname, orgSlug),
+              getAppIframeUrl(s, appOriginContext.hostname, appOriginContext.orgSlug),
             ).origin;
             return event.origin === expectedOrigin;
           })
@@ -4028,6 +4028,10 @@ export default function Chat({
         toast.error(
           "App is in a different workspace. Please switch workspaces first.",
         );
+        return;
+      }
+      if (!orgSlug) {
+        toast.error("Organization slug is unavailable");
         return;
       }
 

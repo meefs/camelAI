@@ -2,8 +2,7 @@ import type { Route } from './+types/apps.$scriptName.preview';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
 import { type AuthEnv } from '@/lib/auth-helpers';
 import { getSession } from '@/lib/auth.server';
-import { isOrgMember, getWorkerAccessInfo } from '@/lib/auth-do';
-import { ENTERPRISE_OIDC_AUTH_SOURCE } from '../../../workers/main/src/signed-session';
+import { isOrgMember } from '@/lib/auth-do';
 
 interface R2Env extends AuthEnv {
   R2_BUCKET: R2Bucket;
@@ -38,24 +37,12 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     }
     const session = sessionContext.session;
 
-    // Pass script name as both dispatch name and legacy name to enable fallback lookup
-    const accessInfo = await getWorkerAccessInfo(env, normalized, normalized);
-    if (!accessInfo) {
-      return Response.json({ error: 'App not found' }, { status: 404 });
-    }
-    if (
-      session.auth_source === ENTERPRISE_OIDC_AUTH_SOURCE &&
-      session.org_id !== accessInfo.org_id
-    ) {
-      return Response.json({ error: 'Forbidden' }, { status: 403 });
-    }
-
-    const isMember = await isOrgMember(env, session.user_id, accessInfo.org_id);
+    const isMember = await isOrgMember(env, session.user_id, session.org_id);
     if (!isMember) {
       return Response.json({ error: 'Forbidden' }, { status: 403 });
     }
 
-    const script = await env.ORG.get(env.ORG.idFromName(accessInfo.org_id)).getWorkerScript(normalized);
+    const script = await env.ORG.get(env.ORG.idFromName(session.org_id)).getWorkerScript(normalized);
     if (!script || script.preview_status !== 'ready' || !script.preview_key) {
       return Response.json({ error: 'Preview not available' }, { status: 404 });
     }

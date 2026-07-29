@@ -19,9 +19,9 @@ import { isSelfhostRuntime } from "../../../src/lib/selfhost-runtime.js";
 import type { LlmModel } from "../../../src/types.js";
 import type { Env } from "./types.js";
 import {
-  getOrgModelPickerConfigCompat,
-  getWorkspaceModelPickerConfigCompat,
-} from "./model-picker-config-compat.js";
+  readOrgModelPickerConfig,
+  readWorkspaceModelPickerConfig,
+} from "./model-picker-config-reader.js";
 
 export type ChannelKind = "email" | "slack" | "telegram" | "discord" | (string & {});
 
@@ -255,8 +255,8 @@ export async function resolveDefaultChannelThreadModel(
     retryTransientDurableObjectRead("OrgDO.getLlmProviderConfig", () =>
       Promise.resolve(orgStub.getLlmProviderConfig()),
     ),
-    getOrgModelPickerConfigCompat(orgStub),
-    getWorkspaceModelPickerConfigCompat(workspaceStub),
+    readOrgModelPickerConfig(orgStub),
+    readWorkspaceModelPickerConfig(workspaceStub),
   ]);
   const effectiveLlmProviderConfig = getEffectiveLlmProviderConfig(
     env,

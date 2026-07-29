@@ -1,21 +1,21 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  getOrgModelPickerConfigCompat,
-  getWorkspaceModelPickerConfigCompat,
-} from '../src/model-picker-config-compat';
+  readOrgModelPickerConfig,
+  readWorkspaceModelPickerConfig,
+} from '../src/model-picker-config-reader';
 
-describe('model picker config RPC compatibility', () => {
-  it('fails when older DOs do not expose the RPC', async () => {
+describe('model picker config RPC reads', () => {
+  it('propagates unavailable RPC errors', async () => {
     const error = new Error('No such RPC method getModelPickerConfig');
 
     await expect(
-      getOrgModelPickerConfigCompat({
+      readOrgModelPickerConfig({
         getModelPickerConfig: vi.fn().mockRejectedValue(error),
       }),
     ).rejects.toBe(error);
 
     await expect(
-      getWorkspaceModelPickerConfigCompat({
+      readWorkspaceModelPickerConfig({
         getModelPickerConfig: vi.fn().mockRejectedValue(error),
       }),
     ).rejects.toBe(error);
@@ -45,7 +45,7 @@ describe('model picker config RPC compatibility', () => {
       });
 
     await expect(
-      getOrgModelPickerConfigCompat({
+      readOrgModelPickerConfig({
         getModelPickerConfig: orgGetModelPickerConfig,
       }),
     ).resolves.toMatchObject({
@@ -54,7 +54,7 @@ describe('model picker config RPC compatibility', () => {
       models: [],
     });
     await expect(
-      getWorkspaceModelPickerConfigCompat({
+      readWorkspaceModelPickerConfig({
         getModelPickerConfig: workspaceGetModelPickerConfig,
       }),
     ).resolves.toMatchObject({
@@ -66,11 +66,11 @@ describe('model picker config RPC compatibility', () => {
     expect(workspaceGetModelPickerConfig).toHaveBeenCalledTimes(2);
   });
 
-  it('rethrows non-compatibility failures', async () => {
+  it('rethrows non-transient failures', async () => {
     const error = new Error('storage failed');
 
     await expect(
-      getOrgModelPickerConfigCompat({
+      readOrgModelPickerConfig({
         getModelPickerConfig: vi.fn().mockRejectedValue(error),
       }),
     ).rejects.toThrow(error);

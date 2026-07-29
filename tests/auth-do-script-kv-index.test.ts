@@ -52,9 +52,7 @@ describe('worker script KV index writes', () => {
     await setWorkerScriptPublic(env, 'org-1', 'my-app', false, 'user-1');
 
     const keys = appKv.put.mock.calls.map((call: [string, string]) => call[0]);
-    expect(keys).toContain('script:my-app--acme-85b');
-    expect(keys).toContain('script_org:my-app');
-    expect(keys).not.toContain('script:acme-85b--my-app');
+    expect(keys).toEqual(['script:my-app--acme-85b']);
   });
 
   it('deletes dispatch index entries using script--org dispatch key format', async () => {
@@ -63,8 +61,6 @@ describe('worker script KV index writes', () => {
     await deleteWorkerScript(env, 'org-1', 'my-app', 'user-1');
 
     const keys = appKv.delete.mock.calls.map((call: [string]) => call[0]);
-    expect(keys).toContain('script:my-app--acme-85b');
-    expect(keys).toContain('script_org:my-app');
-    expect(keys).not.toContain('script:acme-85b--my-app');
+    expect(keys).toEqual(['script:my-app--acme-85b']);
   });
 });

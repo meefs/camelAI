@@ -7,7 +7,7 @@ import {
 } from '../src/secure-fetch';
 
 describe('secure fetch', () => {
-  it('indexes vanity, iframe, legacy, and custom app hostnames for a workspace', async () => {
+  it('indexes vanity, iframe, and custom app hostnames for a workspace', async () => {
     const orgStub = {
       getInfo: vi.fn(async () => ({ slug: 'alpha12' })),
       listWorkerScriptsByWorkspace: vi.fn(async () => ([
@@ -34,7 +34,6 @@ describe('secure fetch', () => {
 
     expect(isWorkspaceAppHostname(index, 'webhook-api-alpha12.staging.camelai.app')).toBe(true);
     expect(isWorkspaceAppHostname(index, 'webhook-api-alpha12.apps.staging.camelai.dev')).toBe(true);
-    expect(isWorkspaceAppHostname(index, 'webhook-api.staging.camelai.app')).toBe(true);
     expect(isWorkspaceAppHostname(index, 'hooks.example.com')).toBe(true);
     expect(isWorkspaceAppHostname(index, 'other-org-app-beta99.staging.camelai.app')).toBe(false);
   });
@@ -48,7 +47,6 @@ describe('secure fetch', () => {
           scriptName: 'private-app',
           orgSlug: 'alpha12',
           dispatchScriptName: 'private-app--alpha12',
-          legacyDispatchScriptName: 'private-app',
           workspaceId: 'workspace1',
           orgId: 'org1',
           isPublic: false,

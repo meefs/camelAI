@@ -271,7 +271,7 @@ export class AutomationWorkflow extends WorkflowEntrypoint {
 
     await expect(
       automationTools.update({
-        automation_id: created.id,
+        workflow_id: created.id,
         description: null,
       } as Record<string, unknown>),
     ).rejects.toThrow('description must be a string');

@@ -96,12 +96,6 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       return Response.json({ error: 'Project not found' }, { status: 404 });
     }
 
-    if ((projectRecord.backend ?? 'vm') !== 'do-r2') {
-      return Response.json(
-        { error: 'This legacy project was archived when camelAI retired project VMs.' },
-        { status: 404 },
-      );
-    }
 
     const resolvedPath = path;
     let contentLength: string | null = null;

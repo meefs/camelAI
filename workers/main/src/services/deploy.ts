@@ -17,8 +17,6 @@ import {
 
 // KV key prefix for script access info (namespaced by org-slug)
 const SCRIPT_PREFIX = 'script:';
-// Legacy KV key prefix (for backwards compatibility and legacy URL redirect)
-const SCRIPT_ORG_PREFIX_LEGACY = 'script_org:';
 
 export async function handleDeploySideEffects(env: Env, info: DeploySideEffectsInfo): Promise<void> {
   const { scriptName, dispatchScriptName, orgId, orgSlug, workspaceId, hostname, threadId, projectId, configPath, commitSha, artifactCacheKey, scriptVersion } = info;
@@ -84,17 +82,6 @@ export async function handleDeploySideEffects(env: Env, info: DeploySideEffectsI
   // This allows the dispatcher to look up access info by dispatchScriptName
   await env.APP_KV.put(
     primaryRegistryKey,
-    JSON.stringify({ org_id: orgId, org_slug: orgSlug, is_public: script.is_public, ...usageGuardFields })
-  );
-
-  // Also write legacy format for legacy URL redirect support.
-  // When someone uses a legacy URL (script.camelai.app), the dispatcher can
-  // look this up and redirect to the new URL format (script--org-slug.camelai.app).
-  // Note: If multiple orgs deploy workers with the same name, this entry gets overwritten.
-  // That's acceptable since this is only for redirect purposes - the primary lookup
-  // uses the namespaced format which is unique per org.
-  await env.APP_KV.put(
-    `${SCRIPT_ORG_PREFIX_LEGACY}${scriptName}`,
     JSON.stringify({ org_id: orgId, org_slug: orgSlug, is_public: script.is_public, ...usageGuardFields })
   );
 

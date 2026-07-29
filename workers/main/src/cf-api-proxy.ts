@@ -281,8 +281,6 @@ const TOKEN_VERIFY = /^\/client\/v4\/(?:user|accounts\/[^/]+)\/tokens\/verify$/;
 const ASSETS_UPLOAD =
   /^\/client\/v4\/accounts\/[^/]+\/workers\/assets\/upload$/;
 
-// Legacy prefix for script ownership (being phased out)
-const SCRIPT_ORG_PREFIX_LEGACY = "script_org:";
 // New prefix with org-slug namespacing: script:{script-name}--{org-slug}
 const SCRIPT_PREFIX = "script:";
 
@@ -2667,15 +2665,9 @@ export async function proxyCloudflareApi(
                 if (script) {
                   isPublic = script.is_public;
                 } else {
-                  // Check new KV format first, then legacy
-                  let stored = await env.APP_KV.get(
+                  const stored = await env.APP_KV.get(
                     `${SCRIPT_PREFIX}${dispatchScriptName}`,
                   );
-                  if (!stored) {
-                    stored = await env.APP_KV.get(
-                      `${SCRIPT_ORG_PREFIX_LEGACY}${originalScriptName}`,
-                    );
-                  }
                   if (stored) {
                     try {
                       const parsed = JSON.parse(stored) as {

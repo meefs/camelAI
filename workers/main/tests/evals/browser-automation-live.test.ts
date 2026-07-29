@@ -321,7 +321,7 @@ describe("browser automation agent eval", () => {
             label: "Agent created a DO-backed project",
             passed: project?.backend === "do-r2" && runtimeAssertions.usedCreateProject,
             reason: project
-              ? `Project backend was ${project.backend ?? "vm"}, create_project=${runtimeAssertions.usedCreateProject}`
+              ? `Project backend was ${project.backend}, create_project=${runtimeAssertions.usedCreateProject}`
               : `No project named ${PROJECT_NAME} was created.`,
             details: { project, runtimeAssertions },
           }),

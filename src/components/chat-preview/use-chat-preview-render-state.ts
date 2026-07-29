@@ -21,7 +21,7 @@ function buildPreviewDomains(
   hostname?: AppUrlInput,
   orgSlug?: string,
 ): { appPreviewUrl: string; vanityHost: string } {
-  if (target?.kind !== "app") {
+  if (target?.kind !== "app" || !orgSlug) {
     return { appPreviewUrl: "", vanityHost: "" };
   }
 

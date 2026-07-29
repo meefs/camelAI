@@ -12,12 +12,10 @@
 	"compatibility_flags": ["nodejs_compat"],
 	"vars": {
 		"AI_VIRTUAL_MODEL": "dynamic/auto",
-		"MAIN_APP_URL": "https://dev-miguel.camelai.dev",
-		// Temporary migration mode. "legacy-open" fails closed except for legacy hostnames.
-		"DISPATCHER_MISSING_REGISTRY_MODE": "legacy-open"
+		"MAIN_APP_URL": "https://dev-miguel.camelai.dev"
 	},
 	"routes": [
-		// Matches both legacy and new format
+		// Canonical org-scoped app hostnames
 		{ "pattern": "*.apps.dev-miguel.camelai.dev/*", "zone_name": "camelai.dev" },
 		{ "pattern": "*.dev-miguel.camelai.app/*", "zone_name": "camelai.app" }
 	],

@@ -107,7 +107,7 @@ export interface WorkspaceProject {
   name: string;
   description: string;
   defaultVmId: string;
-  backend?: WorkspaceProjectBackend;
+  backend: "do-r2";
   kind?: "project" | "clone";
   clonedFromProjectId?: string;
   cloneSource?: WorkspaceProjectCloneSource;
@@ -134,15 +134,13 @@ export interface WorkspaceProjectCloneSummary {
   name: string;
   description: string;
   defaultVmId: string;
-  backend?: WorkspaceProjectBackend;
+  backend: "do-r2";
   clonedFromProjectId: string;
   artifactRemote?: string;
   artifactStatus?: WorkspaceProject["artifactStatus"];
   createdAt: string;
   updatedAt: string;
 }
-
-export type WorkspaceProjectBackend = "vm" | "do-r2";
 
 export interface WorkspaceFilesystemLike {
   exists(path: string): Promise<WorkspaceExistsResponse>;
@@ -166,10 +164,8 @@ export interface WorkspaceFilesystemLike {
     id?: unknown;
     name?: unknown;
     description?: unknown;
-    backend?: unknown;
   }): Promise<WorkspaceProject>;
   setProjectDescription(input?: { project?: unknown; projectId?: unknown; description?: unknown }): Promise<WorkspaceProject>;
-  setProjectBackend(input?: { project?: unknown; projectId?: unknown; backend?: unknown }): Promise<WorkspaceProject>;
   cloneProject(input?: {
     sourceProject?: unknown;
     sourceProjectId?: unknown;
@@ -988,7 +984,6 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
     name?: unknown;
     description?: unknown;
     workspaceId?: unknown;
-    backend?: unknown;
   } = {}): Promise<WorkspaceProject> {
     const projects = await this.readProjects();
     const name = requireProjectName(input.name ?? input.id ?? `project-${projects.length + 1}`);
@@ -1004,13 +999,12 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
 
     const now = new Date().toISOString();
     const description = requireProjectDescription(input.description);
-    const backend = input.backend === undefined ? "do-r2" : requireProjectBackend(input.backend);
     const project = await this.ensureProjectArtifactRepo({
       id,
       name,
       description,
       defaultVmId: DEFAULT_PROJECT_VM_ID,
-      backend,
+      backend: "do-r2",
       createdAt: now,
       updatedAt: now,
     });
@@ -1032,25 +1026,6 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
     const updated: WorkspaceProject = {
       ...projects[index]!,
       description,
-      updatedAt: new Date().toISOString(),
-    };
-    projects[index] = updated;
-    await this.ctx.storage.kv.put(PROJECTS_KEY, projects);
-    return toPublicProject(updated);
-  }
-
-  async setProjectBackend(input: { project?: unknown; projectId?: unknown; backend?: unknown } = {}): Promise<WorkspaceProject> {
-    const backend = requireProjectBackend(input.backend);
-    const projects = await this.readProjects();
-    const index = typeof input.project === "string" && input.project.trim()
-      ? projects.findIndex((project) => projectNameKey(project.name) === requireProjectNameKey(input.project, "project"))
-      : projects.findIndex((project) => project.id === requireProjectId(input.projectId, "project"));
-    if (index === -1) {
-      throw new Error(`Project not found: ${String(input.project || input.projectId || "")}`);
-    }
-    const updated: WorkspaceProject = {
-      ...projects[index]!,
-      backend,
       updatedAt: new Date().toISOString(),
     };
     projects[index] = updated;
@@ -1109,7 +1084,7 @@ export class WorkspaceFilesystemDO extends DurableObject<WorkspaceFilesystemEnv>
       name: cloneName,
       description,
       defaultVmId: DEFAULT_PROJECT_VM_ID,
-      backend: source.backend ?? "vm",
+      backend: "do-r2",
       clonedFromProjectId: source.id,
       artifactRemoteProjectId: source.artifactRemoteProjectId || source.id,
       artifactRepoName: source.artifactRepoName,
@@ -1341,17 +1316,12 @@ export class WorkspaceFilesystemClient implements WorkspaceFilesystemLike {
     id?: unknown;
     name?: unknown;
     description?: unknown;
-    backend?: unknown;
   }): Promise<WorkspaceProject> {
     return this.stub.createProject({ ...input, workspaceId: this.workspaceId });
   }
 
   setProjectDescription(input?: { project?: unknown; projectId?: unknown; description?: unknown }): Promise<WorkspaceProject> {
     return this.stub.setProjectDescription(input);
-  }
-
-  setProjectBackend(input?: { project?: unknown; projectId?: unknown; backend?: unknown }): Promise<WorkspaceProject> {
-    return this.stub.setProjectBackend(input);
   }
 
   cloneProject(input?: {
@@ -1706,7 +1676,7 @@ function toProjectCloneSummary(project: WorkspaceProject): WorkspaceProjectClone
     name: project.name,
     description: projectDescription(project),
     defaultVmId: project.defaultVmId,
-    backend: project.backend ?? "vm",
+    backend: "do-r2",
     clonedFromProjectId: project.clonedFromProjectId,
     artifactRemote: project.artifactRemote,
     artifactStatus: project.artifactStatus,
@@ -1769,7 +1739,8 @@ function isWorkspaceProject(value: unknown): value is WorkspaceProject {
     value &&
       typeof value === "object" &&
       typeof (value as WorkspaceProject).id === "string" &&
-      typeof (value as WorkspaceProject).name === "string",
+      typeof (value as WorkspaceProject).name === "string" &&
+      (value as WorkspaceProject).backend === "do-r2",
   );
 }
 
@@ -1788,11 +1759,6 @@ function requireProjectDescription(value: unknown): string {
     throw new Error("project description is required");
   }
   return description;
-}
-
-function requireProjectBackend(value: unknown): WorkspaceProjectBackend {
-  if (value === "vm" || value === "do-r2") return value;
-  throw new Error('project backend must be "vm" or "do-r2"');
 }
 
 function normalizeProjectSnapshotPath(path: string): string {

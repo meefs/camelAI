@@ -449,7 +449,7 @@ function trajectoryPriority(item, rubric) {
   const text = safeJsonStringify(item)?.toLowerCase() ?? "";
   let priority = 0;
   if (item.status === "failed" || item.isError === true || /error|failed|exception/.test(item.output ?? "")) priority += 100;
-  if (["Research", "Oracle", "deploy_project", "build_project", "run_code", "browser"].includes(item.tool)) priority += 40;
+  if (["Research", "Oracle", "deploy_project", "run_code", "browser"].includes(item.tool)) priority += 40;
   const hints = rubric.criteria.flatMap((criterion) => criterion.evidenceHints ?? [])
     .flatMap((hint) => String(hint).toLowerCase().split(/[^a-z0-9_.-]+/))
     .filter((hint) => hint.length >= 4);

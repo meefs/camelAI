@@ -89,7 +89,7 @@ describe('child agent progress labels', () => {
     expect(describeChildAgentActivity('edit', { path: 'public/styles.css' })).toBe('edit · public/styles.css');
     expect(describeChildAgentActivity('WebSearch', { query: 'Cloudflare Workers limits' })).toBe('WebSearch · Cloudflare Workers limits');
     expect(describeChildAgentActivity('web_fetch', { url: 'https://example.com/docs' })).toBe('web_fetch · https://example.com/docs');
-    expect(describeChildAgentActivity('build_project', { project: 'chess-game' })).toBe('build_project · chess-game');
+    expect(describeChildAgentActivity('deploy_project', { project: 'chess-game' })).toBe('deploy_project · chess-game');
     expect(describeChildAgentActivity('unknown_tool')).toBe('unknown_tool');
   });
 });
@@ -196,11 +196,9 @@ function base64(content: string): string {
 function createProjectToolFake({
   deploy = false,
   projectFileEntries,
-  backend = 'do-r2',
 }: {
   deploy?: boolean;
   projectFileEntries?: Array<[string, string]>;
-  backend?: 'do-r2' | 'vm';
 } = {}) {
   const project = {
     id: 'project-1',
@@ -208,7 +206,7 @@ function createProjectToolFake({
     name: 'Demo App',
     description: 'Demo project',
     defaultVmId: 'main',
-    backend,
+    backend: 'do-r2',
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
   };
@@ -229,7 +227,7 @@ function createProjectToolFake({
         ...project,
         name: input.name,
         description: input.description,
-        backend: input.backend,
+        backend: 'do-r2',
       };
       projectsByName.set(createdProject.name, createdProject);
       return createdProject;
@@ -4792,7 +4790,6 @@ describe('ChatThreadDO Pi turn handling', () => {
     }
     expect((byName.get('read') as any).parameters.properties.path).toBeDefined();
     expect((byName.get('read') as any).parameters.properties.project).toBeDefined();
-    expect((byName.get('build_project') as any).hidden).toBe(true);
     expect((byName.get('deploy_project') as any).parameters.properties.dry_run).toBeDefined();
     expect((byName.get('deploy_project') as any).parameters.properties.publish_intent).toBeDefined();
     expect((byName.get('read_skill') as any).parameters.properties.skill).toBeDefined();
@@ -4817,7 +4814,6 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect((byName.get('set_project_description') as any).parameters.properties.projectId).toBeUndefined();
     expect((byName.get('set_project_description') as any).parameters.properties.description).toBeDefined();
     expect((byName.get('add_dependency') as any).parameters.properties.project).toBeDefined();
-    expect((byName.get('build_project') as any).description).toContain('Deprecated compatibility alias');
     expect((byName.get('deploy_project') as any).description).toContain('when validation, build, or deploy fails');
     expect((byName.get('deploy_project') as any).description).toContain("publish_intent='user_requested'");
     expect((byName.get('run_notebook') as any).description).toContain('open a clean successful run in preview automatically');
@@ -4881,7 +4877,6 @@ describe('ChatThreadDO Pi turn handling', () => {
       category: 'connections',
       examples: expect.arrayContaining([expect.stringContaining('env.CONNECTIONS.methods')]),
     });
-    expect(byName.has('list_deterministic_automations')).toBe(false);
     expect(byName.has('prompt_connection_setup')).toBe(false);
   });
 
@@ -5092,7 +5087,6 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(directSkill.content[0].text).toContain(
       'Do not automatically launch `env.BROWSER` or capture screenshots after every deploy',
     );
-    expect(directSkill.content[0].text).not.toContain('tools.build_project');
     expect(directSkill.content[0].text).not.toContain('tools.set_preview({ app_name');
     expect(directSkill.details.details.source).toBe('bundled_skill');
 
@@ -5191,7 +5185,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       isError: false,
       result: {
         content: [{ type: 'text', text: 'deployed' }],
-        details: { success: true, url: 'https://demo.camelai.app' },
+        details: { success: true, url: 'https://demo-acme85.camelai.app' },
       },
     });
 
@@ -6364,8 +6358,6 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(prompt).toContain('`set_preview` remains available when you explicitly want to reopen or switch');
     expect(prompt).toContain('Browser and screenshot tools are opt-in verification tools');
     expect(prompt).toContain('Do not launch `env.BROWSER` or capture a screenshot merely because an app was deployed');
-    expect(prompt).not.toContain('tools.build_project');
-    expect(prompt).not.toContain('call `build_project` before');
     expect(prompt).toContain('Use `Research` for current or external information');
     expect(prompt).toContain('Give it one focused question');
     expect(prompt).not.toContain('WebSearch');
@@ -7070,9 +7062,10 @@ describe('ChatThreadDO Pi turn handling', () => {
   it('builds a DO-backed project through the project build action', async () => {
     const { fake, sandbox, workspaceStub, projectStub } = createProjectToolFake();
 
-    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'build_project', {
+    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
       project: 'Demo App',
       timeoutMs: 5000,
+      dry_run: true,
     });
 
     expect(result).toMatchObject({
@@ -7192,8 +7185,9 @@ describe('ChatThreadDO Pi turn handling', () => {
     const { fake, sandbox } = createProjectToolFake();
     sandbox.mkdir.mockRejectedValueOnce(new Error('RPCTransportError: WebSocket upgrade failed: 503 Service Unavailable'));
 
-    const resultPromise = CodeModeToolsBinding.prototype.callTool.call(fake, 'build_project', {
+    const resultPromise = CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
       project: 'Demo App',
+      dry_run: true,
     });
     await vi.advanceTimersByTimeAsync(1_000);
 
@@ -7206,8 +7200,9 @@ describe('ChatThreadDO Pi turn handling', () => {
     const { fake, projectStub, sandbox } = createProjectToolFake();
     projectStub.projectReadFile.mockRejectedValueOnce(new Error('Network connection lost.'));
 
-    const resultPromise = CodeModeToolsBinding.prototype.callTool.call(fake, 'build_project', {
+    const resultPromise = CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
       project: 'Demo App',
+      dry_run: true,
     });
     await vi.advanceTimersByTimeAsync(1_000);
 
@@ -7235,8 +7230,9 @@ describe('ChatThreadDO Pi turn handling', () => {
         ? { success: false, exitCode: 1, stdout: buildOutput, stderr: '' }
         : { success: true, exitCode: 0, stdout: '', stderr: '' });
 
-    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'build_project', {
+    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
       project: 'Demo App',
+      dry_run: true,
     }) as Record<string, unknown>;
 
     expect(result.success).toBe(false);
@@ -7276,8 +7272,9 @@ describe('ChatThreadDO Pi turn handling', () => {
         ? { success: false, exitCode: 1, stdout: buildOutput, stderr: '' }
         : { success: true, exitCode: 0, stdout: '', stderr: '' });
 
-    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'build_project', {
+    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
       project: 'Demo App',
+      dry_run: true,
     }) as Record<string, unknown>;
 
     // The regression case: the printed error-object tail must never win.
@@ -7310,8 +7307,9 @@ describe('ChatThreadDO Pi turn handling', () => {
         ? { success: false, exitCode: 1, stdout: buildOutput, stderr: '' }
         : { success: true, exitCode: 0, stdout: '', stderr: '' });
 
-    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'build_project', {
+    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
       project: 'Demo App',
+      dry_run: true,
     }) as Record<string, unknown>;
 
     expect(result.errorMessage).toBe('[plugin @tailwindcss/vite:generate:build] app/app.css CssSyntaxError: Missing closing } at');
@@ -7420,48 +7418,6 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(result.errorSummary).toContain('export class LeaderboardDO');
   });
 
-  it('rejects DO-only project actions for archived legacy projects', async () => {
-    const { fake, sandbox, projectStub } = createProjectToolFake({ backend: 'vm' });
-
-    const archivedError = 'archived when camelAI retired project VMs';
-    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'build_project', {
-      project: 'Demo App',
-    })).rejects.toThrow(archivedError);
-    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
-      project: 'Demo App',
-    })).rejects.toThrow(archivedError);
-    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'add_dependency', {
-      project: 'Demo App',
-      dependency: 'zod',
-    })).rejects.toThrow(archivedError);
-    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'list_commits', {
-      project: 'Demo App',
-    })).rejects.toThrow(archivedError);
-    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'revert_project', {
-      project: 'Demo App',
-      snapshot_id: 'a'.repeat(64),
-    })).rejects.toThrow(archivedError);
-
-    expect(sandbox.exec).not.toHaveBeenCalled();
-    expect(projectStub.projectListFiles).not.toHaveBeenCalled();
-    expect(projectStub.projectWriteFile).not.toHaveBeenCalled();
-    expect(projectStub.projectRestoreSourceSnapshot).not.toHaveBeenCalled();
-  });
-
-  it('rejects project-location file tools for archived legacy projects', async () => {
-    const { fake, projectStub } = createProjectToolFake({ backend: 'vm' });
-
-    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'read', {
-      location: 'project',
-      project: 'Demo App',
-      path: '/package.json',
-    })).rejects.toThrow('archived when camelAI retired project VMs');
-
-    expect(projectStub.projectReadFile).not.toHaveBeenCalled();
-    expect(projectStub.projectListFiles).not.toHaveBeenCalled();
-    expect(projectStub.projectWriteFile).not.toHaveBeenCalled();
-  });
-
   it('creates new code-mode projects as DO-backed projects', async () => {
     const { fake, workspaceStub, projectStub, chatThreadStub } = createProjectToolFake({ projectFileEntries: [] });
 
@@ -7473,7 +7429,6 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(workspaceStub.createProject).toHaveBeenCalledWith({
       name: 'New App',
       description: 'A new app',
-      backend: 'do-r2',
       workspaceId: 'workspace1',
     });
     expect(result).toMatchObject({
@@ -7552,7 +7507,6 @@ describe('ChatThreadDO Pi turn handling', () => {
       name: 'Demo Analysis',
       description: 'A data analysis project',
       template: 'data-analysis',
-      backend: 'do-r2',
       workspaceId: 'workspace1',
     });
     expect(result).toMatchObject({
@@ -7583,7 +7537,6 @@ describe('ChatThreadDO Pi turn handling', () => {
       name: 'Tiny Game',
       description: 'A client-only browser game',
       template: 'vanilla',
-      backend: 'do-r2',
       workspaceId: 'workspace1',
     });
     expect(result).toMatchObject({
@@ -7740,8 +7693,9 @@ describe('ChatThreadDO Pi turn handling', () => {
     const storedPackageJson = await projectStub.projectReadFile('/package.json');
     expect(storedPackageJson.content).toContain('devDependencies');
 
-    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'build_project', {
+    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
       project: 'Demo App',
+      dry_run: true,
     })).resolves.toMatchObject({
       success: true,
       project: 'Demo App',
@@ -8322,7 +8276,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
   });
 
-  it('exposes restored legacy Pi tools through the shared code mode binding', async () => {
+  it('exposes direct Pi tools through the shared code mode binding', async () => {
     const callTool = vi.fn(async (_name: string, args: Record<string, unknown>) => ({
       ok: true,
       args,
@@ -8354,7 +8308,6 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(toolNames).not.toEqual(expect.arrayContaining(['WebSearch', 'WebFetch']));
     expect(toolNames).not.toContain('grep');
     expect(toolNames).not.toContain('find');
-    expect(toolNames).not.toContain('list_deterministic_automations');
     // Long-tail-category tools are reachable via js_exec (tools.<name>()) and
     // tools.search(), not advertised as top-level definitions.
     expect(toolNames).not.toContain('list_scheduled_prompts');

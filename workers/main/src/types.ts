@@ -204,5 +204,3 @@ export { SESSION_HEADER } from "./cookies.js";
 
 // New prefix with org-slug namespacing: script:{script-name}--{org-slug}
 export const SCRIPT_PREFIX = "script:";
-// Legacy prefix for backwards compatibility during migration
-export const SCRIPT_ORG_PREFIX_LEGACY = "script_org:";

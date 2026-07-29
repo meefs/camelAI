@@ -330,7 +330,6 @@ describe("notebook deploy agent eval", () => {
         usedRunNotebook: usedTool(result.events, "run_notebook"),
         successfulNotebookRun: hasSuccessfulNotebookRun(result.events, "analysis.ipynb"),
         usedDeployProject: usedTool(result.events, "deploy_project"),
-        usedBuildProject: usedTool(result.events, "build_project"),
         legacyFailures,
         evidence: collectRuntimeEvidence(result.events),
       };
@@ -347,7 +346,7 @@ describe("notebook deploy agent eval", () => {
             label: "Agent created a DO-backed analysis project",
             passed: project?.backend === "do-r2",
             reason: project
-              ? `Project backend was ${project.backend ?? "vm"}`
+              ? `Project backend was ${project.backend}`
               : `No project named ${PROJECT_NAME} was created.`,
             details: { project },
           }),
@@ -390,16 +389,13 @@ describe("notebook deploy agent eval", () => {
             details: { notebookInspection, successfulNotebookRun: runtimeAssertions.successfulNotebookRun },
           }),
           passFailCriterion({
-            id: "avoided_build_and_legacy_paths",
-            label: "Agent avoided build_project and legacy deploy paths",
-            passed: !runtimeAssertions.usedBuildProject && legacyFailures.length === 0,
+            id: "avoided_legacy_paths",
+            label: "Agent avoided legacy deploy paths",
+            passed: legacyFailures.length === 0,
             reason:
-              !runtimeAssertions.usedBuildProject && legacyFailures.length === 0
+              legacyFailures.length === 0
                 ? undefined
-                : [
-                    runtimeAssertions.usedBuildProject ? "used build_project" : "",
-                    ...legacyFailures,
-                  ].filter(Boolean).join("; "),
+                : legacyFailures.join("; "),
             details: runtimeAssertions,
           }),
           passFailCriterion({

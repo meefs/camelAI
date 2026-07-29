@@ -219,7 +219,6 @@ describe("data-analysis report agent eval", () => {
         ]),
         usedRunNotebook: usedTool(result.events, "run_notebook"),
         successfulNotebookRun: hasSuccessfulNotebookRun(result.events, "analysis.ipynb"),
-        usedBuildProject: usedTool(result.events, "build_project"),
         usedDeployProject: usedTool(result.events, "deploy_project"),
         legacyFailures,
         evidence: collectRuntimeEvidence(result.events),
@@ -236,7 +235,7 @@ describe("data-analysis report agent eval", () => {
             label: "Agent created a DO-backed analysis project",
             passed: project?.backend === "do-r2",
             reason: project
-              ? `Project backend was ${project.backend ?? "vm"}`
+              ? `Project backend was ${project.backend}`
               : `No project named ${PROJECT_NAME} was created.`,
             details: { project },
           }),
@@ -287,16 +286,13 @@ describe("data-analysis report agent eval", () => {
             id: "avoided_web_deploy_path",
             label: "Agent avoided build/deploy and legacy scaffold/deploy paths",
             passed:
-              !runtimeAssertions.usedBuildProject &&
               !runtimeAssertions.usedDeployProject &&
               legacyFailures.length === 0,
             reason:
-              !runtimeAssertions.usedBuildProject &&
               !runtimeAssertions.usedDeployProject &&
               legacyFailures.length === 0
                 ? undefined
                 : [
-                    runtimeAssertions.usedBuildProject ? "used build_project" : "",
                     runtimeAssertions.usedDeployProject ? "used deploy_project" : "",
                     ...legacyFailures,
                   ].filter(Boolean).join("; "),

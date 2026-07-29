@@ -319,12 +319,12 @@ describe('code mode runner tools.help guide', () => {
   it('resolves the connections category over the connections runtime facade for bare keys', () => {
     const createHelp = loadGeneratedToolHelp();
     const help = createHelp([
-      { name: 'warehouse_list_connections', category: 'connections', description: 'List warehouse connections.' },
+      { name: 'analysis_list_connections', category: 'connections', description: 'List data connections.' },
     ]);
 
     const result = help('connections');
     expect(result.category).toBe('connections');
-    expect(result.tools.map((tool: any) => tool.name)).toContain('warehouse_list_connections');
+    expect(result.tools.map((tool: any) => tool.name)).toContain('analysis_list_connections');
     // The runtime facade still shows up inside the category view...
     expect(result.runtimes.map((entry: any) => entry.name)).toContain('connections');
     // ...and stays directly reachable via an explicit runtime request.
@@ -630,7 +630,7 @@ describe('code mode runner tools.search / tools.describe', () => {
     const { createEnvelopeToolCall } = loadGeneratedToolSearch();
     const published = createEnvelopeToolCall('deploy_project', async () => ({
       ok: true,
-      data: { success: true, url: 'https://demo.camelai.app' },
+      data: { success: true, url: 'https://demo-acme85.camelai.app' },
     }));
     const dryRun = createEnvelopeToolCall('deploy_project', async () => ({
       ok: true,
@@ -641,7 +641,7 @@ describe('code mode runner tools.search / tools.describe', () => {
       completionEvidence: {
         status: 'succeeded',
         supportedClaims: ['deployed', 'published'],
-        target: 'https://demo.camelai.app',
+        target: 'https://demo-acme85.camelai.app',
       },
     });
     await expect(dryRun({})).resolves.toMatchObject({
@@ -687,7 +687,7 @@ describe('js_exec result-shape contracts', () => {
   });
 
   it('resolves ok: false for build/deploy/notebook operational failures, with the result kept in data', () => {
-    expect(source).toContain('OPERATIONAL_OUTCOME_TOOLS = new Set(["build_project", "deploy_project", "run_notebook"])');
+    expect(source).toContain('OPERATIONAL_OUTCOME_TOOLS = new Set(["deploy_project", "run_notebook"])');
     expect(source).toContain('envelope.data.success === false || envelope.data.ok === false');
     expect(source).toContain('deploy_project and run_notebook resolve ok: false');
   });

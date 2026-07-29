@@ -5,7 +5,6 @@ const getSessionMock = vi.fn();
 const requireAccessMappedOrgMock = vi.fn();
 const isOrgAdminMock = vi.fn();
 const getInvitationMock = vi.fn();
-const getWorkerAccessInfoMock = vi.fn();
 const isOrgMemberMock = vi.fn();
 const r2GetMock = vi.fn();
 
@@ -25,7 +24,6 @@ vi.mock("@/lib/auth-do", () => ({
   createInvitations: vi.fn(),
   getInvitation: getInvitationMock,
   isOrgAdmin: isOrgAdminMock,
-  getWorkerAccessInfo: getWorkerAccessInfoMock,
   isOrgMember: isOrgMemberMock,
 }));
 
@@ -93,8 +91,8 @@ describe("enterprise SSO target organization routes", () => {
     expect(getInvitationMock).not.toHaveBeenCalled();
   });
 
-  it("rejects private app previews outside the signed SSO organization", async () => {
-    getWorkerAccessInfoMock.mockResolvedValueOnce({ org_id: "org-2" });
+  it("checks private app preview access against the signed SSO organization", async () => {
+    isOrgMemberMock.mockResolvedValueOnce(false);
 
     const response = await appPreviewLoader({
       request: new Request(
@@ -105,7 +103,11 @@ describe("enterprise SSO target organization routes", () => {
     } as never);
 
     expect(response.status).toBe(403);
-    expect(isOrgMemberMock).not.toHaveBeenCalled();
+    expect(isOrgMemberMock).toHaveBeenCalledWith(
+      expect.any(Object),
+      "user-1",
+      "org-1",
+    );
     expect(r2GetMock).not.toHaveBeenCalled();
   });
 });

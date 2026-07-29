@@ -12,12 +12,10 @@
 	"compatibility_flags": ["nodejs_compat"],
 	"vars": {
 		"AI_VIRTUAL_MODEL": "dynamic/auto",
-		"MAIN_APP_URL": "https://staging.camelai.dev",
-		// Temporary migration mode. "legacy-open" fails closed except for legacy hostnames.
-		"DISPATCHER_MISSING_REGISTRY_MODE": "legacy-open"
+		"MAIN_APP_URL": "https://staging.camelai.dev"
 	},
 	"routes": [
-		// Matches both legacy (script.apps.staging) and new (script.org-slug.apps.staging)
+		// Canonical org-scoped iframe hostnames
 		{ "pattern": "*.apps.staging.camelai.dev/*", "zone_name": "camelai.dev" },
 		{ "pattern": "*.staging.camelai.app/*", "zone_name": "camelai.app" },
 		// Fallback origin for Cloudflare for SaaS custom hostnames

@@ -33,9 +33,9 @@ import {
 } from "../../../src/lib/billing-plans";
 import type { LlmModel } from "../../../src/types";
 import {
-  getOrgModelPickerConfigCompat,
-  getWorkspaceModelPickerConfigCompat,
-} from "./model-picker-config-compat";
+  readOrgModelPickerConfig,
+  readWorkspaceModelPickerConfig,
+} from "./model-picker-config-reader";
 
 const MAX_DUE_JOBS_PER_ALARM = 20;
 const WORKSPACE_ID_KEY = "workspaceId";
@@ -968,8 +968,8 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
       retryTransientDurableObjectRead("OrgDO.getLlmProviderConfig", () =>
         Promise.resolve(orgStub.getLlmProviderConfig()),
       ),
-      getOrgModelPickerConfigCompat(orgStub),
-      getWorkspaceModelPickerConfigCompat(workspaceStub),
+      readOrgModelPickerConfig(orgStub),
+      readWorkspaceModelPickerConfig(workspaceStub),
     ]);
     const effectiveLlmProviderConfig = getEffectiveLlmProviderConfig(
       this.env,

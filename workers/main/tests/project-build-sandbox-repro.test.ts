@@ -49,7 +49,7 @@ describe("real project build sandbox repro", () => {
       const add = await runProjectAddDependency({ projectId, files, sandbox, dependency });
       expect(add, `add_dependency attempt ${index}`).toMatchObject({ success: true, packageJsonPersisted: true });
       const build = await runProjectBuild({ projectId, files, sandbox });
-      expect(build, `build_project attempt ${index}: ${build.stderr || build.stdout}`).toMatchObject({ success: true });
+      expect(build, `project build attempt ${index}: ${build.stderr || build.stdout}`).toMatchObject({ success: true });
     }
   }, 180_000);
 });

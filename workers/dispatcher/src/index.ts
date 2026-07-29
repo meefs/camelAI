@@ -5,8 +5,8 @@
  * dispatch namespace. Supports subdomain-based routing with private worker
  * access control.
  *
- * Example: hello-world.apps.camelai.dev -> routes to worker "hello-world" (same-site for iframe)
- *          hello-world.camelai.app -> routes to worker "hello-world" (vanity URL)
+ * Example: hello-world-acme85.apps.camelai.dev -> routes to worker "hello-world--acme85"
+ *          hello-world-acme85.camelai.app -> routes to worker "hello-world--acme85"
  *
  * Private worker authentication:
  *
@@ -37,8 +37,6 @@ import {
 } from '../../main/src/worker-auth';
 import {
   getWorkerAccessInfo,
-  resolveMissingRegistryMode,
-  shouldFailOpenForMissingRegistry,
   type WorkerAccessInfo,
 } from './access-control';
 import {
@@ -59,7 +57,6 @@ import {
   type SelfhostWorkerRecord,
 } from '../../main/src/selfhost-worker-registry';
 import {
-  PLATFORM_DISPATCH_LEGACY_SCRIPT_HEADER,
   PLATFORM_DISPATCH_SCRIPT_HEADER,
   PLATFORM_DISPATCH_SCRIPT_NAME_HEADER,
 } from '../../main/src/workspace-app-fetcher.js';
@@ -94,8 +91,6 @@ interface Env {
   TOKEN_SIGNING_SECRET: string;
   // Set to "true" to skip all auth checks (local development only)
   SKIP_AUTH?: string;
-  // Policy for workers missing KV access metadata ("open" during migration, "closed" for strict enforcement)
-  DISPATCHER_MISSING_REGISTRY_MODE?: string;
   MAIN_APP_URL?: string;
   CF_ACCOUNT_ID?: string;
   CF_GATEWAY_NAME?: string;
@@ -790,25 +785,17 @@ function isNewStyleSlug(slug: string): boolean {
 
 /**
  * Parse worker route from hostname.
- * Returns script name and org slug for new format, or just script name for legacy.
+ * Returns script name and org slug for the canonical format.
  *
  * New single-hyphen format: {script}-{org-slug}.camelai.app (org slug is 6+ alphanumeric, no hyphens)
- * Old double-hyphen format: {script}--{org-slug}.camelai.app (backwards compat)
- * Legacy format: {script}.camelai.app -> { scriptName, orgSlug: null, dispatchScriptName: scriptName }
+ * Double-hyphen format: {script}--{org-slug}.camelai.app (required when the org slug contains hyphens)
  *
  * Dispatch namespace always uses: {script}--{org-slug} (internal, not URL-facing)
  */
 interface ParsedWorkerRoute {
   scriptName: string;
-  orgSlug: string | null;
+  orgSlug: string;
   dispatchScriptName: string;
-  /**
-   * When a single-hyphen parse matched (ambiguous case), this holds the legacy
-   * fallback interpretation where the entire segment is treated as the script name.
-   * Used to resolve ambiguity at runtime via KV lookup.
-   * Example: "report-alpha12" could be script="report" + slug="alpha12" OR legacy script="report-alpha12"
-   */
-  legacyFallback?: { scriptName: string; dispatchScriptName: string };
 }
 
 function getConfiguredDomain(configValue: string | null | undefined): string | null {
@@ -828,7 +815,6 @@ function preparePlatformDispatchRequest(request: Request): Request {
   for (const name of [
     PLATFORM_DISPATCH_SCRIPT_HEADER,
     PLATFORM_DISPATCH_SCRIPT_NAME_HEADER,
-    PLATFORM_DISPATCH_LEGACY_SCRIPT_HEADER,
   ]) {
     headers.delete(name);
   }
@@ -852,9 +838,7 @@ function parseConfiguredDomainRoute(hostname: string, domain: string): ParsedWor
   const prefix = hostname.slice(0, -(domain.length + 1));
   const firstPart = prefix.split('.')[0];
   if (!firstPart) return null;
-  const parsed = parseScriptSlug(firstPart);
-  if (parsed) return parsed;
-  return { scriptName: firstPart, orgSlug: null, dispatchScriptName: firstPart };
+  return parseScriptSlug(firstPart);
 }
 
 function parseWorkerRoute(hostname: string, env?: Pick<Env, 'LOCAL_APP_VANITY_DOMAIN' | 'LOCAL_APP_IFRAME_DOMAIN'>): ParsedWorkerRoute | null {
@@ -876,18 +860,14 @@ function parseWorkerRoute(hostname: string, env?: Pick<Env, 'LOCAL_APP_VANITY_DO
   if (hostname.endsWith('.camelai.app')) {
     if (parts.length < 3) return null;
     const firstPart = parts[0]!;
-    const parsed = parseScriptSlug(firstPart);
-    if (parsed) return parsed;
-    return { scriptName: firstPart, orgSlug: null, dispatchScriptName: firstPart };
+    return parseScriptSlug(firstPart);
   }
 
   // .apps.camelai.dev domain (same-site for iframes)
   if (hostname.endsWith('.camelai.dev') && hostname.includes('.apps.')) {
     if (parts.length < 4) return null;
     const firstPart = parts[0]!;
-    const parsed = parseScriptSlug(firstPart);
-    if (parsed) return parsed;
-    return { scriptName: firstPart, orgSlug: null, dispatchScriptName: firstPart };
+    return parseScriptSlug(firstPart);
   }
 
   return null;
@@ -908,9 +888,6 @@ function parseScriptSlug(segment: string): ParsedWorkerRoute | null {
   }
 
   // New format: last hyphen is the separator, slug is 6+ alphanumeric (e.g. "my-app-k7m2p3")
-  // This is ambiguous: "report-alpha12" could be script="report" + slug="alpha12"
-  // OR a legacy script named "report-alpha12". We include a legacyFallback so the
-  // dispatcher can resolve the ambiguity at runtime via KV lookup.
   const lastHyphen = segment.lastIndexOf('-');
   if (lastHyphen > 0) {
     const candidate = segment.slice(lastHyphen + 1);
@@ -920,7 +897,6 @@ function parseScriptSlug(segment: string): ParsedWorkerRoute | null {
         scriptName,
         orgSlug: candidate,
         dispatchScriptName: `${scriptName}--${candidate}`,
-        legacyFallback: { scriptName: segment, dispatchScriptName: segment },
       };
     }
   }
@@ -940,53 +916,6 @@ async function isOrgMember(
   return stub.isMember(userId);
 }
 
-/**
- * Build the canonical URL for a worker.
- * New-style slugs (6+ alphanumeric) use single hyphen: {script}-{slug}.domain
- * Old-style slugs (contain hyphens) use double hyphen: {script}--{slug}.domain
- */
-function appendCurrentPort(url: URL, hostname: string): string {
-  return url.port ? `${hostname}:${url.port}` : hostname;
-}
-
-function buildNewFormatUrl(url: URL, hostname: string, scriptName: string, orgSlug: string, env?: Env): string {
-  const parts = hostname.split('.');
-  const separator = isNewStyleSlug(orgSlug) ? '-' : '--';
-  const label = `${scriptName}${separator}${orgSlug}`;
-
-  const configuredVanityDomain = getConfiguredDomain(env?.LOCAL_APP_VANITY_DOMAIN);
-  if (configuredVanityDomain && parseConfiguredDomainRoute(hostname, configuredVanityDomain)) {
-    return `${url.protocol}//${appendCurrentPort(url, `${label}.${configuredVanityDomain}`)}${url.pathname}${url.search}`;
-  }
-
-  const configuredIframeDomain = getConfiguredDomain(env?.LOCAL_APP_IFRAME_DOMAIN);
-  if (configuredIframeDomain && parseConfiguredDomainRoute(hostname, configuredIframeDomain)) {
-    return `${url.protocol}//${appendCurrentPort(url, `${label}.${configuredIframeDomain}`)}${url.pathname}${url.search}`;
-  }
-
-  // For .camelai.app domains
-  if (hostname.endsWith('.camelai.app')) {
-    if (parts.length === 3) {
-      return `${url.protocol}//${appendCurrentPort(url, `${label}.camelai.app`)}${url.pathname}${url.search}`;
-    }
-    if (parts.length === 4 && (parts[1]?.startsWith('dev-') || parts[1] === 'staging')) {
-      return `${url.protocol}//${appendCurrentPort(url, `${label}.${parts[1]}.camelai.app`)}${url.pathname}${url.search}`;
-    }
-  }
-
-  // For .apps.camelai.dev domains
-  if (hostname.endsWith('.camelai.dev') && hostname.includes('.apps.')) {
-    if (parts.length === 4 && parts[1] === 'apps') {
-      return `${url.protocol}//${appendCurrentPort(url, `${label}.apps.camelai.dev`)}${url.pathname}${url.search}`;
-    }
-    if (parts.length === 5 && parts[1] === 'apps') {
-      return `${url.protocol}//${appendCurrentPort(url, `${label}.apps.${parts[2]}.camelai.dev`)}${url.pathname}${url.search}`;
-    }
-  }
-
-  return url.toString();
-}
-
 // Cookie settings for dispatcher session
 const SESSION_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
 
@@ -998,10 +927,8 @@ function getMainAppUrl(hostname: string, configuredMainAppUrl?: string): string 
   }
 
   // Extract environment from hostname
-  // New format: worker.org-slug.camelai.app -> camelai.dev (main app)
-  // New format: worker.org-slug.dev-miguel.camelai.app -> dev-miguel.camelai.dev (main app)
-  // Legacy: worker.camelai.app -> camelai.dev (main app)
-  // Legacy: worker.dev-miguel.camelai.app -> dev-miguel.camelai.dev (main app)
+  // Canonical format: worker-orgslug.camelai.app -> camelai.dev (main app)
+  // Environment format: worker-orgslug.dev-miguel.camelai.app -> dev-miguel.camelai.dev
   // Local: worker.local.camelai.app -> local.camelai.dev (main app)
   const parts = hostname.split('.');
 
@@ -1127,7 +1054,6 @@ async function fetchPlatformWorkspaceApp(
 
   const dispatchScriptName = request.headers.get(PLATFORM_DISPATCH_SCRIPT_HEADER)?.trim();
   const scriptName = request.headers.get(PLATFORM_DISPATCH_SCRIPT_NAME_HEADER)?.trim();
-  const legacyDispatchScriptName = request.headers.get(PLATFORM_DISPATCH_LEGACY_SCRIPT_HEADER)?.trim();
   const forwardedRequest = preparePlatformDispatchRequest(request);
 
   if (dispatchScriptName && scriptName) {
@@ -1137,9 +1063,6 @@ async function fetchPlatformWorkspaceApp(
       ctx,
       dispatchScriptName,
       scriptName,
-      legacyDispatchScriptName && legacyDispatchScriptName !== dispatchScriptName
-        ? legacyDispatchScriptName
-        : undefined,
     );
   }
 
@@ -1151,7 +1074,6 @@ async function fetchPlatformWorkspaceApp(
       ctx,
       route.dispatchScriptName,
       route.scriptName,
-      route.legacyFallback?.dispatchScriptName,
     );
   }
 
@@ -1218,15 +1140,15 @@ export default class DispatcherEntrypoint extends WorkerEntrypoint<Env> {
     // Parse worker route from hostname
     const route = parseWorkerRoute(hostname, env);
     if (route) {
-      const { scriptName, orgSlug, dispatchScriptName, legacyFallback } = route;
+      const { scriptName, orgSlug, dispatchScriptName } = route;
 
       // Handle auth callback route
       if (url.pathname === AUTH_CALLBACK_PATH) {
-        return handleAuthCallback(request, env, scriptName, orgSlug, dispatchScriptName, legacyFallback);
+        return handleAuthCallback(request, env, scriptName, orgSlug, dispatchScriptName);
       }
 
       // Check worker access
-      return handleWorkerRequest(request, env, ctx, scriptName, orgSlug, dispatchScriptName, legacyFallback);
+      return handleWorkerRequest(request, env, ctx, scriptName, dispatchScriptName);
     }
 
     // Not a known *.camelai.app or *.apps.camelai.dev hostname — try custom domain zone lookup
@@ -1237,7 +1159,7 @@ export default class DispatcherEntrypoint extends WorkerEntrypoint<Env> {
       if (url.pathname === AUTH_CALLBACK_PATH) {
         return handleAuthCallback(request, env, scriptName, orgSlug, dispatchScriptName, undefined, cookieDomain);
       }
-      return handleWorkerRequest(request, env, ctx, scriptName, orgSlug, dispatchScriptName);
+      return handleWorkerRequest(request, env, ctx, scriptName, dispatchScriptName);
     }
 
     // Default response for apex domain or unknown hostname
@@ -1268,9 +1190,8 @@ async function handleAuthCallback(
   request: Request,
   env: Env,
   scriptName: string,
-  _orgSlug: string | null,
+  _orgSlug: string,
   _dispatchScriptName: string,
-  legacyFallback?: { scriptName: string; dispatchScriptName: string },
   cookieDomain?: string
 ): Promise<Response> {
   const url = new URL(request.url);
@@ -1294,11 +1215,7 @@ async function handleAuthCallback(
   }
 
   // Verify script name matches (user-facing name, not dispatch name).
-  // For ambiguous single-hyphen hostnames, also accept the legacy fallback
-  // script name (e.g. token issued for "report-alpha12" should match
-  // hostname "report-alpha12.camelai.app" even though the parser initially
-  // splits it as script="report" + slug="alpha12").
-  if (tokenData.script_name !== scriptName && tokenData.script_name !== legacyFallback?.scriptName) {
+  if (tokenData.script_name !== scriptName) {
     return new Response('Script name mismatch', { status: 400 });
   }
   if (!isWorkerAuthCallbackOriginValid(tokenData.callback_origin, url.toString())) {
@@ -1341,70 +1258,30 @@ async function handleWorkerRequest(
   env: Env,
   ctx: ExecutionContext,
   scriptName: string,
-  orgSlug: string | null,
   dispatchScriptName: string,
-  legacyFallback?: { scriptName: string; dispatchScriptName: string }
 ): Promise<Response> {
   const url = new URL(request.url);
   const hostname = getRequestHostname(request, url);
-  const legacyDispatchScriptName = orgSlug ? scriptName : undefined;
 
   // Skip all auth checks in local development mode
   if (env.SKIP_AUTH === 'true') {
     console.log(`[dispatcher] SKIP_AUTH enabled, dispatching directly to: ${dispatchScriptName}`);
-    return dispatchToWorker(request, env, ctx, dispatchScriptName, scriptName, legacyDispatchScriptName);
+    return dispatchToWorker(request, env, ctx, dispatchScriptName, scriptName);
   }
 
   const cookieHeader = request.headers.get('Cookie');
 
-  // Resolve effective script identity early. For ambiguous single-hyphen hostnames
-  // (e.g. "report-alpha12") the initial parse may split incorrectly; the KV lookup
-  // + legacy fallback here corrects it before access checks.
   let accessInfo: WorkerAccessInfo | null = null;
-  let effectiveScriptName = scriptName;
-  let effectiveOrgSlug = orgSlug;
-  let effectiveDispatchScriptName = dispatchScriptName;
-  let effectiveLegacyDispatchScriptName = legacyDispatchScriptName;
   try {
-    accessInfo = await getWorkerAccessInfo(env.APP_KV, dispatchScriptName, scriptName, orgSlug);
+    accessInfo = await getWorkerAccessInfo(env.APP_KV, dispatchScriptName);
   } catch (e) {
     console.error(`[dispatcher] Error getting worker access info: ${e}`);
     return errorResponse(error503Page(getMainAppUrl(hostname, env.MAIN_APP_URL)));
   }
 
-  // Ambiguity resolution: If the single-hyphen parse found no KV entry, retry
-  // with the full segment as a legacy script name. This handles legacy apps like
-  // "report-alpha12" where "alpha12" looks like a new-style slug but isn't.
-  if (!accessInfo && legacyFallback) {
-    try {
-      const fallbackAccessInfo = await getWorkerAccessInfo(
-        env.APP_KV,
-        legacyFallback.dispatchScriptName,
-        legacyFallback.scriptName,
-        null
-      );
-      if (fallbackAccessInfo) {
-        console.log(`[dispatcher] Ambiguous hostname resolved as legacy script: ${legacyFallback.scriptName}`);
-        accessInfo = fallbackAccessInfo;
-        effectiveScriptName = legacyFallback.scriptName;
-        effectiveOrgSlug = null;
-        effectiveDispatchScriptName = legacyFallback.dispatchScriptName;
-        effectiveLegacyDispatchScriptName = undefined;
-      }
-    } catch (e) {
-      console.error(`[dispatcher] Error checking legacy fallback: ${e}`);
-    }
-  }
-
-  const missingRegistryMode = resolveMissingRegistryMode(env.DISPATCHER_MISSING_REGISTRY_MODE);
-
   if (!accessInfo) {
-    if (shouldFailOpenForMissingRegistry(missingRegistryMode, effectiveOrgSlug)) {
-      console.warn(`[dispatcher] Worker "${effectiveDispatchScriptName}" not in registry, dispatching anyway (fail open)`); // TEMP migration mode
-      return dispatchToWorker(request, env, ctx, effectiveDispatchScriptName, effectiveScriptName, effectiveLegacyDispatchScriptName);
-    }
-    console.warn(`[dispatcher] Worker "${effectiveDispatchScriptName}" not in registry, denying access (fail closed)`);
-    return errorResponse(error404Page(getMainAppUrl(hostname, env.MAIN_APP_URL), effectiveScriptName));
+    console.warn(`[dispatcher] Worker "${dispatchScriptName}" not in registry, denying access`);
+    return errorResponse(error404Page(getMainAppUrl(hostname, env.MAIN_APP_URL), scriptName));
   }
 
   if (
@@ -1419,23 +1296,9 @@ async function handleWorkerRequest(
     return response;
   }
 
-  // Legacy URL redirect: If using old URL format AND the worker was deployed with the
-  // new system (has org_slug in KV), redirect to the new URL format.
-  //
-  // Cases:
-  // 1. orgSlug !== null: Already using new URL format, no redirect needed
-  // 2. is_legacy: false: Found in new KV format (means dispatchScriptName already has org-slug prefix)
-  // 3. is_legacy: true AND has org_slug: Worker was redeployed with new system, redirect to new URL
-  // 4. is_legacy: true AND no org_slug: Old worker, serve from legacy dispatch (no redirect)
-  if (effectiveOrgSlug === null && accessInfo && accessInfo.org_slug && accessInfo.is_legacy) {
-    const newUrl = buildNewFormatUrl(url, hostname, effectiveScriptName, accessInfo.org_slug, env);
-    console.log(`[dispatcher] Legacy URL redirect: ${hostname} -> ${new URL(newUrl).hostname}`);
-    return Response.redirect(newUrl, 301);
-  }
-
   // If public, dispatch directly
   if (accessInfo.is_public) {
-    return dispatchToWorker(request, env, ctx, effectiveDispatchScriptName, effectiveScriptName, effectiveLegacyDispatchScriptName);
+    return dispatchToWorker(request, env, ctx, dispatchScriptName, scriptName);
   }
 
   // Private worker - check session
@@ -1447,7 +1310,7 @@ async function handleWorkerRequest(
     if (session && session.org_id === accessInfo.org_id) {
       try {
         if (await validateWorkerSessionForOrg(env, session, accessInfo.org_id)) {
-          return dispatchToWorker(request, env, ctx, effectiveDispatchScriptName, effectiveScriptName, effectiveLegacyDispatchScriptName);
+          return dispatchToWorker(request, env, ctx, dispatchScriptName, scriptName);
         }
         await destroyDispatcherSession(env.SESSIONS, dispatcherSessionId);
       } catch (error) {
@@ -1464,18 +1327,18 @@ async function handleWorkerRequest(
     const currentCookieName = getSessionCookieName(hostname);
     const mainSessionId = getCookieValue(cookieHeader, currentCookieName);
 
-    console.log(`[dispatcher] Same-site auth for ${effectiveScriptName}: cookie=${currentCookieName}, found=${mainSessionId ? 'yes' : 'no'}`);
+    console.log(`[dispatcher] Same-site auth for ${scriptName}: cookie=${currentCookieName}, found=${mainSessionId ? 'yes' : 'no'}`);
 
     if (!mainSessionId) {
       // No session cookie - user is not logged in
-      console.log(`[dispatcher] No session cookie found for ${effectiveScriptName}`);
+      console.log(`[dispatcher] No session cookie found for ${scriptName}`);
       return errorResponse(error401Page(getMainAppUrl(hostname, env.MAIN_APP_URL)));
     }
 
     try {
       const session = await parseSignedSession(env.TOKEN_SIGNING_SECRET, mainSessionId);
       if (!session) {
-        console.log(`[dispatcher] Session invalid for ${effectiveScriptName}, token prefix: ${mainSessionId.slice(0, 8)}...`);
+        console.log(`[dispatcher] Session invalid for ${scriptName}, token prefix: ${mainSessionId.slice(0, 8)}...`);
         return errorResponse(error401Page(getMainAppUrl(hostname, env.MAIN_APP_URL)));
       }
 
@@ -1505,8 +1368,8 @@ async function handleWorkerRequest(
         return errorResponse(error403Page(getMainAppUrl(hostname, env.MAIN_APP_URL)));
       }
 
-      console.log(`[dispatcher] Same-site auth: user ${session.user_id} accessing ${effectiveScriptName} via main session`);
-      return dispatchToWorker(request, env, ctx, effectiveDispatchScriptName, effectiveScriptName, effectiveLegacyDispatchScriptName);
+      console.log(`[dispatcher] Same-site auth: user ${session.user_id} accessing ${scriptName} via main session`);
+      return dispatchToWorker(request, env, ctx, dispatchScriptName, scriptName);
     } catch (e) {
       console.error(`[dispatcher] Error validating main session: ${e}`);
       return errorResponse(error503Page(getMainAppUrl(hostname, env.MAIN_APP_URL)));
@@ -1514,14 +1377,13 @@ async function handleWorkerRequest(
   }
 
   // Cross-site request (*.camelai.app) - redirect to auth
-  return redirectToAuth(env, url, hostname, effectiveScriptName, accessInfo.org_id);
+  return redirectToAuth(env, url, hostname, scriptName, accessInfo.org_id);
 }
 
 /**
  * Dispatch request to the user worker
  * @param dispatchScriptName - The script name in the dispatch namespace ({org-slug}--{script})
  * @param userFacingScriptName - The user-facing script name for error messages
- * @param fallbackDispatchScriptName - Optional legacy script name fallback ({script})
  */
 async function dispatchToWorker(
   request: Request,
@@ -1529,7 +1391,6 @@ async function dispatchToWorker(
   _ctx: ExecutionContext,
   dispatchScriptName: string,
   userFacingScriptName: string,
-  fallbackDispatchScriptName?: string
 ): Promise<Response> {
   try {
     console.log(`[dispatcher] Routing to worker: ${dispatchScriptName}`);
@@ -1542,42 +1403,13 @@ async function dispatchToWorker(
       const runner = env.SELFHOST_APP_RUNNER.get(
         env.SELFHOST_APP_RUNNER.idFromName(dispatchScriptName),
       );
-      const response = await runner.fetch(
+      return runner.fetch(
         new Request(request, { headers }),
       );
-      if (
-        response.status === 404 &&
-        response.headers.get('x-camelai-selfhost-runner-error') === 'worker_not_found' &&
-        fallbackDispatchScriptName &&
-        fallbackDispatchScriptName !== dispatchScriptName
-      ) {
-        console.log(`[dispatcher] Primary self-host worker not found, retrying legacy worker: ${fallbackDispatchScriptName}`);
-        headers.set('x-camelai-selfhost-app-id', fallbackDispatchScriptName);
-        const legacyRunner = env.SELFHOST_APP_RUNNER.get(
-          env.SELFHOST_APP_RUNNER.idFromName(fallbackDispatchScriptName),
-        );
-        return legacyRunner.fetch(new Request(request, { headers }));
-      }
-      return response;
     }
 
     const userWorker = getUserWorker(env, dispatchScriptName);
-    let response: Response;
-
-    try {
-      response = await fetchUserWorker(userWorker, request);
-    } catch (e) {
-      const error = e as Error;
-      if (error.message?.startsWith('Worker not found') && fallbackDispatchScriptName && fallbackDispatchScriptName !== dispatchScriptName) {
-        console.log(`[dispatcher] Primary worker not found, retrying legacy worker: ${fallbackDispatchScriptName}`);
-        const legacyWorker = getUserWorker(env, fallbackDispatchScriptName);
-        response = await fetchUserWorker(legacyWorker, request);
-      } else {
-        throw e;
-      }
-    }
-
-    return response;
+    return fetchUserWorker(userWorker, request);
   } catch (e) {
     const error = e as Error;
     console.error('[dispatcher] failed to route user worker', {

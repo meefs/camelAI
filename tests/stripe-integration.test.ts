@@ -3,12 +3,8 @@ import {
   createBillingPortalSession,
   createCreditsCheckoutSession,
   createSubscriptionCheckoutSession,
-  getOrCreateBillingPortalConfiguration,
   isStripeSecretKeyAllowedForMode,
-  loadCanonicalPaidPlanCatalog,
   processPaidSubscriptionInvoice,
-  resolveSubscriptionInvoiceGrant,
-  retrieveCanonicalStripeInvoice,
   STRIPE_API_VERSION,
   syncOrgSubscriptionFromStripe,
   createSubscriptionUpdatePortalSession,
@@ -17,7 +13,6 @@ import {
   type StripeSubscription,
 } from "@/lib/billing.server";
 import type { Organization } from "@/types";
-import { handleStripeWebhook } from "../workers/main/src/routes/billing";
 
 /**
  * Opt-in tests against Stripe test mode.
@@ -406,15 +401,6 @@ async function updateSubscriptionItem(args: {
   });
 }
 
-async function setSubscriptionDefaultPaymentMethod(
-  subscriptionId: string,
-  paymentMethodId: string,
-): Promise<void> {
-  await stripePost(`/subscriptions/${subscriptionId}`, {
-    default_payment_method: paymentMethodId,
-  });
-}
-
 async function listSubscriptionInvoices(
   subscriptionId: string,
 ): Promise<StripeInvoiceRecord[]> {
@@ -483,61 +469,6 @@ function parseCheckoutSessionId(url: string): string {
   return decodeURIComponent(match[1]);
 }
 
-async function stripeSignature(
-  payload: string,
-  secret: string,
-): Promise<string> {
-  const timestamp = Math.floor(Date.now() / 1000);
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const signature = await crypto.subtle.sign(
-    "HMAC",
-    key,
-    new TextEncoder().encode(`${timestamp}.${payload}`),
-  );
-  const digest = Array.from(new Uint8Array(signature))
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
-  return `t=${timestamp},v1=${digest}`;
-}
-
-async function sendNextVersionPaidWebhook(args: {
-  env: StripeBillingEnv;
-  invoiceId: string;
-}): Promise<Response> {
-  const secret = "whsec_integration_next";
-  const payload = JSON.stringify({
-    id: `evt_next_${args.invoiceId}`,
-    type: "invoice.paid",
-    data: { object: { id: args.invoiceId } },
-  });
-  const url = new URL(
-    "https://camelai.test/api/billing/stripe/webhook?version=next",
-  );
-  const req = new Request(url, {
-    method: "POST",
-    headers: {
-      "stripe-signature": await stripeSignature(payload, secret),
-    },
-    body: payload,
-  });
-  return handleStripeWebhook({
-    req,
-    url,
-    env: {
-      ...args.env,
-      STRIPE_WEBHOOK_SECRET: "whsec_integration_current",
-      STRIPE_WEBHOOK_SECRET_NEXT: secret,
-    } as never,
-    ctx: {} as ExecutionContext,
-    match: [] as unknown as RegExpMatchArray,
-  });
-}
 
 function makeOrg(id: string, overrides: Partial<Organization> = {}) {
   return {

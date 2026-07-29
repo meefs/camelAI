@@ -765,9 +765,6 @@ routes.post(
     if (!project) {
       return c.json({ error: `Project not found: ${body.project}` }, 404);
     }
-    if ((project.backend ?? "vm") !== "do-r2") {
-      return c.json({ error: `Project "${project.name}" is backend "${project.backend ?? "vm"}"; build verification only supports do-r2 projects` }, 400);
-    }
     if (!c.env.PROJECT_BUILD_SANDBOX) {
       return c.json({ error: "PROJECT_BUILD_SANDBOX container binding is not configured" }, 400);
     }
@@ -785,7 +782,7 @@ routes.post(
     });
 
     recordObservabilityEvent(c.env, {
-      event: "project_vm_migration_build_verify",
+      event: "project_build_verify",
       severity: result.success ? "info" : "warn",
       component: "admin",
       operation: "project-build-verify",

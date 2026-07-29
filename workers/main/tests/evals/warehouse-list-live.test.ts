@@ -94,15 +94,12 @@ describe("warehouse list connections agent eval", () => {
         }),
       );
 
-      // The canonical tool is analysis_list_connections; warehouse_list_connections
-      // remains a callable-but-hidden source-compat alias, so accept either.
       // Requires a listing call to have actually SUCCEEDED. With usedTool this
       // eval was near-vacuous: an empty workspace gives it no state to check, so
       // "did the agent emit the call" was its entire substance — and that passes
       // even when the listing tool errors or is unreachable.
       const LISTING_TOOLS = [
         "analysis_list_connections",
-        "warehouse_list_connections",
         "connections_list",
       ];
       const calledWarehouseList = LISTING_TOOLS.some((name) =>

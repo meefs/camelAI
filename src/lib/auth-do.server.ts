@@ -147,7 +147,6 @@ async function collectOrgIdsFromOrgIndex(
 }
 
 const SCRIPT_PREFIX = "script:";
-const SCRIPT_ORG_PREFIX_LEGACY = "script_org:";
 const SPEND_PREFIX = "spend:";
 const ORG_INDEX_PREFIX = "org_index:";
 const API_TOKEN_PREFIX = "tok_";
@@ -1280,9 +1279,6 @@ export async function hardDeleteAdminOrgWithEnv(
     ...dispatchNames.map((dispatchName) =>
       authEnv.APP_KV.delete(`${SCRIPT_PREFIX}${dispatchName}`),
     ),
-    ...scriptNames.map((scriptName) =>
-      authEnv.APP_KV.delete(`${SCRIPT_ORG_PREFIX_LEGACY}${scriptName}`),
-    ),
   ]);
 
   try {
@@ -1297,23 +1293,6 @@ export async function hardDeleteAdminOrgWithEnv(
   } catch (error) {
     warnings.push(
       `Failed to clean script ownership index: ${toErrorMessage(error)}`,
-    );
-  }
-
-  try {
-    await deleteKvEntriesWithPrefix(
-      authEnv.APP_KV,
-      SCRIPT_ORG_PREFIX_LEGACY,
-      (_key, value) => {
-        if (!value) return false;
-        if (value === orgId) return true;
-        const parsed = parseJsonSafely(value);
-        return parsed?.org_id === orgId;
-      },
-    );
-  } catch (error) {
-    warnings.push(
-      `Failed to clean legacy script index: ${toErrorMessage(error)}`,
     );
   }
 

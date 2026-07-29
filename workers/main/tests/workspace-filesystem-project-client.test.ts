@@ -63,7 +63,6 @@ describe("ProjectFilesystemClient", () => {
       editTextFile: vi.fn(async () => ({ success: true, replacementCount: 1 })),
       readFile: vi.fn(async () => ({ success: true, content: "workspace", encoding: "utf8" })),
       createProject: vi.fn(async () => ({ id: "project-1", name: "demo", description: "Demo", defaultVmId: "main", backend: "do-r2" })),
-      setProjectBackend: vi.fn(async () => ({ id: "project-1", name: "demo", description: "Demo", defaultVmId: "main", backend: "do-r2" })),
     };
     const workspaces = namespaceFor(stub);
     const client = new WorkspaceFilesystemClient({ WORKSPACE_FS: workspaces } as never, "workspace-1");
@@ -81,11 +80,8 @@ describe("ProjectFilesystemClient", () => {
     expect(stub.readFile).toHaveBeenCalledWith("/notes.md");
     expect(stub).not.toHaveProperty("projectWriteFile.mock");
 
-    await expect(client.createProject({ name: "demo", description: "Demo", backend: "do-r2" })).resolves.toMatchObject({ backend: "do-r2" });
-    expect(stub.createProject).toHaveBeenCalledWith({ name: "demo", description: "Demo", backend: "do-r2", workspaceId: "workspace-1" });
-
-    await expect(client.setProjectBackend({ project: "demo", backend: "do-r2" })).resolves.toMatchObject({ backend: "do-r2" });
-    expect(stub.setProjectBackend).toHaveBeenCalledWith({ project: "demo", backend: "do-r2" });
+    await expect(client.createProject({ name: "demo", description: "Demo" })).resolves.toMatchObject({ backend: "do-r2" });
+    expect(stub.createProject).toHaveBeenCalledWith({ name: "demo", description: "Demo", workspaceId: "workspace-1" });
   });
 
   it("uses a distinct R2 prefix for project source blobs", () => {

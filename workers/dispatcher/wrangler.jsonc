@@ -14,9 +14,7 @@
 	"vars": {
 		"AI_VIRTUAL_MODEL": "dynamic/auto",
 		"MAIN_APP_URL": "https://local.camelai.dev",
-		"SKIP_AUTH": "true",
-		// Temporary migration mode. "legacy-open" fails closed except for legacy hostnames.
-		"DISPATCHER_MISSING_REGISTRY_MODE": "legacy-open"
+		"SKIP_AUTH": "true"
 	},
 	"dispatch_namespaces": [
 		{

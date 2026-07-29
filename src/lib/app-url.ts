@@ -13,8 +13,6 @@ import type { WorkerScript } from '../types';
  * Old URL format (old-style slugs with hyphens use double-hyphen separator):
  * Production: {scriptName}--{orgSlug}.camelai.app, {scriptName}--{orgSlug}.apps.camelai.dev
  *
- * Legacy URL format (backwards compatibility, no org slug):
- * Production: {scriptName}.camelai.app, {scriptName}.apps.camelai.dev
  */
 
 /**
@@ -150,12 +148,9 @@ export function getIframeDomain(input?: AppUrlInput): string {
  * Get the full vanity URL for a deployed app with org slug.
  * New-style slugs use single hyphen, old-style use double hyphen.
  */
-export function getAppUrl(scriptName: string, hostname?: AppUrlInput, orgSlug?: string): string {
+export function getAppUrl(scriptName: string, hostname: AppUrlInput, orgSlug: string): string {
   const domain = getVanityDomain(hostname);
-  if (orgSlug) {
-    return `https://${buildAppLabel(scriptName, orgSlug)}.${domain}`;
-  }
-  return `https://${scriptName}.${domain}`;
+  return `https://${buildAppLabel(scriptName, orgSlug)}.${domain}`;
 }
 
 /**
@@ -198,6 +193,9 @@ export function getPreferredAppUrl(
   if (isAppCustomDomainReady(app, orgCustomDomain)) {
     return getCustomDomainAppUrl(app.custom_domain_hostname!);
   }
+  if (!orgSlug) {
+    throw new Error(`Organization slug is required to build an app URL for ${app.script_name}`);
+  }
   return getAppUrl(app.script_name, hostname, orgSlug);
 }
 
@@ -205,10 +203,7 @@ export function getPreferredAppUrl(
  * Get the full iframe URL for a deployed app (used for same-site embedding).
  * New-style slugs use single hyphen, old-style use double hyphen.
  */
-export function getAppIframeUrl(scriptName: string, hostname?: AppUrlInput, orgSlug?: string): string {
+export function getAppIframeUrl(scriptName: string, hostname: AppUrlInput, orgSlug: string): string {
   const domain = getIframeDomain(hostname);
-  if (orgSlug) {
-    return `https://${buildAppLabel(scriptName, orgSlug)}.${domain}`;
-  }
-  return `https://${scriptName}.${domain}`;
+  return `https://${buildAppLabel(scriptName, orgSlug)}.${domain}`;
 }

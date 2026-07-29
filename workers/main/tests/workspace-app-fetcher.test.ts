@@ -7,14 +7,13 @@ import {
   isLocalAppHostname,
   isWorkspaceAppHostname,
   performWorkspaceAppFetch,
-  PLATFORM_DISPATCH_LEGACY_SCRIPT_HEADER,
   PLATFORM_DISPATCH_SCRIPT_HEADER,
   PLATFORM_DISPATCH_SCRIPT_NAME_HEADER,
   shouldUseDispatchInterceptionForScreenshot,
 } from '../src/workspace-app-fetcher';
 
 describe('workspace app fetcher', () => {
-  it('indexes vanity, iframe, legacy, and custom app hostnames for a workspace', async () => {
+  it('indexes vanity, iframe, and custom app hostnames for a workspace', async () => {
     const orgStub = {
       getInfo: vi.fn(async () => ({ slug: 'alpha12' })),
       listWorkerScriptsByWorkspace: vi.fn(async () => ([
@@ -56,7 +55,6 @@ describe('workspace app fetcher', () => {
           scriptName: 'private-app',
           orgSlug: 'alpha12',
           dispatchScriptName: 'private-app--alpha12',
-          legacyDispatchScriptName: 'private-app',
           workspaceId: 'workspace1',
           orgId: 'org1',
           isPublic: false,
@@ -90,7 +88,6 @@ describe('workspace app fetcher', () => {
     expect(forwarded.method).toBe('POST');
     expect(forwarded.headers.get(PLATFORM_DISPATCH_SCRIPT_HEADER)).toBe('private-app--alpha12');
     expect(forwarded.headers.get(PLATFORM_DISPATCH_SCRIPT_NAME_HEADER)).toBe('private-app');
-    expect(forwarded.headers.get(PLATFORM_DISPATCH_LEGACY_SCRIPT_HEADER)).toBe('private-app');
     expect(forwarded.headers.get('Host')).toBe('private-app-alpha12.staging.camelai.app');
   });
 
@@ -103,7 +100,6 @@ describe('workspace app fetcher', () => {
           scriptName: 'private-app',
           orgSlug: 'alpha12',
           dispatchScriptName: 'private-app--alpha12',
-          legacyDispatchScriptName: 'private-app',
           workspaceId: 'workspace1',
           orgId: 'org1',
           isPublic: false,
@@ -134,7 +130,7 @@ describe('workspace app fetcher', () => {
     expect(forwarded.headers.get(PLATFORM_DISPATCH_SCRIPT_NAME_HEADER)).toBe('private-app');
   });
 
-  it('returns dispatcher 404 responses without legacy fallback in the main worker', async () => {
+  it('returns dispatcher 404 responses directly', async () => {
     const fetchMock = vi.fn(async () => new Response('not found', { status: 404 }));
     const index = {
       hostnames: new Set(['private-app-alpha12.staging.camelai.app']),
@@ -143,7 +139,6 @@ describe('workspace app fetcher', () => {
           scriptName: 'private-app',
           orgSlug: 'alpha12',
           dispatchScriptName: 'private-app--alpha12',
-          legacyDispatchScriptName: 'private-app',
           workspaceId: 'workspace1',
           orgId: 'org1',
           isPublic: false,
@@ -185,7 +180,6 @@ describe('workspace app fetcher', () => {
           scriptName: 'private-app',
           orgSlug: 'alpha12',
           dispatchScriptName: 'private-app--alpha12',
-          legacyDispatchScriptName: 'private-app',
           workspaceId: 'workspace1',
           orgId: 'org1',
           isPublic: false,
@@ -225,7 +219,6 @@ describe('workspace app fetcher', () => {
           scriptName: 'private-app',
           orgSlug: 'alpha12',
           dispatchScriptName: 'private-app--alpha12',
-          legacyDispatchScriptName: 'private-app',
           workspaceId: 'workspace1',
           orgId: 'org1',
           isPublic: false,
@@ -342,7 +335,6 @@ describe('workspace app fetcher', () => {
           scriptName: 'private-app',
           orgSlug: 'alpha12',
           dispatchScriptName: 'private-app--alpha12',
-          legacyDispatchScriptName: 'private-app',
           workspaceId: 'workspace1',
           orgId: 'org1',
           isPublic: false,

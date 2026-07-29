@@ -25,9 +25,8 @@ export interface WorkspaceAppFetcherEnv {
 
 export interface WorkspaceAppRoute {
   scriptName: string;
-  orgSlug?: string;
+  orgSlug: string;
   dispatchScriptName: string;
-  legacyDispatchScriptName: string;
   workspaceId: string;
   orgId: string;
   isPublic: boolean;
@@ -54,12 +53,9 @@ const CROSS_ORIGIN_REDIRECT_HEADERS = [
 
 export const PLATFORM_DISPATCH_SCRIPT_HEADER = 'x-camelai-platform-dispatch-script';
 export const PLATFORM_DISPATCH_SCRIPT_NAME_HEADER = 'x-camelai-platform-script-name';
-export const PLATFORM_DISPATCH_LEGACY_SCRIPT_HEADER = 'x-camelai-platform-legacy-dispatch-script';
-
 const PLATFORM_DISPATCH_HEADERS = [
   PLATFORM_DISPATCH_SCRIPT_HEADER,
   PLATFORM_DISPATCH_SCRIPT_NAME_HEADER,
-  PLATFORM_DISPATCH_LEGACY_SCRIPT_HEADER,
 ] as const;
 
 function stripPlatformDispatchHeaders(headers: Headers): void {
@@ -76,9 +72,6 @@ function syncRequestHostHeader(headers: Headers, url: URL): void {
 function applyPlatformDispatchRoute(headers: Headers, route: WorkspaceAppRoute): void {
   headers.set(PLATFORM_DISPATCH_SCRIPT_HEADER, route.dispatchScriptName);
   headers.set(PLATFORM_DISPATCH_SCRIPT_NAME_HEADER, route.scriptName);
-  if (route.legacyDispatchScriptName !== route.dispatchScriptName) {
-    headers.set(PLATFORM_DISPATCH_LEGACY_SCRIPT_HEADER, route.legacyDispatchScriptName);
-  }
 }
 
 function normalizeHostname(hostname: string): string {
@@ -99,22 +92,22 @@ export async function buildWorkspaceAppHostIndex(
 ): Promise<WorkspaceAppHostIndex> {
   const orgStub = env.ORG.get(env.ORG.idFromName(context.orgId));
   const info = await orgStub.getInfo();
+  const routesByHostname = new Map<string, WorkspaceAppRoute>();
   const orgSlug = typeof info?.slug === 'string' && info.slug.trim()
     ? info.slug.trim()
     : undefined;
+  if (!orgSlug) {
+    return { routesByHostname, hostnames: new Set() };
+  }
   const scripts = await orgStub.listWorkerScriptsByWorkspace(context.workspaceId);
-  const routesByHostname = new Map<string, WorkspaceAppRoute>();
   const urlContext = appUrlContext(env);
 
   for (const script of scripts) {
-    const dispatchScriptName = orgSlug
-      ? `${script.script_name}--${orgSlug}`
-      : script.script_name;
+    const dispatchScriptName = `${script.script_name}--${orgSlug}`;
     const route: WorkspaceAppRoute = {
       scriptName: script.script_name,
       orgSlug,
       dispatchScriptName,
-      legacyDispatchScriptName: script.script_name,
       workspaceId: context.workspaceId,
       orgId: context.orgId,
       isPublic: script.is_public,
@@ -123,7 +116,6 @@ export async function buildWorkspaceAppHostIndex(
     const urls = [
       getPreferredAppUrl(script, { hostname: urlContext, orgSlug }),
       getAppUrl(script.script_name, urlContext, orgSlug),
-      getAppUrl(script.script_name, urlContext),
       getAppIframeUrl(script.script_name, urlContext, orgSlug),
     ];
     for (const appUrl of urls) {

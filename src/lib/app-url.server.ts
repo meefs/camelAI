@@ -6,8 +6,6 @@ import type { AppLoadContext } from 'react-router';
 import type { CloudflareEnv } from './cloudflare.server';
 import {
   type AppUrlContext,
-  getAppUrl as getAppUrlBase,
-  getAppIframeUrl as getAppIframeUrlBase,
   getVanityDomain as getVanityDomainBase,
 } from './app-url';
 
@@ -44,20 +42,4 @@ export async function getVanityDomain(contextOrRequest?: AppLoadContext | Reques
   }
 
   return getVanityDomainBase(hostname);
-}
-
-/**
- * Get the full vanity URL for a deployed app (server-side).
- */
-export async function getAppUrl(scriptName: string, request?: Request, orgSlug?: string): Promise<string> {
-  const hostname = request ? getHostFromRequest(request) : 'camelai.dev';
-  return getAppUrlBase(scriptName, hostname, orgSlug);
-}
-
-/**
- * Get the full iframe URL for a deployed app (server-side).
- */
-export async function getAppIframeUrl(scriptName: string, request?: Request, orgSlug?: string): Promise<string> {
-  const hostname = request ? getHostFromRequest(request) : 'camelai.dev';
-  return getAppIframeUrlBase(scriptName, hostname, orgSlug);
 }

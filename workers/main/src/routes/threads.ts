@@ -37,22 +37,8 @@ export async function handleThreadPreview({ req, env, match }: RouteContext): Pr
       }
       isPublic = script.is_public;
     } else {
-      const stored = await env.APP_KV.get(`script_org:${scriptName}`);
-      if (stored) {
-        try {
-          const parsed = JSON.parse(stored) as { is_public?: boolean };
-          if (typeof parsed.is_public === 'boolean') {
-            isPublic = parsed.is_public;
-          } else {
-            isPublic = true;
-          }
-        } catch {
-          isPublic = true;
-        }
-      } else {
-        // Default for newly registered scripts
-        isPublic = true;
-      }
+      // Default for newly registered scripts.
+      isPublic = true;
     }
   } catch (err) {
     console.error('[handleThreadPreview] Failed to load app visibility', err);

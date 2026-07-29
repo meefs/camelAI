@@ -130,7 +130,7 @@ export function describeChildAgentActivity(toolName: string, args?: unknown): st
     detail = stringToolArg(args, "query");
   } else if (["webfetch", "web_fetch"].includes(normalized)) {
     detail = stringToolArg(args, "url");
-  } else if (["create_project", "build_project", "deploy_project"].includes(normalized)) {
+  } else if (["create_project", "deploy_project"].includes(normalized)) {
     detail = stringToolArg(args, "project", "name", "script_name");
   } else if (normalized === "take_screenshot") {
     detail = stringToolArg(args, "script_name");
@@ -458,7 +458,6 @@ export function createPiToolDefinitions(
 
   for (const definition of CODE_MODE_PI_PASSTHROUGH_TOOL_DEFINITIONS) {
     const { name } = definition;
-    // Hidden tools (deprecated aliases) never register top-level.
     if (definition.hidden) continue;
     // Web schemas and execution are reserved for the focused Research child.
     if (!includeWebTools && (name === "WebSearch" || name === "WebFetch")) continue;

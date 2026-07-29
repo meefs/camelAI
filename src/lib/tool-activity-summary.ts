@@ -104,22 +104,16 @@ function canonicalizeToolSummaryName(name: string): string {
     case 'run_scheduled_prompt_now':
       return 'RunScheduledPrompt';
     case 'list_workflows':
-    case 'list_deterministic_automations':
       return 'ListWorkflows';
     case 'validate_workflow':
-    case 'validate_deterministic_automation':
       return 'ValidateWorkflow';
     case 'create_workflow':
-    case 'create_deterministic_automation':
       return 'CreateWorkflow';
     case 'update_workflow':
-    case 'update_deterministic_automation':
       return 'UpdateWorkflow';
     case 'delete_workflow':
-    case 'delete_deterministic_automation':
       return 'DeleteWorkflow';
     case 'run_workflow_now':
-    case 'run_deterministic_automation_now':
       return 'RunWorkflow';
     case 'list_integrations':
     case 'connections_list':

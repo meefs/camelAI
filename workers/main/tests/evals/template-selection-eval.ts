@@ -125,7 +125,6 @@ export async function runTemplateSelectionEval(
     config.template === "crud"
       ? usedCreateProject && scaffoldMatches
       : referencedExpectedTemplate && scaffoldMatches;
-  const usedBuild = usedTool(result.events, "build_project");
   const usedDeploy = usedTool(result.events, "deploy_project");
   const signal = evaluateAgentEvalSignal(
     result,
@@ -140,7 +139,6 @@ export async function runTemplateSelectionEval(
     readDevelopingSoftwareSkill,
     referencedExpectedTemplate,
     scaffoldMatches,
-    usedBuild,
     usedDeploy,
     evidence: collectRuntimeEvidence(result.events),
   };
@@ -176,12 +174,12 @@ export async function runTemplateSelectionEval(
       passFailCriterion({
         id: "avoided_unrequested_build_deploy",
         label: "Agent stopped after scaffold creation and inspection",
-        passed: !usedBuild && !usedDeploy,
+        passed: !usedDeploy,
         reason:
-          usedBuild || usedDeploy
-            ? "Agent built or deployed despite the prompt asking only for scaffold selection."
+          usedDeploy
+            ? "Agent deployed despite the prompt asking only for scaffold selection."
             : undefined,
-        details: { usedBuild, usedDeploy },
+        details: { usedDeploy },
       }),
       buildNoAssistantErrorCriterion(result),
       buildRuntimeEventsCriterion(result),

@@ -1,6 +1,4 @@
-import { Suspense } from "react";
 import {
-  Await,
   Outlet,
   redirect,
   data,
@@ -14,7 +12,6 @@ import {
   getRemainingSessionCookieMaxAge,
   parseCookies,
 } from "@/lib/cookies.server";
-import { LegacyUserBanner } from "@/components/legacy-user-banner";
 import {
   PaywallTakeover,
   type PaywallTakeoverContext,
@@ -202,34 +199,10 @@ export async function loader({ request, context }: Route.LoaderArgs) {
         throw error;
       })
     : Promise.resolve([]);
-  const showLegacyBannerPromise = (async () => {
-    const normalizedEmail = (
-      authContext.user?.email ??
-      authContext.session?.user_email ??
-      ""
-    )
-      .trim()
-      .toLowerCase();
-    const isDevelopment = env.NEXTJS_ENV === "development";
-    const [legacyUserValue, dismissedValue] = await Promise.all([
-      isDevelopment || !normalizedEmail
-        ? Promise.resolve(isDevelopment ? "1" : null)
-        : env.APP_KV.get(`legacy_user:${normalizedEmail}`),
-      actingUserId
-        ? env.APP_KV.get(`legacy_banner_dismissed:${actingUserId}`)
-        : Promise.resolve(null),
-    ]);
-    const isLegacyUser = isDevelopment || Boolean(legacyUserValue);
-    return isLegacyUser && !dismissedValue;
-  })().catch(() => {
-    // KV failure should never take down the app — degrade to hiding the banner.
-    return false;
-  });
   const responseData = {
     authState,
     defaultSidebarOpen,
     pinnedGroupCountHint,
-    showLegacyBanner: showLegacyBannerPromise,
     chatGroups: currentChatGroupsPromise,
     billingAccessReady,
     appRouteAccessible,
@@ -259,7 +232,6 @@ export default function AppLayout() {
   const {
     authState,
     defaultSidebarOpen,
-    showLegacyBanner,
     appRouteAccessible,
     billingAccessMode,
     isOrgAdmin,
@@ -289,20 +261,6 @@ export default function AppLayout() {
           </ChatThreadSnapshotsProvider>
         </BillingDialogPresenceProvider>
       </ChatGroupsProvider>
-      {embedMode ? null : (
-        <>
-          <Suspense fallback={null}>
-            <Await resolve={showLegacyBanner}>
-              {(resolvedShowLegacyBanner) => (
-                <LegacyUserBanner
-                  show={resolvedShowLegacyBanner}
-                  userId={authState.user?.id ?? "legacy-user"}
-                />
-              )}
-            </Await>
-          </Suspense>
-        </>
-      )}
     </SidebarProvider>
   );
 }
