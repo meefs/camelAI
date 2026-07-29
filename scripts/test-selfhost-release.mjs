@@ -112,6 +112,7 @@ includesAll(
     "SHARED_SECRET_FILE",
     "pomerium-data",
     'test: ["CMD", "pomerium", "health"]',
+    "DAC_OVERRIDE",
     "no-new-privileges:true",
   ],
   "bundled Pomerium Compose override",
