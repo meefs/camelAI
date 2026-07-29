@@ -49,7 +49,8 @@ loopback behind the reverse proxy.
 ## Requirements
 
 - x86_64 Ubuntu 24.04 or a current x86_64 Linux distribution
-- 4 vCPUs and 8 GiB RAM minimum
+- 4 vCPUs and 8 GiB allocated RAM minimum (Docker may report about 7.5–7.8
+  GiB usable after normal VM/kernel overhead)
 - 100 GiB recommended persistent disk
 - Docker Engine and Compose v2
 - Git, Node.js 22, and Bun 1.3.14

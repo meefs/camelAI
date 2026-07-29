@@ -30,6 +30,8 @@ const effectiveEnv = scriptEnv({
   SELFHOST_DEPLOYMENT_MODE: deploymentMode,
 });
 const selectedVolumeNames = volumeNamesForEnv(env);
+const minimumAllocatedMemoryGiB = 8;
+const minimumUsableMemoryGiB = 7.5;
 let current;
 
 await check("env file", async () => {
@@ -126,8 +128,11 @@ await check("Docker VM capacity", async () => {
     );
   }
   if (cpus > 0 && cpus < 4) warnings.push("fewer than 4 Docker CPUs");
-  if (memoryBytes > 0 && memoryBytes < 8 * 1024 ** 3) {
-    warnings.push("less than 8 GiB Docker memory");
+  if (memoryBytes > 0 && memoryBytes < minimumUsableMemoryGiB * 1024 ** 3) {
+    warnings.push(
+      `less than ${minimumUsableMemoryGiB} GiB usable Docker memory ` +
+        `(allocate at least ${minimumAllocatedMemoryGiB} GiB to the VM)`,
+    );
   }
 
   const dockerRootDir = String(info.DockerRootDir || "").trim();
