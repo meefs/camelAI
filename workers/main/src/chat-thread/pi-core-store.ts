@@ -329,7 +329,7 @@ export class PiCoreMessageStore {
   ): Promise<unknown> {
     if (value === null || value === undefined || typeof value !== "object") return value;
     if (Array.isArray(value)) {
-      const hydrated = new Array<unknown>(value.length);
+      const hydrated: unknown[] = Array.from({ length: value.length });
       // Prefer recent provider context and avoid concurrently materializing
       // several R2 bodies/base64 strings. The source/session graph is untouched.
       let changed = false;

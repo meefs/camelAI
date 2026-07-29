@@ -437,7 +437,13 @@ function stopDockerFuseProxy() {
   if (!fuseProxy) return;
   try {
     fuseProxy.kill("SIGTERM");
-  } catch {}
+  } catch (error) {
+    console.warn(
+      `Failed to stop Docker FUSE proxy: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
   fuseProxy = undefined;
 }
 

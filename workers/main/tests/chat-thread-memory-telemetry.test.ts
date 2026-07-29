@@ -92,6 +92,32 @@ describe('privacy-safe chat memory aggregates', () => {
     }
   });
 
+  it('returns the current unmeasured store shape when aggregate collection fails', () => {
+    const storage = {} as { sql?: SqlStorage };
+    Object.defineProperty(storage, 'sql', {
+      get() {
+        throw new Error('storage unavailable');
+      },
+    });
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.ctx = { storage };
+
+    const stats = ChatThreadDO.prototype['readChatMemoryStats'].call(fake);
+
+    expect(stats).toEqual({
+      totalRows: 0,
+      totalBytes: 0,
+      maxRowBytes: 0,
+      stores: {
+        render: { rows: 0, bytes: 0, maxRowBytes: 0, measured: false },
+        pi: { rows: 0, bytes: 0, maxRowBytes: 0, measured: false },
+        journal: { rows: 0, bytes: 0, maxRowBytes: 0, measured: false },
+        toolRuns: { rows: 0, bytes: 0, maxRowBytes: 0, measured: false },
+      },
+    });
+    expect(stats.stores).not.toHaveProperty('stream');
+  });
+
   it('emits privacy-safe start/end pairs and leaves a start when work does not finish', () => {
     const events: Array<{ event: string; details: Record<string, unknown> }> =
       [];

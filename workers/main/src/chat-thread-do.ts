@@ -4264,10 +4264,10 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         totalBytes: 0,
         maxRowBytes: 0,
         stores: {
-          render: { rows: 0, bytes: 0, maxRowBytes: 0 },
-          pi: { rows: 0, bytes: 0, maxRowBytes: 0 },
-          journal: { rows: 0, bytes: 0, maxRowBytes: 0 },
-          stream: { rows: 0, bytes: 0, maxRowBytes: 0 },
+          render: { rows: 0, bytes: 0, maxRowBytes: 0, measured: false },
+          pi: { rows: 0, bytes: 0, maxRowBytes: 0, measured: false },
+          journal: { rows: 0, bytes: 0, maxRowBytes: 0, measured: false },
+          toolRuns: { rows: 0, bytes: 0, maxRowBytes: 0, measured: false },
         },
       };
     }
