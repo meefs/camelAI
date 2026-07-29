@@ -30,6 +30,22 @@ jobs:
       - run: docker compose --env-file .env.selfhost -f docker-compose.selfhost.yml config --quiet
       - name: Validate bundled Pomerium overlay
         run: |
+          compose() {
+            docker compose --env-file .env.selfhost \
+              -f docker-compose.selfhost.yml \
+              -f docker-compose.selfhost.pomerium.yml \
+              "$@"
+          }
+          cleanup() {
+            exit_code=$?
+            if (( exit_code != 0 )); then
+              compose ps --all || true
+              compose logs --tail=200 pomerium || true
+            fi
+            compose down --volumes || true
+            exit "$exit_code"
+          }
+          trap cleanup EXIT
           {
             echo "SELFHOST_POMERIUM_TLS_MODE=upstream"
             echo "POMERIUM_IDP_PROVIDER_URL=https://accounts.example.com"
@@ -37,18 +53,20 @@ jobs:
             echo "POMERIUM_IDP_CLIENT_SECRET=release-validation-secret"
           } >> .env.selfhost
           bun run selfhost:configure
-          docker compose --env-file .env.selfhost \
-            -f docker-compose.selfhost.yml \
-            -f docker-compose.selfhost.pomerium.yml \
-            up --detach --wait pomerium
-          docker compose --env-file .env.selfhost \
-            -f docker-compose.selfhost.yml \
-            -f docker-compose.selfhost.pomerium.yml \
-            exec -T pomerium pomerium health
-          docker compose --env-file .env.selfhost \
-            -f docker-compose.selfhost.yml \
-            -f docker-compose.selfhost.pomerium.yml \
-            down --volumes
+          compose config --quiet
+          compose up --detach pomerium
+          healthy=0
+          for attempt in {1..30}; do
+            if compose exec -T pomerium pomerium health; then
+              healthy=1
+              break
+            fi
+            sleep 1
+          done
+          if (( healthy == 0 )); then
+            echo "Pomerium did not become healthy within 30 seconds" >&2
+            exit 1
+          fi
       - run: bun run test:selfhost
 
   validate-bundled-images:

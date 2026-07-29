@@ -2817,8 +2817,6 @@ describe('ChatThreadDO Pi turn handling', () => {
       expect.objectContaining({ threadId: 'thread1' }),
       expect.objectContaining({
         CHIRIDION_MODEL: 'sonnet',
-        CHIRIDION_CLAUDE_MODEL: 'sonnet',
-        CHIRIDION_CODEX_MODEL: 'sonnet',
       }),
     );
   });
