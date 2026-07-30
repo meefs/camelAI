@@ -99,7 +99,6 @@ describe('capability agent tool boundaries', () => {
     expect(capabilityAgentToolOptions('Oracle')).toEqual({
       includeSubagents: false,
       includeResearch: true,
-      includeOracle: false,
       includeWebTools: false,
     });
   });
@@ -108,7 +107,6 @@ describe('capability agent tool boundaries', () => {
     expect(capabilityAgentToolOptions('Research')).toEqual({
       includeSubagents: false,
       includeResearch: false,
-      includeOracle: false,
       includeWebTools: true,
     });
   });
@@ -1996,7 +1994,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       usageProvider: 'openrouter',
     });
     expect(model.model).toMatchObject({
-      id: 'openai/gpt-5.6-luna:nitro',
+      id: 'openai/gpt-5.6-luna',
       provider: 'cloudflare-ai-gateway',
       api: 'openai-responses',
     });
@@ -2092,7 +2090,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(fake.piCurrentUsageProvider).toBe('openrouter');
   });
 
-  it('routes hosted deepseek-v4-auto through the AI Gateway dynamic fallback route', async () => {
+  it('routes the persisted camelCode id to Luna through AI Gateway OpenRouter', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.env = {
       CF_ACCOUNT_ID: 'acct_1',
@@ -2111,14 +2109,14 @@ describe('ChatThreadDO Pi turn handling', () => {
     }));
 
     const getModel = vi.fn(() => ({
-      id: 'deepseek/deepseek-v4-pro',
-      provider: 'openrouter',
-      api: 'openai-completions',
-      baseUrl: 'https://openrouter.ai/api/v1',
+      id: 'gpt-5.6-luna',
+      provider: 'openai',
+      api: 'openai-responses',
+      baseUrl: 'https://api.openai.com/v1',
       reasoning: true,
-      compat: { thinkingFormat: 'openrouter' },
-      contextWindow: 384_000,
-      maxTokens: 384_000,
+      input: ['text', 'image'],
+      contextWindow: 1_050_000,
+      maxTokens: 128_000,
     }));
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
@@ -2127,33 +2125,18 @@ describe('ChatThreadDO Pi turn handling', () => {
       getModel,
     );
 
-    expect(getModel).toHaveBeenCalledWith('openrouter', 'deepseek/deepseek-v4-pro');
+    expect(getModel).toHaveBeenCalledWith('openai', 'gpt-5.6-luna');
     expect(model.model).toMatchObject({
-      id: 'dynamic/deepseek-v4-auto',
+      id: 'openai/gpt-5.6-luna',
       provider: 'cloudflare-ai-gateway',
-      api: 'openai-completions',
-      baseUrl: 'https://gateway.ai.cloudflare.com/v1/acct_1/gateway_1/compat',
+      api: 'openai-responses',
+      baseUrl: 'https://gateway.ai.cloudflare.com/v1/acct_1/gateway_1/openrouter',
+      input: ['text', 'image'],
     });
-    expect(model.model.headers).toMatchObject({
-      'x-sticky-key': 'chiridion:org1:workspace1:thread1',
-      'X-Chiridion-VLLM-Priority': '100',
-    });
-    // Dynamic routes fan out across RTX/Azure/OpenRouter. Keep high reasoning,
-    // but use a conservative working window because Pi's estimate does not
-    // include every vLLM chat-template and tool-schema token.
-    expect(model.model.compat).toMatchObject({
-      supportsReasoningEffort: true,
-      thinkingFormat: 'openai',
-    });
-    expect(model.model.thinkingLevelMap).toEqual({
-      minimal: 'high',
-      low: 'high',
-      medium: 'high',
-      high: 'high',
-      xhigh: 'high',
-    });
-    expect(model.model.contextWindow).toBe(220000);
-    expect(model.model.maxTokens).toBe(262144);
+    expect(model.model.headers).not.toHaveProperty('x-sticky-key');
+    expect(model.model.headers).not.toHaveProperty('X-Chiridion-VLLM-Priority');
+    expect(model.model.contextWindow).toBe(1_050_000);
+    expect(model.model.maxTokens).toBe(128_000);
     expect(model.model.reasoning).toBe(true);
     expect(model.creditChargeable).toBe(false);
     expect(fake.checkHostedPiModelAccess).toHaveBeenCalledWith(
@@ -2161,7 +2144,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       'deepseek-v4-auto',
     );
     expect(fake.resolveCurrentByokCredentials).not.toHaveBeenCalled();
-    expect(fake.piCurrentUsageProvider).toBe('compat');
+    expect(fake.piCurrentUsageProvider).toBe('openrouter');
   });
 
   it('falls back to camelCode when hosted credits are exhausted', async () => {
@@ -2217,7 +2200,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       billingSource: 'hosted',
       creditChargeable: false,
       model: {
-        id: 'dynamic/deepseek-v4-auto',
+        id: 'openai/gpt-5.6-luna',
         provider: 'cloudflare-ai-gateway',
       },
     });
@@ -2428,7 +2411,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
   });
 
-  it('does not route deepseek-v4-auto through OpenRouter BYOK', async () => {
+  it('keeps camelCode Luna on the hosted OpenRouter route instead of BYOK', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.env = {
       CF_ACCOUNT_ID: 'acct_1',
@@ -2454,21 +2437,21 @@ describe('ChatThreadDO Pi turn handling', () => {
       { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
       { CHIRIDION_MODEL: 'deepseek-v4-auto' },
       vi.fn(() => ({
-        id: 'deepseek/deepseek-v4-pro',
-        provider: 'openrouter',
-        api: 'openai-completions',
-        baseUrl: 'https://openrouter.ai/api/v1',
+        id: 'gpt-5.6-luna',
+        provider: 'openai',
+        api: 'openai-responses',
+        baseUrl: 'https://api.openai.com/v1',
       })),
     );
 
     expect(model.model).toMatchObject({
-      id: 'dynamic/deepseek-v4-auto',
+      id: 'openai/gpt-5.6-luna',
       provider: 'cloudflare-ai-gateway',
-      baseUrl: 'https://gateway.ai.cloudflare.com/v1/acct_1/gateway_1/compat',
+      baseUrl: 'https://gateway.ai.cloudflare.com/v1/acct_1/gateway_1/openrouter',
     });
     expect(model.apiKey).toBe('cf-token');
     expect(model.billingSource).toBe('hosted');
-    expect(model.usageProvider).toBe('compat');
+    expect(model.usageProvider).toBe('openrouter');
     expect(fake.checkHostedPiModelAccess).toHaveBeenCalledOnce();
   });
 
@@ -4456,25 +4439,15 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
   });
 
-  it('resolves deepseek-v4-auto to the AI Gateway dynamic route with an OpenRouter lookup id', () => {
+  it('resolves the persisted camelCode id to hosted Luna on OpenRouter', () => {
     const result = new PiModelMapping().resolvePiModelReference('deepseek-v4-auto');
 
     expect(result).toEqual({
-      provider: 'openrouter',
-      modelId: 'deepseek/deepseek-v4-pro',
-      hostedGatewayProvider: 'compat',
-      hostedModelId: 'dynamic/deepseek-v4-auto',
-      hostedStickyRouting: true,
-      hostedReasoningEffort: 'high',
+      provider: 'openai',
+      modelId: 'gpt-5.6-luna',
+      hostedGatewayProvider: 'openrouter',
+      hostedModelId: 'openai/gpt-5.6-luna',
       byokAllowed: false,
-      hostedRequestProfile: {
-        name: 'deepseek-v4-flash-rtx',
-        contextWindow: 220_000,
-        maxTokens: 262_144,
-        reasoning: true,
-        supportsReasoningEffort: true,
-        thinkingFormat: 'openai',
-      },
     });
   });
 
@@ -5340,7 +5313,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(text).not.toContain('Oracle');
   });
 
-  it('redirects stripped camelCode image reads to the Oracle tool', async () => {
+  it('does not redirect stripped legacy camelCode image reads to Oracle', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.piSession = { state: { model: { id: 'dynamic/deepseek-v4-auto', input: ['text'] } } };
     fake.currentThreadModel = 'deepseek-v4-auto';
@@ -5357,7 +5330,8 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
 
     const text = (result?.content?.[0] as { text: string }).text;
-    expect(text).toContain('active model cannot inspect images. Delegate image understanding to the `Oracle` tool, passing this file path]');
+    expect(text).toContain('active model cannot inspect images');
+    expect(text).not.toContain('Oracle');
   });
 
   it('truncates oversized Pi tool results and stores full text in R2', async () => {
@@ -6372,21 +6346,10 @@ describe('ChatThreadDO Pi turn handling', () => {
 
     fake.currentThreadModel = 'deepseek-v4-auto';
     const camelFreePrompt = ChatThreadDO.prototype['createPiSystemPrompt'].call(fake, context);
-    expect(camelFreePrompt).toContain('Use `Oracle` when the user asks for it');
-    expect(camelFreePrompt).toContain('stuck after failed attempts');
-    expect(camelFreePrompt).toContain('difficult architecture, debugging, planning, or implementation');
-    expect(camelFreePrompt).toContain('Handle routine work directly');
-    expect(camelFreePrompt).toContain('You cannot see images');
-    expect(camelFreePrompt).toContain('do not guess and do not answer generically: call `Oracle`');
-    expect(camelFreePrompt).toContain('include the exact image path(s)');
-    expect(camelFreePrompt).toContain("Use Oracle's description of the image as ground truth");
-    expect(camelFreePrompt).toContain('never claim to have viewed an image yourself');
+    expect(camelFreePrompt).not.toContain('Oracle');
+    expect(camelFreePrompt).not.toContain('You cannot see images');
     expect(camelFreePrompt).not.toContain('WebSearch');
     expect(camelFreePrompt).not.toContain('WebFetch');
-
-    const oracleTools = ChatThreadDO.prototype['createPiToolDefinitions'].call(fake, context, { includeOracle: true });
-    const oracleTool = oracleTools.find((tool: any) => tool.name === 'Oracle');
-    expect(oracleTool?.description).toContain('Oracle can also view and interpret images (screenshots, charts, photos) that you cannot see yourself; give it the image file path.');
 
     const piTools = ChatThreadDO.prototype['createPiToolDefinitions'].call(fake, context);
     expect(piTools.map((tool: any) => tool.description ?? '').join('\n')).not.toContain('WebSearch');
@@ -8348,7 +8311,6 @@ describe('ChatThreadDO Pi turn handling', () => {
     }, {
       includeSubagents: false,
       includeResearch: false,
-      includeOracle: false,
       includeWebTools: true,
     });
     const webSearch = tools.find((tool: any) => tool.name === 'WebSearch');
@@ -9450,7 +9412,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
   });
 
-  it('exposes shared Research and camelCode-only Oracle without recursive capability agents', () => {
+  it('exposes shared Research without exposing Oracle', () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.ctx = {
       exports: {
@@ -9489,48 +9451,9 @@ describe('ChatThreadDO Pi turn handling', () => {
       expect.arrayContaining(['Agent', 'Explore']),
     );
 
-    const camelCodeTools = ChatThreadDO.prototype['createPiToolDefinitions'].call(fake, context, {
-      includeOracle: true,
-    });
-    expect(camelCodeTools.map((tool: any) => tool.name)).toEqual(
-      expect.arrayContaining(['Research', 'Oracle']),
-    );
-    const camelCodeResearch = camelCodeTools.find((tool: any) => tool.name === 'Research');
-    expect(camelCodeResearch?.description).toBe(research?.description);
-    const oracle = camelCodeTools.find((tool: any) => tool.name === 'Oracle');
-    expect(oracle?.description).toContain('especially after failed attempts');
-    expect(oracle?.description).toContain('inspect, edit, and verify the workspace');
-    expect(oracle?.description).toContain('difficult architecture, debugging, planning, or implementation');
-    expect(oracle?.description).not.toContain('Research');
-    expect(oracle?.description).not.toMatch(/gpt|luna|model/i);
-
-    for (const activeModel of [
-      'gpt-5.6-sol',
-      'gpt-5.6-terra',
-      'deepseek-v4-pro',
-      'claude-sonnet-4-6',
-      'custom',
-      null,
-    ]) {
-      fake.currentThreadModel = activeModel;
-      expect(
-        ChatThreadDO.prototype['isCamelCodeActive'].call(fake),
-        `Oracle policy must be disabled for ${activeModel ?? 'no active model'}`,
-      ).toBe(false);
-    }
-    fake.currentThreadModel = 'deepseek-v4-auto';
-    expect(ChatThreadDO.prototype['isCamelCodeActive'].call(fake)).toBe(true);
-    expect(ChatThreadDO.prototype['isCamelCodeActive'].call(fake, {
-      CHIRIDION_MODEL: 'gpt-5.6-sol',
-    })).toBe(false);
-    expect(ChatThreadDO.prototype['isCamelCodeActive'].call(fake, {
-      CHIRIDION_MODEL: 'deepseek-v4-auto',
-    })).toBe(true);
-
     const capabilityChildTools = ChatThreadDO.prototype['createPiToolDefinitions'].call(fake, context, {
       includeSubagents: false,
       includeResearch: false,
-      includeOracle: false,
     });
     expect(capabilityChildTools.map((tool: any) => tool.name)).not.toEqual(
       expect.arrayContaining(['Agent', 'Explore', 'Research', 'Oracle']),
@@ -9538,21 +9461,9 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(capabilityChildTools.map((tool: any) => tool.name)).not.toContain('WebSearch');
     expect(capabilityChildTools.map((tool: any) => tool.name)).not.toContain('WebFetch');
 
-    const oracleChildTools = ChatThreadDO.prototype['createPiToolDefinitions'].call(
-      fake,
-      context,
-      capabilityAgentToolOptions('Oracle'),
-    );
-    const oracleChildToolNames = oracleChildTools.map((tool: any) => tool.name);
-    expect(oracleChildToolNames).toContain('Research');
-    expect(oracleChildToolNames).not.toContain('Agent');
-    expect(oracleChildToolNames).not.toContain('Explore');
-    expect(oracleChildToolNames).not.toContain('Oracle');
-    expect(oracleChildToolNames).not.toContain('WebSearch');
-    expect(oracleChildToolNames).not.toContain('WebFetch');
   });
 
-  it('keeps Oracle when refreshing an active camelCode session', async () => {
+  it('keeps Oracle disabled when refreshing an active camelCode session', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     const refreshedModel = { id: 'dynamic/deepseek-v4-auto' };
     fake.piSession = { state: { model: null, tools: [] } };
@@ -9572,10 +9483,9 @@ describe('ChatThreadDO Pi turn handling', () => {
       ...refreshedModel,
       maxTokens: PI_MAIN_REQUEST_DEFAULT_OUTPUT_TOKENS,
     });
-    expect(fake.piSession.state.systemPrompt).toContain('Use `Oracle` when the user asks for it');
+    expect(fake.piSession.state.systemPrompt).not.toContain('Oracle');
     expect(fake.createPiToolDefinitions).toHaveBeenCalledWith(
       fake.chatContext,
-      { includeOracle: true },
     );
   });
 
@@ -9615,9 +9525,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       userId: 'user1',
     };
     fake.currentThreadModel = 'gpt-5.6-sol';
-    fake.createPiToolDefinitions = vi.fn((_context: unknown, options: any) =>
-      options.includeOracle ? [{ name: 'Oracle' }] : []
-    );
+    fake.createPiToolDefinitions = vi.fn(() => []);
 
     await ChatThreadDO.prototype['refreshPiSessionModel'].call(fake);
 
@@ -9629,7 +9537,6 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(fake.piSession.state.systemPrompt).not.toContain('Oracle');
     expect(fake.createPiToolDefinitions).toHaveBeenCalledWith(
       fake.chatContext,
-      { includeOracle: false },
     );
   });
 

@@ -129,9 +129,10 @@ const DEEPSEEK_V4_VIRTUAL_AI_ROUTES: Readonly<
     allowOpenRouterByok: true,
   },
   "deepseek-v4-auto": {
-    nativeOpenRouterModel: "deepseek/deepseek-v4-pro",
-    hostedModel: "dynamic/deepseek-v4-auto",
-    hostedGatewayProvider: "compat",
+    // Backward-compatible public id; hosted execution has moved to Luna.
+    nativeOpenRouterModel: "openai/gpt-5.6-luna",
+    hostedModel: "openai/gpt-5.6-luna",
+    hostedGatewayProvider: "openrouter",
     allowOpenRouterByok: false,
   },
   "deepseek-v4-flash": {
@@ -347,7 +348,7 @@ export async function executeVirtualAiRun(
           routing.model,
           routing.gatewayProvider,
           routing.byokKey,
-          requestedModel.startsWith("deepseek-v4-") && !usesByok
+          routing.model.startsWith("dynamic/deepseek-v4-") && !usesByok
             ? access.vllmPriority
             : undefined,
         );
@@ -660,6 +661,7 @@ function formatModelForProvider(
 export function appendNitro(model: string): string {
   const trimmed = model.trim();
   if (!trimmed) return trimmed;
+  if (trimmed.toLowerCase() === "openai/gpt-5.6-luna") return trimmed;
   const lastSegment = trimmed.slice(trimmed.lastIndexOf("/") + 1);
   if (lastSegment.includes(":")) return trimmed;
   return `${trimmed}:nitro`;

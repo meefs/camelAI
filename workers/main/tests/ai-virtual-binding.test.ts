@@ -142,7 +142,7 @@ describe("normalizeLegacyModel (back-compat shim)", () => {
 });
 
 describe("resolveRouting", () => {
-  it("routes hosted DeepSeek V4 Auto through the AI Gateway compat dynamic route", async () => {
+  it("routes the legacy DeepSeek V4 Auto id to hosted Luna on OpenRouter", async () => {
     const routing = await resolveRouting(
       {
         env: {
@@ -160,9 +160,9 @@ describe("resolveRouting", () => {
     );
 
     expect(routing.provider).toBe("openrouter");
-    expect(routing.gatewayProvider).toBe("compat");
-    expect(routing.usageProvider).toBe("compat");
-    expect(routing.model).toBe("dynamic/deepseek-v4-auto");
+    expect(routing.gatewayProvider).toBe("openrouter");
+    expect(routing.usageProvider).toBe("openrouter");
+    expect(routing.model).toBe("openai/gpt-5.6-luna");
     expect(routing.byokKey).toBeUndefined();
   });
 
@@ -237,9 +237,9 @@ describe("resolveRouting", () => {
     );
 
     expect(routing.provider).toBe("openrouter");
-    expect(routing.gatewayProvider).toBe("compat");
-    expect(routing.usageProvider).toBe("compat");
-    expect(routing.model).toBe("dynamic/deepseek-v4-auto");
+    expect(routing.gatewayProvider).toBe("openrouter");
+    expect(routing.usageProvider).toBe("openrouter");
+    expect(routing.model).toBe("openai/gpt-5.6-luna");
     expect(routing.byokKey).toBeUndefined();
   });
 
@@ -372,14 +372,14 @@ describe("executeVirtualAiRun", () => {
 
       const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
       expect(url).toBe(
-        "https://gateway.ai.cloudflare.com/v1/acct_1/gw_1/compat/chat/completions",
+        "https://gateway.ai.cloudflare.com/v1/acct_1/gw_1/openrouter/chat/completions",
       );
       const headers = new Headers(init.headers);
       expect(headers.get("authorization")).toBe("Bearer tok_1");
       expect(headers.get("cf-aig-authorization")).toBeNull();
-      expect(headers.get("X-Chiridion-VLLM-Priority")).toBe("0");
+      expect(headers.get("X-Chiridion-VLLM-Priority")).toBeNull();
       const body = JSON.parse(String(init.body)) as { model: string };
-      expect(body.model).toBe("dynamic/deepseek-v4-auto");
+      expect(body.model).toBe("openai/gpt-5.6-luna");
       expect(getUsageLogSum).not.toHaveBeenCalled();
       await Promise.all(backgroundTasks);
       expect(recordUsage).toHaveBeenCalledWith(
@@ -438,6 +438,12 @@ describe("appendNitro", () => {
     );
     expect(appendNitro("moonshotai/kimi-k2.7-code")).toBe(
       "moonshotai/kimi-k2.7-code:nitro",
+    );
+  });
+
+  it("leaves Luna unsuffixed", () => {
+    expect(appendNitro("openai/gpt-5.6-luna")).toBe(
+      "openai/gpt-5.6-luna",
     );
   });
 

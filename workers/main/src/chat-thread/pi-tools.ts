@@ -53,14 +53,13 @@ import { projectPiToolResultDetails } from "../pi-message-storage";
 export interface PiToolDefinitionOptions {
   includeSubagents?: boolean;
   includeResearch?: boolean;
-  includeOracle?: boolean;
   /** WebSearch/WebFetch are reserved for the Research capability agent. */
   includeWebTools?: boolean;
   /** Self-host mode disables outbound email and omits it from js_exec discovery. */
   outboundEmailEnabled?: boolean;
 }
 
-const RESEARCH_CAPABILITY_MODEL = "deepseek-v4-auto";
+const RESEARCH_CAPABILITY_MODEL = "gpt-5.6-luna";
 const ORACLE_CAPABILITY_MODEL = "gpt-5.6-luna";
 
 export function capabilityAgentToolOptions(
@@ -69,7 +68,6 @@ export function capabilityAgentToolOptions(
   return {
     includeSubagents: false,
     includeResearch: toolName === "Oracle",
-    includeOracle: false,
     includeWebTools: toolName === "Research",
   };
 }
@@ -551,21 +549,6 @@ export function createPiToolDefinitions(
     )
   );
 
-  if (options.includeOracle === true) {
-    definitions.push({
-      name: "Oracle",
-      label: "Oracle",
-      description:
-        "Delegate difficult architecture, debugging, planning, or implementation when stronger reasoning would materially help, especially after failed attempts. Oracle can inspect, edit, and verify the workspace. Oracle can also view and interpret images (screenshots, charts, photos) that you cannot see yourself; give it the image file path.",
-      parameters: Type.Object({
-        question: Type.String(),
-      }),
-      execute: async (toolUseId, params, signal, onUpdate) =>
-        runCapability("Oracle", toolUseId, params, signal, onUpdate),
-      executionMode: "sequential",
-    });
-  }
-
   if (options.includeResearch !== false) {
     definitions.push({
       name: "Research",
@@ -618,7 +601,6 @@ export async function runPiSubagentTool(
       tools: deps.createPiToolDefinitions(context, {
         includeSubagents: false,
         includeResearch: false,
-        includeOracle: false,
         includeWebTools: false,
       }),
       messages: [],

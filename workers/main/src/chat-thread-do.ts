@@ -2763,13 +2763,8 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     const inlineImages = imageBlindModel
       ? stripPiInlineImageDataUrls(fullText)
       : { text: fullText, count: 0, bytes: 0 };
-    // camelCode threads have a vision-capable Oracle; redirect the agent there
-    // exactly where its own image read failed.
-    const imageOmissionRedirect = this.isCamelCodeActive()
-      ? ". Delegate image understanding to the `Oracle` tool, passing this file path"
-      : "";
     const imagePartNotice = omittedImageParts > 0
-      ? `[${omittedImageParts} image tool result${omittedImageParts === 1 ? "" : "s"} omitted: ${omittedImageBytes} bytes; active model cannot inspect images${imageOmissionRedirect}]`
+      ? `[${omittedImageParts} image tool result${omittedImageParts === 1 ? "" : "s"} omitted: ${omittedImageBytes} bytes; active model cannot inspect images]`
       : "";
     const modelText = [inlineImages.text, imagePartNotice]
       .filter(Boolean)
@@ -5333,9 +5328,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
                 customModelId,
               });
       // Keep the in-memory model aligned with the durable thread before any
-      // refresh rebuilds the tool surface. Without this, an explicitly selected
-      // camelCode thread initially receives Oracle, then refreshPiSessionModel()
-      // immediately removes it because currentThreadModel is still null.
+      // refresh rebuilds the tool surface.
       this.currentThreadModel = threadModel;
       const storedModelChangedAt =
         thread && typeof thread === "object" && "last_model_changed_at" in thread
@@ -5440,9 +5433,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       initialState: {
         systemPrompt: this.createPiSystemPrompt(context, envVars),
         model: capPiMainRequestOutput(modelConfig.model),
-        tools: this.createPiToolDefinitions(context, {
-          includeOracle: this.isCamelCodeActive(envVars),
-        }),
+        tools: this.createPiToolDefinitions(context),
         messages: initialMessages,
         thinkingLevel: "medium",
       },
@@ -5502,7 +5493,6 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     const base = createPiSystemPrompt(context, {
       skillNames: PI_SKILL_NAMES,
       skillDescriptions: PI_SKILL_DESCRIPTIONS,
-      oracleAvailable: this.isCamelCodeActive(envVars),
     });
     const verifiedWorkState = formatVerifiedWorkStatePrompt(
       this.ctx?.storage?.kv?.get<unknown>(CHAT_VERIFIED_WORK_STATE_KEY),
@@ -5785,12 +5775,6 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       idempotency_key: idempotencyKey,
     });
   }
-
-  private isCamelCodeActive(envVars?: Record<string, string>): boolean {
-    const requested = envVars?.CHIRIDION_MODEL;
-    return (requested ?? this.currentThreadModel) === CAMEL_CODE_LLM_MODEL;
-  }
-
 
   private checkHostedPiModelAccess(
     context: ChatContextState,
@@ -6848,9 +6832,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   ): void {
     if (!this.piSession) return;
     this.piSession.state.systemPrompt = this.createPiSystemPrompt(context, envVars);
-    this.piSession.state.tools = this.createPiToolDefinitions(context, {
-      includeOracle: this.isCamelCodeActive(envVars),
-    });
+    this.piSession.state.tools = this.createPiToolDefinitions(context);
   }
 
   private recordCurrentThreadError(input: {

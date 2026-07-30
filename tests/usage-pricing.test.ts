@@ -37,13 +37,13 @@ describe("calculateEffectiveUsageCostUsd", () => {
 describe("calculateUsageCostUsd", () => {
   it("prices GPT-5.6 aliases and long prompts", () => {
     expect(lookupPricing("openai/gpt-5.6-terra")).toMatchObject({
-      inputPerToken: 0.0000025,
-      outputPerToken: 0.000015,
+      inputPerToken: 0.000002,
+      outputPerToken: 0.000012,
     });
     expect(lookupPricing("openai/gpt-5.6-luna")).toMatchObject({
-      inputPerToken: 0.000001,
-      outputPerToken: 0.000006,
-      cacheReadPerToken: 0.0000001,
+      inputPerToken: 0.0000002,
+      outputPerToken: 0.0000012,
+      cacheReadPerToken: 0.00000002,
     });
     expect(lookupPricing("openai/gpt-5.6-luna:nitro")).toBe(
       lookupPricing("gpt-5.6-luna"),

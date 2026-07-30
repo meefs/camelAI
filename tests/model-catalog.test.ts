@@ -90,7 +90,7 @@ const NEW_FRONTIER_MODELS: Array<{
     label: 'GPT-5.6 Luna',
     providerLogo: 'openai',
     pricingKey: 'gpt-5.6-luna',
-    cost: '$$',
+    cost: '$',
   },
   {
     id: 'opus-4.8',

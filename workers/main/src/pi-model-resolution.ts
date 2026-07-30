@@ -95,17 +95,13 @@ export class PiModelMapping {
           hostedReasoningEffort: "xhigh",
         };
       case "deepseek-v4-auto":
-        // Hosted traffic goes through the AI Gateway dynamic route (provider
-        // fallbacks are configured on the gateway). There is no OpenRouter BYOK
-        // equivalent for this camelAI-hosted auto route.
+        // Keep the persisted/public camelCode id stable while its hosted
+        // backend uses the existing Luna-over-OpenRouter route. This lets old
+        // threads and free-mode fallbacks move off the self-hosted DeepSeek
+        // pool without a thread-model migration.
         return {
-          ...openRouterReference("deepseek/deepseek-v4-pro"),
-          hostedGatewayProvider: "compat",
-          hostedModelId: "dynamic/deepseek-v4-auto",
-          hostedStickyRouting: true,
-          hostedReasoningEffort: "high",
+          ...openAiReference("gpt-5.6-luna"),
           byokAllowed: false,
-          hostedRequestProfile: DEEPSEEK_V4_FLASH_RTX_PROFILE,
         };
       case "deepseek-v4-flash":
         return {
@@ -252,6 +248,7 @@ export class PiModelMapping {
     if (!trimmed) return model;
     const lower = trimmed.toLowerCase();
     if (
+      lower === "openai/gpt-5.6-luna" ||
       lower.startsWith("dynamic/") ||
       lower.startsWith("google/gemini-") ||
       lower.startsWith("deepseek/deepseek-v4-") ||

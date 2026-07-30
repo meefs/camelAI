@@ -42,7 +42,7 @@ export const PLAN_CONTENT: Record<BillingPlan, PlanContent> = {
     ctaKind: "subscribe",
     features: [
       "$10 of model credits / mo (at cost)",
-      "5× daily web search, research, and Oracle allowances",
+      "5× daily web search and research allowances",
       "Priority over free traffic on camelCode",
       "30 deployed apps",
       "10 custom domains",
@@ -58,7 +58,7 @@ export const PLAN_CONTENT: Record<BillingPlan, PlanContent> = {
     ctaKind: "subscribe",
     features: [
       "$40 of model credits / mo (at cost)",
-      "20× daily web search, research, and Oracle allowances",
+      "20× daily web search and research allowances",
       "Priority over free traffic on camelCode",
       "Unlimited deployed apps",
       "Unlimited custom domains",
@@ -73,7 +73,7 @@ export const PLAN_CONTENT: Record<BillingPlan, PlanContent> = {
     ctaKind: "subscribe",
     features: [
       "$50 of model credits / seat / mo",
-      "20× daily web search, research, and Oracle allowances",
+      "20× daily web search and research allowances",
       "Priority over free traffic on camelCode",
       "2 shared workspaces",
       "Role-based access (admin / member)",

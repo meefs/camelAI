@@ -8,7 +8,6 @@ export type PiSystemPromptOptions = {
   skillNames: readonly string[];
   skillDescriptions?: Readonly<Record<string, string | undefined>>;
   researchAvailable?: boolean;
-  oracleAvailable?: boolean;
 };
 
 export type PiSubagentMode = "agent" | "explore";
@@ -33,10 +32,6 @@ export function createPiSystemPrompt(
   const webResearchGuidance = options.researchAvailable === false
     ? "If the task needs external research, note what is needed so the primary agent can handle it."
     : "Use `Research` for current or external information, reading a URL, or source synthesis. Give it one focused question and use the relevant findings in your answer.";
-  const oracleRoutingGuidance = options.oracleAvailable === true
-    ? "Use `Oracle` when the user asks for it, when you are stuck after failed attempts, or when difficult architecture, debugging, planning, or implementation would benefit from stronger reasoning. When one of those applies, delegate the complete bounded task—including its requested subtasks—instead of doing that work yourself. Handle routine work directly. " +
-      "You cannot see images: uploaded screenshots, photos, charts, and other image files reach you only as text placeholders. Whenever the task depends on the content of an image — a `(user uploaded file to uploads/...)` reference, an image file in the workspace, or a screenshot — do not guess and do not answer generically: call `Oracle`. In the Oracle question, include the exact image path(s) (uploads are read with the `read` tool using `location: \"r2\"` and path `uploads/<file>`) and state precisely what to extract, transcribe, diagnose, or replicate. Oracle can view images and reads the file itself; you do not attach it. Use Oracle's description of the image as ground truth for the rest of the task, and never claim to have viewed an image yourself."
-    : "";
   const skillLines = options.skillNames.map((name) => {
     const hint = formatSkillHint(options.skillDescriptions?.[name]);
     const instruction = `call \`read_skill({ skill: "${name}" })\``;
@@ -57,7 +52,6 @@ export function createPiSystemPrompt(
     `When you create or edit a user-visible file, call the \`set_preview\` tool with exactly one real file target. A clean successful \`run_notebook\` opens the executed notebook automatically, so no manual \`set_preview\` call is needed after it; a failed run leaves preview unchanged. \`deploy_project\` returns the live URL and opens successfully deployed apps automatically, so no manual app \`set_preview\` or \`list_apps\` call is needed after deploy. \`set_preview\` remains available when you explicitly want to reopen or switch to an existing file or app. Use \`set_preview({ location: "workspace", path: "/notes.md" })\` for durable workspace files, \`set_preview({ location: "project", project: "menu-app", path: "index.html" })\` for DO-backed project files, and \`set_preview({ location: "r2", path: "outputs/report.html" })\` for R2 output/upload files. Use \`set_preview({ app_name: "poll-maker" })\` to switch to an already-deployed app. Do not call \`set_preview\` with only \`project\` or \`location\`; project file previews require \`path\`, \`project\`, and the correct \`location\`. Do not call \`set_preview\` to clear the preview. Link to workspace files with relative URLs only, never an absolute host. R2 outputs use path \`outputs/<path>\` and link as \`/api/workspaces/${context.workspaceId}/outputs/<path>\`; R2 uploads use path \`uploads/<path>\` and link as \`/api/workspaces/${context.workspaceId}/uploads/<path>\`. Do not use legacy \`/files/output/...\` URLs.`,
     "For workspace connections, prefer the `js_exec` tool. In `js_exec`, use `await env.CONNECTIONS.find(\"provider-or-type\")` to resolve one connection, then call it through `env.CONNECTIONS[entry.alias].method(input)`, `connections[entry.alias].method(input)`, or `context.cloudflare.connections[entry.alias].method(input)`. Database-style connections expose `query({ query })`; custom `other` connections expose `fetch(input, init)`. Channel side effects such as Telegram sending are virtual actions listed by `tools.list_integrations({ category: \"communication\" })` and `await env.CONNECTIONS.methods()`; call their copyable `tools.<action>(...)` examples from js_exec. Global `fetch()` is also available in `js_exec` for direct HTTP requests and automatically reaches this workspace's deployed apps, including private apps, through the platform dispatch binding. Browser and screenshot tools are opt-in verification tools, not a required post-deploy step: a successful deploy is enough for routine build-and-ship requests. Do not launch `env.BROWSER` or capture a screenshot merely because an app was deployed. Use them only when the user asks for visual/browser/E2E verification, the task is specifically diagnosing a deployed UI/runtime issue, or the task explicitly requires browser evidence. When applicable, use `await env.SCREENSHOT.capture({ scriptName, path: \"/\" })` or `tools.take_screenshot({ script_name, path: \"/\" })` for a visual check. For a focused interactive check, launch a browser session in `js_exec`: `const b = await env.BROWSER.launch({ scriptName }); await b.click(\"button\"); await b.waitForText(\"Saved\"); const logs = await b.logs(); await b.close();` — see `tools.help({ runtime: \"env.BROWSER\" })` for the full Playwright-style method list. Use `await env.CONNECTIONS.methods()` only when you need the full catalog, schemas, or examples. Connection credentials are intentionally hidden behind the binding.",
     webResearchGuidance,
-    oracleRoutingGuidance,
     "For hosted AI in `js_exec`, use `env.AI` or `context.cloudflare.env.AI` with `run()` only, for example `await env.AI.run(\"auto\", { messages: [{ role: \"user\", content: \"hello\" }] })`. Model tiers are `cheap`, `fast`, `auto` (default), and `smart`; any OpenRouter model id is also accepted. Deployed apps receive `CAMELAI` automatically; do not add a custom `camelai`, `cam-el-ai`, or placeholder service binding to wrangler.jsonc. For images, call `await env.CAMELAI.generateImage(\"prompt\")`; for audio transcription, call `await env.CAMELAI.transcribeAudio({ path: \"uploads/audio.ogg\" })` or pass base64 audio (same on `context.cloudflare.env.CAMELAI`). Use `await tools.help()` inside js_exec to expand tool categories, `await env.CAMELAI.help()` for CAMELAI methods, and `await env.WORKSPACE.info()` for workspace metadata such as its email address.",
     "Before relying on repository-specific conventions, read /workspace/AGENTS.md or /AGENTS.md if present.",
     "",
@@ -79,7 +73,6 @@ export function createPiSubagentSystemPrompt(
   const base = createPiSystemPrompt(context, {
     ...options,
     researchAvailable: false,
-    oracleAvailable: false,
   });
   return [
     base,

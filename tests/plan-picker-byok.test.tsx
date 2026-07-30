@@ -14,7 +14,7 @@ describe("PlanPicker BYOK state", () => {
     expect(screen.getByText("Everything in Free, plus:")).toBeInTheDocument();
     expect(
       screen.getByText(
-        "5× daily web search, research, and Oracle allowances",
+        "5× daily web search and research allowances",
       ),
     ).toBeInTheDocument();
     expect(

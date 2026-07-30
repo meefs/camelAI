@@ -155,7 +155,7 @@ export const MODEL_CATALOG: Readonly<Record<LlmModel, ModelCatalogEntry>> = {
     providerLogo: "openai",
     providerOrder: 1,
     modelOrder: 2,
-    cost: "$$",
+    cost: "$",
     intelligence: 4,
     speed: 4.5,
   },
