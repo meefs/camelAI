@@ -26,6 +26,7 @@ import { PiCoreMessageStore } from '../src/chat-thread/pi-core-store';
 import {
   HostedModelCreditsExhaustedError,
   HostedModelSubscriptionUnavailableError,
+  primaryPiThinkingLevel,
   resolveCurrentByokCredentials,
 } from '../src/chat-thread/pi-model-config';
 import { BrowserPromptCoordinator } from '../src/chat-thread-browser-prompts';
@@ -43,6 +44,19 @@ import {
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
+});
+
+describe('primary Pi reasoning policy', () => {
+  it.each([
+    ['deepseek-v4-auto', 'high'],
+    ['gpt-5.6-luna', 'high'],
+    ['gpt-5.6-terra', 'medium'],
+    ['gpt-5.6-sol', 'medium'],
+    ['sonnet', 'medium'],
+    [undefined, 'medium'],
+  ] as const)('maps %s to %s reasoning', (model, expected) => {
+    expect(primaryPiThinkingLevel(model)).toBe(expected);
+  });
 });
 
 /**

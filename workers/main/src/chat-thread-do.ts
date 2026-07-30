@@ -251,6 +251,7 @@ import {
   type HostedModelFallbackReason,
   type LlmProviderConfigRecord,
   isPiImageBlindModel,
+  primaryPiThinkingLevel,
 } from "./chat-thread/pi-model-config";
 import { FREE_VLLM_PRIORITY } from "./hosted-vllm-priority";
 
@@ -5435,7 +5436,9 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         model: capPiMainRequestOutput(modelConfig.model),
         tools: this.createPiToolDefinitions(context),
         messages: initialMessages,
-        thinkingLevel: "medium",
+        thinkingLevel: primaryPiThinkingLevel(
+          envVars.CHIRIDION_MODEL ?? this.currentThreadModel,
+        ),
       },
       transformContext: (messages, signal) =>
         this.withChatMemoryPhase("provider_request_prepare", async () => {

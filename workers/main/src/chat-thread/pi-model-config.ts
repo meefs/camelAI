@@ -34,6 +34,14 @@ import {
 
 export type PiBillingSource = "hosted" | "byok";
 
+export function primaryPiThinkingLevel(
+  modelId: string | null | undefined,
+): "medium" | "high" {
+  return modelId === CAMEL_CODE_LLM_MODEL || modelId === "gpt-5.6-luna"
+    ? "high"
+    : "medium";
+}
+
 export type LlmProviderConfigRecord = ReturnType<
   import("../identity/org-do").OrgDO["getLlmProviderConfig"]
 >;
