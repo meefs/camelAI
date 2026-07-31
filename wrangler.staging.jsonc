@@ -42,7 +42,7 @@
     "WORKER_BASE_URL": "https://staging.camelai.dev",
     "EMAIL_FROM_ADDRESS": "agent-staging@camelai.dev",
     "WORKSPACE_EMAIL_DOMAIN": "camelai.dev",
-    "DISCORD_CHANNEL_ENABLED": "false",
+    "DISCORD_CHANNEL_ENABLED": "true",
     "DISCORD_CLIENT_ID": "1531378050447704264",
     "STRIPE_MODE": "test",
     "STRIPE_SUBSCRIPTION_PRICE_ID": "price_1TtBYWGvliMKf4vH0F0649xi",

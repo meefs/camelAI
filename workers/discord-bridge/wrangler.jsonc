@@ -36,7 +36,7 @@
       "vars": {
         "DISCORD_APPLICATION_ID": "1531378050447704264",
         "DISCORD_MESSAGE_CONTENT_MODE": "full",
-        "DISCORD_INGRESS_ENABLED": "false",
+        "DISCORD_INGRESS_ENABLED": "true",
         "DISCORD_OUTBOUND_ENABLED": "true"
       },
       "durable_objects": {
