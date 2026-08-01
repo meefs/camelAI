@@ -72,13 +72,26 @@ async function sha256(input: string): Promise<string> {
 }
 
 function isLoopbackHostname(hostname: string): boolean {
-  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1" || hostname === "[::1]";
+}
+
+function isCursorOAuthRedirectUri(url: URL): boolean {
+  return url.protocol === "cursor:"
+    && url.hostname === "anysphere.cursor-mcp"
+    && url.pathname === "/oauth/callback"
+    && !url.port
+    && !url.username
+    && !url.password
+    && !url.search
+    && !url.hash;
 }
 
 export function isAllowedOAuthRedirectUri(value: string): boolean {
   try {
     const url = new URL(value);
-    return url.protocol === "https:" || (url.protocol === "http:" && isLoopbackHostname(url.hostname));
+    return url.protocol === "https:"
+      || (url.protocol === "http:" && isLoopbackHostname(url.hostname))
+      || isCursorOAuthRedirectUri(url);
   } catch {
     return false;
   }
@@ -112,7 +125,10 @@ export class AdminMcpOAuthProvider {
       throw new OAuthError("invalid_client_metadata", "redirect_uris is required");
     }
     if (!redirectUris.every((uri) => typeof uri === "string" && isAllowedOAuthRedirectUri(uri))) {
-      throw new OAuthError("invalid_client_metadata", "redirect_uris must be HTTPS or localhost HTTP URLs");
+      throw new OAuthError(
+        "invalid_client_metadata",
+        "redirect_uris must be HTTPS, loopback HTTP, or a supported native-app callback URL",
+      );
     }
     if (
       metadata.token_endpoint_auth_method &&

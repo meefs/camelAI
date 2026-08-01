@@ -223,6 +223,35 @@ describe("admin MCP OAuth resource", () => {
     expect(retiredWorkspaceResourceResponse?.status).toBe(404);
   });
 
+  it("accepts Cursor's native-app callback during dynamic client registration", async () => {
+    const oauth = new AdminMcpOAuthProvider(testEnv.APP_KV);
+    const redirectUris = [
+      "cursor://anysphere.cursor-mcp/oauth/callback",
+      "https://www.cursor.com/agents/mcp/oauth/callback",
+      "http://localhost:8787/callback",
+    ];
+
+    const client = await oauth.registerClient({
+      client_name: "Cursor",
+      redirect_uris: redirectUris,
+    });
+
+    expect(client.redirect_uris).toEqual(redirectUris);
+  });
+
+  it("rejects lookalike Cursor native-app callbacks", async () => {
+    const oauth = new AdminMcpOAuthProvider(testEnv.APP_KV);
+
+    await expect(oauth.registerClient({
+      client_name: "Untrusted Cursor callback",
+      redirect_uris: ["cursor://attacker.example/oauth/callback"],
+    })).rejects.toMatchObject({ error: "invalid_client_metadata" });
+    await expect(oauth.registerClient({
+      client_name: "Untrusted Cursor callback path",
+      redirect_uris: ["cursor://anysphere.cursor-mcp/other"],
+    })).rejects.toMatchObject({ error: "invalid_client_metadata" });
+  });
+
   it("requires redirect_uri during authorization-code token exchange", async () => {
     const oauth = new AdminMcpOAuthProvider(testEnv.APP_KV);
     const client = await oauth.registerClient({
