@@ -27,6 +27,7 @@ import {
   type CodeModeToolsBinding,
 } from "../code-mode-tools";
 import { PI_CONTAINER_TOOL_DEFINITIONS } from "../pi-container-tools";
+import { connectionsBindingEnabled } from "../../../../src/lib/connections-binding";
 import { createPiSubagentSystemPrompt as buildPiSubagentSystemPrompt } from "../pi-system-prompt";
 import {
   resolveAgentSkillCatalog,
@@ -947,7 +948,7 @@ export async function runPiCapabilityAgentTool(
 export async function createPiSubagentSystemPrompt(
   context: ChatContextState,
   isExplore: boolean,
-  env?: SelfhostAgentPackEnv,
+  env?: SelfhostAgentPackEnv & { CONNECTIONS_BINDING_ENABLED?: string },
 ): Promise<string> {
   const catalog = resolveAgentSkillCatalog(env);
   return buildPiSubagentSystemPrompt(
@@ -958,6 +959,7 @@ export async function createPiSubagentSystemPrompt(
       skillDescriptions: catalog.skillDescriptions,
       promptPrepend: catalog.promptPrepend,
       promptAppend: catalog.promptAppend,
+      deployedConnectionsBindingEnabled: connectionsBindingEnabled(env),
     },
   );
 }

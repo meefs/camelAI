@@ -80,6 +80,7 @@ import {
 } from "../../../src/lib/llm-provider-config";
 import { isTransientDurableObjectRpcError } from "../../../src/lib/do-rpc-retry.server";
 import type { HostedCapability } from "../../../src/lib/capability-allowances";
+import { connectionsBindingEnabled } from "../../../src/lib/connections-binding";
 import {
   getEffectiveLlmProviderConfig,
   isSelfhostRuntime,
@@ -5496,6 +5497,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       skillDescriptions: catalog.skillDescriptions,
       promptPrepend: catalog.promptPrepend,
       promptAppend: catalog.promptAppend,
+      deployedConnectionsBindingEnabled: connectionsBindingEnabled(this.env),
     });
     const verifiedWorkState = formatVerifiedWorkStatePrompt(
       this.ctx?.storage?.kv?.get<unknown>(CHAT_VERIFIED_WORK_STATE_KEY),

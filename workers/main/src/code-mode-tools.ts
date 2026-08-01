@@ -19,9 +19,14 @@ import { findConnectionMethodEntry, getConnection, invokeConnectionMethod, listC
 import { confirmDestructiveAction, DESTRUCTIVE_CONFIRM_LABEL } from "./confirmed-destructive-action";
 import { collectProjectDeletionTargets } from "./project-deletion";
 import {
+  connectionsBindingEnabled,
+} from "../../../src/lib/connections-binding";
+import { DEPLOYED_CONNECTIONS_BINDING_DISABLED_PROMPT } from "./pi-system-prompt";
+import {
   listAgentSkillFiles,
   readAgentSkillFile,
   resolveAgentSkillCatalog,
+  type AgentSkillReadResult,
 } from "./selfhost-agent-pack";
 import { PiContainerTools, PI_CONTAINER_TOOL_DEFINITIONS } from "./pi-container-tools";
 import { parseFilePreviewPath } from "./preview-paths";
@@ -1357,7 +1362,34 @@ function hasR2Target(args: Record<string, unknown>): boolean {
   return args.location === "r2";
 }
 
-function skillReadResponse(skill: NonNullable<ReturnType<typeof readAgentSkillFile>>) {
+/** Skills that advertise deployed-app CONNECTIONS and need an override banner. */
+const DEPLOYED_CONNECTIONS_SKILL_OVERRIDES = new Set([
+  "developing-software",
+  "camelai-platform-faq",
+  "data-analysis",
+]);
+
+function withDeployedConnectionsSkillOverride(
+  skill: AgentSkillReadResult,
+  env: { CONNECTIONS_BINDING_ENABLED?: string },
+): AgentSkillReadResult {
+  if (connectionsBindingEnabled(env)) return skill;
+  if (!DEPLOYED_CONNECTIONS_SKILL_OVERRIDES.has(skill.skill)) return skill;
+  // CONNECTIONS-AND-STORAGE.md and SKILL.md for developing-software; FAQ and
+  // data-analysis also teach deployed-app CONNECTIONS. Deterministic
+  // automations keep their CONNECTIONS docs — those are workflow bindings, not
+  // the deployed-app broker this flag disables.
+  const banner =
+    `> **Deployment override:** ${DEPLOYED_CONNECTIONS_BINDING_DISABLED_PROMPT}\n\n`;
+  const text = `${banner}${skill.text}`;
+  return {
+    ...skill,
+    text,
+    size: text.length,
+  };
+}
+
+function skillReadResponse(skill: AgentSkillReadResult) {
   return {
     text: skill.text,
     content: [{ type: "text", text: skill.text }],
@@ -2834,7 +2866,9 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
               `Available files: ${availableFiles.join(", ")}.`,
             );
           }
-          return skillReadResponse(skill);
+          return skillReadResponse(
+            withDeployedConnectionsSkillOverride(skill, this.env),
+          );
         }
 
         case "read":
