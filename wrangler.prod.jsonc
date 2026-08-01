@@ -42,7 +42,7 @@
     "WORKER_BASE_URL": "https://camelai.dev",
     "EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com",
     "WORKSPACE_EMAIL_DOMAIN": "camelai.dev",
-    "DISCORD_CHANNEL_ENABLED": "false",
+    "DISCORD_CHANNEL_ENABLED": "true",
     "DISCORD_CLIENT_ID": "1531387078808436787",
     "STRIPE_MODE": "live",
     "STRIPE_SUBSCRIPTION_PRICE_ID": "price_1TtCX7GvliMKf4vHRVJ6LKLl",
