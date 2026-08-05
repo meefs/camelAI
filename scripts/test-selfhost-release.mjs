@@ -376,6 +376,7 @@ includesAll(
     "image: container-egress",
     "image: caddy",
     "platforms: linux/amd64",
+    "type=raw,value=latest,enable=${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/selfhost-v') }}",
     "provenance: mode=max",
     "sbom: true",
     "attest-build-provenance",
