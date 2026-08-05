@@ -1,12 +1,18 @@
 import { mapWithConcurrency } from "../../../src/lib/map-with-concurrency";
 
-import { base64ToBytes, bytesToBase64 } from "./base64-codec.js";
+import { base64ToBytes } from "./base64-codec.js";
 import { sha256Hex } from "./sha256.js";
 import type { WorkspaceFileStoreLike } from "./workspace-filesystem-do.js";
 import type { ProjectBuildSandboxLike } from "./project-worker-bundle.js";
 
 export const PROJECT_BUILD_ROOT = "/workspace";
 const SOURCE_READ_CONCURRENCY = 16;
+// Keep parallel Sandbox streams below the Worker connection ceiling while
+// giving cold, data-heavy projects enough lanes to overlap transfer latency.
+const SOURCE_ARCHIVE_MAX_LANES = 3;
+const SOURCE_ARCHIVE_TARGET_LANE_BYTES = 8 * 1024 * 1024;
+const SOURCE_ARCHIVE_GZIP_MIN_BYTES = 1024 * 1024;
+const SOURCE_ARCHIVE_STREAM_CHUNK_BYTES = 256 * 1024;
 
 export interface ProjectBuildSourceTimings {
   collectSourceMs: number;
@@ -26,8 +32,19 @@ export interface ProjectSourceFile {
   sha256: string;
 }
 
+export interface ProjectSourceEntry {
+  path: string;
+  size: number;
+  modifiedAt: string;
+  sha256: string;
+}
+
 export interface ProjectSourceCollection {
-  files: ProjectSourceFile[];
+  entries: ProjectSourceEntry[];
+  changedFiles: ProjectSourceFile[];
+  validationFiles: ProjectSourceFile[];
+  previousManifest: SourceManifest | null;
+  previousManifestReadMs: number;
   timings: Pick<
     ProjectBuildSourceTimings,
     "collectSourceMs" | "sourceListMs" | "sourceReadMs" | "sourceHashMs"
@@ -35,37 +52,51 @@ export interface ProjectSourceCollection {
   totalBytes: number;
 }
 
-interface SourceManifest {
-  schemaVersion: 1;
-  files: Array<{ path: string; size: number; sha256: string }>;
+export interface SourceManifest {
+  schemaVersion: 1 | 2;
+  files: Array<{ path: string; size: number; sha256: string; modifiedAt?: string }>;
 }
 
-export async function collectProjectSourceFiles(files: WorkspaceFileStoreLike): Promise<ProjectSourceCollection> {
+export async function collectProjectSourceFiles(
+  files: WorkspaceFileStoreLike,
+  options?: { sandbox: ProjectBuildSandboxLike; workdir: string },
+): Promise<ProjectSourceCollection> {
   const startedAt = Date.now();
+  const previousManifestStartedAt = Date.now();
+  const previousManifest = options
+    ? await readSourceManifestFromSandbox(options.sandbox, options.workdir)
+    : null;
+  const previousManifestReadMs = Date.now() - previousManifestStartedAt;
+  const previousFiles = previousManifest
+    ? new Map(previousManifest.files.map((file) => [file.path, file]))
+    : null;
   const listStartedAt = Date.now();
   const listing = await files.listFiles("/", { recursive: true, includeHidden: true, limit: 50_000 });
   const sourceListMs = Date.now() - listStartedAt;
   if (!listing.success) throw new Error(listing.error || "Failed to list project files");
-  const entries = listing.files
+  const listedFiles = listing.files
     .filter((entry) => entry.type === "file")
     .map((entry) => ({ entry, relativePath: normalizeRelativeBuildPath(entry.absolutePath) }))
     .filter(({ relativePath }) => Boolean(relativePath) && !shouldIgnoreBuildSourcePath(relativePath));
 
+  const filesToRead = listedFiles.filter(({ entry, relativePath }) => {
+    const previous = previousFiles?.get(relativePath);
+    const metadataMatches = previous?.modifiedAt != null &&
+      previous.size === entry.size && previous.modifiedAt === entry.modifiedAt;
+    // Always re-read executable source for admission checks. Large unchanged
+    // data/assets can safely reuse the prior content hash and avoid an R2 read.
+    return !metadataMatches || shouldReadBuildSourceForValidation(relativePath);
+  });
+
   const readStartedAt = Date.now();
-  const readFiles = await mapWithConcurrency(entries, SOURCE_READ_CONCURRENCY, async ({ entry, relativePath }) => {
-    const read = await files.readFile(entry.absolutePath);
-    if (!read.success || typeof read.content !== "string") {
-      throw new Error(read.error || `Failed to read ${entry.absolutePath}`);
-    }
-    const bytes = read.encoding === "base64"
-      ? base64ToBytes(read.content)
-      : new TextEncoder().encode(read.content);
-    return { path: relativePath, bytes };
+  const readFiles = await mapWithConcurrency(filesToRead, SOURCE_READ_CONCURRENCY, async ({ entry, relativePath }) => {
+    const bytes = await readWorkspaceSourceBytes(files, entry.absolutePath, entry.size);
+    return { path: relativePath, bytes, modifiedAt: entry.modifiedAt };
   });
   const sourceReadMs = Date.now() - readStartedAt;
 
   const hashStartedAt = Date.now();
-  const out = await mapWithConcurrency(readFiles, SOURCE_READ_CONCURRENCY, async (file) => {
+  const hashedFiles = await mapWithConcurrency(readFiles, SOURCE_READ_CONCURRENCY, async (file) => {
     const sha256 = await sha256Hex(file.bytes);
     return {
       ...file,
@@ -73,9 +104,40 @@ export async function collectProjectSourceFiles(files: WorkspaceFileStoreLike): 
     };
   });
   const sourceHashMs = Date.now() - hashStartedAt;
-  const totalBytes = out.reduce((sum, file) => sum + file.bytes.byteLength, 0);
+  const readByPath = new Map(hashedFiles.map((file) => [file.path, file]));
+  const entries: ProjectSourceEntry[] = listedFiles.map(({ entry, relativePath }) => {
+    const read = readByPath.get(relativePath);
+    if (read) {
+      return {
+        path: relativePath,
+        size: read.bytes.byteLength,
+        modifiedAt: entry.modifiedAt,
+        sha256: read.sha256,
+      };
+    }
+    const previous = previousFiles?.get(relativePath);
+    if (!previous) throw new Error(`Missing source bytes for ${relativePath}`);
+    return {
+      path: relativePath,
+      size: previous.size,
+      modifiedAt: entry.modifiedAt,
+      sha256: previous.sha256,
+    };
+  }).sort((a, b) => a.path.localeCompare(b.path));
+  const changedFiles = hashedFiles.filter((file) => {
+    const previous = previousFiles?.get(file.path);
+    return !previous || previous.size !== file.bytes.byteLength || previous.sha256 !== file.sha256;
+  }).map(({ path, bytes, sha256 }) => ({ path, bytes, sha256 }));
+  const validationFiles = hashedFiles
+    .filter((file) => shouldReadBuildSourceForValidation(file.path))
+    .map(({ path, bytes, sha256 }) => ({ path, bytes, sha256 }));
+  const totalBytes = entries.reduce((sum, file) => sum + file.size, 0);
   return {
-    files: out.sort((a, b) => a.path.localeCompare(b.path)),
+    entries,
+    changedFiles,
+    validationFiles,
+    previousManifest,
+    previousManifestReadMs,
     totalBytes,
     timings: {
       collectSourceMs: Date.now() - startedAt,
@@ -84,6 +146,45 @@ export async function collectProjectSourceFiles(files: WorkspaceFileStoreLike): 
       sourceHashMs,
     },
   };
+}
+
+async function readWorkspaceSourceBytes(
+  files: WorkspaceFileStoreLike,
+  absolutePath: string,
+  expectedSize: number,
+): Promise<Uint8Array> {
+  const streamed = await files.readFileStream(absolutePath);
+  if (streamed.success && streamed.stream) {
+    // Preallocate from list metadata so a large source file never takes the
+    // older text/base64 path or accumulates a second set of stream chunks.
+    const reader = streamed.stream.getReader();
+    let bytes = new Uint8Array(Math.max(0, expectedSize));
+    let offset = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value?.byteLength) continue;
+      if (offset + value.byteLength > bytes.byteLength) {
+        const grown = new Uint8Array(Math.max(offset + value.byteLength, Math.max(1, bytes.byteLength * 2)));
+        grown.set(bytes);
+        bytes = grown;
+      }
+      bytes.set(value, offset);
+      offset += value.byteLength;
+    }
+    return offset === bytes.byteLength ? bytes : bytes.slice(0, offset);
+  }
+  const read = await files.readFile(absolutePath);
+  if (!read.success || typeof read.content !== "string") {
+    throw new Error(read.error || streamed.error || `Failed to read ${absolutePath}`);
+  }
+  return read.encoding === "base64"
+    ? base64ToBytes(read.content)
+    : new TextEncoder().encode(read.content);
+}
+
+function shouldReadBuildSourceForValidation(path: string): boolean {
+  return path === "package.json" || DO_SQLITE_CHECK_EXTENSIONS.test(path);
 }
 
 export function shouldIgnoreBuildSourcePath(path: string): boolean {
@@ -106,41 +207,23 @@ export function normalizeRelativeBuildPath(path: string): string {
 export async function materializeProjectSourceFiles(
   sandbox: ProjectBuildSandboxLike,
   workdir: string,
-  sourceFiles: ProjectSourceFile[],
+  source: ProjectSourceCollection,
 ): Promise<Pick<ProjectBuildSourceTimings, "materializeMs" | "previousManifestReadMs" | "archiveCreateMs" | "archiveWriteMs" | "materializeExecMs">> {
   const startedAt = Date.now();
   await sandbox.mkdir(workdir, { recursive: true });
-  const manifest = sourceManifestForFiles(sourceFiles);
+  const manifest = sourceManifestForEntries(source.entries);
   const manifestPath = `${workdir}.next-source-manifest.json`;
   const currentManifestPath = sourceManifestPath(workdir);
-  const archivePath = `${workdir}.source.tar`;
-
-  const previousManifestStartedAt = Date.now();
-  const previousManifest = await readSourceManifestFromSandbox(sandbox, workdir);
-  const previousManifestReadMs = Date.now() - previousManifestStartedAt;
-  const previousFiles = previousManifest
-    ? new Map(previousManifest.files.map((file) => [file.path, file]))
-    : null;
-  const changedFiles = previousFiles
-    ? sourceFiles.filter((file) => {
-      const previous = previousFiles.get(file.path);
-      return !previous || previous.size !== file.bytes.byteLength || previous.sha256 !== file.sha256;
-    })
-    : sourceFiles;
 
   const archiveCreateStartedAt = Date.now();
-  const archive = changedFiles.length > 0 ? createTarArchive(changedFiles) : null;
+  const archiveLanes = createArchiveLanes(workdir, source.changedFiles);
   const archiveCreateMs = Date.now() - archiveCreateStartedAt;
 
   const archiveWriteStartedAt = Date.now();
-  if (archive) {
-    await sandbox.writeFile(archivePath, bytesToBase64(archive), { encoding: "base64" });
-  }
-  await sandbox.writeFile(
-    manifestPath,
-    bytesToBase64(new TextEncoder().encode(JSON.stringify(manifest))),
-    { encoding: "base64" },
-  );
+  await Promise.all([
+    ...archiveLanes.map((lane) => sandbox.writeFile(lane.path, lane.stream)),
+    sandbox.writeFile(manifestPath, JSON.stringify(manifest), { encoding: "utf8" }),
+  ]);
   const archiveWriteMs = Date.now() - archiveWriteStartedAt;
 
   const materializeExecStartedAt = Date.now();
@@ -148,15 +231,14 @@ export async function materializeProjectSourceFiles(
     workdir,
     currentManifestPath,
     manifestPath,
-    archivePath,
-    extractArchive: archive !== null,
-    forceClean: previousManifest === null,
+    archives: archiveLanes.map(({ path, compressed }) => ({ path, compressed })),
+    forceClean: source.previousManifest === null,
   }), { cwd: PROJECT_BUILD_ROOT });
   const materializeExecMs = Date.now() - materializeExecStartedAt;
 
   return {
     materializeMs: Date.now() - startedAt,
-    previousManifestReadMs,
+    previousManifestReadMs: source.previousManifestReadMs,
     archiveCreateMs,
     archiveWriteMs,
     materializeExecMs,
@@ -203,13 +285,14 @@ export function validateDoSqliteApiUsage(sourceFiles: ProjectSourceFile[]): stri
   return null;
 }
 
-function sourceManifestForFiles(sourceFiles: ProjectSourceFile[]): SourceManifest {
+function sourceManifestForEntries(sourceFiles: ProjectSourceEntry[]): SourceManifest {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     files: sourceFiles.map((file) => ({
       path: file.path,
-      size: file.bytes.byteLength,
+      size: file.size,
       sha256: file.sha256,
+      modifiedAt: file.modifiedAt,
     })),
   };
 }
@@ -230,14 +313,14 @@ async function readSourceManifestFromSandbox(
   }
   let read: { content: string };
   try {
-    read = await sandbox.readFile(manifestPath, { encoding: "base64" });
+    read = await sandbox.readFile(manifestPath, { encoding: "utf8" });
   } catch (error) {
     const message = String(error).toLowerCase();
     if (message.includes("missing") || message.includes("not found") || message.includes("enoent")) return null;
     throw error;
   }
   try {
-    return validateSourceManifest(JSON.parse(new TextDecoder().decode(base64ToBytes(read.content))));
+    return validateSourceManifest(JSON.parse(read.content));
   } catch {
     // Treat malformed old state as a cache miss. The materializer will wipe the
     // workdir before extracting the full source archive.
@@ -248,35 +331,46 @@ async function readSourceManifestFromSandbox(
 function validateSourceManifest(value: unknown): SourceManifest {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid source manifest");
   const record = value as SourceManifest;
-  if (record.schemaVersion !== 1 || !Array.isArray(record.files)) throw new Error("invalid source manifest");
+  if ((record.schemaVersion !== 1 && record.schemaVersion !== 2) || !Array.isArray(record.files)) throw new Error("invalid source manifest");
   const files = record.files.map((file) => {
     if (!file || typeof file !== "object" || Array.isArray(file)) throw new Error("invalid source manifest");
-    const entry = file as { path?: unknown; size?: unknown; sha256?: unknown };
+    const entry = file as { path?: unknown; size?: unknown; sha256?: unknown; modifiedAt?: unknown };
     if (typeof entry.path !== "string" || !entry.path || entry.path.includes("\0") || entry.path.startsWith("/")) {
       throw new Error("invalid source manifest");
     }
     if (typeof entry.size !== "number" || entry.size < 0 || !Number.isFinite(entry.size)) throw new Error("invalid source manifest");
     if (typeof entry.sha256 !== "string" || !/^[a-f0-9]{64}$/i.test(entry.sha256)) throw new Error("invalid source manifest");
-    return { path: normalizeRelativeBuildPath(entry.path), size: entry.size, sha256: entry.sha256.toLowerCase() };
+    if (entry.modifiedAt != null && typeof entry.modifiedAt !== "string") throw new Error("invalid source manifest");
+    return {
+      path: normalizeRelativeBuildPath(entry.path),
+      size: entry.size,
+      sha256: entry.sha256.toLowerCase(),
+      ...(typeof entry.modifiedAt === "string" ? { modifiedAt: entry.modifiedAt } : {}),
+    };
   }).filter((file) => file.path);
-  return { schemaVersion: 1, files };
+  return { schemaVersion: record.schemaVersion, files };
 }
 
 function sourceManifestPath(workdir: string): string {
   return `${workdir}.source-manifest.json`;
 }
 
-function materializeCommand(input: { workdir: string; currentManifestPath: string; manifestPath: string; archivePath: string; extractArchive: boolean; forceClean?: boolean }): string {
+function materializeCommand(input: {
+  workdir: string;
+  currentManifestPath: string;
+  manifestPath: string;
+  archives: Array<{ path: string; compressed: boolean }>;
+  forceClean?: boolean;
+}): string {
   const commands = [
+    ...input.archives.map((archive) => `tar -t${archive.compressed ? "z" : ""}f ${shellQuote(archive.path)} >/dev/null`),
     `CAMELAI_WORKDIR=${shellQuote(input.workdir)} CAMELAI_CURRENT_MANIFEST=${shellQuote(input.currentManifestPath)} CAMELAI_NEXT_MANIFEST=${shellQuote(input.manifestPath)} CAMELAI_FORCE_CLEAN=${input.forceClean ? "1" : "0"} bun -e ${shellQuote(SOURCE_MATERIALIZE_SCRIPT)}`,
   ];
-  if (input.extractArchive) {
-    commands.push(`tar -xf ${shellQuote(input.archivePath)} -C ${shellQuote(input.workdir)}`);
-    commands.push(`rm -f ${shellQuote(input.archivePath)}`);
-  } else {
-    commands.push(`rm -f ${shellQuote(input.archivePath)}`);
-  }
+  commands.push(...input.archives.map((archive) =>
+    `tar -x${archive.compressed ? "z" : ""}f ${shellQuote(archive.path)} -C ${shellQuote(input.workdir)}`
+  ));
   commands.push(`mv ${shellQuote(input.manifestPath)} ${shellQuote(input.currentManifestPath)}`);
+  commands.push(`rm -f ${shellQuote(workdirArchivePrefix(input.workdir))}*`);
   commands.push(`find ${shellQuote(input.workdir)} -type d -empty -delete 2>/dev/null || true`);
   return commands.join(" && ");
 }
@@ -312,16 +406,62 @@ if (forceClean || !fs.existsSync(currentManifestPath)) {
 }
 `;
 
-function createTarArchive(sourceFiles: ProjectSourceFile[]): Uint8Array {
+interface SourceArchiveLane {
+  path: string;
+  compressed: boolean;
+  stream: ReadableStream<Uint8Array>;
+}
+
+function createArchiveLanes(workdir: string, sourceFiles: ProjectSourceFile[]): SourceArchiveLane[] {
+  if (sourceFiles.length === 0) return [];
+  const totalBytes = sourceFiles.reduce((sum, file) => sum + file.bytes.byteLength, 0);
+  const laneCount = Math.min(
+    SOURCE_ARCHIVE_MAX_LANES,
+    sourceFiles.length,
+    Math.max(1, Math.ceil(totalBytes / SOURCE_ARCHIVE_TARGET_LANE_BYTES)),
+  );
+  const lanes = Array.from({ length: laneCount }, () => ({ bytes: 0, files: [] as ProjectSourceFile[] }));
+  for (const file of [...sourceFiles].sort((a, b) => b.bytes.byteLength - a.bytes.byteLength)) {
+    const lane = lanes.reduce((smallest, candidate) => candidate.bytes < smallest.bytes ? candidate : smallest);
+    lane.files.push(file);
+    lane.bytes += file.bytes.byteLength;
+  }
+  return lanes.map((lane, index) => {
+    const compressed = lane.bytes >= SOURCE_ARCHIVE_GZIP_MIN_BYTES;
+    const stream = createTarStream(lane.files);
+    return {
+      path: `${workdirArchivePrefix(workdir)}${index}.tar${compressed ? ".gz" : ""}`,
+      compressed,
+      stream: compressed
+        ? stream.pipeThrough(new CompressionStream("gzip") as unknown as ReadableWritablePair<Uint8Array, Uint8Array>)
+        : stream,
+    };
+  });
+}
+
+function workdirArchivePrefix(workdir: string): string {
+  return `${workdir}.source.`;
+}
+
+function createTarStream(sourceFiles: ProjectSourceFile[]): ReadableStream<Uint8Array> {
   const chunks: Uint8Array[] = [];
   for (const file of sourceFiles) {
     chunks.push(tarHeader(file.path, file.bytes.byteLength));
-    chunks.push(file.bytes);
+    for (let offset = 0; offset < file.bytes.byteLength; offset += SOURCE_ARCHIVE_STREAM_CHUNK_BYTES) {
+      chunks.push(file.bytes.subarray(offset, offset + SOURCE_ARCHIVE_STREAM_CHUNK_BYTES));
+    }
     const padding = tarPadding(file.bytes.byteLength);
     if (padding > 0) chunks.push(new Uint8Array(padding));
   }
   chunks.push(new Uint8Array(1024));
-  return concatBytes(chunks);
+  let index = 0;
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      const chunk = chunks[index++];
+      if (chunk) controller.enqueue(chunk);
+      else controller.close();
+    },
+  });
 }
 
 function tarHeader(path: string, size: number): Uint8Array {
@@ -381,17 +521,6 @@ function writeTarChecksum(header: Uint8Array, value: number): void {
 function tarPadding(size: number): number {
   const remainder = size % 512;
   return remainder === 0 ? 0 : 512 - remainder;
-}
-
-function concatBytes(chunks: Uint8Array[]): Uint8Array {
-  const total = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return out;
 }
 
 export function validatePackageJson(sourceFiles: ProjectSourceFile[]): string | null {

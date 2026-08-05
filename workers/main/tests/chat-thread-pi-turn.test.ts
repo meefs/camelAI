@@ -227,6 +227,9 @@ function createProjectToolFake({
     ['/package.json', '{"scripts":{"build":"vite build"}}'],
     ['/src/index.ts', 'export default { fetch() { return new Response("ok"); } }'],
   ]);
+  const projectModifiedAt = new Map<string, string>(
+    [...projectFiles.keys()].map((path) => [path, '2026-01-01T00:00:00.000Z']),
+  );
   const workspaceStub = {
     getProjectByName: vi.fn(async (name: string) => projectsByName.get(name) ?? null),
     listProjectsForMigrationReset: vi.fn(async () => [project]),
@@ -258,7 +261,7 @@ function createProjectToolFake({
         name: path.split('/').pop(),
         type: 'file',
         size: content.length,
-        modifiedAt: '2026-01-01T00:00:00.000Z',
+        modifiedAt: projectModifiedAt.get(path) ?? '2026-01-01T00:00:00.000Z',
         absolutePath: path,
         relativePath: path.replace(/^\/+/, ''),
       })),
@@ -272,8 +275,24 @@ function createProjectToolFake({
       isBinary: false,
       size: projectFiles.get(path)?.length ?? 0,
     })),
+    projectReadFileStream: vi.fn(async (path: string) => {
+      const content = projectFiles.get(path);
+      if (content == null) return { success: false, error: 'File not found' };
+      const bytes = new TextEncoder().encode(content);
+      return {
+        success: true,
+        stream: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(bytes);
+            controller.close();
+          },
+        }),
+        size: bytes.byteLength,
+      };
+    }),
     projectWriteFile: vi.fn(async (path: string, content: string) => {
       projectFiles.set(path, content);
+      projectModifiedAt.set(path, new Date(Date.parse(projectModifiedAt.get(path) ?? '2026-01-01T00:00:00.000Z') + 1).toISOString());
       return { success: true };
     }),
     projectDeleteFile: vi.fn(async (path: string) => {
@@ -305,11 +324,40 @@ function createProjectToolFake({
     projectDeleteSourceSnapshots: vi.fn(async () => ({ snapshotsDeleted: 1, blobsDeleted: 2 })),
   };
   const sandboxFiles = new Map<string, string>();
+  const sandboxWrites = new Map<string, string[]>();
   const sandbox = {
     mkdir: vi.fn(async () => undefined),
-    writeFile: vi.fn(async (path: string, content: string) => {
-      sandboxFiles.set(path, content);
+    writeFile: vi.fn(async (
+      path: string,
+      content: string | ReadableStream<Uint8Array>,
+      options?: { encoding?: 'base64' | 'utf8' },
+    ) => {
+      let encoded: string;
+      if (typeof content === 'string') {
+        encoded = options?.encoding === 'base64' ? content : base64(content);
+      } else {
+        const reader = content.getReader();
+        const chunks: Uint8Array[] = [];
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value) chunks.push(value);
+        }
+        const size = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+        const bytes = new Uint8Array(size);
+        let offset = 0;
+        for (const chunk of chunks) {
+          bytes.set(chunk, offset);
+          offset += chunk.byteLength;
+        }
+        encoded = btoa(String.fromCharCode(...bytes));
+      }
+      sandboxFiles.set(path, encoded);
+      const writes = sandboxWrites.get(path) ?? [];
+      writes.push(encoded);
+      sandboxWrites.set(path, writes);
     }),
+    exists: vi.fn(async (path: string) => ({ exists: sandboxFiles.has(path) })),
     exec: vi.fn(async (command: string, options?: { cwd?: string }) => {
       if (command === 'bun install && bun run build' && options?.cwd) {
         sandboxFiles.set(`${options.cwd}/bun.lock`, base64('# lockfile\n'));
@@ -331,7 +379,10 @@ function createProjectToolFake({
       }
       return { success: true, stdout: 'built', stderr: '', exitCode: 0 };
     }),
-    readFile: vi.fn(async (path: string) => ({ content: sandboxFiles.get(path) ?? base64('') })),
+    readFile: vi.fn(async (path: string, options?: { encoding?: 'base64' | 'utf8' }) => {
+      const stored = sandboxFiles.get(path) ?? base64('');
+      return { content: options?.encoding === 'utf8' ? atob(stored) : stored };
+    }),
     readFileStream: vi.fn(async (path: string) => {
       const binary = atob(sandboxFiles.get(path) ?? base64(''));
       const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
@@ -363,6 +414,7 @@ function createProjectToolFake({
     // Test helper: seed a sandbox file (auto-base64) so a custom exec mock can
     // shape the build output collectWorkerBundleFromSandbox will read back.
     __setFile: (path: string, content: string) => sandboxFiles.set(path, base64(content)),
+    __getWrites: (path: string) => sandboxWrites.get(path) ?? [],
   };
   const script = {
     script_name: 'demo-app',
@@ -7225,7 +7277,7 @@ describe('ChatThreadDO Pi turn handling', () => {
   it('retries a transient project filesystem network failure before starting a build', async () => {
     vi.useFakeTimers();
     const { fake, projectStub, sandbox } = createProjectToolFake();
-    projectStub.projectReadFile.mockRejectedValueOnce(new Error('Network connection lost.'));
+    projectStub.projectReadFileStream.mockRejectedValueOnce(new Error('Network connection lost.'));
 
     const resultPromise = CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
       project: 'Demo App',
@@ -7234,7 +7286,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     await vi.advanceTimersByTimeAsync(1_000);
 
     await expect(resultPromise).resolves.toMatchObject({ success: true, project: 'Demo App' });
-    expect(projectStub.projectReadFile).toHaveBeenCalledTimes(4);
+    expect(projectStub.projectReadFileStream).toHaveBeenCalledTimes(4);
     expect(sandbox.mkdir).toHaveBeenCalledTimes(1);
   });
 
@@ -7729,9 +7781,8 @@ describe('ChatThreadDO Pi turn handling', () => {
       backend: 'do-r2',
     });
 
-    const sourceArchives = sandbox.writeFile.mock.calls
-      .filter(([path]) => path === '/workspace/project-1.source.tar')
-      .map(([, content]) => atob(content));
+    const sourceArchives = sandbox.__getWrites('/workspace/project-1.source.0.tar')
+      .map((content) => atob(content));
     expect(sourceArchives).toHaveLength(2);
     expect(sourceArchives.at(-1)).toContain('devDependencies');
   });

@@ -98,7 +98,7 @@ describe("runProjectBuild", () => {
       "/workspace/demo-project.source-manifest.json",
       { encoding: "base64" },
     );
-    expect(sandbox.exec).toHaveBeenCalledWith(expect.stringContaining("tar -xf '/workspace/demo-project.source.tar'"), { cwd: "/workspace" });
+    expect(sandbox.exec).toHaveBeenCalledWith(expect.stringContaining("tar -xf '/workspace/demo-project.source.0.tar'"), { cwd: "/workspace" });
     expect(sandbox.exec).toHaveBeenCalledWith("bun install && bun run build", {
       cwd: "/workspace/demo-project",
       timeout: 15_000,
@@ -111,7 +111,7 @@ describe("runProjectBuild", () => {
     });
     expect(sandbox.writeFile).toHaveBeenCalledTimes(2);
     expect(sandbox.writeFile.mock.calls.map((call) => call[0])).toEqual([
-      "/workspace/demo-project.source.tar",
+      "/workspace/demo-project.source.0.tar",
       "/workspace/demo-project.next-source-manifest.json",
     ]);
     expect(files.writeFile).toHaveBeenCalledWith("/.camelai/tmp/build.log", "built");

@@ -15,7 +15,11 @@ export interface ProjectBuildSandboxLike {
     exitCode?: number;
   }>;
   mkdir(path: string, options?: { recursive?: boolean }): Promise<unknown>;
-  writeFile(path: string, content: string, options?: { encoding?: "base64" | "utf8" }): Promise<unknown>;
+  writeFile(
+    path: string,
+    content: string | ReadableStream<Uint8Array>,
+    options?: { encoding?: "base64" | "utf8" },
+  ): Promise<unknown>;
   exists?(path: string): Promise<{ exists: boolean }>;
   readFile?(path: string, options?: { encoding?: "base64" | "utf8" }): Promise<{ content: string }>;
   readFileStream?(path: string): Promise<ReadableStream<Uint8Array>>;

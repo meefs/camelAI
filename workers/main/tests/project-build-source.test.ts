@@ -7,6 +7,7 @@ import {
   validateDoSqliteApiUsage,
   validatePackageJson,
   validatePackageJsonBuildScript,
+  type ProjectSourceCollection,
   type ProjectSourceFile,
 } from "../src/project-build-source";
 import type { ProjectBuildSandboxLike } from "../src/project-worker-bundle";
@@ -61,15 +62,48 @@ describe("project build source owner", () => {
 
     const collected = await collectProjectSourceFiles(files);
 
-    expect(collected.files.map((file) => file.path)).toEqual([
+    expect(collected.entries.map((file) => file.path)).toEqual([
       "package.json",
       "src/a.bin",
       "src/z.ts",
     ]);
-    expect(collected.files.find((file) => file.path === "src/a.bin")?.bytes)
+    expect(collected.changedFiles.find((file) => file.path === "src/a.bin")?.bytes)
       .toEqual(new Uint8Array([0, 1, 2]));
-    expect(collected.files.every((file) => /^[a-f0-9]{64}$/.test(file.sha256))).toBe(true);
+    expect(collected.entries.every((file) => /^[a-f0-9]{64}$/.test(file.sha256))).toBe(true);
     expect(collected.totalBytes).toBe(6);
+  });
+
+  it("reuses warm manifest hashes without reading unchanged large data files", async () => {
+    const baselineFiles = fakeFiles({
+      "/package.json": { content: JSON.stringify({ scripts: { build: "vite build" } }) },
+      "/src/index.ts": { content: "export const value = 1;" },
+      "/public/data.json": { content: "x".repeat(2_000_000) },
+    });
+    const baseline = await collectProjectSourceFiles(baselineFiles);
+    const manifest = {
+      schemaVersion: 2,
+      files: baseline.entries,
+    };
+    const files = fakeFiles({
+      "/package.json": { content: JSON.stringify({ scripts: { build: "vite build" } }) },
+      "/src/index.ts": { content: "export const value = 2;" },
+      "/public/data.json": { content: "x".repeat(2_000_000) },
+    });
+    const listing = await files.listFiles("/");
+    const sourceEntry = listing.files.find((entry) => entry.absolutePath === "/src/index.ts")!;
+    sourceEntry.modifiedAt = new Date(1).toISOString();
+    const sandbox = {
+      exists: vi.fn(async () => ({ exists: true })),
+      readFile: vi.fn(async () => ({ content: JSON.stringify(manifest) })),
+    } as unknown as ProjectBuildSandboxLike;
+
+    const collected = await collectProjectSourceFiles(files, { sandbox, workdir: "/workspace/demo" });
+
+    expect(files.readFile).toHaveBeenCalledWith("/package.json");
+    expect(files.readFile).toHaveBeenCalledWith("/src/index.ts");
+    expect(files.readFile).not.toHaveBeenCalledWith("/public/data.json");
+    expect(collected.changedFiles.map((file) => file.path)).toEqual(["src/index.ts"]);
+    expect(collected.totalBytes).toBe(baseline.totalBytes);
   });
 
   it("owns package and Durable Object SQLite source admission", () => {
@@ -93,17 +127,17 @@ describe("project build source owner", () => {
 
   it("materializes only changed files against the persisted source manifest", async () => {
     const previousManifest = {
-      schemaVersion: 1,
+      schemaVersion: 2 as const,
       files: [
-        { path: "package.json", size: 2, sha256: SHA_A },
-        { path: "src/removed.ts", size: 3, sha256: SHA_A },
+        { path: "package.json", size: 2, sha256: SHA_A, modifiedAt: new Date(0).toISOString() },
+        { path: "src/removed.ts", size: 3, sha256: SHA_A, modifiedAt: new Date(0).toISOString() },
       ],
     };
     const sandbox = {
       mkdir: vi.fn(async () => undefined),
       exists: vi.fn(async () => ({ exists: true })),
       readFile: vi.fn(async () => ({
-        content: Buffer.from(JSON.stringify(previousManifest)).toString("base64"),
+        content: JSON.stringify(previousManifest),
       })),
       writeFile: vi.fn(async () => undefined),
       exec: vi.fn(async () => ({ success: true, stdout: "", stderr: "", exitCode: 0 })),
@@ -112,25 +146,176 @@ describe("project build source owner", () => {
       exec: ReturnType<typeof vi.fn>;
     };
 
-    const timings = await materializeProjectSourceFiles(sandbox, "/workspace/demo", [
-      sourceFile("package.json", "{}", SHA_A),
-      sourceFile("src/new.ts", "new", SHA_B),
-    ]);
+    const source: ProjectSourceCollection = {
+      entries: [
+        { path: "package.json", size: 2, modifiedAt: new Date(0).toISOString(), sha256: SHA_A },
+        { path: "src/new.ts", size: 3, modifiedAt: new Date(1).toISOString(), sha256: SHA_B },
+      ],
+      changedFiles: [sourceFile("src/new.ts", "new", SHA_B)],
+      validationFiles: [sourceFile("package.json", "{}", SHA_A), sourceFile("src/new.ts", "new", SHA_B)],
+      previousManifest,
+      previousManifestReadMs: 1,
+      timings: { collectSourceMs: 1, sourceListMs: 1, sourceReadMs: 1, sourceHashMs: 1 },
+      totalBytes: 5,
+    };
+    const timings = await materializeProjectSourceFiles(sandbox, "/workspace/demo", source);
 
     expect(sandbox.writeFile).toHaveBeenCalledTimes(2);
     expect(sandbox.writeFile.mock.calls.map((call) => call[0])).toEqual([
-      "/workspace/demo.source.tar",
+      "/workspace/demo.source.0.tar",
       "/workspace/demo.next-source-manifest.json",
     ]);
     expect(sandbox.exec).toHaveBeenCalledWith(expect.any(String), { cwd: "/workspace" });
     const command = sandbox.exec.mock.calls[0]?.[0] as string;
     expect(command).toContain("CAMELAI_FORCE_CLEAN=0");
-    expect(command).toContain("tar -xf '/workspace/demo.source.tar'");
+    expect(command).toContain("tar -tf '/workspace/demo.source.0.tar'");
+    expect(command).toContain("tar -xf '/workspace/demo.source.0.tar'");
     expect(timings).toEqual(expect.objectContaining({
       materializeMs: expect.any(Number),
       archiveCreateMs: expect.any(Number),
       materializeExecMs: expect.any(Number),
     }));
+  });
+
+  it("commits deletion-only deltas without creating an archive lane", async () => {
+    const previousManifest = {
+      schemaVersion: 2 as const,
+      files: [
+        { path: "package.json", size: 2, sha256: SHA_A, modifiedAt: new Date(0).toISOString() },
+        { path: "public/removed.json", size: 4, sha256: SHA_B, modifiedAt: new Date(0).toISOString() },
+      ],
+    };
+    const source: ProjectSourceCollection = {
+      entries: [
+        { path: "package.json", size: 2, modifiedAt: new Date(0).toISOString(), sha256: SHA_A },
+      ],
+      changedFiles: [],
+      validationFiles: [sourceFile("package.json", "{}", SHA_A)],
+      previousManifest,
+      previousManifestReadMs: 1,
+      timings: { collectSourceMs: 1, sourceListMs: 1, sourceReadMs: 1, sourceHashMs: 1 },
+      totalBytes: 2,
+    };
+    const sandbox = {
+      mkdir: vi.fn(async () => undefined),
+      writeFile: vi.fn(async () => undefined),
+      exec: vi.fn(async () => ({ success: true, stdout: "", stderr: "", exitCode: 0 })),
+    } as unknown as ProjectBuildSandboxLike;
+
+    await materializeProjectSourceFiles(sandbox, "/workspace/demo", source);
+
+    expect(sandbox.writeFile).toHaveBeenCalledTimes(1);
+    expect(sandbox.writeFile).toHaveBeenCalledWith(
+      "/workspace/demo.next-source-manifest.json",
+      expect.any(String),
+      { encoding: "utf8" },
+    );
+    const command = (sandbox.exec as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as string;
+    expect(command).toContain("CAMELAI_FORCE_CLEAN=0");
+    expect(command).not.toContain("tar -t");
+    expect(command).not.toContain("tar -x");
+  });
+
+  it("streams a cold 21 MB source over three parallel gzip lanes", async () => {
+    const files = [
+      sourceFile("public/a.json", "a".repeat(7 * 1024 * 1024)),
+      sourceFile("public/b.json", "b".repeat(7 * 1024 * 1024)),
+      sourceFile("public/c.json", "c".repeat(7 * 1024 * 1024)),
+    ];
+    const source: ProjectSourceCollection = {
+      entries: files.map((file) => ({
+        path: file.path,
+        size: file.bytes.byteLength,
+        modifiedAt: new Date(0).toISOString(),
+        sha256: file.sha256,
+      })),
+      changedFiles: files,
+      validationFiles: [],
+      previousManifest: null,
+      previousManifestReadMs: 0,
+      timings: { collectSourceMs: 1, sourceListMs: 1, sourceReadMs: 1, sourceHashMs: 1 },
+      totalBytes: 21 * 1024 * 1024,
+    };
+    let activeStreams = 0;
+    let maxActiveStreams = 0;
+    const transferred = new Map<string, Uint8Array>();
+    const writeFile = vi.fn(async (path: string, content: string | ReadableStream<Uint8Array>) => {
+      if (typeof content === "string") return;
+      activeStreams += 1;
+      maxActiveStreams = Math.max(maxActiveStreams, activeStreams);
+      const reader = content.getReader();
+      const chunks: Uint8Array[] = [];
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) chunks.push(value);
+      }
+      const size = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+      const bytes = new Uint8Array(size);
+      let offset = 0;
+      for (const chunk of chunks) {
+        bytes.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      transferred.set(path, bytes);
+      activeStreams -= 1;
+    });
+    const sandbox = {
+      mkdir: vi.fn(async () => undefined),
+      writeFile,
+      exec: vi.fn(async () => ({ success: true, stdout: "", stderr: "", exitCode: 0 })),
+    } as unknown as ProjectBuildSandboxLike;
+
+    await materializeProjectSourceFiles(sandbox, "/workspace/large", source);
+
+    expect(maxActiveStreams).toBe(3);
+    expect(writeFile.mock.calls.filter(([, content]) => content instanceof ReadableStream).map(([path]) => path)).toEqual([
+      "/workspace/large.source.0.tar.gz",
+      "/workspace/large.source.1.tar.gz",
+      "/workspace/large.source.2.tar.gz",
+    ]);
+    const command = (sandbox.exec as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as string;
+    expect(command.match(/tar -tzf/g)).toHaveLength(3);
+    expect(command.match(/tar -xzf/g)).toHaveLength(3);
+    const firstArchive = transferred.get("/workspace/large.source.0.tar.gz")!;
+    const compressedInput = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(firstArchive);
+        controller.close();
+      },
+    });
+    const decompressed = compressedInput.pipeThrough(
+      new DecompressionStream("gzip") as unknown as ReadableWritablePair<Uint8Array, Uint8Array>,
+    );
+    expect(new TextDecoder().decode(await new Response(decompressed).arrayBuffer())).toContain("public/a.json");
+  });
+
+  it("does not materialize a partial source tree when an archive lane upload fails", async () => {
+    const files = [sourceFile("a.txt", "a"), sourceFile("b.txt", "b")];
+    const source: ProjectSourceCollection = {
+      entries: files.map((file) => ({
+        path: file.path,
+        size: file.bytes.byteLength,
+        modifiedAt: new Date(0).toISOString(),
+        sha256: file.sha256,
+      })),
+      changedFiles: files,
+      validationFiles: [],
+      previousManifest: null,
+      previousManifestReadMs: 0,
+      timings: { collectSourceMs: 1, sourceListMs: 1, sourceReadMs: 1, sourceHashMs: 1 },
+      totalBytes: 2,
+    };
+    const sandbox = {
+      mkdir: vi.fn(async () => undefined),
+      writeFile: vi.fn(async (path: string) => {
+        if (path.endsWith(".tar")) throw new Error("upload failed");
+      }),
+      exec: vi.fn(async () => ({ success: true, stdout: "", stderr: "", exitCode: 0 })),
+    } as unknown as ProjectBuildSandboxLike;
+
+    await expect(materializeProjectSourceFiles(sandbox, "/workspace/demo", source)).rejects.toThrow("upload failed");
+    expect(sandbox.exec).not.toHaveBeenCalled();
   });
 
   it("quotes shell values without exposing a second command", () => {

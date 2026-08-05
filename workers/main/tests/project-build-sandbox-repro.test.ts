@@ -25,6 +25,37 @@ const DEPENDENCIES = [
 ];
 
 describe("real project build sandbox repro", () => {
+  maybeIt("builds a cold 20 MB data-heavy project through streamed archive lanes", async () => {
+    expect(testEnv.PROJECT_BUILD_SANDBOX).toBeDefined();
+    const suffix = Date.now().toString(36);
+    const projectId = `large-repro-${suffix}`;
+    const sandbox = getSandbox(testEnv.PROJECT_BUILD_SANDBOX, projectBuildSandboxKey(`large-repro-org-${suffix}`), {
+      normalizeId: true,
+      transport: "rpc",
+    }) as unknown as ProjectBuildSandboxLike;
+    const files = new ProjectFilesystemClient(testEnv as never, projectId);
+    await expect(files.writeFile(
+      "/package.json",
+      JSON.stringify({
+        type: "module",
+        scripts: { build: "bun -e \"console.log('built large source')\"" },
+      }),
+    )).resolves.toEqual({ success: true });
+    await expect(files.writeFile("/src/index.ts", "export default {};\n")).resolves.toEqual({ success: true });
+    await expect(files.writeFile("/public/data.json", "a".repeat(11 * 1024 * 1024))).resolves.toEqual({ success: true });
+    await expect(files.writeFile("/public/skus/0.json", "b".repeat(5 * 1024 * 1024))).resolves.toEqual({ success: true });
+    await expect(files.writeFile("/public/skus/1.json", "c".repeat(4 * 1024 * 1024))).resolves.toEqual({ success: true });
+
+    const build = await runProjectBuild({ projectId, files, sandbox });
+
+    expect(build, build.stderr || build.stdout).toMatchObject({
+      success: true,
+      fileCount: 5,
+      sourceBytes: expect.any(Number),
+    });
+    expect(build.sourceBytes).toBeGreaterThanOrEqual(20 * 1024 * 1024);
+  }, 180_000);
+
   maybeIt("runs add_dependency followed immediately by build repeatedly", async () => {
     expect(testEnv.PROJECT_BUILD_SANDBOX).toBeDefined();
     const projectId = `repro-${Date.now().toString(36)}`;

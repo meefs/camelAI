@@ -35,8 +35,8 @@ export async function runProjectBuild(input: {
   const projectId = normalizeProjectBuildId(input.projectId);
   const workdir = `${PROJECT_BUILD_ROOT}/${projectId}`;
   const timeoutMs = Math.max(1, Math.floor(input.timeoutMs ?? DEFAULT_BUILD_TIMEOUT_MS));
-  const sourceCollection = await collectProjectSourceFiles(input.files);
-  const sourceFiles = sourceCollection.files;
+  const sourceCollection = await collectProjectSourceFiles(input.files, { sandbox: input.sandbox, workdir });
+  const sourceFiles = sourceCollection.validationFiles;
   const packageValidationError = validatePackageJsonBuildScript(sourceFiles)
     ?? validateDoSqliteApiUsage(sourceFiles);
   if (packageValidationError) {
@@ -47,7 +47,7 @@ export async function runProjectBuild(input: {
       operation: "build",
       projectId,
       workdir,
-      fileCount: sourceFiles.length,
+      fileCount: sourceCollection.entries.length,
       error: packageValidationError,
     });
     return {
@@ -57,7 +57,7 @@ export async function runProjectBuild(input: {
       stdout: "",
       stderr: packageValidationError,
       exitCode: 1,
-      fileCount: sourceFiles.length,
+      fileCount: sourceCollection.entries.length,
       sourceBytes: sourceCollection.totalBytes,
       durationMs,
       timings: zeroProjectBuildTimings({ ...sourceCollection.timings, totalMs: durationMs }),
@@ -68,7 +68,7 @@ export async function runProjectBuild(input: {
       error: packageValidationError,
     };
   }
-  const materializeTiming = await materializeProjectSourceFiles(input.sandbox, workdir, sourceFiles);
+  const materializeTiming = await materializeProjectSourceFiles(input.sandbox, workdir, sourceCollection);
   const commandStartedAt = Date.now();
   const result = normalizeSandboxExecResult(await input.sandbox.exec("bun install && bun run build", {
     cwd: workdir,
@@ -86,7 +86,7 @@ export async function runProjectBuild(input: {
     logProjectCommandFailure("build", {
       projectId,
       workdir,
-      fileCount: sourceFiles.length,
+      fileCount: sourceCollection.entries.length,
       durationMs: Date.now() - startedAt,
       timeoutMs,
     }, result);
@@ -116,7 +116,7 @@ export async function runProjectBuild(input: {
     stdout: result.stdout,
     stderr: result.stderr,
     exitCode: result.exitCode,
-    fileCount: sourceFiles.length,
+    fileCount: sourceCollection.entries.length,
     sourceBytes: sourceCollection.totalBytes,
     durationMs,
     timings: zeroProjectBuildTimings({
@@ -150,8 +150,8 @@ export async function runProjectAddDependency(input: {
   const workdir = `${PROJECT_BUILD_ROOT}/${projectId}`;
   const dependency = normalizeDependencySpec(input.dependency);
   const dev = input.dev === true;
-  const sourceCollection = await collectProjectSourceFiles(input.files);
-  const sourceFiles = sourceCollection.files;
+  const sourceCollection = await collectProjectSourceFiles(input.files, { sandbox: input.sandbox, workdir });
+  const sourceFiles = sourceCollection.validationFiles;
   const packageValidationError = validatePackageJson(sourceFiles);
   if (packageValidationError) {
     const durationMs = Date.now() - startedAt;
@@ -161,7 +161,7 @@ export async function runProjectAddDependency(input: {
       workdir,
       dependency,
       dev,
-      fileCount: sourceFiles.length,
+      fileCount: sourceCollection.entries.length,
       error: packageValidationError,
     });
     return {
@@ -173,7 +173,7 @@ export async function runProjectAddDependency(input: {
       stdout: "",
       stderr: packageValidationError,
       exitCode: 1,
-      fileCount: sourceFiles.length,
+      fileCount: sourceCollection.entries.length,
       sourceBytes: sourceCollection.totalBytes,
       durationMs,
       timings: zeroProjectBuildTimings({ ...sourceCollection.timings, totalMs: durationMs }),
@@ -182,7 +182,7 @@ export async function runProjectAddDependency(input: {
       error: packageValidationError,
     };
   }
-  const materializeTiming = await materializeProjectSourceFiles(input.sandbox, workdir, sourceFiles);
+  const materializeTiming = await materializeProjectSourceFiles(input.sandbox, workdir, sourceCollection);
   const command = `bun add ${dev ? "-d " : ""}${shellQuote(dependency)}`;
   const commandStartedAt = Date.now();
   const result = normalizeSandboxExecResult(await input.sandbox.exec(command, {
@@ -201,7 +201,7 @@ export async function runProjectAddDependency(input: {
       workdir,
       dependency,
       dev,
-      fileCount: sourceFiles.length,
+      fileCount: sourceCollection.entries.length,
       durationMs: Date.now() - startedAt,
       timeoutMs: DEFAULT_BUILD_TIMEOUT_MS,
     }, result);
@@ -224,7 +224,7 @@ export async function runProjectAddDependency(input: {
     stdout: result.stdout,
     stderr: result.stderr,
     exitCode: result.exitCode,
-    fileCount: sourceFiles.length,
+    fileCount: sourceCollection.entries.length,
     sourceBytes: sourceCollection.totalBytes,
     durationMs,
     timings: zeroProjectBuildTimings({
