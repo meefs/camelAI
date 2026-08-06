@@ -10,6 +10,8 @@ export default [
   layout("routes/_auth.tsx", [
     route("login", "routes/_auth.login.tsx"),
     route("signup", "routes/_auth.signup.tsx"),
+    route("forgot-password", "routes/_auth.forgot-password.tsx"),
+    route("reset-password", "routes/_auth.reset-password.tsx"),
   ]),
   route("signup.", "routes/signup-dot.ts"),
   route("banned", "routes/banned.tsx"),
@@ -142,6 +144,8 @@ export default [
   // Auth API routes
   route("api/auth/login", "routes/api/auth.login.ts"),
   route("api/auth/signup", "routes/api/auth.signup.ts"),
+  route("api/auth/forgot-password", "routes/api/auth.forgot-password.ts"),
+  route("api/auth/reset-password", "routes/api/auth.reset-password.ts"),
   route("api/auth/verify-email", "routes/api/auth.verify-email.ts"),
   route("api/auth/verify-email/send", "routes/api/auth.verify-email.send.ts"),
   route("api/auth/logout", "routes/api/auth.logout.ts"),

@@ -27,12 +27,20 @@ export async function loader({ request }: Route.LoaderArgs) {
   const oauthError = errorCode
     ? (OAUTH_ERROR_MESSAGES[errorCode] ?? null)
     : null;
-  return { redirectTo, oauthError };
+  const passwordResetSuccess = url.searchParams.get("passwordReset") === "1";
+  return { redirectTo, oauthError, passwordResetSuccess };
 }
 
 export default function LoginPage() {
-  const { redirectTo, oauthError } = useLoaderData<typeof loader>();
-  return <LoginForm redirectTo={redirectTo} oauthError={oauthError} />;
+  const { redirectTo, oauthError, passwordResetSuccess } =
+    useLoaderData<typeof loader>();
+  return (
+    <LoginForm
+      redirectTo={redirectTo}
+      oauthError={oauthError}
+      passwordResetSuccess={passwordResetSuccess}
+    />
+  );
 }
 
 function getSafeRedirect(redirect: string | null): string {

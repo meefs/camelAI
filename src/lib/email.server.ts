@@ -41,6 +41,13 @@ interface EmailVerificationEmailArgs {
   expiresAt: number;
 }
 
+interface PasswordResetEmailArgs {
+  env: EmailEnvBindings;
+  to: string;
+  resetUrl: string;
+  expiresAt: number;
+}
+
 interface HelpConfirmationEmailArgs {
   env: EmailEnvBindings;
   to: string;
@@ -328,6 +335,36 @@ export async function sendEmailVerificationEmail({
   const { htmlBody, textBody } = await renderEmailElement(
     createElement(EmailVerificationEmailTemplate, {
       verificationUrl,
+      expirationLabel: expiration,
+    })
+  );
+
+  return deliverEmail({
+    env,
+    to: normalizedTo,
+    subject,
+    htmlBody,
+    textBody,
+  });
+}
+
+export async function sendPasswordResetEmail({
+  env,
+  to,
+  resetUrl,
+  expiresAt,
+}: PasswordResetEmailArgs): Promise<EmailDeliveryResult> {
+  const normalizedTo = to.trim().toLowerCase();
+  const subject = sanitizeHeaderValue('Reset your camelAI password');
+  const expiration = formatExpiration(expiresAt);
+
+  const [{ createElement }, { PasswordResetEmailTemplate }] = await Promise.all([
+    import('react'),
+    import('./email/templates/password-reset-email'),
+  ]);
+  const { htmlBody, textBody } = await renderEmailElement(
+    createElement(PasswordResetEmailTemplate, {
+      resetUrl,
       expirationLabel: expiration,
     })
   );

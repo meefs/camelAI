@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { useNavigate, Link, useFetcher } from "react-router";
+import { useState } from "react";
+import { Link, useFetcher } from "react-router";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -10,7 +10,6 @@ import { RadialGridBackground } from "@/components/ui/radial-grid-background";
 import { SlotMachinePrompt } from "@/components/ui/slot-machine-prompt";
 import { AlertCircle, CheckCircle2 } from "lucide-react";
 import { FullLogo } from "@/components/ui/logo";
-import { OAuthButtons, OAuthDivider } from "@/components/auth/oauth-buttons";
 
 const inspirationalPrompts = [
   "Alert me in Slack whenever someone signs up with a .edu email address",
@@ -21,47 +20,21 @@ const inspirationalPrompts = [
   "Build an internal calculator for sales reps to quote custom pricing",
 ];
 
-type LoginFormProps = {
-  redirectTo: string;
-  oauthError?: string | null;
-  passwordResetSuccess?: boolean;
-};
-
-export function LoginForm({
-  redirectTo,
-  oauthError,
-  passwordResetSuccess = false,
-}: LoginFormProps) {
-  const navigate = useNavigate();
+export function ForgotPasswordForm() {
   const fetcher = useFetcher();
   const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
 
   const submitting = fetcher.state !== "idle";
   const error = fetcher.data?.error as string | undefined;
-
-  const signupHref =
-    redirectTo === "/"
-      ? "/signup"
-      : `/signup?redirect=${encodeURIComponent(redirectTo)}`;
-
-  // Navigate on successful login
-  useEffect(() => {
-    const redirectTarget = fetcher.data?.redirect as string | undefined;
-    if (fetcher.state === "idle" && redirectTarget) {
-      navigate(redirectTarget);
-      return;
-    }
-    if (fetcher.state === "idle" && fetcher.data && !fetcher.data.error) {
-      navigate(redirectTo);
-    }
-  }, [fetcher.state, fetcher.data, navigate, redirectTo]);
+  const successMessage = fetcher.data?.success
+    ? (fetcher.data.message as string | undefined)
+    : undefined;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    fetcher.submit(JSON.stringify({ email, password }), {
+    fetcher.submit(JSON.stringify({ email }), {
       method: "post",
-      action: "/api/auth/login",
+      action: "/api/auth/forgot-password",
       encType: "application/json",
     });
   };
@@ -79,28 +52,12 @@ export function LoginForm({
             <form onSubmit={handleSubmit} className="flex flex-col gap-6">
               <div className="flex flex-col items-center gap-2 text-center">
                 <h1 className="text-xl font-semibold tracking-tight">
-                  Welcome back
+                  Forgot password?
                 </h1>
                 <p className="text-muted-foreground text-sm text-balance">
-                  Sign in to your account
+                  Enter your email and we&apos;ll send you a reset link
                 </p>
               </div>
-
-              {oauthError && (
-                <Alert variant="destructive">
-                  <AlertCircle className="size-4" />
-                  <AlertDescription>{oauthError}</AlertDescription>
-                </Alert>
-              )}
-
-              {passwordResetSuccess && (
-                <Alert>
-                  <CheckCircle2 className="size-4" />
-                  <AlertDescription>
-                    Password updated. Sign in with your new password.
-                  </AlertDescription>
-                </Alert>
-              )}
 
               {error && (
                 <Alert variant="destructive">
@@ -109,9 +66,12 @@ export function LoginForm({
                 </Alert>
               )}
 
-              <OAuthButtons redirectUrl={redirectTo} disabled={submitting} />
-
-              <OAuthDivider text="or continue with email" />
+              {successMessage && (
+                <Alert>
+                  <CheckCircle2 className="size-4" />
+                  <AlertDescription>{successMessage}</AlertDescription>
+                </Alert>
+              )}
 
               <div className="grid gap-4">
                 <div className="grid gap-1.5">
@@ -123,55 +83,26 @@ export function LoginForm({
                     onChange={(e) => setEmail(e.target.value)}
                     required
                     placeholder="you@example.com"
-                  />
-                </div>
-                <div className="grid gap-1.5">
-                  <div className="flex items-center justify-between gap-2">
-                    <Label htmlFor="password">Password</Label>
-                    <Link
-                      to="/forgot-password"
-                      className="text-muted-foreground text-xs hover:text-primary hover:underline underline-offset-4"
-                    >
-                      Forgot password?
-                    </Link>
-                  </div>
-                  <Input
-                    id="password"
-                    type="password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    required
-                    placeholder="Your password"
+                    autoComplete="email"
                   />
                 </div>
                 <Button
                   type="submit"
-                  disabled={submitting}
+                  disabled={submitting || Boolean(successMessage)}
                   className="w-full"
                   size="lg"
                 >
-                  {submitting ? "Signing in..." : "Sign in"}
+                  {submitting ? "Sending..." : "Send reset link"}
                 </Button>
               </div>
 
               <div className="text-center text-sm">
-                Don&apos;t have an account?{" "}
                 <Link
-                  to={signupHref}
+                  to="/login"
                   className="text-primary hover:underline underline-offset-4"
                 >
-                  Sign up
+                  Back to sign in
                 </Link>
-              </div>
-
-              <div className="text-center text-xs text-muted-foreground">
-                Looking for old camelAI?{" "}
-                <a
-                  href="https://app.camelai.com"
-                  className="hover:underline underline-offset-4"
-                >
-                  Open old camelAI
-                </a>
               </div>
             </form>
           </div>

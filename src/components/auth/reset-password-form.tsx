@@ -1,16 +1,15 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { useNavigate, Link, useFetcher } from "react-router";
+import { useEffect, useState } from "react";
+import { Link, useFetcher, useNavigate } from "react-router";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { RadialGridBackground } from "@/components/ui/radial-grid-background";
 import { SlotMachinePrompt } from "@/components/ui/slot-machine-prompt";
-import { AlertCircle, CheckCircle2 } from "lucide-react";
+import { AlertCircle } from "lucide-react";
 import { FullLogo } from "@/components/ui/logo";
-import { OAuthButtons, OAuthDivider } from "@/components/auth/oauth-buttons";
 
 const inspirationalPrompts = [
   "Alert me in Slack whenever someone signs up with a .edu email address",
@@ -21,47 +20,51 @@ const inspirationalPrompts = [
   "Build an internal calculator for sales reps to quote custom pricing",
 ];
 
-type LoginFormProps = {
-  redirectTo: string;
-  oauthError?: string | null;
-  passwordResetSuccess?: boolean;
+type ResetPasswordFormProps = {
+  token: string | null;
 };
 
-export function LoginForm({
-  redirectTo,
-  oauthError,
-  passwordResetSuccess = false,
-}: LoginFormProps) {
+export function ResetPasswordForm({ token }: ResetPasswordFormProps) {
   const navigate = useNavigate();
   const fetcher = useFetcher();
-  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [validationError, setValidationError] = useState("");
 
   const submitting = fetcher.state !== "idle";
-  const error = fetcher.data?.error as string | undefined;
+  const serverError = fetcher.data?.error as string | undefined;
+  const error = validationError || serverError;
+  const missingToken = !token;
 
-  const signupHref =
-    redirectTo === "/"
-      ? "/signup"
-      : `/signup?redirect=${encodeURIComponent(redirectTo)}`;
-
-  // Navigate on successful login
   useEffect(() => {
     const redirectTarget = fetcher.data?.redirect as string | undefined;
     if (fetcher.state === "idle" && redirectTarget) {
       navigate(redirectTarget);
-      return;
     }
-    if (fetcher.state === "idle" && fetcher.data && !fetcher.data.error) {
-      navigate(redirectTo);
-    }
-  }, [fetcher.state, fetcher.data, navigate, redirectTo]);
+  }, [fetcher.state, fetcher.data, navigate]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    fetcher.submit(JSON.stringify({ email, password }), {
+    setValidationError("");
+
+    if (!token) {
+      setValidationError("Reset link is invalid or has expired.");
+      return;
+    }
+
+    if (password.length < 8) {
+      setValidationError("Password must be at least 8 characters");
+      return;
+    }
+
+    if (password !== confirmPassword) {
+      setValidationError("Passwords do not match");
+      return;
+    }
+
+    fetcher.submit(JSON.stringify({ token, password }), {
       method: "post",
-      action: "/api/auth/login",
+      action: "/api/auth/reset-password",
       encType: "application/json",
     });
   };
@@ -79,99 +82,70 @@ export function LoginForm({
             <form onSubmit={handleSubmit} className="flex flex-col gap-6">
               <div className="flex flex-col items-center gap-2 text-center">
                 <h1 className="text-xl font-semibold tracking-tight">
-                  Welcome back
+                  Set a new password
                 </h1>
                 <p className="text-muted-foreground text-sm text-balance">
-                  Sign in to your account
+                  Choose a new password for your account
                 </p>
               </div>
 
-              {oauthError && (
+              {(error || missingToken) && (
                 <Alert variant="destructive">
                   <AlertCircle className="size-4" />
-                  <AlertDescription>{oauthError}</AlertDescription>
-                </Alert>
-              )}
-
-              {passwordResetSuccess && (
-                <Alert>
-                  <CheckCircle2 className="size-4" />
                   <AlertDescription>
-                    Password updated. Sign in with your new password.
+                    {missingToken && !error
+                      ? "Reset link is invalid or has expired."
+                      : error}
                   </AlertDescription>
                 </Alert>
               )}
 
-              {error && (
-                <Alert variant="destructive">
-                  <AlertCircle className="size-4" />
-                  <AlertDescription>{error}</AlertDescription>
-                </Alert>
-              )}
-
-              <OAuthButtons redirectUrl={redirectTo} disabled={submitting} />
-
-              <OAuthDivider text="or continue with email" />
-
               <div className="grid gap-4">
                 <div className="grid gap-1.5">
-                  <Label htmlFor="email">Email</Label>
-                  <Input
-                    id="email"
-                    type="email"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    required
-                    placeholder="you@example.com"
-                  />
-                </div>
-                <div className="grid gap-1.5">
-                  <div className="flex items-center justify-between gap-2">
-                    <Label htmlFor="password">Password</Label>
-                    <Link
-                      to="/forgot-password"
-                      className="text-muted-foreground text-xs hover:text-primary hover:underline underline-offset-4"
-                    >
-                      Forgot password?
-                    </Link>
-                  </div>
+                  <Label htmlFor="password">New password</Label>
                   <Input
                     id="password"
                     type="password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     required
-                    placeholder="Your password"
+                    minLength={8}
+                    placeholder="At least 8 characters"
+                    autoComplete="new-password"
+                    disabled={missingToken}
+                  />
+                </div>
+                <div className="grid gap-1.5">
+                  <Label htmlFor="confirmPassword">Confirm password</Label>
+                  <Input
+                    id="confirmPassword"
+                    type="password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    required
+                    minLength={8}
+                    placeholder="Confirm your new password"
+                    autoComplete="new-password"
+                    disabled={missingToken}
                   />
                 </div>
                 <Button
                   type="submit"
-                  disabled={submitting}
+                  disabled={submitting || missingToken}
                   className="w-full"
                   size="lg"
                 >
-                  {submitting ? "Signing in..." : "Sign in"}
+                  {submitting ? "Updating..." : "Update password"}
                 </Button>
               </div>
 
               <div className="text-center text-sm">
-                Don&apos;t have an account?{" "}
                 <Link
-                  to={signupHref}
+                  to="/login"
                   className="text-primary hover:underline underline-offset-4"
                 >
-                  Sign up
+                  Back to sign in
                 </Link>
-              </div>
-
-              <div className="text-center text-xs text-muted-foreground">
-                Looking for old camelAI?{" "}
-                <a
-                  href="https://app.camelai.com"
-                  className="hover:underline underline-offset-4"
-                >
-                  Open old camelAI
-                </a>
               </div>
             </form>
           </div>

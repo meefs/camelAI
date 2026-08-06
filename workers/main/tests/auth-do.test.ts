@@ -126,6 +126,26 @@ describe('Auth flow (full-stack with DOs)', () => {
       expect(after.verified).toBe(true);
     });
 
+    it('resets password with a one-time nonce and invalidates sessions', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'oldPassword1', 'Reset User');
+      const userStub = testEnv.USER.get(testEnv.USER.idFromName(userId));
+
+      await userStub.setPasswordResetNonce('nonce-reset-1');
+      expect(await userStub.getPasswordResetNonce()).toBe('nonce-reset-1');
+
+      const reset = await userStub.resetPassword('newPassword1', 'nonce-reset-1');
+      expect(reset).toBe(true);
+      expect(await userStub.getPasswordResetNonce()).toBeNull();
+      expect(await verifyUserPassword(testEnv, userId, 'newPassword1')).toBe(true);
+      expect(await verifyUserPassword(testEnv, userId, 'oldPassword1')).toBe(false);
+      expect(await userStub.getSessionInvalidatedAt()).toBeTypeOf('number');
+      expect((await userStub.getEmailVerificationStatus()).verified).toBe(true);
+
+      // Token is single-use.
+      expect(await userStub.resetPassword('anotherPassword1', 'nonce-reset-1')).toBe(false);
+    });
+
     it('marks OAuth users as already verified', async () => {
       const userId = crypto.randomUUID();
       const email = testEmail();

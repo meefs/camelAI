@@ -39,6 +39,7 @@ export type { OrgRole, BillingStatus } from "../../../../src/types";
 const USER_ONBOARDING_KEY = "onboarding";
 const USER_SIGNUP_IP_KEY = "signup_ip";
 const USER_NEW_CAMEL_ACTIVATION_KEY = "new_camel_activation";
+const PASSWORD_RESET_NONCE_KEY = "password_reset_nonce";
 const CHAT_GROUP_ICON_GENERATION_LEASE_MS = 2 * 60 * 1000;
 const CHAT_GROUP_ICON_MAX_CONCURRENCY = 3;
 
@@ -885,6 +886,42 @@ export class UserDO extends DurableObject<DOEnv> {
     const hash = await this.getPasswordHash();
     if (!hash) return false;
     return verifyPassword(password, hash);
+  }
+
+  setPasswordResetNonce(nonce: string): void {
+    const normalized = nonce.trim();
+    if (!normalized) {
+      throw new Error("password_reset_nonce_required");
+    }
+    this.ctx.storage.kv.put(PASSWORD_RESET_NONCE_KEY, normalized);
+  }
+
+  getPasswordResetNonce(): string | null {
+    return this.ctx.storage.kv.get<string>(PASSWORD_RESET_NONCE_KEY) ?? null;
+  }
+
+  clearPasswordResetNonce(): void {
+    this.ctx.storage.kv.delete(PASSWORD_RESET_NONCE_KEY);
+  }
+
+  /**
+   * Replace the password hash after a validated reset token, consume the
+   * one-time nonce, mark the email verified, and invalidate outstanding sessions.
+   */
+  async resetPassword(password: string, nonce: string): Promise<boolean> {
+    const profile = await this.getProfile();
+    if (!profile) return false;
+
+    const expectedNonce = this.getPasswordResetNonce();
+    if (!expectedNonce || expectedNonce !== nonce.trim()) {
+      return false;
+    }
+
+    await this.setPasswordHash(await hashPassword(password));
+    this.clearPasswordResetNonce();
+    this.invalidateSessions();
+    await this.markEmailVerified();
+    return true;
   }
 
   getSignupIp(): string | null {
