@@ -57,7 +57,8 @@ export class PiModelMapping {
       case "opus":
       case "opus-4.7":
       case "opus-4.8":
-        return claudeReference("claude-opus-4-8");
+      case "opus-5":
+        return claudeReference("claude-opus-5");
       case "fable-5":
         return claudeReference("claude-fable-5");
       case "sonnet":
@@ -210,13 +211,15 @@ export class PiModelMapping {
       case "opus":
       case "opus-4.7":
       case "opus-4.8":
+      case "opus-5":
+      case "claude-opus-5":
       case "claude-opus-4-8":
       case "claude-opus-4.8":
       case "claude-opus-4-7":
       case "claude-opus-4.7":
       case "claude-opus-4-6":
       case "claude-opus-4.6":
-        return "anthropic/claude-opus-4.8";
+        return "anthropic/claude-opus-5";
       case "claude-sonnet-5":
         return "anthropic/claude-sonnet-5";
       case "claude-sonnet-4-6":
@@ -252,7 +255,7 @@ export class PiModelMapping {
       lower.startsWith("dynamic/") ||
       lower.startsWith("google/gemini-") ||
       lower.startsWith("deepseek/deepseek-v4-") ||
-      lower.startsWith("anthropic/claude-opus-4.") ||
+      lower.startsWith("anthropic/claude-opus-") ||
       lower.endsWith(":nitro")
     ) {
       return trimmed;
@@ -268,13 +271,14 @@ export class PiModelMapping {
     switch (modelId) {
       case "claude-haiku-4-5-20251001":
         return "anthropic.claude-haiku-4-5";
-      case "claude-opus-4-8":
-        return "anthropic.claude-opus-4-8";
+      case "claude-opus-5":
+        return "anthropic.claude-opus-5";
       case "claude-fable-5":
         return "anthropic.claude-fable-5";
       case "claude-opus-4-6":
       case "claude-opus-4-7":
-        return "anthropic.claude-opus-4-8";
+      case "claude-opus-4-8":
+        return "anthropic.claude-opus-5";
       case "claude-sonnet-5":
         return "anthropic.claude-sonnet-5";
       case "claude-sonnet-4-6":

@@ -60,7 +60,7 @@ describe('model pricing coverage', () => {
     expect(source).toContain('case "gpt-5.6-luna":');
     expect(source).toContain('return openAiReference(normalizedModelId);');
     expect(source).toContain('return claudeReference("claude-fable-5");');
-    expect(source).toContain('case "opus-4.8":');
-    expect(source).toContain('return claudeReference("claude-opus-4-8");');
+    expect(source).toContain('case "opus-5":');
+    expect(source).toContain('return claudeReference("claude-opus-5");');
   });
 });

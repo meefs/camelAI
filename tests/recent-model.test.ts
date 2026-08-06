@@ -20,9 +20,9 @@ describe('recent model localStorage helpers', () => {
 
   it('round-trips a valid model by org and workspace scope', () => {
     const scope = { orgId: 'org-a', workspaceId: 'ws-a' };
-    setRecentModel(scope, 'opus-4.8');
+    setRecentModel(scope, 'opus-5');
 
-    expect(getRecentModel(scope)).toBe('opus-4.8');
+    expect(getRecentModel(scope)).toBe('opus-5');
     expect(getRecentModel({ orgId: 'org-a', workspaceId: 'ws-b' })).toBeNull();
     expect(getRecentModel({ orgId: 'org-b', workspaceId: 'ws-a' })).toBeNull();
   });
@@ -32,7 +32,7 @@ describe('recent model localStorage helpers', () => {
 
     expect(getRecentModel({ orgId: 'org-a', workspaceId: 'ws-a' })).toBeNull();
     expect(() =>
-      setRecentModel({ orgId: 'org-a', workspaceId: 'ws-a' }, 'opus-4.8'),
+      setRecentModel({ orgId: 'org-a', workspaceId: 'ws-a' }, 'opus-5'),
     ).not.toThrow();
   });
 
@@ -51,19 +51,22 @@ describe('recent model localStorage helpers', () => {
 
     expect(getRecentModel({ orgId: 'org-a', workspaceId: 'ws-a' })).toBeNull();
     expect(() =>
-      setRecentModel({ orgId: 'org-a', workspaceId: 'ws-a' }, 'opus-4.8'),
+      setRecentModel({ orgId: 'org-a', workspaceId: 'ws-a' }, 'opus-5'),
     ).not.toThrow();
 
     getItemSpy.mockRestore();
     setItemSpy.mockRestore();
   });
 
-  it('remaps legacy Opus recent models to Opus 4.8', () => {
+  it('remaps legacy Opus recent models to Opus 5', () => {
     const scope = { orgId: 'org-a', workspaceId: 'ws-a' };
     window.localStorage.setItem('camelai.recentModel.org-a.ws-a', 'opus');
-    expect(getRecentModel(scope)).toBe('opus-4.8');
+    expect(getRecentModel(scope)).toBe('opus-5');
 
     window.localStorage.setItem('camelai.recentModel.org-a.ws-a', 'opus-4.7');
-    expect(getRecentModel(scope)).toBe('opus-4.8');
+    expect(getRecentModel(scope)).toBe('opus-5');
+
+    window.localStorage.setItem('camelai.recentModel.org-a.ws-a', 'opus-4.8');
+    expect(getRecentModel(scope)).toBe('opus-5');
   });
 });

@@ -210,14 +210,18 @@ const PI_MODEL_CATALOG_FALLBACKS: Record<string, Model<any>> = {
     contextWindow: 1_000_000,
     maxTokens: 128_000,
   } satisfies Model<"anthropic-messages">,
-  "anthropic/claude-opus-4-8": {
-    id: "claude-opus-4-8",
-    name: "Claude Opus 4.8",
+  "anthropic/claude-opus-5": {
+    id: "claude-opus-5",
+    name: "Claude Opus 5",
     api: "anthropic-messages",
     provider: "anthropic",
     baseUrl: "https://api.anthropic.com",
+    compat: {
+      forceAdaptiveThinking: true,
+      supportsTemperature: false,
+    },
     reasoning: true,
-    thinkingLevelMap: { xhigh: "xhigh" },
+    thinkingLevelMap: { xhigh: "xhigh", max: "max" },
     input: ["text", "image"],
     cost: {
       input: 5,

@@ -16,6 +16,11 @@ interface BedrockModelMetadata {
   name: string;
   reasoning: boolean;
   thinkingLevelMap?: Record<string, string | null>;
+  compat?: {
+    forceAdaptiveThinking?: boolean;
+    supportsTemperature?: boolean;
+    supportsEagerToolInputStreaming?: boolean;
+  };
   input: ('text' | 'image')[];
   cost: {
     input: number;
@@ -50,11 +55,16 @@ const bedrockModels: BedrockModelMetadata[] = [
     maxTokens: 128_000,
   },
   {
-    id: 'claude-opus-4-8',
-    bedrockModelId: 'anthropic.claude-opus-4-8',
-    name: 'Claude Opus 4.8',
+    id: 'claude-opus-5',
+    bedrockModelId: 'anthropic.claude-opus-5',
+    name: 'Claude Opus 5',
     reasoning: true,
-    thinkingLevelMap: { xhigh: 'xhigh' },
+    thinkingLevelMap: { xhigh: 'xhigh', max: 'max' },
+    compat: {
+      forceAdaptiveThinking: true,
+      supportsTemperature: false,
+      supportsEagerToolInputStreaming: false,
+    },
     input: ['text', 'image'],
     cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
     contextWindow: 1_000_000,
@@ -91,9 +101,15 @@ const bedrockModelMap: Record<string, string> = {
   'global.anthropic.claude-fable-5': 'anthropic.claude-fable-5',
   'anthropic/claude-sonnet-5': 'anthropic.claude-sonnet-5',
   'global.anthropic.claude-sonnet-5': 'anthropic.claude-sonnet-5',
-  'anthropic/claude-opus-4.8': 'anthropic.claude-opus-4-8',
-  'anthropic/claude-opus-4-8': 'anthropic.claude-opus-4-8',
-  'global.anthropic.claude-opus-4-8': 'anthropic.claude-opus-4-8',
+  opus: 'anthropic.claude-opus-5',
+  'opus-4.7': 'anthropic.claude-opus-5',
+  'opus-4.8': 'anthropic.claude-opus-5',
+  'opus-5': 'anthropic.claude-opus-5',
+  'anthropic/claude-opus-5': 'anthropic.claude-opus-5',
+  'global.anthropic.claude-opus-5': 'anthropic.claude-opus-5',
+  'anthropic/claude-opus-4.8': 'anthropic.claude-opus-5',
+  'anthropic/claude-opus-4-8': 'anthropic.claude-opus-5',
+  'global.anthropic.claude-opus-4-8': 'anthropic.claude-opus-5',
   'anthropic/claude-haiku-4.5': 'anthropic.claude-haiku-4-5',
   'claude-haiku-4-5-20251001': 'anthropic.claude-haiku-4-5',
   'global.anthropic.claude-haiku-4-5-20251001-v1:0': 'anthropic.claude-haiku-4-5',
@@ -168,6 +184,7 @@ function toModelListItem(model: BedrockModelMetadata): Record<string, unknown> {
     name: model.name,
     reasoning: model.reasoning,
     thinkingLevelMap: model.thinkingLevelMap,
+    compat: model.compat,
     input: model.input,
     cost: model.cost,
     contextWindow: model.contextWindow,
@@ -179,12 +196,56 @@ function toModelListItem(model: BedrockModelMetadata): Record<string, unknown> {
 }
 
 function toMantleBody(body: AnthropicMessagesRequest): Record<string, unknown> {
-  return Object.fromEntries(
-    Object.entries(body).map(([key, value]) => [
-      key,
-      key === 'model' && typeof value === 'string' ? mapToBedrockModel(value) : value,
-    ]),
-  );
+  const sourceModel = typeof body.model === 'string' ? body.model : '';
+  const next: Record<string, unknown> = {
+    ...body,
+    model: mapToBedrockModel(sourceModel),
+  };
+
+  if (!isLegacyOpusModel(sourceModel)) return next;
+
+  // Opus 4.6 and earlier accepted manual thinking budgets and sampling
+  // parameters that Opus 5 rejects. Older clients may still send those fields
+  // through the 4.7/4.8 compatibility aliases, so migrate the request body at
+  // the same boundary where the model ID is upgraded.
+  delete next.temperature;
+  delete next.top_p;
+  delete next.top_k;
+
+  const thinking = asRecord(next.thinking);
+  if (thinking?.type === 'enabled') {
+    const adaptiveThinking = { ...thinking, type: 'adaptive' };
+    delete adaptiveThinking.budget_tokens;
+    next.thinking = adaptiveThinking;
+  } else if (
+    thinking?.type === 'disabled' &&
+    isAboveDisabledThinkingEffort(asRecord(next.output_config)?.effort)
+  ) {
+    // Opus 5 permits disabled thinking only through high effort. Preserve the
+    // requested xhigh/max effort and re-enable adaptive thinking.
+    next.thinking = { type: 'adaptive' };
+  }
+
+  return next;
+}
+
+function isLegacyOpusModel(model: string): boolean {
+  const normalized = model.trim().toLowerCase();
+  return normalized === 'opus' ||
+    normalized.includes('opus-4-8') ||
+    normalized.includes('opus-4.8') ||
+    normalized.includes('opus-4-7') ||
+    normalized.includes('opus-4.7');
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function isAboveDisabledThinkingEffort(effort: unknown): boolean {
+  return effort === 'xhigh' || effort === 'max';
 }
 
 function mapToBedrockModel(model: string): string {
@@ -194,8 +255,13 @@ function mapToBedrockModel(model: string): string {
   const normalized = model.toLowerCase();
   if (normalized.includes('fable-5')) return 'anthropic.claude-fable-5';
   if (normalized.includes('sonnet-5')) return 'anthropic.claude-sonnet-5';
-  if (normalized.includes('opus-4-8') || normalized.includes('opus-4.8')) return 'anthropic.claude-opus-4-8';
-  if (normalized.includes('opus-4-7') || normalized.includes('opus-4.7')) return 'anthropic.claude-opus-4-7';
+  if (
+    normalized.includes('opus-5') ||
+    normalized.includes('opus-4-8') ||
+    normalized.includes('opus-4.8') ||
+    normalized.includes('opus-4-7') ||
+    normalized.includes('opus-4.7')
+  ) return 'anthropic.claude-opus-5';
   if (normalized.includes('sonnet-4-6') || normalized.includes('sonnet-4.6')) return 'anthropic.claude-sonnet-4-6-v1';
   if (normalized.includes('haiku-4-5') || normalized.includes('haiku-4.5')) return 'anthropic.claude-haiku-4-5';
 

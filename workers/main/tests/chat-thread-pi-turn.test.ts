@@ -598,6 +598,19 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
   });
 
+  it('resolves current and legacy Opus requests to Opus 5', () => {
+    const mapping = new PiModelMapping();
+    const expected = {
+      provider: 'anthropic',
+      modelId: 'claude-opus-5',
+      hostedGatewayProvider: 'openrouter',
+      hostedModelId: 'anthropic/claude-opus-5',
+    };
+
+    expect(mapping.resolvePiModelReference('opus-5')).toEqual(expected);
+    expect(mapping.resolvePiModelReference('opus-4.8')).toEqual(expected);
+  });
+
   it('preserves sentDuringStreaming metadata on parsed Pi user messages', () => {
     const result = piCoreMessageToParsedChatMessage(
       {
@@ -3474,7 +3487,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(fake.checkHostedPiModelAccess).not.toHaveBeenCalled();
   });
 
-  it('uses Mantle for BYOK Opus 4.8 when Pi catalog lags', async () => {
+  it('uses Mantle for BYOK Opus 5 when Pi catalog lags', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.env = {};
     fake.resolveCurrentByokCredentials = vi.fn(async () => ({
@@ -3490,17 +3503,22 @@ describe('ChatThreadDO Pi turn handling', () => {
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
       { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      { CHIRIDION_MODEL: 'opus-4.8' },
+      { CHIRIDION_MODEL: 'opus-5' },
       getModel,
     );
 
-    expect(getModel).toHaveBeenCalledWith('anthropic', 'claude-opus-4-8');
+    expect(getModel).toHaveBeenCalledWith('anthropic', 'claude-opus-5');
     expect(model.model).toMatchObject({
-      id: 'anthropic.claude-opus-4-8',
+      id: 'anthropic.claude-opus-5',
       provider: 'custom',
       api: 'anthropic-messages',
       baseUrl: 'https://bedrock-mantle.us-west-2.api.aws/anthropic',
-      name: 'Claude Opus 4.8',
+      name: 'Claude Opus 5',
+      compat: {
+        forceAdaptiveThinking: true,
+        supportsTemperature: false,
+      },
+      thinkingLevelMap: { xhigh: 'xhigh', max: 'max' },
       contextWindow: 1_000_000,
       maxTokens: 128_000,
     });
@@ -11690,7 +11708,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     fake.piCurrentBillingSource = 'byok';
     fake.piSession = {
       state: {
-        model: { id: 'us.anthropic.claude-opus-4-8' },
+        model: { id: 'anthropic.claude-opus-5' },
       },
     };
     const errorMessage = 'Bedrock request failed with HTTP 524: error code: 524';

@@ -538,7 +538,7 @@ describe('chat loader workspace mismatch handling', () => {
       id: 'thread_123',
       workspace_id: 'ws_active',
       title: 'Workspace Thread',
-      model: 'opus-4.8',
+      model: 'opus-5',
     });
     getWorkspaceModelPickerStateMock.mockRejectedValue(
       new Error('transient picker failure'),
@@ -553,11 +553,11 @@ describe('chat loader workspace mismatch handling', () => {
       params: { id: 'thread_123' },
     } as never);
 
-    expect(result.threadModel).toBe('opus-4.8');
+    expect(result.threadModel).toBe('opus-5');
     if (!Array.isArray(result.allowedThreadModels)) {
       throw new Error('Expected fallback allowedThreadModels to be an array');
     }
-    expect(result.allowedThreadModels).toContain('opus-4.8');
+    expect(result.allowedThreadModels).toContain('opus-5');
     expect(result.allowedThreadModels).toContain('sonnet');
     expect(result.allowedThreadModels.length).toBeGreaterThan(0);
     consoleErrorSpy.mockRestore();

@@ -52,6 +52,7 @@ import {
   getStoredCustomLlmProviderApi,
   getStoredCustomLlmProviderModelId,
   normalizeLlmModel,
+  resolveStoredLlmModel,
   type LlmProviderConfigRecord,
 } from "../../../../src/lib/llm-provider-config";
 import {
@@ -8080,7 +8081,8 @@ export class OrgDO extends DurableObject<DOEnv> {
     if (!existing) return null;
     if (
       expectedModel !== undefined &&
-      existing.model !== normalizeThreadModelForStorage(expectedModel)
+      (resolveStoredLlmModel(existing.model) ?? existing.model) !==
+        (resolveStoredLlmModel(expectedModel) ?? expectedModel)
     ) {
       return null;
     }

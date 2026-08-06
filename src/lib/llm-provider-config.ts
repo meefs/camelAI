@@ -18,8 +18,9 @@ const STORED_LLM_MODEL_REPLACEMENTS: Readonly<Record<string, LlmModel>> = {
   "kimi-latest": "kimi-k2.7-code",
   "grok-4.3": "grok-4.5",
   "grok-latest": "grok-4.5",
-  opus: "opus-4.8",
-  "opus-4.7": "opus-4.8",
+  opus: "opus-5",
+  "opus-4.7": "opus-5",
+  "opus-4.8": "opus-5",
 };
 
 // When adding a model here, also add it to the picker catalog at
@@ -30,8 +31,8 @@ export const ANTHROPIC_LLM_MODEL_OPTIONS: ReadonlyArray<{
   description: string;
 }> = [
   {
-    value: "opus-4.8",
-    label: "Opus 4.8",
+    value: "opus-5",
+    label: "Opus 5",
     description: "Flagship coding model",
   },
   {
