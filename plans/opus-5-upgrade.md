@@ -66,6 +66,7 @@ Implementation consequences:
 - Teach both the chat BYOK mapper and the standalone Bedrock provider worker to emit `anthropic.claude-opus-5`.
 - Normalize any incoming `global.anthropic.claude-opus-5` compatibility spelling to the Mantle ID without the `global.` prefix, matching the existing Mantle behavior.
 - Give the Pi fallback model `forceAdaptiveThinking: true` and `supportsTemperature: false`. Without these flags, a lagging Pi catalog can produce the obsolete budget-based thinking body or forward an unsupported temperature.
+- At the standalone Bedrock proxy boundary, migrate request bodies that arrive under a legacy Opus alias: convert manual budget thinking to adaptive thinking, remove unsupported sampling fields, and re-enable adaptive thinking when disabled thinking is combined with `xhigh` or `max`. Preserve valid disabled thinking at `high` or below.
 - Advertise the complete Opus 5 effort map, including `xhigh` and `max`. Standard levels can use Pi's native `low`/`medium`/`high` mapping.
 - Keep `off` available for the OpenAI-compatible virtual binding path, which intentionally requests no reasoning when the caller does not ask for it. With no `xhigh`/`max` effort in that path, `thinking: { type: "disabled" }` remains valid.
 - Preserve `supportsEagerToolInputStreaming: false` on Mantle, as the existing Bedrock integration already requires.

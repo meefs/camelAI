@@ -196,12 +196,56 @@ function toModelListItem(model: BedrockModelMetadata): Record<string, unknown> {
 }
 
 function toMantleBody(body: AnthropicMessagesRequest): Record<string, unknown> {
-  return Object.fromEntries(
-    Object.entries(body).map(([key, value]) => [
-      key,
-      key === 'model' && typeof value === 'string' ? mapToBedrockModel(value) : value,
-    ]),
-  );
+  const sourceModel = typeof body.model === 'string' ? body.model : '';
+  const next: Record<string, unknown> = {
+    ...body,
+    model: mapToBedrockModel(sourceModel),
+  };
+
+  if (!isLegacyOpusModel(sourceModel)) return next;
+
+  // Opus 4.6 and earlier accepted manual thinking budgets and sampling
+  // parameters that Opus 5 rejects. Older clients may still send those fields
+  // through the 4.7/4.8 compatibility aliases, so migrate the request body at
+  // the same boundary where the model ID is upgraded.
+  delete next.temperature;
+  delete next.top_p;
+  delete next.top_k;
+
+  const thinking = asRecord(next.thinking);
+  if (thinking?.type === 'enabled') {
+    const adaptiveThinking = { ...thinking, type: 'adaptive' };
+    delete adaptiveThinking.budget_tokens;
+    next.thinking = adaptiveThinking;
+  } else if (
+    thinking?.type === 'disabled' &&
+    isAboveDisabledThinkingEffort(asRecord(next.output_config)?.effort)
+  ) {
+    // Opus 5 permits disabled thinking only through high effort. Preserve the
+    // requested xhigh/max effort and re-enable adaptive thinking.
+    next.thinking = { type: 'adaptive' };
+  }
+
+  return next;
+}
+
+function isLegacyOpusModel(model: string): boolean {
+  const normalized = model.trim().toLowerCase();
+  return normalized === 'opus' ||
+    normalized.includes('opus-4-8') ||
+    normalized.includes('opus-4.8') ||
+    normalized.includes('opus-4-7') ||
+    normalized.includes('opus-4.7');
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function isAboveDisabledThinkingEffort(effort: unknown): boolean {
+  return effort === 'xhigh' || effort === 'max';
 }
 
 function mapToBedrockModel(model: string): string {
