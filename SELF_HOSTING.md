@@ -399,8 +399,10 @@ curl --fail --silent http://127.0.0.1:3001/api/selfhost/health
 bun run selfhost:doctor
 ```
 
-For a release upgrade, use the digest manifest produced by the self-host release
-workflow:
+For a release upgrade, download the durable `selfhost-release.json` asset from
+the matching [GitHub Release](https://github.com/qaml-ai/camelAI/releases). The
+manifest is also retained as a workflow artifact for release engineering, but
+operators should use the release asset:
 
 ```bash
 bun run selfhost:upgrade -- \
@@ -409,9 +411,9 @@ bun run selfhost:upgrade -- \
 ```
 
 For every installation whose current upgrader predates the target-code handoff,
-use the `selfhost-upgrade-bootstrap.mjs` shipped beside the manifest once. This
-includes older upgraders that already recognize `--release` but do not
-re-execute the target release:
+download the `selfhost-upgrade-bootstrap.mjs` asset shipped beside the manifest
+and use it once. This includes older upgraders that already recognize
+`--release` but do not re-execute the target release:
 
 ```bash
 node /secure/path/selfhost-upgrade-bootstrap.mjs \

@@ -464,8 +464,9 @@ separate copy. Restore only into a stopped stack:
 bun run selfhost:restore -- .selfhost/backups/<timestamp>
 ```
 
-For a manual release upgrade, download `selfhost-release.json` from the release
-workflow artifact, keep it outside the repository checkout, and run:
+For a manual release upgrade, download `selfhost-release.json` from the matching
+[GitHub Release](https://github.com/qaml-ai/camelAI/releases), keep it outside
+the repository checkout, and run:
 
 ```bash
 bun run selfhost:upgrade -- \
@@ -473,10 +474,11 @@ bun run selfhost:upgrade -- \
   --manifest /secure/path/selfhost-release.json
 ```
 
-The same artifact includes a standalone `selfhost-upgrade-bootstrap.mjs`. Use it
-once for every installation whose checked-out upgrader predates the target-code
-handoff. This includes older upgraders that already recognize `--release` but
-continue running their own loaded code after checking out the target:
+The same GitHub Release includes a standalone
+`selfhost-upgrade-bootstrap.mjs`. Use it once for every installation whose
+checked-out upgrader predates the target-code handoff. This includes older
+upgraders that already recognize `--release` but continue running their own
+loaded code after checking out the target:
 
 ```bash
 node /secure/path/selfhost-upgrade-bootstrap.mjs \
