@@ -81,6 +81,7 @@ import type { ChatGroupIconGenerationClaim } from "./identity/user-do";
 import {
   CAMEL_CODE_LLM_MODEL,
   CUSTOM_LLM_MODEL,
+  getStoredBedrockAwsRegion,
   getStoredCustomLlmProviderApi,
   getStoredCustomLlmProviderModelId,
   normalizeLlmModel,
@@ -264,6 +265,7 @@ import { FREE_VLLM_PRIORITY } from "./hosted-vllm-priority";
 import {
   streamPiModelWithTransientRetry,
   abortableSleep,
+  isBedrockRegionUnavailableError,
   type PiProviderStreamTerminalStatus,
 } from "./chat-thread/pi-stream-retry";
 
@@ -5337,6 +5339,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       );
       const customApi = getStoredCustomLlmProviderApi(effectiveLlmProviderRecord);
       const customModelId = getStoredCustomLlmProviderModelId(effectiveLlmProviderRecord);
+      const awsRegion = getStoredBedrockAwsRegion(effectiveLlmProviderRecord);
       const billingStatus = orgInfo?.billing_status ?? "inactive";
       const totalCreditsCents =
         (orgInfo?.billing_credit_purchase_total_cents ?? 0) +
@@ -5369,6 +5372,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
                   {
                     customApi,
                     customModelId,
+                    awsRegion,
                     allowCamelCode: false,
                   },
                 )
@@ -5378,6 +5382,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
             : normalizeLlmModel(undefined, effectiveLlmProviderRecord?.provider, {
                 customApi,
                 customModelId,
+                awsRegion,
               });
       // Keep the in-memory model aligned with the durable thread before any
       // refresh rebuilds the tool surface.
@@ -5947,12 +5952,38 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       model.api === "openai-codex-responses" && this.env.OPENAI_CODEX_PROXY_BASE_URL
         ? { ...options, transport: "sse" as const }
         : options;
+    const bedrockBaseUrls = this.piCurrentUsageProvider === "bedrock"
+      ? this.piModelMapping.bedrockRegionalBaseUrls(model.id, model.baseUrl)
+      : [model.baseUrl];
+    let bedrockRegionIndex = 0;
+    let requestModel = model;
+    const canRetryInAnotherBedrockRegion = (message: string) =>
+      isBedrockRegionUnavailableError(message) &&
+      bedrockRegionIndex < bedrockBaseUrls.length - 1;
     return streamPiModelWithTransientRetry(
       model,
       effectiveOptions,
-      () => streamSimple(model, context, effectiveOptions),
+      () => streamSimple(requestModel, context, effectiveOptions),
       (message, status, attempt, forwardedEvent) =>
-        this.recordPiProviderStreamTerminalError(model, message, status, attempt, forwardedEvent),
+        this.recordPiProviderStreamTerminalError(
+          requestModel,
+          message,
+          status,
+          attempt,
+          forwardedEvent,
+        ),
+      {
+        maxRetryAttempts: 2 + Math.max(0, bedrockBaseUrls.length - 1),
+        isRetryableError: canRetryInAnotherBedrockRegion,
+        onRetry: (message) => {
+          if (!canRetryInAnotherBedrockRegion(message)) return;
+          bedrockRegionIndex += 1;
+          requestModel = {
+            ...model,
+            baseUrl: bedrockBaseUrls[bedrockRegionIndex],
+          };
+        },
+      },
     ) as ReturnType<typeof import("@earendil-works/pi-ai/compat").streamSimple>;
   }
 

@@ -27,6 +27,16 @@ describe('recent model localStorage helpers', () => {
     expect(getRecentModel({ orgId: 'org-b', workspaceId: 'ws-a' })).toBeNull();
   });
 
+  it('round-trips Bedrock-only models with provider context', () => {
+    const scope = { orgId: 'org-a', workspaceId: 'ws-a' };
+    setRecentModel(scope, 'gpt-5.6-terra-bedrock');
+
+    expect(getRecentModel(scope)).toBeNull();
+    expect(getRecentModel(scope, { orgProvider: 'bedrock' })).toBe(
+      'gpt-5.6-terra-bedrock',
+    );
+  });
+
   it('is safe without a browser window', () => {
     vi.stubGlobal('window', undefined);
 

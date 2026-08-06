@@ -40,6 +40,17 @@ export function isTransientPiProviderError(message: string): boolean {
   );
 }
 
+export function isBedrockRegionUnavailableError(message: string): boolean {
+  const lower = message.toLowerCase();
+  return (
+    lower.includes("not_found_error") ||
+    lower.includes("model not found") ||
+    lower.includes("model") && lower.includes("does not exist") ||
+    lower.includes("model") && lower.includes("not available in") ||
+    lower.includes("model") && lower.includes("unsupported region")
+  );
+}
+
 export function createPiProviderStreamErrorMessage(
   model: Model<any>,
   errorMessage: string,
@@ -112,8 +123,18 @@ export function streamPiModelWithTransientRetry(
     attempt: number,
     forwardedEvent: boolean,
   ) => void,
+  retryOptions: {
+    maxRetryAttempts?: number;
+    isRetryableError?: (message: string) => boolean;
+    onRetry?: (message: string, nextAttempt: number) => void;
+  } = {},
 ): AssistantMessageEventStream {
   const outer = createAssistantMessageEventStream();
+  const maxRetryAttempts = retryOptions.maxRetryAttempts ??
+    PI_PROVIDER_TRANSIENT_RETRY_ATTEMPTS;
+  const isRetryableError = (message: string) =>
+    isTransientPiProviderError(message) ||
+    retryOptions.isRetryableError?.(message) === true;
 
   void (async () => {
     let attempt = 0;
@@ -133,8 +154,8 @@ export function streamPiModelWithTransientRetry(
             errorMessage &&
             !forwardedEvent &&
             !options?.signal?.aborted &&
-            attempt < PI_PROVIDER_TRANSIENT_RETRY_ATTEMPTS &&
-            isTransientPiProviderError(errorMessage)
+            attempt < maxRetryAttempts &&
+            isRetryableError(errorMessage)
           ) {
             retryErrorMessage = errorMessage;
             break;
@@ -146,7 +167,7 @@ export function streamPiModelWithTransientRetry(
                 ? "aborted"
                 : forwardedEvent
                   ? "after_forwarded_event"
-                  : attempt >= PI_PROVIDER_TRANSIENT_RETRY_ATTEMPTS
+                  : attempt >= maxRetryAttempts
                     ? "retry_exhausted"
                     : "non_transient",
               attempt + 1,
@@ -166,8 +187,8 @@ export function streamPiModelWithTransientRetry(
         if (
           !forwardedEvent &&
           !options?.signal?.aborted &&
-          attempt < PI_PROVIDER_TRANSIENT_RETRY_ATTEMPTS &&
-          isTransientPiProviderError(errorMessage)
+          attempt < maxRetryAttempts &&
+          isRetryableError(errorMessage)
         ) {
           retryErrorMessage = errorMessage;
         } else {
@@ -177,7 +198,7 @@ export function streamPiModelWithTransientRetry(
               ? "aborted"
               : forwardedEvent
                 ? "after_forwarded_event"
-                : attempt >= PI_PROVIDER_TRANSIENT_RETRY_ATTEMPTS
+                : attempt >= maxRetryAttempts
                   ? "retry_exhausted"
                   : "non_transient",
             attempt + 1,
@@ -202,6 +223,7 @@ export function streamPiModelWithTransientRetry(
         return;
       }
 
+      retryOptions.onRetry?.(retryErrorMessage, attempt + 1);
       attempt += 1;
       await abortableSleep(PI_PROVIDER_TRANSIENT_RETRY_DELAY_MS, options?.signal);
     }

@@ -40,6 +40,7 @@ const [
   commonScript,
   bundledDockerfile,
   imageWorkflow,
+  upScript,
   upgradeScript,
   upgradeBootstrapScript,
   backupScript,
@@ -62,6 +63,7 @@ const [
   read("scripts/selfhost-common.mjs"),
   read("infra/selfhost/app-bundled.Dockerfile"),
   read(".github/workflows/selfhost-images.yml"),
+  read("scripts/selfhost-up.mjs"),
   read("scripts/selfhost-upgrade.mjs"),
   read("scripts/selfhost-upgrade-bootstrap.mjs"),
   read("scripts/selfhost-backup.mjs"),
@@ -246,8 +248,16 @@ includesAll(
     '"pomerium-data"',
     '"caddy-data"',
     '"caddy-config"',
+    "caddyConfigLoadCommands",
+    '"reload"',
+    '"/etc/caddy/Caddyfile"',
   ],
   "self-host Compose selection",
+);
+includesAll(
+  upScript,
+  ["loadCaddyConfig", "{ build: sourceMode }"],
+  "self-host startup Caddy configuration reload",
 );
 for (const [name, env, expectedFiles] of [
   [
@@ -419,6 +429,7 @@ includesAll(
     "snapshotReleaseState",
     "restoreReleaseState",
     "runtimeMayHaveMigrated",
+    "loadCaddyConfig(env)",
     "--resume-upgrade",
     "writeUpgradeHandoff",
     "Automatic code rollback is disabled",

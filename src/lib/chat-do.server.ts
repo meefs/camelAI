@@ -430,6 +430,7 @@ async function getWorkspaceModelPickerStateForOrg(
       : getDefaultLlmModel(effectiveLlmProviderConfig?.provider, {
           customApi,
           customModelId,
+          awsRegion,
         }),
     visibleCatalog: selectableCatalog,
   });

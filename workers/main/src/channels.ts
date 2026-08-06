@@ -5,6 +5,7 @@ import type {
 import { getOrgStub, getWorkspaceStub } from "./helpers/stubs.js";
 import {
   getDefaultLlmModel,
+  getStoredBedrockAwsRegion,
   getStoredCustomLlmProviderApi,
   getStoredCustomLlmProviderModelId,
 } from "../../../src/lib/llm-provider-config.js";
@@ -264,6 +265,7 @@ export async function resolveDefaultChannelThreadModel(
   );
   const customApi = getStoredCustomLlmProviderApi(effectiveLlmProviderConfig);
   const customModelId = getStoredCustomLlmProviderModelId(effectiveLlmProviderConfig);
+  const awsRegion = getStoredBedrockAwsRegion(effectiveLlmProviderConfig);
   const effectiveConfig = resolveEffectivePickerConfig(
     orgPickerConfig,
     workspacePickerConfig,
@@ -273,6 +275,7 @@ export async function resolveDefaultChannelThreadModel(
     orgProvider: effectiveLlmProviderConfig?.provider,
     customApi,
     customModelId,
+    awsRegion,
     allowCamelCode: !isSelfhostRuntime(env),
   });
   const model = resolveDefaultModelForChat({
@@ -280,6 +283,7 @@ export async function resolveDefaultChannelThreadModel(
     fallbackModel: getDefaultLlmModel(effectiveLlmProviderConfig?.provider, {
       customApi,
       customModelId,
+      awsRegion,
     }),
     visibleCatalog,
   });

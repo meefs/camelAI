@@ -187,19 +187,31 @@ const BEDROCK_ONLY_OPENAI_MODELS = new Set<LlmModel>([
   "gpt-5.6-terra-bedrock",
 ]);
 
-const BEDROCK_OPENAI_MODEL_REGIONS: Readonly<Record<string, readonly string[]>> = {
+export const BEDROCK_OPENAI_MODEL_REGIONS: Readonly<Record<string, readonly string[]>> = {
   "gpt-5.6-sol-bedrock": ["us-east-1", "us-east-2"],
   "gpt-5.6-terra-bedrock": ["us-east-1", "us-east-2", "us-west-2"],
 };
+
+export function getBedrockOpenAiModelRegions(
+  model: LlmModel,
+  preferredRegion?: string | null,
+): readonly string[] {
+  const supportedRegions = BEDROCK_OPENAI_MODEL_REGIONS[model] ?? [];
+  const normalizedPreferred = preferredRegion?.trim();
+  if (!normalizedPreferred || !supportedRegions.includes(normalizedPreferred)) {
+    return supportedRegions;
+  }
+  return [
+    normalizedPreferred,
+    ...supportedRegions.filter((region) => region !== normalizedPreferred),
+  ];
+}
 
 export function isBedrockOpenAiModelAllowedInRegion(
   model: LlmModel,
   awsRegion: string | null | undefined,
 ): boolean {
-  const supportedRegions = BEDROCK_OPENAI_MODEL_REGIONS[model];
-  if (!supportedRegions) return false;
-  const normalizedRegion = awsRegion?.trim() || "us-east-1";
-  return supportedRegions.includes(normalizedRegion);
+  return getBedrockOpenAiModelRegions(model, awsRegion).length > 0;
 }
 
 export interface LlmProviderStoredConfig {
@@ -229,6 +241,15 @@ export function getDefaultLlmModel(
 ): LlmModel {
   if (orgProvider === "openai") return DEFAULT_OPENAI_MODEL;
   if (orgProvider === "openrouter") return DEFAULT_OPENROUTER_MODEL;
+  if (
+    orgProvider === "bedrock" &&
+    isBedrockOpenAiModelAllowedInRegion(
+      "gpt-5.6-terra-bedrock",
+      options?.awsRegion,
+    )
+  ) {
+    return "gpt-5.6-terra-bedrock";
+  }
   if (orgProvider === "custom" && hasCustomModelId(options?.customModelId)) {
     return CUSTOM_LLM_MODEL;
   }

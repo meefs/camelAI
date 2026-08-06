@@ -16,6 +16,7 @@ import type { WorkspaceFilesystemDO } from "./workspace-filesystem-do";
 import type { ProjectBuildSandbox } from "./project-build-sandbox";
 import {
   getDefaultLlmModel,
+  getStoredBedrockAwsRegion,
   getStoredCustomLlmProviderApi,
   getStoredCustomLlmProviderModelId,
 } from "../../../src/lib/llm-provider-config";
@@ -977,6 +978,7 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
     );
     const customApi = getStoredCustomLlmProviderApi(effectiveLlmProviderConfig);
     const customModelId = getStoredCustomLlmProviderModelId(effectiveLlmProviderConfig);
+    const awsRegion = getStoredBedrockAwsRegion(effectiveLlmProviderConfig);
     const effectiveConfig = resolveEffectivePickerConfig(
       orgPickerConfig,
       workspacePickerConfig,
@@ -986,6 +988,7 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
       orgProvider: effectiveLlmProviderConfig?.provider,
       customApi,
       customModelId,
+      awsRegion,
       allowCamelCode: !isSelfhostRuntime(this.env),
     });
     const model = resolveDefaultModelForChat({
@@ -993,6 +996,7 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
       fallbackModel: getDefaultLlmModel(effectiveLlmProviderConfig?.provider, {
         customApi,
         customModelId,
+        awsRegion,
       }),
       visibleCatalog,
     });

@@ -71,7 +71,7 @@ export async function writePomeriumConfig(env, { strict = true } = {}) {
     requireValue(env.POMERIUM_COOKIE_SECRET, "POMERIUM_COOKIE_SECRET");
     requireValue(env.POMERIUM_SHARED_SECRET, "POMERIUM_SHARED_SECRET");
     if ((env.POMERIUM_IDP_PROVIDER || "oidc").trim() === "oidc") {
-      requiredHttpsUrl(
+      requiredHttpsUrlWithOptionalPath(
         env.POMERIUM_IDP_PROVIDER_URL,
         "POMERIUM_IDP_PROVIDER_URL",
       );
@@ -192,6 +192,22 @@ function requiredHttpsUrl(value, name) {
   }
   if (parsed.protocol !== "https:" || parsed.pathname !== "/" || parsed.search || parsed.hash) {
     throw new Error(`${name} must be an https origin without a path`);
+  }
+  return parsed;
+}
+
+export function requiredHttpsUrlWithOptionalPath(value, name) {
+  requireValue(value, name);
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error(`${name} must be a valid URL`);
+  }
+  if (parsed.protocol !== "https:" || parsed.search || parsed.hash) {
+    throw new Error(
+      `${name} must be an https URL without a query or fragment`,
+    );
   }
   return parsed;
 }

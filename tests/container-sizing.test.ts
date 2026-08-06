@@ -10,7 +10,7 @@ import {
   EVAL_INSTANCE_TYPE,
   PROJECT_BUILD_INSTANCE_TYPE,
   PROJECT_BUILD_SLEEP_AFTER,
-} from "../workers/main/src/container-sizing.ts";
+} from "../workers/main/src/container-sizing";
 
 /**
  * Strip // and /* *\/ comments plus trailing commas so wrangler JSONC can be

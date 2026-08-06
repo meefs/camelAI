@@ -4,6 +4,7 @@ import {
 } from "./selfhost-agent-pack.mjs";
 import {
   composeArgs,
+  loadCaddyConfig,
   readSelfhostEnv,
   repoRoot,
   run,
@@ -19,6 +20,12 @@ await ensureSelfhostAgentPackSkeleton(repoRoot, env);
 const sourceMode =
   (env.SELFHOST_DEPLOYMENT_MODE || process.env.SELFHOST_DEPLOYMENT_MODE) ===
   "source";
+
+// The generated Caddyfile is bind-mounted, so Compose cannot detect that it
+// changed. Start Caddy if needed and explicitly reload it before attaching to
+// the full stack; otherwise an existing container can keep the previous auth
+// upstream indefinitely.
+await loadCaddyConfig(env, { build: sourceMode });
 
 await run("docker", composeArgs(env, [
   "up",

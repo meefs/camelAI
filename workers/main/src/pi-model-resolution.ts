@@ -7,6 +7,7 @@
 import {
   DEFAULT_OPENAI_MODEL,
   DEFAULT_LLM_MODEL,
+  getBedrockOpenAiModelRegions,
   normalizeLlmModel,
 } from "../../../src/lib/llm-provider-config";
 import type { PiHeaderValue, PiResolvedModelReference } from "./chat-thread-do";
@@ -298,27 +299,55 @@ export class PiModelMapping {
     region: string | undefined,
   ): { modelId: string; baseUrl: string } | null {
     const normalizedModel = modelId.trim().toLowerCase();
-    const supportedRegionsByModel: Record<string, readonly string[]> = {
-      "gpt-5.6-sol": ["us-east-1", "us-east-2"],
-      "gpt-5.6-terra": ["us-east-1", "us-east-2", "us-west-2"],
-    };
-    const supportedRegions = supportedRegionsByModel[normalizedModel];
-    if (!supportedRegions) return null;
-
     const normalizedRegion = region?.trim() || "us-east-1";
     if (!/^[a-z0-9-]+$/.test(normalizedRegion)) {
       throw new Error(`Invalid Bedrock AWS region: ${normalizedRegion}`);
     }
-    if (!supportedRegions.includes(normalizedRegion)) {
-      throw new Error(
-        `OpenAI ${modelId} on Amazon Bedrock is not available in ${normalizedRegion}. Supported regions: ${supportedRegions.join(", ")}.`,
-      );
-    }
+    const catalogModel = `${normalizedModel}-bedrock` as Parameters<
+      typeof getBedrockOpenAiModelRegions
+    >[0];
+    const selectedRegion = getBedrockOpenAiModelRegions(
+      catalogModel,
+      normalizedRegion,
+    )[0];
+    if (!selectedRegion) return null;
 
     return {
       modelId: `openai.${normalizedModel}`,
-      baseUrl: `https://bedrock-mantle.${normalizedRegion}.api.aws/openai/v1`,
+      baseUrl: `https://bedrock-mantle.${selectedRegion}.api.aws/openai/v1`,
     };
+  }
+
+  bedrockRegionalBaseUrls(modelId: string, baseUrl: string): readonly string[] {
+    let parsed: URL;
+    try {
+      parsed = new URL(baseUrl);
+    } catch {
+      return [baseUrl];
+    }
+    const match = /^bedrock-mantle\.([a-z0-9-]+)\.api\.aws$/.exec(parsed.hostname);
+    if (!match) return [baseUrl];
+
+    const currentRegion = match[1];
+    const normalizedModel = modelId.trim().toLowerCase().replace(/^openai\./, "");
+    const catalogModel = `${normalizedModel}-bedrock` as Parameters<
+      typeof getBedrockOpenAiModelRegions
+    >[0];
+    const openAiRegions = getBedrockOpenAiModelRegions(catalogModel, currentRegion);
+    const regions = openAiRegions.length > 0
+      ? openAiRegions
+      : [
+          currentRegion,
+          ...["us-east-1", "us-east-2", "us-west-2"].filter(
+            (region) => region !== currentRegion,
+          ),
+        ];
+
+    return regions.map((region) => {
+      const candidate = new URL(parsed);
+      candidate.hostname = `bedrock-mantle.${region}.api.aws`;
+      return candidate.toString().replace(/\/$/, "");
+    });
   }
 
 }

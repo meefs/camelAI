@@ -284,7 +284,7 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     expect(state).toMatchObject({
       billingAccessMode: 'selfhost',
       llmProvider: 'bedrock',
-      defaultModel: 'sonnet',
+      defaultModel: 'gpt-5.6-terra-bedrock',
     });
     expect(state?.modelOptions.map((option) => option.id)).not.toContain(
       CAMEL_CODE_LLM_MODEL,
@@ -308,7 +308,7 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
       'New Chat',
       'user_123',
       undefined,
-      'sonnet',
+      'gpt-5.6-terra-bedrock',
     );
   });
 
@@ -1230,7 +1230,7 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
 
     const thread = await getThread({}, 'thread_123', 'ws_123');
 
-    expect(thread?.model).toBe('sonnet');
+    expect(thread?.model).toBe('gpt-5.6-terra-bedrock');
   });
 
   it('keeps full prompts for single thread reads but bounds recent-thread previews', async () => {

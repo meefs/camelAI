@@ -2051,7 +2051,9 @@ export default function Chat({
       optimisticThreadModelRef.current = null;
     }
     const recentModel =
-      !threadId && modelRecentScope ? getRecentModel(modelRecentScope) : null;
+      !threadId && modelRecentScope
+        ? getRecentModel(modelRecentScope, { orgProvider: llmProvider })
+        : null;
     setSelectedThreadModel(
       resolveSelectedThreadModel({
         threadId,
@@ -4008,7 +4010,9 @@ export default function Chat({
     }
     appliedRecentModelScopeRef.current = scopeKey;
 
-    const recentModel = getRecentModel(modelRecentScope);
+    const recentModel = getRecentModel(modelRecentScope, {
+      orgProvider: llmProvider,
+    });
     const nextModel = resolveDefaultModelForChat({
       effectiveDefaultModel: null,
       recentModel,

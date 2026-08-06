@@ -6,6 +6,7 @@ import {
   buildPublicLlmProviderConfig,
   DEFAULT_LLM_MODEL,
   getDefaultLlmModel,
+  getBedrockOpenAiModelRegions,
   getLlmModelOptions,
   getVisibleLlmModelOptions,
   isLlmModel,
@@ -89,6 +90,15 @@ describe("llm provider config helpers", () => {
     expect(getDefaultLlmModel("anthropic")).toBe(DEFAULT_LLM_MODEL);
     expect(getDefaultLlmModel("openai")).toBe(DEFAULT_OPENAI_MODEL);
     expect(getDefaultLlmModel("openrouter")).toBe(DEFAULT_OPENROUTER_MODEL);
+    expect(
+      getDefaultLlmModel("bedrock", { awsRegion: "us-east-2" }),
+    ).toBe("gpt-5.6-terra-bedrock");
+    expect(
+      getDefaultLlmModel("bedrock", { awsRegion: "eu-west-1" }),
+    ).toBe("gpt-5.6-terra-bedrock");
+    expect(
+      getBedrockOpenAiModelRegions("gpt-5.6-terra-bedrock", "us-east-2"),
+    ).toEqual(["us-east-2", "us-east-1", "us-west-2"]);
     expect(
       getDefaultLlmModel("custom", { customApi: "openai-responses" }),
     ).toBe(DEFAULT_OPENAI_MODEL);
@@ -217,14 +227,18 @@ describe("llm provider config helpers", () => {
     ).toEqual([
       CAMEL_CODE_MODEL,
       ...ANTHROPIC_MODELS,
-      "gpt-5.6-terra-bedrock",
+      ...BEDROCK_OPENAI_MODELS,
     ]);
     expect(
       getVisibleLlmModelOptions(null, {
         orgProvider: "bedrock",
         awsRegion: "eu-west-1",
       }).map((option) => option.value),
-    ).toEqual([CAMEL_CODE_MODEL, ...ANTHROPIC_MODELS]);
+    ).toEqual([
+      CAMEL_CODE_MODEL,
+      ...ANTHROPIC_MODELS,
+      ...BEDROCK_OPENAI_MODELS,
+    ]);
     expect(
       getVisibleLlmModelOptions(null, {
         orgProvider: null,

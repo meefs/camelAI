@@ -562,6 +562,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       {
         customApi,
         customModelId,
+        awsRegion,
       },
     );
     const fallbackAllowedThreadModels = getVisibleLlmModelOptions(

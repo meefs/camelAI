@@ -112,6 +112,40 @@ export function composeArgs(env, args) {
   ];
 }
 
+export function caddyConfigLoadCommands(env, { build = false } = {}) {
+  if (!usesCaddy(env)) return [];
+  return [
+    composeArgs(env, [
+      "up",
+      "--detach",
+      "--no-deps",
+      "--wait",
+      "--wait-timeout",
+      "60",
+      ...(build ? ["--build"] : []),
+      "caddy",
+    ]),
+    composeArgs(env, [
+      "exec",
+      "-T",
+      "caddy",
+      "caddy",
+      "reload",
+      "--config",
+      "/etc/caddy/Caddyfile",
+      "--adapter",
+      "caddyfile",
+    ]),
+  ];
+}
+
+export async function loadCaddyConfig(env, { build = false } = {}) {
+  const effectiveEnv = scriptEnv(env);
+  for (const args of caddyConfigLoadCommands(env, { build })) {
+    await run("docker", args, { env: effectiveEnv });
+  }
+}
+
 export function scriptEnv(env = {}, extra = {}) {
   const sourceMode =
     (env.SELFHOST_DEPLOYMENT_MODE || process.env.SELFHOST_DEPLOYMENT_MODE) ===

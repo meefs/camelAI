@@ -12,6 +12,11 @@ import {
   selfhostAssetsKey,
   type SelfhostAssetsRecord,
 } from "./selfhost-assets-registry.js";
+import {
+  selfhostWorkerKey,
+  type SelfhostWorkerModule,
+  type SelfhostWorkerRecord,
+} from "./selfhost-worker-registry.js";
 import { resolveUploadedDispatchScriptVersion, withUsageGuardTracing } from "./usage-guard-config.js";
 import {
   acquireUsageGuardOperationLeaseWithRetry,
@@ -202,16 +207,21 @@ export async function deployWorkerModulesDirect(
   } = {},
 ): Promise<DirectDispatchDeployResult> {
   const startedAt = Date.now();
+  const selfhostPublishingMode = isSelfhostDirectPublishingMode(env);
   const requestedAssets = request.assets ?? [];
-  const skippedAssets: DirectDeploySkippedAsset[] = requestedAssets
-    .filter((asset) => asset.size > CLOUDFLARE_STATIC_ASSET_MAX_BYTES)
-    .map((asset) => ({
-      path: asset.path,
-      size: asset.size,
-      limit: CLOUDFLARE_STATIC_ASSET_MAX_BYTES,
-      reason: "asset_too_large",
-    }));
-  const deployableAssets = requestedAssets.filter((asset) => asset.size <= CLOUDFLARE_STATIC_ASSET_MAX_BYTES);
+  const skippedAssets: DirectDeploySkippedAsset[] = selfhostPublishingMode
+    ? []
+    : requestedAssets
+        .filter((asset) => asset.size > CLOUDFLARE_STATIC_ASSET_MAX_BYTES)
+        .map((asset) => ({
+          path: asset.path,
+          size: asset.size,
+          limit: CLOUDFLARE_STATIC_ASSET_MAX_BYTES,
+          reason: "asset_too_large",
+        }));
+  const deployableAssets = selfhostPublishingMode
+    ? requestedAssets
+    : requestedAssets.filter((asset) => asset.size <= CLOUDFLARE_STATIC_ASSET_MAX_BYTES);
   const warnings = skippedAssets.map((asset) =>
     `Skipped static asset ${JSON.stringify(asset.path)} (${formatMiB(asset.size)} MiB, ${asset.size} bytes): ` +
     `Cloudflare Workers allows at most 25 MiB per asset. The deployed app will return 404 for this file.`
@@ -240,10 +250,6 @@ export async function deployWorkerModulesDirect(
   const dispatchNamespace = env.CF_DISPATCH_NAMESPACE?.trim();
   const workerServiceName = env.CF_WORKER_NAME?.trim();
   const tailWorkerName = env.TAIL_WORKER_NAME?.trim();
-  if (!cfApiToken) throw new Error("CF_API_TOKEN is required for direct deploy");
-  if (!accountId) throw new Error("CF_ACCOUNT_ID is required for direct deploy");
-  if (!dispatchNamespace) throw new Error("CF_DISPATCH_NAMESPACE is required for direct deploy");
-  if (!workerServiceName) throw new Error("CF_WORKER_NAME is required for direct deploy");
   if (!request.modules.some((module) => module.name === request.metadata.main_module)) {
     throw new Error(`Direct deploy bundle is missing main module: ${request.metadata.main_module}`);
   }
@@ -255,6 +261,22 @@ export async function deployWorkerModulesDirect(
   }
 
   const dispatchScriptName = `${request.scriptName}--${request.identity.orgSlug}`;
+  if (selfhostPublishingMode) {
+    return deploySelfhostWorkerModulesDirect(
+      env,
+      request,
+      dispatchScriptName,
+      preparedAssets,
+      warnings,
+      timings,
+      startedAt,
+      options,
+    );
+  }
+  if (!cfApiToken) throw new Error("CF_API_TOKEN is required for direct deploy");
+  if (!accountId) throw new Error("CF_ACCOUNT_ID is required for direct deploy");
+  if (!dispatchNamespace) throw new Error("CF_DISPATCH_NAMESPACE is required for direct deploy");
+  if (!workerServiceName) throw new Error("CF_WORKER_NAME is required for direct deploy");
   const nativeAssetsStartedAt = Date.now();
   const nativeAssets = await uploadNativeWorkerAssets(env, dispatchNamespace, dispatchScriptName, request, preparedAssets, options.fetcher ?? fetch);
   timings.nativeAssetsMs = Date.now() - nativeAssetsStartedAt;
@@ -426,6 +448,182 @@ export async function deployWorkerModulesDirect(
       await releaseUsageGuardOperationLease({ db: env.APP_DB, appId: operationAppId, holder: operationLeaseHolder });
     }
   }
+}
+
+function isSelfhostDirectPublishingMode(env: DirectDispatchDeployEnv): boolean {
+  const accountId = env.CF_ACCOUNT_ID?.trim().toLowerCase();
+  const namespace = env.CF_DISPATCH_NAMESPACE?.trim().toLowerCase();
+  return accountId === "selfhost" || namespace === "selfhost";
+}
+
+function selfhostModuleType(
+  module: DirectWorkerModule,
+  metadata: DirectWorkerMetadata,
+): SelfhostWorkerModule["type"] {
+  const binding = metadata.bindings?.find((candidate) => {
+    const part = typeof candidate.part === "string" ? candidate.part : null;
+    return part === module.name || (!part && candidate.name === module.name);
+  });
+  if (binding?.type === "wasm_module") return "wasm";
+  if (binding?.type === "data_blob") return "data";
+  if (binding?.type === "text_blob") return "text";
+
+  const lowerName = module.name.toLowerCase();
+  const lowerType = module.contentType.toLowerCase();
+  if (lowerName.endsWith(".wasm") || lowerType.includes("application/wasm")) {
+    return "wasm";
+  }
+  if (
+    lowerType.startsWith("text/") &&
+    !lowerName.endsWith(".js") &&
+    !lowerName.endsWith(".mjs")
+  ) {
+    return "text";
+  }
+  if (lowerType.includes("application/json") && lowerName.endsWith(".json")) {
+    return "json";
+  }
+  return "js";
+}
+
+function selfhostWorkerModules(
+  modules: DirectWorkerModule[],
+  metadata: DirectWorkerMetadata,
+): Record<string, SelfhostWorkerModule> {
+  return Object.fromEntries(
+    modules.map((module) => {
+      const type = selfhostModuleType(module, metadata);
+      const bytes = contentBytes(module.content);
+      const content = type === "data" || type === "wasm"
+        ? bytesToBase64(bytes)
+        : typeof module.content === "string"
+          ? module.content
+          : new TextDecoder().decode(bytes);
+      return [module.name, { name: module.name, type, content }];
+    }),
+  );
+}
+
+async function deploySelfhostWorkerModulesDirect(
+  env: DirectDispatchDeployEnv,
+  request: DirectDispatchDeployRequest,
+  dispatchScriptName: string,
+  preparedAssets: PreparedDirectAsset[],
+  warnings: string[],
+  timings: DirectDispatchDeployTimings,
+  startedAt: number,
+  options: {
+    fetcher?: typeof fetch;
+    onDeploySideEffects?: (info: DeploySideEffectsInfo) => Promise<void>;
+  },
+): Promise<DirectDispatchDeployResult> {
+  if (!env.APP_KV) {
+    throw new Error("APP_KV is required for self-host app publishing");
+  }
+
+  const bindings = normalizedDirectBindings(request.metadata).filter(
+    (binding) => binding.type !== "worker_loader",
+  );
+  const version = crypto.randomUUID();
+  const createdAt = new Date().toISOString();
+  const record: SelfhostWorkerRecord = {
+    schemaVersion: 1,
+    appId: dispatchScriptName,
+    scriptName: request.scriptName,
+    dispatchScriptName,
+    orgId: request.identity.orgId,
+    orgSlug: request.identity.orgSlug,
+    workspaceId: request.identity.workspaceId,
+    version,
+    createdAt,
+    compatibilityDate:
+      typeof request.metadata.compatibility_date === "string" &&
+      request.metadata.compatibility_date.trim()
+        ? request.metadata.compatibility_date.trim()
+        : "2026-06-09",
+    compatibilityFlags: Array.isArray(request.metadata.compatibility_flags)
+      ? request.metadata.compatibility_flags.filter(
+          (flag): flag is string => typeof flag === "string",
+        )
+      : [],
+    mainModule: request.metadata.main_module,
+    modules: selfhostWorkerModules(request.modules, request.metadata),
+    bindings: bindings as Array<Record<string, unknown>>,
+  };
+
+  const storeAssetsStartedAt = Date.now();
+  const preparedStore = prepareDirectAssetsRecord(
+    env,
+    dispatchScriptName,
+    request,
+    preparedAssets,
+  );
+  await preparedStore.store;
+  if (preparedStore.record) {
+    await publishDirectAssetsRecord(env, dispatchScriptName, preparedStore.record);
+  }
+  timings.storeAssetsMs = Date.now() - storeAssetsStartedAt;
+
+  await env.APP_KV.put(selfhostWorkerKey(dispatchScriptName), JSON.stringify(record));
+
+  let artifactCacheKey: string | undefined;
+  const artifactCacheStartedAt = Date.now();
+  try {
+    const preparedArtifactCache = await prepareDeployArtifactCache(env, {
+      scriptName: request.scriptName,
+      dispatchScriptName,
+      identity: request.identity,
+      metadata: request.metadata,
+      modules: request.modules,
+      assetsRecord: preparedStore.record,
+    });
+    if (preparedArtifactCache) {
+      await storePreparedDeployArtifactCache(
+        env,
+        preparedArtifactCache,
+      );
+      artifactCacheKey = preparedArtifactCache.key;
+    }
+  } catch (error) {
+    warnings.push(`Deploy artifact cache unavailable: ${errorMessage(error)}`);
+  }
+  timings.artifactCacheMs = Date.now() - artifactCacheStartedAt;
+  timings.totalMs = Date.now() - startedAt;
+
+  const sideEffects: DeploySideEffectsInfo = {
+    scriptName: request.scriptName,
+    dispatchScriptName,
+    orgId: request.identity.orgId,
+    orgSlug: request.identity.orgSlug,
+    workspaceId: request.identity.workspaceId,
+    hostname: request.hostname,
+    threadId: request.identity.threadId,
+    projectId: request.identity.projectId,
+    configPath:
+      typeof request.metadata.config_path === "string"
+        ? request.metadata.config_path
+        : undefined,
+    commitSha: request.commitSha,
+    artifactCacheKey,
+    scriptVersion: version,
+  };
+  await options.onDeploySideEffects?.(sideEffects);
+
+  return {
+    success: true,
+    scriptName: request.scriptName,
+    dispatchScriptName,
+    status: 200,
+    timings,
+    sideEffects,
+    ...(warnings.length > 0 ? { warnings } : {}),
+    result: {
+      id: dispatchScriptName,
+      script_name: dispatchScriptName,
+      deployment_id: version,
+      source: "selfhost",
+    },
+  };
 }
 
 function formatMiB(bytes: number): string {

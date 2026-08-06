@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { deployWorkerModulesDirect, rollbackWorkerDeployFromArtifactCache, type DirectDeployAsset } from "../src/direct-dispatch-deploy";
 import { selfhostAssetObjectKey, selfhostAssetsKey } from "../src/selfhost-assets-registry";
+import { selfhostWorkerKey } from "../src/selfhost-worker-registry";
 
 // Instruments lazy asset handles so tests can assert bytes are read on demand
 // and only in bounded batches (never the whole asset set at once).
@@ -56,6 +57,96 @@ const identity = {
 };
 
 describe("deployWorkerModulesDirect", () => {
+  it("publishes self-host apps to the local worker registry without Cloudflare credentials", async () => {
+    const kv = new Map<string, string>();
+    const putKv = vi.fn(async (key: string, value: string) => {
+      kv.set(key, value);
+    });
+    const putR2 = vi.fn(async () => undefined);
+    const fetcher = vi.fn();
+    const onDeploySideEffects = vi.fn(async () => undefined);
+    const oversizedForCloudflare = lazyAsset(
+      "index.html",
+      "local asset",
+      "text/html; charset=utf-8",
+    );
+    oversizedForCloudflare.size = 26 * 1024 * 1024;
+
+    const result = await deployWorkerModulesDirect({
+      CF_ACCOUNT_ID: "selfhost",
+      CF_DISPATCH_NAMESPACE: "selfhost",
+      APP_KV: { put: putKv } as unknown as KVNamespace,
+      R2_BUCKET: { put: putR2 } as unknown as R2Bucket,
+    }, {
+      scriptName: "guestbook",
+      hostname: "apps.example.test",
+      identity,
+      metadata: {
+        main_module: "index.js",
+        compatibility_date: "2026-06-01",
+        compatibility_flags: ["nodejs_compat"],
+        assets: { directory: "../client" },
+        bindings: [
+          { type: "durable_object_namespace", name: "GUESTBOOK", class_name: "Guestbook" },
+          { type: "worker_loader", name: "LOADER" },
+        ],
+      },
+      modules: [
+        {
+          name: "index.js",
+          contentType: "application/javascript+module",
+          content: "export class Guestbook {}; export default {};",
+        },
+      ],
+      assets: [oversizedForCloudflare],
+      commitSha: "snapshot-1",
+    }, {
+      fetcher: fetcher as unknown as typeof fetch,
+      onDeploySideEffects,
+    });
+
+    expect(result).toMatchObject({
+      success: true,
+      status: 200,
+      scriptName: "guestbook",
+      dispatchScriptName: "guestbook--acme",
+      result: { source: "selfhost" },
+      sideEffects: {
+        commitSha: "snapshot-1",
+        scriptVersion: expect.any(String),
+      },
+    });
+    expect(result.skippedAssets).toBeUndefined();
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(onDeploySideEffects).toHaveBeenCalledOnce();
+
+    const worker = JSON.parse(
+      kv.get(selfhostWorkerKey("guestbook--acme"))!,
+    );
+    expect(worker).toMatchObject({
+      appId: "guestbook--acme",
+      mainModule: "index.js",
+      compatibilityFlags: ["nodejs_compat"],
+      modules: {
+        "index.js": {
+          type: "js",
+          content: "export class Guestbook {}; export default {};",
+        },
+      },
+    });
+    expect(worker.bindings).toContainEqual({
+      type: "durable_object_namespace",
+      name: "GUESTBOOK",
+      class_name: "Guestbook",
+    });
+    expect(worker.bindings).toContainEqual({ type: "assets", name: "ASSETS" });
+    expect(worker.bindings).not.toContainEqual(
+      expect.objectContaining({ type: "worker_loader" }),
+    );
+    expect(kv.get(selfhostAssetsKey("guestbook--acme"))).toBeTruthy();
+    expect(putR2).toHaveBeenCalled();
+  });
+
   it("uploads a module worker bundle directly to the dispatch namespace", async () => {
     const fetcher = vi.fn(async () => Response.json({ success: true, result: { id: "version-1" } }));
 

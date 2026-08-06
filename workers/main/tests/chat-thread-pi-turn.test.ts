@@ -503,6 +503,16 @@ describe('ChatThreadDO Pi turn handling', () => {
       provider: 'openai',
       modelId: 'gpt-5.6-terra',
     });
+    expect(
+      mapping.bedrockRegionalBaseUrls(
+        'openai.gpt-5.6-terra',
+        'https://bedrock-mantle.us-east-2.api.aws/openai/v1',
+      ),
+    ).toEqual([
+      'https://bedrock-mantle.us-east-2.api.aws/openai/v1',
+      'https://bedrock-mantle.us-east-1.api.aws/openai/v1',
+      'https://bedrock-mantle.us-west-2.api.aws/openai/v1',
+    ]);
   });
   function createPiEventFake() {
     const events: any[] = [];
@@ -2880,7 +2890,6 @@ describe('ChatThreadDO Pi turn handling', () => {
       expect.objectContaining({ threadId: 'thread1' }),
       expect.objectContaining({
         CHIRIDION_MODEL: 'sonnet',
-        CHIRIDION_MODEL: 'sonnet',
       }),
     );
   });
@@ -2923,7 +2932,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(fake.ensurePiSession).toHaveBeenCalledWith(
       expect.objectContaining({ threadId: 'thread1' }),
       expect.objectContaining({
-        CHIRIDION_MODEL: 'sonnet',
+        CHIRIDION_MODEL: 'gpt-5.6-terra-bedrock',
       }),
     );
   });
@@ -3466,7 +3475,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(fake.checkHostedPiModelAccess).not.toHaveBeenCalled();
   });
 
-  it('rejects Bedrock OpenAI models in unsupported regions before falling back to hosted', async () => {
+  it('starts Bedrock OpenAI models in a supported fallback region', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.env = {};
     fake.resolveCurrentByokCredentials = vi.fn(async () => ({
@@ -3478,12 +3487,18 @@ describe('ChatThreadDO Pi turn handling', () => {
       throw new Error('hosted billing should not be checked for BYOK');
     });
 
-    await expect(ChatThreadDO.prototype['resolvePiModel'].call(
+    const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
       { provider: 'pi', orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
       { CHIRIDION_MODEL: 'gpt-5.6-sol' },
       vi.fn((provider: string, id: string) => ({ id, provider, api: 'openai-responses' })),
-    )).rejects.toThrow('OpenAI gpt-5.6-sol on Amazon Bedrock is not available in eu-west-1');
+    );
+    expect(model.model).toMatchObject({
+      id: 'openai.gpt-5.6-sol',
+      provider: 'custom',
+      api: 'openai-responses',
+      baseUrl: 'https://bedrock-mantle.us-east-1.api.aws/openai/v1',
+    });
     expect(fake.checkHostedPiModelAccess).not.toHaveBeenCalled();
   });
 

@@ -137,6 +137,7 @@ export interface ChatEnv extends WorkspaceFilesystemEnv {
   SELFHOST_AGENT_PROMPT_APPEND?: string;
   SELFHOST_AGENT_PROMPT_PREPEND?: string;
   SELFHOST_AGENT_SKILLS_JSON?: string;
+  CONNECTIONS_BINDING_ENABLED?: string;
   LOCAL_APP_VANITY_DOMAIN?: string;
   LOCAL_APP_IFRAME_DOMAIN?: string;
   WORKER_BASE_URL?: string;

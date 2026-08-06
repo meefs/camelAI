@@ -3,7 +3,11 @@ import { readFileSync } from "node:fs";
 import { parse } from "yaml";
 import { describe, expect, it } from "vitest";
 
-import { composeArgs, scriptEnv } from "../scripts/selfhost-common.mjs";
+import {
+  caddyConfigLoadCommands,
+  composeArgs,
+  scriptEnv,
+} from "../scripts/selfhost-common.mjs";
 
 type ComposeService = {
   image?: string;
@@ -106,6 +110,41 @@ describe("self-host Docker container runtime", () => {
       scriptEnv({ SELFHOST_DEPLOYMENT_MODE: "source" })
         .SELFHOST_CONTAINER_EGRESS_IMAGE,
     ).toBe("camelai-selfhost-container-egress:0.12.0");
+  });
+
+  it("explicitly reloads bind-mounted Caddy configuration", () => {
+    const [startArgs, reloadArgs] = caddyConfigLoadCommands(
+      {
+        SELFHOST_DEPLOYMENT_MODE: "release",
+        SELFHOST_TLS_MODE: "external",
+      },
+    );
+    expect(startArgs.slice(startArgs.indexOf("up"))).toEqual([
+      "up",
+      "--detach",
+      "--no-deps",
+      "--wait",
+      "--wait-timeout",
+      "60",
+      "caddy",
+    ]);
+    expect(reloadArgs.slice(reloadArgs.indexOf("exec"))).toEqual([
+      "exec",
+      "-T",
+      "caddy",
+      "caddy",
+      "reload",
+      "--config",
+      "/etc/caddy/Caddyfile",
+      "--adapter",
+      "caddyfile",
+    ]);
+
+    const [sourceStartArgs] = caddyConfigLoadCommands({
+      SELFHOST_DEPLOYMENT_MODE: "source",
+      SELFHOST_TLS_MODE: "external",
+    }, { build: true });
+    expect(sourceStartArgs).toContain("--build");
   });
 
   it("contains no retired project runtime bridge", () => {

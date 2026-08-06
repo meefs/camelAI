@@ -6,6 +6,7 @@ import {
   capture,
   composeArgs,
   envFile,
+  loadCaddyConfig,
   readSelfhostEnv,
   repoRoot,
   run,
@@ -206,6 +207,7 @@ async function applyCurrentConfig(env, { onRuntimeStart } = {}) {
   if (sourceMode) {
     await run("docker", composeArgs(env, ["build"]), { env: effectiveEnv });
   }
+  await loadCaddyConfig(env);
   onRuntimeStart?.();
   await run(
     "docker",

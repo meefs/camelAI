@@ -47,10 +47,10 @@ import type {
   ThreadCompletionSummaryStatus,
 } from "../../../../src/types";
 import {
-  CUSTOM_LLM_MODEL,
   DEFAULT_LLM_MODEL,
   getStoredCustomLlmProviderApi,
   getStoredCustomLlmProviderModelId,
+  isLlmModel,
   normalizeLlmModel,
   resolveStoredLlmModel,
   type LlmProviderConfigRecord,
@@ -235,8 +235,11 @@ function clampRetryAtMs(retryAtMs: number, nowMs: number): number {
 }
 
 function normalizeThreadModelForStorage(model: LlmModel | undefined): LlmModel {
-  if (model === CUSTOM_LLM_MODEL) {
-    return CUSTOM_LLM_MODEL;
+  // Provider-specific models have already been validated by the caller. Do not
+  // normalize them without provider context here: that would collapse Bedrock
+  // model ids (and the custom marker) back to the platform Sonnet default.
+  if (isLlmModel(model)) {
+    return model;
   }
   return normalizeLlmModel(model);
 }

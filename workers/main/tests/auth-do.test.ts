@@ -976,6 +976,32 @@ describe('Auth flow (full-stack with DOs)', () => {
       expect(stored?.model).toBe('gpt-5.6-terra');
     });
 
+    it('preserves Bedrock-only models when creating and updating threads', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password123', 'Thread Owner');
+      const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Thread Org', userId);
+      const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+
+      const thread = await orgStub.createThread(
+        defaultWorkspaceId,
+        'Bedrock model thread',
+        userId,
+        undefined,
+        'gpt-5.6-terra-bedrock',
+      );
+      expect(thread.model).toBe('gpt-5.6-terra-bedrock');
+
+      const updated = await orgStub.updateThreadModel(
+        thread.id,
+        'gpt-5.6-sol-bedrock',
+        userId,
+      );
+      expect(updated?.model).toBe('gpt-5.6-sol-bedrock');
+
+      const stored = await orgStub.getThread(thread.id);
+      expect(stored?.model).toBe('gpt-5.6-sol-bedrock');
+    });
+
     it('maps retired OpenAI models when creating a thread', async () => {
       const email = testEmail();
       const { userId } = await createUser(testEnv, email, 'password123', 'Thread Owner');

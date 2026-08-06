@@ -8,6 +8,10 @@ export interface RecentModelScope {
   workspaceId: string;
 }
 
+interface RecentModelOptions {
+  orgProvider?: string | null;
+}
+
 function keyFor(scope: RecentModelScope): string {
   return `${PREFIX}.${scope.orgId}.${scope.workspaceId}`;
 }
@@ -21,12 +25,15 @@ function getStorage(): Storage | null {
   }
 }
 
-export function getRecentModel(scope: RecentModelScope): LlmModel | null {
+export function getRecentModel(
+  scope: RecentModelScope,
+  options?: RecentModelOptions,
+): LlmModel | null {
   const storage = getStorage();
   if (!storage) return null;
   try {
     const raw = storage.getItem(keyFor(scope));
-    return resolveStoredLlmModel(raw);
+    return resolveStoredLlmModel(raw, options?.orgProvider);
   } catch {
     return null;
   }

@@ -56,7 +56,7 @@ export interface SelfhostCapabilityContract {
   };
 }
 
-export interface SelfhostComputeBindings {
+export interface SelfhostComputeBindings extends ConnectionsBindingEnv {
   projectBuild: boolean;
   analysis: boolean;
   databaseQuery: boolean;

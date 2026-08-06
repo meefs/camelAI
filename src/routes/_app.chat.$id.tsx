@@ -816,6 +816,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     {
       customApi,
       customModelId,
+      awsRegion,
     },
   );
   const fallbackThreadModel = selfhostRuntime
