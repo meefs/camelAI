@@ -49,9 +49,13 @@ Add separate Opus 5 pricing keys for the first-party, OpenRouter, and Bedrock sp
 
 No eager Durable Object or SQL rewrite is planned. Existing normalization already provides a safer lazy migration boundary and avoids a fleet-wide destructive data operation.
 
+Optimistic model updates must compare known canonical aliases of both the raw stored model and the expected model. Otherwise a legacy `opus-4.8` row read as `opus-5` cannot pass compare-and-set updates such as the hosted-credit fallback; the successful update then writes the new canonical model and completes the lazy migration. Unknown model IDs must remain unchanged during this comparison so an older rolling deployment cannot mistake a future model for the default and overwrite it.
+
 ### No fast-mode enablement
 
 This change uses standard Opus 5. Anthropic/OpenRouter fast mode has distinct pricing and availability and is outside the requested 4.8-to-5 replacement.
+
+The existing OpenRouter `:nitro` suffix used by the virtual AI pass-through path remains unchanged. OpenRouter defines Nitro as provider sorting by throughput, not as Anthropic fast mode or a different model/pricing tier; removing it would alter an established routing policy unrelated to this upgrade.
 
 ## Bedrock-specific design
 

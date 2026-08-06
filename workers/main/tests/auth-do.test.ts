@@ -849,6 +849,71 @@ describe('Auth flow (full-stack with DOs)', () => {
       expect(stored?.model).toBe('sonnet');
     });
 
+    it('matches legacy stored models against their canonical expected model', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password123', 'Legacy Thread Owner');
+      const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Legacy Thread Org', userId);
+      const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+      const thread = await orgStub.createThread(
+        defaultWorkspaceId,
+        'Legacy model thread',
+        userId,
+      );
+      await (orgStub as unknown as {
+        setThreadModelForTest(id: string, model: string): Promise<unknown>;
+      }).setThreadModelForTest(thread.id, 'opus-4.8');
+
+      const updated = await orgStub.updateThreadModel(
+        thread.id,
+        'deepseek-v4-auto',
+        userId,
+        'opus-5',
+      );
+
+      expect(updated?.model).toBe('deepseek-v4-auto');
+      await expect(orgStub.getThread(thread.id)).resolves.toMatchObject({
+        model: 'deepseek-v4-auto',
+      });
+
+      const staleUpdate = await orgStub.updateThreadModel(
+        thread.id,
+        'sonnet',
+        userId,
+        'opus-5',
+      );
+      expect(staleUpdate).toBeNull();
+      await expect(orgStub.getThread(thread.id)).resolves.toMatchObject({
+        model: 'deepseek-v4-auto',
+      });
+    });
+
+    it('preserves unknown stored models during expected-model comparisons', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password123', 'Future Model Owner');
+      const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Future Model Org', userId);
+      const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+      const thread = await orgStub.createThread(
+        defaultWorkspaceId,
+        'Future model thread',
+        userId,
+      );
+      await (orgStub as unknown as {
+        setThreadModelForTest(id: string, model: string): Promise<unknown>;
+      }).setThreadModelForTest(thread.id, 'future-model');
+
+      const staleUpdate = await orgStub.updateThreadModel(
+        thread.id,
+        'deepseek-v4-auto',
+        userId,
+        'sonnet',
+      );
+
+      expect(staleUpdate).toBeNull();
+      await expect(orgStub.getThread(thread.id)).resolves.toMatchObject({
+        model: 'future-model',
+      });
+    });
+
     it('touches assistant thread activity without incrementing user message count', async () => {
       const email = testEmail();
       const { userId } = await createUser(testEnv, email, 'password123', 'Thread Owner');
