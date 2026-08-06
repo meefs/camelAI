@@ -45,11 +45,14 @@ export function buildBedrockPiModel(
 function toMantleAnthropicModelId(modelId: string): string {
   const normalized = modelId.trim().toLowerCase();
   if (normalized.includes("fable-5")) return "anthropic.claude-fable-5";
-  if (normalized.includes("opus-4-8") || normalized.includes("opus-4.8")) {
-    return "anthropic.claude-opus-4-8";
-  }
-  if (normalized.includes("opus-4-7") || normalized.includes("opus-4.7")) {
-    return "anthropic.claude-opus-4-7";
+  if (
+    normalized.includes("opus-5") ||
+    normalized.includes("opus-4-8") ||
+    normalized.includes("opus-4.8") ||
+    normalized.includes("opus-4-7") ||
+    normalized.includes("opus-4.7")
+  ) {
+    return "anthropic.claude-opus-5";
   }
   if (normalized.includes("sonnet-5")) return "anthropic.claude-sonnet-5";
   if (normalized.includes("haiku-4-5") || normalized.includes("haiku-4.5")) {
@@ -75,14 +78,15 @@ function anthropicMantleMetadata(modelId: string): AnthropicMantleMetadata {
       maxTokens: 128_000,
     };
   }
-  if (
-    modelId.includes("claude-opus-4-8") ||
-    modelId.includes("claude-opus-4-7")
-  ) {
+  if (modelId.includes("claude-opus-5")) {
     return {
-      name: modelId.includes("4-7") ? "Claude Opus 4.7" : "Claude Opus 4.8",
+      name: "Claude Opus 5",
+      compat: {
+        forceAdaptiveThinking: true,
+        supportsTemperature: false,
+      },
       reasoning: true,
-      thinkingLevelMap: { xhigh: "xhigh" },
+      thinkingLevelMap: { xhigh: "xhigh", max: "max" },
       input: ["text", "image"],
       cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
       contextWindow: 1_000_000,

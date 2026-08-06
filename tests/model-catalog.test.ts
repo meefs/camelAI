@@ -93,10 +93,10 @@ const NEW_FRONTIER_MODELS: Array<{
     cost: '$',
   },
   {
-    id: 'opus-4.8',
-    label: 'Opus 4.8',
+    id: 'opus-5',
+    label: 'Opus 5',
     providerLogo: 'claude',
-    pricingKey: 'claude-opus-4-8',
+    pricingKey: 'claude-opus-5',
     cost: '$$$$',
   },
 ];
@@ -141,7 +141,7 @@ describe('MODEL_CATALOG', () => {
   });
 
   it('uses Claude product logos for Anthropic-family models', () => {
-    expect(MODEL_CATALOG['opus-4.8'].providerLogo).toBe('claude');
+    expect(MODEL_CATALOG['opus-5'].providerLogo).toBe('claude');
     expect(MODEL_CATALOG.sonnet.providerLogo).toBe('claude');
     expect(MODEL_CATALOG.haiku.providerLogo).toBe('claude');
   });
@@ -176,7 +176,7 @@ describe('MODEL_CATALOG', () => {
     }
   });
 
-  it('adds Luna and Opus 4.8 as distinct priced models', () => {
+  it('adds Luna and Opus 5 as distinct priced models', () => {
     for (const expected of NEW_FRONTIER_MODELS) {
       expect(MODEL_CATALOG[expected.id]).toMatchObject({
         id: expected.id,
@@ -209,7 +209,7 @@ describe('MODEL_CATALOG', () => {
         default_model: null,
         models: [
           { id: 'sonnet', added_at: 1 },
-          { id: 'opus-4.8', added_at: 11 },
+          { id: 'opus-5', added_at: 11 },
           { id: 'gpt-5.6-sol', added_at: 12 },
           { id: 'gpt-5.6-terra', added_at: 13 },
           { id: 'gpt-5.6-luna', added_at: 14 },
@@ -258,7 +258,7 @@ describe('MODEL_CATALOG', () => {
       default_model: null,
         models: [
         { id: 'sonnet' as const, added_at: 1 },
-        { id: 'opus-4.8' as const, added_at: 2 },
+        { id: 'opus-5' as const, added_at: 2 },
         { id: 'gpt-5.6-sol' as const, added_at: 3 },
         { id: 'gpt-5.6-terra' as const, added_at: 4 },
         { id: 'gpt-5.6-luna' as const, added_at: 5 },
@@ -279,7 +279,7 @@ describe('MODEL_CATALOG', () => {
         orgProvider: 'custom',
         customApi: 'anthropic-messages',
       }).map((entry) => entry.id),
-    ).toEqual(['opus-4.8', 'sonnet']);
+    ).toEqual(['opus-5', 'sonnet']);
     expect(
       resolveModelPickerCatalog({
         effectiveConfig,
@@ -316,7 +316,7 @@ describe('MODEL_CATALOG', () => {
 
     expect(visible.map((entry) => entry.id)).toEqual([
       'deepseek-v4-auto',
-      'opus-4.8',
+      'opus-5',
       'fable-5',
       'sonnet',
       'haiku',

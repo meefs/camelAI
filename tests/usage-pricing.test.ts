@@ -91,7 +91,32 @@ describe("calculateUsageCostUsd", () => {
     ).toBeCloseTo(73.5);
   });
 
-  it("calculates current Opus 4.8 pricing and hosted prefixes", () => {
+  it("calculates current Opus 5 pricing across provider spellings", () => {
+    const usage = {
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000,
+      cacheCreationInputTokens: 1_000_000,
+      cacheReadInputTokens: 1_000_000,
+    };
+
+    expect(
+      calculateUsageCostUsd({ ...usage, model: "claude-opus-5" }),
+    ).toBeCloseTo(36.75);
+    expect(
+      calculateUsageCostUsd({
+        ...usage,
+        model: "camel/anthropic/claude-opus-5",
+      }),
+    ).toBeCloseTo(36.75);
+    expect(
+      calculateUsageCostUsd({
+        ...usage,
+        model: "anthropic.claude-opus-5",
+      }),
+    ).toBeCloseTo(36.75);
+  });
+
+  it("retains historical Opus 4.8 pricing", () => {
     const usage = {
       inputTokens: 1_000_000,
       outputTokens: 1_000_000,

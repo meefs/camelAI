@@ -51,6 +51,24 @@ const modelPricingTable: Record<string, ModelPricing> = {
     cacheCreationPerToken: 0.0000025,
     cacheReadPerToken: 0.0000002,
   },
+  "claude-opus-5": {
+    inputPerToken: 0.000005,
+    outputPerToken: 0.000025,
+    cacheCreationPerToken: 0.00000625,
+    cacheReadPerToken: 0.0000005,
+  },
+  "anthropic/claude-opus-5": {
+    inputPerToken: 0.000005,
+    outputPerToken: 0.000025,
+    cacheCreationPerToken: 0.00000625,
+    cacheReadPerToken: 0.0000005,
+  },
+  "anthropic.claude-opus-5": {
+    inputPerToken: 0.000005,
+    outputPerToken: 0.000025,
+    cacheCreationPerToken: 0.00000625,
+    cacheReadPerToken: 0.0000005,
+  },
   "claude-opus-4-8": {
     inputPerToken: 0.000005,
     outputPerToken: 0.000025,
@@ -377,6 +395,9 @@ export function lookupPricing(model: string): ModelPricing {
   }
   if (normalized.includes("claude-sonnet-5")) {
     return modelPricingTable["claude-sonnet-5"];
+  }
+  if (normalized.includes("claude-opus-5")) {
+    return modelPricingTable["claude-opus-5"];
   }
   if (
     normalized.includes("claude-opus-4.8") ||

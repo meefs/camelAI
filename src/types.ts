@@ -629,7 +629,7 @@ export type LlmModel =
   | "haiku"
   | "sonnet"
   | "fable-5"
-  | "opus-4.8"
+  | "opus-5"
   | "gpt-5.6-sol"
   | "gpt-5.6-terra"
   | "gpt-5.6-luna"

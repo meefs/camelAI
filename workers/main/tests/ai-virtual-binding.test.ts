@@ -15,10 +15,39 @@ import {
   runViaGatewayHTTP,
 } from "../src/ai-virtual-binding.js";
 import {
+  buildBedrockPiModel,
   chatCompletionToPiCall,
   piMessageToChatCompletion,
 } from "../src/bedrock-pi-adapter.js";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
+
+describe("buildBedrockPiModel", () => {
+  it("uses the suffix-free Opus 5 Mantle model with adaptive-thinking metadata", () => {
+    expect(
+      buildBedrockPiModel("global.anthropic.claude-opus-5", "us-west-2"),
+    ).toMatchObject({
+      id: "anthropic.claude-opus-5",
+      name: "Claude Opus 5",
+      api: "anthropic-messages",
+      provider: "custom",
+      baseUrl: "https://bedrock-mantle.us-west-2.api.aws/anthropic",
+      compat: {
+        forceAdaptiveThinking: true,
+        supportsTemperature: false,
+        supportsEagerToolInputStreaming: false,
+      },
+      thinkingLevelMap: { xhigh: "xhigh", max: "max" },
+      contextWindow: 1_000_000,
+      maxTokens: 128_000,
+    });
+  });
+
+  it("upgrades legacy Opus Mantle IDs to Opus 5", () => {
+    expect(buildBedrockPiModel("anthropic.claude-opus-4-8").id).toBe(
+      "anthropic.claude-opus-5",
+    );
+  });
+});
 
 describe("resolveGatewaySettings", () => {
   it("returns gateway settings from required env vars", () => {
@@ -114,9 +143,10 @@ describe("normalizeLegacyModel (back-compat shim)", () => {
     expect(normalizeLegacyModel("openai/gpt-5.5")).toBe("openai/gpt-5.6-terra");
     expect(normalizeLegacyModel("kimi-k2.6")).toBe("moonshotai/kimi-k2.7-code");
     expect(normalizeLegacyModel("kimi-latest")).toBe("moonshotai/kimi-k2.7-code");
-    expect(normalizeLegacyModel("opus")).toBe("anthropic/claude-opus-4.8");
-    expect(normalizeLegacyModel("opus-4.7")).toBe("anthropic/claude-opus-4.8");
-    expect(normalizeLegacyModel("opus-4.8")).toBe("anthropic/claude-opus-4.8");
+    expect(normalizeLegacyModel("opus")).toBe("anthropic/claude-opus-5");
+    expect(normalizeLegacyModel("opus-4.7")).toBe("anthropic/claude-opus-5");
+    expect(normalizeLegacyModel("opus-4.8")).toBe("anthropic/claude-opus-5");
+    expect(normalizeLegacyModel("opus-5")).toBe("anthropic/claude-opus-5");
     expect(normalizeLegacyModel("grok-4.3")).toBe("x-ai/grok-4.5");
     expect(normalizeLegacyModel("x-ai/grok-4.3")).toBe("x-ai/grok-4.5");
     expect(normalizeLegacyModel("grok-latest")).toBe("x-ai/grok-4.5");
@@ -270,7 +300,7 @@ describe("resolveRouting", () => {
     expect(routing.awsRegion).toBe("us-east-1");
   });
 
-  it("routes Anthropic BYOK smart tier to Opus 4.8", async () => {
+  it("routes Anthropic BYOK smart tier to Opus 5", async () => {
     const encrypted = await encryptCredentials({ api_key: "anthropic-token" }, "secret");
     const routing = await resolveRouting(
       {
@@ -294,10 +324,10 @@ describe("resolveRouting", () => {
     );
 
     expect(routing.provider).toBe("anthropic");
-    expect(routing.model).toBe("anthropic/claude-opus-4-8");
+    expect(routing.model).toBe("anthropic/claude-opus-5");
   });
 
-  it("routes Bedrock BYOK smart tier to Opus 4.8", async () => {
+  it("routes Bedrock BYOK smart tier to Opus 5", async () => {
     const encrypted = await encryptCredentials({ bearer_token: "bedrock-token" }, "secret");
     const routing = await resolveRouting(
       {
@@ -321,7 +351,7 @@ describe("resolveRouting", () => {
     );
 
     expect(routing.provider).toBe("bedrock");
-    expect(routing.model).toBe("anthropic.claude-opus-4-8");
+    expect(routing.model).toBe("anthropic.claude-opus-5");
     expect(routing.awsRegion).toBe("us-east-1");
   });
 });

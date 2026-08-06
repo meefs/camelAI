@@ -58,7 +58,7 @@ export interface ModelCatalogEntry {
 }
 
 export const LLM_MODEL_TO_PRICING_KEY: Readonly<Record<LlmModel, string>> = {
-  "opus-4.8": "claude-opus-4-8",
+  "opus-5": "claude-opus-5",
   "fable-5": "claude-fable-5",
   sonnet: "claude-sonnet-5",
   haiku: "claude-haiku-4-5-20251001",
@@ -89,9 +89,9 @@ export const LLM_MODEL_TO_PRICING_KEY: Readonly<Record<LlmModel, string>> = {
 //   $$$$  = input < $10   AND output < $50
 //   $$$$$ = input >= $10  OR  output >= $50
 export const MODEL_CATALOG: Readonly<Record<LlmModel, ModelCatalogEntry>> = {
-  "opus-4.8": {
-    id: "opus-4.8",
-    label: "Opus 4.8",
+  "opus-5": {
+    id: "opus-5",
+    label: "Opus 5",
     providerLogo: "claude",
     providerOrder: 0,
     modelOrder: 0,

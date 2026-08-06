@@ -571,7 +571,7 @@ describe('organization model settings actions', () => {
     workspaceGetModelPickerConfigMock.mockResolvedValue({
       use_org_defaults: false,
       models: [
-        { id: 'opus-4.8', added_at: 100 },
+        { id: 'opus-5', added_at: 100 },
         { id: 'sonnet', added_at: 99 },
         { id: 'gpt-5.5', added_at: 98 },
         { id: 'gpt-5.4-mini', added_at: 97 },
@@ -873,7 +873,7 @@ describe('organization model settings loader', () => {
         { id: 'gpt-5.5', added_at: 60 },
         { id: 'haiku', added_at: 50 },
         { id: 'sonnet', added_at: 40 },
-        { id: 'opus-4.8', added_at: 30 },
+        { id: 'opus-5', added_at: 30 },
         { id: 'deepseek-v4-flash', added_at: 10 },
       ],
       default_model: 'gpt-5.5',
@@ -887,7 +887,7 @@ describe('organization model settings loader', () => {
 
     expect(result.config.inPicker.map((row) => row.entry.id)).toEqual([
       'deepseek-v4-auto',
-      'opus-4.8',
+      'opus-5',
       'fable-5',
       'sonnet',
       'haiku',

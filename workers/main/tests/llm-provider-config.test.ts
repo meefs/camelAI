@@ -32,7 +32,7 @@ const OPENAI_COMPATIBLE_MODELS = [
 ] as const;
 
 const ANTHROPIC_MODELS = [
-  "opus-4.8",
+  "opus-5",
   "fable-5",
   "sonnet",
   "haiku",
@@ -155,8 +155,9 @@ describe("llm provider config helpers", () => {
     expect(normalizeLlmModel("fable-5")).toBe("fable-5");
     expect(normalizeLlmModel("kimi-k2.6")).toBe("kimi-k2.7-code");
     expect(normalizeLlmModel("kimi-latest")).toBe("kimi-k2.7-code");
-    expect(normalizeLlmModel("opus")).toBe("opus-4.8");
-    expect(normalizeLlmModel("opus-4.7")).toBe("opus-4.8");
+    expect(normalizeLlmModel("opus")).toBe("opus-5");
+    expect(normalizeLlmModel("opus-4.7")).toBe("opus-5");
+    expect(normalizeLlmModel("opus-4.8")).toBe("opus-5");
     expect(normalizeLlmModel("deepseek-v4-auto")).toBe("deepseek-v4-auto");
     expect(normalizeLlmModel("deepseek-v4-auto", "openrouter")).toBe(
       CAMEL_CODE_MODEL,

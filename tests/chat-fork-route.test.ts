@@ -88,7 +88,7 @@ describe('chat fork route', () => {
       workspace_id: 'ws_123',
       title: 'Fork: Legacy Opus thread',
       first_user_message: 'Build the prototype',
-      model: 'opus-4.8',
+      model: 'opus-5',
     });
     getPiCoreForkMessagesMock.mockResolvedValue({
       success: true,
@@ -155,7 +155,7 @@ describe('chat fork route', () => {
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
-      thread: { id: 'thread_fork', model: 'opus-4.8' },
+      thread: { id: 'thread_fork', model: 'opus-5' },
       groupId: 'group_123',
     });
     expect(createThreadMock).toHaveBeenCalledWith(
@@ -164,7 +164,7 @@ describe('chat fork route', () => {
       'Fork: Legacy Opus thread',
       'user_123',
       'Build the prototype',
-      'opus-4.8',
+      'opus-5',
     );
     expect(createThreadMock).toHaveBeenCalledTimes(1);
     expect(addThreadToExistingGroupMock).toHaveBeenCalledWith(

@@ -984,7 +984,7 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
       getModelPickerConfig: vi.fn().mockResolvedValue({
         use_platform_defaults: true,
         models: [
-          { id: 'opus-4.8', added_at: 10 },
+          { id: 'opus-5', added_at: 10 },
           { id: 'sonnet', added_at: 9 },
           { id: 'gpt-5.5', added_at: 8 },
           { id: 'gpt-5.4-mini', added_at: 7 },
@@ -1026,8 +1026,8 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     expect(modelIds).toContain('fable-5');
     expect(state?.allowedThreadModels).toContain('fable-5');
     expect(state?.allowedThreadModels[0]).toBe('deepseek-v4-auto');
-    expect(state?.allowedThreadModels).toContain('opus-4.8');
-    expect(modelIds.indexOf('opus-4.8')).toBeLessThan(
+    expect(state?.allowedThreadModels).toContain('opus-5');
+    expect(modelIds.indexOf('opus-5')).toBeLessThan(
       modelIds.indexOf('fable-5'),
     );
     expect(modelIds.indexOf('fable-5')).toBeLessThan(
