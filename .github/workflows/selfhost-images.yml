@@ -180,6 +180,9 @@ jobs:
       - name: Smoke project build runtime
         run: node scripts/selfhost-container-smoke.mjs project
 
+      - name: Smoke FUSE-free local R2 synchronization
+        run: node scripts/selfhost-container-smoke.mjs mount
+
       - name: Smoke analysis notebook runtime
         run: node scripts/selfhost-container-smoke.mjs analysis
 
@@ -195,6 +198,16 @@ jobs:
           --env SELFHOST_CONTAINER_EGRESS_IMAGE=camelai-selfhost-container-egress:0.12.0
           camelai-selfhost-app:release-validation
           node scripts/selfhost-container-smoke.mjs project
+
+      - name: Smoke release app nested-Docker storage synchronization
+        run: >
+          docker run --rm
+          --network host
+          --volume /var/run/docker.sock:/var/run/docker.sock:rw
+          --env SELFHOST_PROJECT_BUILD_IMAGE=camelai-selfhost-project-build:0.12.0
+          --env SELFHOST_CONTAINER_EGRESS_IMAGE=camelai-selfhost-container-egress:0.12.0
+          camelai-selfhost-app:release-validation
+          node scripts/selfhost-container-smoke.mjs mount
 
   publish:
     name: Publish ${{ matrix.image }}
