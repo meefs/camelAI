@@ -332,10 +332,18 @@ jobs:
 
           for image in app local-artifacts project-build analysis db-query container-egress caddy; do
             ref="ghcr.io/${owner}/${repo}-selfhost-${image}:${tag}"
-            digest="$(
-              docker buildx imagetools inspect "$ref" |
-                awk '/^Digest:/ { print $2; exit }'
-            )"
+            digest=""
+            for attempt in $(seq 1 12); do
+              digest="$(
+                docker buildx imagetools inspect "$ref" 2>/dev/null |
+                  awk '/^Digest:/ { print $2; exit }' || true
+              )"
+              if [ -n "$digest" ]; then
+                break
+              fi
+              echo "Waiting for ${ref} to become readable (${attempt}/12)..."
+              sleep 5
+            done
             test -n "$digest"
             jq \
               --arg image "$image" \
