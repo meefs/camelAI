@@ -135,6 +135,7 @@ const SELFHOST_WORKFLOW_NAMES = {
 };
 
 const BROWSER_RENDERING_SERVICE_NAME = 'browser-rendering:service';
+const IMAGES_SERVICE_NAME = 'images:service';
 const DEFAULT_CONTAINER_EGRESS_INTERCEPTOR_IMAGE =
   'camelai-selfhost-container-egress:0.12.0';
 const DEFAULT_DOCKER_SOCKET_URI = 'unix:///var/run/docker.sock';
@@ -234,6 +235,13 @@ function bindingWorkerLoader(name, id) {
 function bindingD1(name, serviceName) {
   return `(name = ${q(name)}, wrapped = (` +
     `moduleName = "cloudflare-internal:d1-api", ` +
+    `innerBindings = [(name = "fetcher", service = (name = ${q(serviceName)}))]` +
+  `))`;
+}
+
+function bindingImages(name, serviceName) {
+  return `(name = ${q(name)}, wrapped = (` +
+    `moduleName = "cloudflare-internal:images-api", ` +
     `innerBindings = [(name = "fetcher", service = (name = ${q(serviceName)}))]` +
   `))`;
 }
@@ -607,6 +615,28 @@ function serviceBrowserRendering() {
   `))`;
 }
 
+function serviceImages() {
+  return `(name = ${q(IMAGES_SERVICE_NAME)}, worker = (` +
+    `compatibilityDate = "2025-04-01", ` +
+    `compatibilityFlags = ["nodejs_compat"], ` +
+    `modules = [` +
+      [
+        capnpModule(
+          'images.worker.js',
+          path.join(MINIFLARE_WORKERS_DIR, 'images/images.worker.js'),
+        ),
+        ...miniflareSupportModules(),
+      ].join(', ') +
+    `], ` +
+    `bindings = [` +
+      [
+        bindingKv('IMAGES_STORE', 'images:ns:data'),
+        bindingService('MINIFLARE_LOOPBACK', 'loopback'),
+      ].join(', ') +
+    `]` +
+  `))`;
+}
+
 function serviceEntryWorker(mainServiceName, dispatcherServiceName, vars) {
   const source = `
 const STATIC_PATHS = new Set([
@@ -728,6 +758,7 @@ async function main() {
   await fs.mkdir(path.join(stateDir, 'r2'), { recursive: true });
   await fs.mkdir(path.join(stateDir, 'd1'), { recursive: true });
   await fs.mkdir(path.join(stateDir, 'cache'), { recursive: true });
+  await fs.mkdir(path.join(stateDir, 'images'), { recursive: true });
   await fs.mkdir(path.join(stateDir, 'workflows'), { recursive: true });
 
   const mainServiceName = 'camelai';
@@ -855,6 +886,12 @@ async function main() {
     bindings.push(bindingService(browserBindingName, BROWSER_RENDERING_SERVICE_NAME));
   }
 
+  const imagesBindingName = wrangler.images?.binding;
+  const enableImagesBinding = Boolean(imagesBindingName);
+  if (enableImagesBinding) {
+    bindings.push(bindingImages(imagesBindingName, IMAGES_SERVICE_NAME));
+  }
+
   const workflows = (wrangler.workflows ?? []).map((workflow) => ({
     binding: workflow.binding,
     name: SELFHOST_WORKFLOW_NAMES[workflow.binding] ?? workflow.name,
@@ -934,6 +971,9 @@ async function main() {
   services.push(serviceDisk('r2:storage', path.join(stateDir, 'r2')));
   services.push(serviceDisk('d1:storage', path.join(stateDir, 'd1')));
   services.push(serviceDisk('cache:storage', path.join(stateDir, 'cache')));
+  if (enableImagesBinding) {
+    services.push(serviceDisk('images:storage', path.join(stateDir, 'images')));
+  }
   for (const workflow of workflows) {
     const workflowStorageServiceName = `workflows:storage-${workflow.name}`;
     const workflowStoragePath = path.join(stateDir, 'workflows', workflow.name);
@@ -971,15 +1011,36 @@ async function main() {
   }));
   services.push(serviceCacheEntry());
   services.push(serviceCacheObject());
+  if (enableImagesBinding) {
+    services.push(serviceStorageObject({
+      serviceName: 'images:ns',
+      workerFile: 'kv/namespace.worker.js',
+      workerModuleName: 'namespace.worker.js',
+      className: 'KVNamespaceObject',
+      uniqueKey: 'miniflare-images-KVNamespaceObject',
+      storageServiceName: 'images:storage',
+    }));
+    services.push(serviceObjectEntry(
+      'images:ns:data',
+      'images:ns',
+      'KVNamespaceObject',
+      'images-data',
+    ));
+    services.push(serviceImages());
+  }
   if (producers.size > 0) {
     services.push(serviceQueueBroker({ producers, consumers, workerName, mainServiceName }));
   }
   if (enableBrowserBinding) {
     services.push(serviceBrowserRendering());
+  }
+  if (enableBrowserBinding || enableImagesBinding) {
     services.push('(name = "loopback", external = (http = ()))');
-    services.push('(name = "local", network = (allow = ["local"], tlsOptions = (trustBrowserCas = true)))');
   } else {
     services.push('(name = "loopback", network = (allow = ["local"], tlsOptions = (trustBrowserCas = true)))');
+  }
+  if (enableBrowserBinding) {
+    services.push('(name = "local", network = (allow = ["local"], tlsOptions = (trustBrowserCas = true)))');
   }
   services.push(`(name = "assets", disk = (path = ${q(path.resolve(serverDir, wrangler.assets?.directory ?? '../client'))}, writable = false))`);
   services.push('(name = "internet", network = (allow = ["public", "private"], tlsOptions = (trustBrowserCas = true)))');
@@ -1026,6 +1087,7 @@ const camelai :Workerd.Config = (
       ],
       assets: wrangler.assets?.binding,
       browser: enableBrowserBinding ? [browserBindingName] : [],
+      images: enableImagesBinding ? [imagesBindingName] : [],
       containers: containerRuntime.containers,
     },
     containerEngine: {
@@ -1033,7 +1095,7 @@ const camelai :Workerd.Config = (
       socketUri: containerRuntime.socketUri,
       egressImage: containerRuntime.egressImage,
     },
-    loopback: enableBrowserBinding
+    loopback: enableBrowserBinding || enableImagesBinding
       ? { mode: 'external', hostname: '127.0.0.1' }
       : { mode: 'network' },
     omittedBindings: {

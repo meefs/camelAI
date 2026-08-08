@@ -107,6 +107,14 @@ jobs:
           grep -qx 'dns.providers.cloudflare' <<<"$modules"
           grep -qx 'dns.providers.route53' <<<"$modules"
 
+      - name: Validate app image local Images dependency
+        if: matrix.image == 'app'
+        run: >
+          docker run --rm --entrypoint node
+          camelai-selfhost-app:release-validation
+          --input-type=module
+          --eval "await import('sharp')"
+
   validate-runtimes:
     name: Validate attached container runtimes
     runs-on: ubuntu-latest

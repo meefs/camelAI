@@ -15,6 +15,7 @@ import { selfhostTlsMode } from "./selfhost-tls-mode.mjs";
 const repoRoot = path.resolve(import.meta.dirname, "..");
 
 const read = (file) => fs.readFile(path.join(repoRoot, file), "utf8");
+const packageJson = JSON.parse(await read("package.json"));
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -373,6 +374,10 @@ includesAll(
   bundledDockerfile,
   ["libgbm1", "libgtk-3-0", "fonts-liberation"],
   "bundled app browser runtime",
+);
+assert(
+  packageJson.dependencies?.sharp,
+  "sharp must be a production dependency for the self-host Images binding",
 );
 
 includesAll(

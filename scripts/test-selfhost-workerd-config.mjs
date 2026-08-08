@@ -177,6 +177,11 @@ description: Follow ACME runbooks. Use when shipping internal tools.
   assert(config.includes('name = "local", network = (allow = ["local"]'), 'config should expose local outbound for Chrome');
   assert(manifest.loopback?.mode === 'external', 'manifest should request external loopback for browser rendering');
   includesAll(bindings.browser ?? [], ['BROWSER'], 'browser');
+  includesAll(bindings.images ?? [], ['IMAGES'], 'images');
+  assert(config.includes('name = "IMAGES"'), 'config should contain IMAGES binding');
+  assert(config.includes('cloudflare-internal:images-api'), 'config should contain the Images wrapped binding');
+  assert(config.includes('images/images.worker.js'), 'config should embed the Miniflare Images service');
+  assert(config.includes('images:storage'), 'config should contain persistent Images storage');
   assert(config.includes('selfhost-app-db'), 'config should contain self-host D1 database id');
   assert(
     config.split('(name = "r2:bucket:chiridion-selfhost", worker = (').length -

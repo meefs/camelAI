@@ -46,7 +46,7 @@ try {
       hostname: manifest.loopback.hostname ?? '127.0.0.1',
     });
     console.log(
-      `[selfhost:workerd] Browser loopback on http://${loopbackServer.hostname}:${loopbackServer.port}`,
+      `[selfhost:workerd] Local bindings loopback on http://${loopbackServer.hostname}:${loopbackServer.port}`,
     );
   }
 
@@ -67,7 +67,7 @@ try {
     if (!child.killed) child.kill(signal);
     if (loopbackServer) {
       await loopbackServer.close().catch((error) => {
-        console.error('[selfhost:workerd] Failed to close browser loopback', error);
+        console.error('[selfhost:workerd] Failed to close local bindings loopback', error);
       });
     }
   };
