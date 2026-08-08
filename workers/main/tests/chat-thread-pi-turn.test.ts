@@ -7465,6 +7465,21 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(sandbox.mkdir).toHaveBeenCalledTimes(5);
   });
 
+  it('does not retry a permanent FUSE mount configuration failure', async () => {
+    vi.useFakeTimers();
+    const { fake, sandbox } = createProjectToolFake({ deploy: true });
+    sandbox.mkdir.mockRejectedValue(
+      new Error(
+        'Container failed to start: S3FS mount failed: fuse: device not found, try modprobe fuse first',
+      ),
+    );
+
+    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
+      project: 'Demo App',
+    })).rejects.toThrow('Retrying will not help');
+    expect(sandbox.mkdir).toHaveBeenCalledTimes(1);
+  });
+
   it('returns build diagnostics and the temp build log path on deploy build failures', async () => {
     const { fake, sandbox } = createProjectToolFake({ deploy: true });
     const buildOutput = [

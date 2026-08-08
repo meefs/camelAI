@@ -5,8 +5,77 @@ import {
   isMountAlreadyPresent,
   mountAllowsList,
   mountOrRecover,
+  sandboxR2MountOptions,
+  sandboxR2MountPath,
+  waitForWritableLocalMount,
   type MountRecoverTarget,
 } from '../src/analysis-sandbox.js';
+
+describe('sandboxR2MountOptions', () => {
+  const options = {
+    prefix: '/warehouse/ws-1',
+    readOnly: false,
+    s3fsOptions: ['stat_cache_expire=1'],
+  };
+
+  it('uses FUSE-free local R2 synchronization for self-host', () => {
+    expect(sandboxR2MountOptions({ CF_ACCOUNT_ID: 'selfhost' }, options)).toEqual({
+      localBucket: true,
+      prefix: '/warehouse/ws-1',
+      readOnly: false,
+    });
+  });
+
+  it('keeps credential-less s3fs options on Cloudflare', () => {
+    expect(sandboxR2MountOptions({ CF_ACCOUNT_ID: 'cloudflare-account' }, options)).toEqual(options);
+  });
+});
+
+describe('sandboxR2MountPath', () => {
+  it('relocates writable local sync beneath /workspace', () => {
+    expect(sandboxR2MountPath('/outputs', {
+      localBucket: true,
+      prefix: '/outputs',
+      readOnly: false,
+    })).toBe('/workspace/.camelai-mounts/outputs');
+  });
+
+  it('keeps read-only local and Cloudflare mount paths unchanged', () => {
+    expect(sandboxR2MountPath('/warehouse/ws', {
+      localBucket: true,
+      prefix: '/warehouse/ws',
+      readOnly: true,
+    })).toBe('/warehouse/ws');
+    expect(sandboxR2MountPath('/outputs', {
+      prefix: '/outputs',
+      readOnly: false,
+    })).toBe('/outputs');
+  });
+});
+
+describe('waitForWritableLocalMount', () => {
+  it('rewrites until container changes reach R2, then removes its sentinel', async () => {
+    const writes: string[] = [];
+    const deletedFiles: string[] = [];
+    const deletedKeys: string[] = [];
+    let heads = 0;
+    const target = {
+      async writeFile(path: string) { writes.push(path); },
+      async deleteFile(path: string) { deletedFiles.push(path); },
+    };
+    const bucket = {
+      async head() { heads += 1; return heads >= 2 ? {} : null; },
+      async delete(key: string) { deletedKeys.push(key); },
+    };
+
+    await waitForWritableLocalMount(target, bucket, '/outputs', '/workspace/outputs', [0]);
+
+    expect(writes).toHaveLength(2);
+    expect(writes[0]).toMatch(/^\/outputs\/\.camelai-mount-ready-/);
+    expect(deletedFiles).toEqual([writes[0]]);
+    expect(deletedKeys[0]).toMatch(/^workspace\/outputs\/\.camelai-mount-ready-/);
+  });
+});
 
 describe('isMountAlreadyPresent', () => {
   it('treats nonempty / busy s3fs mount errors as already-mounted', () => {

@@ -7,13 +7,19 @@ import net from "node:net";
 import path from "node:path";
 import process from "node:process";
 
+import { readSelfhostEnv } from "./selfhost-common.mjs";
+
 const repoRoot = path.resolve(import.meta.dirname, "..");
+const selfhostEnv = await readSelfhostEnv(false);
 const workerdPath = path.join(repoRoot, "node_modules/workerd/bin/workerd");
 const egressImage =
   process.env.SELFHOST_CONTAINER_EGRESS_IMAGE ||
+  selfhostEnv.SELFHOST_CONTAINER_EGRESS_IMAGE ||
   "camelai-selfhost-container-egress:0.12.0";
 const socketUri =
-  process.env.SELFHOST_DOCKER_SOCKET_URI || "unix:///var/run/docker.sock";
+  process.env.SELFHOST_DOCKER_SOCKET_URI ||
+  selfhostEnv.SELFHOST_DOCKER_SOCKET_URI ||
+  "unix:///var/run/docker.sock";
 const notebook = Buffer.from(
   JSON.stringify({
     cells: [
@@ -38,10 +44,20 @@ const notebook = Buffer.from(
   }),
 ).toString("base64");
 const runtimes = {
+  mount: {
+    className: "ProjectBuildSandbox",
+    image:
+      process.env.SELFHOST_PROJECT_BUILD_IMAGE ||
+      selfhostEnv.SELFHOST_PROJECT_BUILD_IMAGE ||
+      "camelai-selfhost-project-build:0.12.0",
+    marker: "camelai-local-r2-sync-ok",
+    mountTest: true,
+  },
   project: {
     className: "ProjectBuildSandbox",
     image:
       process.env.SELFHOST_PROJECT_BUILD_IMAGE ||
+      selfhostEnv.SELFHOST_PROJECT_BUILD_IMAGE ||
       "camelai-selfhost-project-build:0.12.0",
     command:
       "printf 'console.log(\"camelai-project-build-ok\")' > /tmp/smoke.ts " +
@@ -53,6 +69,7 @@ const runtimes = {
     className: "AnalysisSandbox",
     image:
       process.env.SELFHOST_ANALYSIS_IMAGE ||
+      selfhostEnv.SELFHOST_ANALYSIS_IMAGE ||
       "camelai-selfhost-analysis:0.12.0",
     command:
       `printf '%s' '${notebook}' | base64 -d > /tmp/smoke.ipynb ` +
@@ -66,6 +83,7 @@ const runtimes = {
     className: "DbQuerySandbox",
     image:
       process.env.SELFHOST_DB_QUERY_IMAGE ||
+      selfhostEnv.SELFHOST_DB_QUERY_IMAGE ||
       "camelai-selfhost-db-query:0.12.0",
     command:
       "cd /opt/db-query-runner && node -e " +
@@ -107,10 +125,45 @@ const sourcePath = path.join(tempDir, "smoke.ts");
 const bundlePath = path.join(tempDir, "smoke.js");
 const configPath = path.join(tempDir, "smoke.capnp");
 const statePath = path.join(tempDir, "state");
+const r2StatePath = path.join(tempDir, "r2-state");
 let child;
 
 try {
   await fs.mkdir(statePath);
+  await fs.mkdir(r2StatePath);
+  const fetchBody = runtime.mountTest
+    ? `
+      await env.SMOKE_BUCKET.put("smoke/input.txt", "from-r2");
+      await sandbox.mountBucket("SMOKE_BUCKET", "/workspace/smoke", {
+        localBucket: true,
+        prefix: "/smoke",
+        readOnly: false,
+      });
+      const alias = await sandbox.exec(
+        "rm -rf /smoke && ln -s /workspace/smoke /smoke",
+      );
+      if (!alias.success) throw new Error("Could not create sandbox mount alias");
+      const seeded = await sandbox.exec("cat /smoke/input.txt");
+      if (!seeded.success || seeded.stdout.trim() !== "from-r2") {
+        throw new Error("R2 to container synchronization failed");
+      }
+      let persisted = null;
+      for (let attempt = 0; attempt < 8 && !persisted; attempt += 1) {
+        await sandbox.exec(
+          "printf 'from-container-" + attempt + "' > /smoke/output.txt",
+        );
+        await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
+        persisted = await env.SMOKE_BUCKET.get("smoke/output.txt");
+      }
+      if (!persisted || !(await persisted.text()).startsWith("from-container-")) {
+        throw new Error("Container to R2 synchronization failed");
+      }
+      return Response.json({ success: true, stdout: ${JSON.stringify(runtime.marker)} });
+    `
+    : `
+      const result = await sandbox.exec(${JSON.stringify(runtime.command)});
+      return Response.json(result);
+    `;
   await fs.writeFile(
     sourcePath,
     `
@@ -126,8 +179,7 @@ export default {
       "selfhost-local-docker-smoke-${runtimeName}",
     );
     try {
-      const result = await sandbox.exec(${JSON.stringify(runtime.command)});
-      return Response.json(result);
+      ${fetchBody}
     } finally {
       await sandbox.destroy();
     }
@@ -142,6 +194,7 @@ export default {
     "--target=browser",
     "--format=esm",
     "--external=cloudflare:workers",
+    "--external=node:*",
     `--outfile=${bundlePath}`,
   ]);
 
@@ -158,7 +211,7 @@ const smoke :Workerd.Config = (
       bindings = [
         (name = "SANDBOX", durableObjectNamespace = (
           className = ${JSON.stringify(runtime.className)}
-        ))
+        ))${runtime.mountTest ? ',\n        (name = "SMOKE_BUCKET", r2Bucket = (name = "r2:bucket:smoke"))' : ""}
       ],
       globalOutbound = "internet",
       durableObjectNamespaces = [(
@@ -177,6 +230,40 @@ const smoke :Workerd.Config = (
       path = ${JSON.stringify(statePath)},
       writable = true
     )),
+${runtime.mountTest ? `    (name = "r2:bucket:smoke", worker = (
+      compatibilityDate = "2023-07-24",
+      modules = [(name = "object-entry.worker.js", esModule = embed ${JSON.stringify(path.relative(tempDir, path.join(repoRoot, "node_modules/miniflare/dist/src/workers/shared/object-entry.worker.js")))})],
+      bindings = [
+        (name = "MINIFLARE_NAMESPACE", text = "smoke"),
+        (name = "MINIFLARE_OBJECT", durableObjectNamespace = (className = "R2BucketObject", serviceName = "r2:bucket"))
+      ]
+    )),
+    (name = "r2:bucket", worker = (
+      compatibilityDate = "2023-07-24",
+      compatibilityFlags = ["nodejs_compat", "experimental"],
+      modules = [
+        (name = "bucket.worker.js", esModule = embed ${JSON.stringify(path.relative(tempDir, path.join(repoRoot, "node_modules/miniflare/dist/src/workers/r2/bucket.worker.js")))}),
+        (name = "miniflare:shared", esModule = embed ${JSON.stringify(path.relative(tempDir, path.join(repoRoot, "node_modules/miniflare/dist/src/workers/shared/index.worker.js")))}),
+        (name = "miniflare:zod", esModule = embed ${JSON.stringify(path.relative(tempDir, path.join(repoRoot, "node_modules/miniflare/dist/src/workers/shared/zod.worker.js")))}),
+        (name = "node-internal:internal_assert", esModule = "import assert from \\"node:assert\\"; export default assert; export * from \\"node:assert\\";"),
+        (name = "node-internal:internal_buffer", esModule = "export { Buffer } from \\"node:buffer\\";")
+      ],
+      durableObjectNamespaces = [(className = "R2BucketObject", uniqueKey = "miniflare-R2BucketObject", enableSql = true)],
+      durableObjectStorage = (localDisk = "r2-storage"),
+      bindings = [
+        (name = "MINIFLARE_BLOBS", service = (name = "r2-storage")),
+        (name = "MINIFLARE_LOOPBACK", service = (name = "loopback"))
+      ]
+    )),
+    (name = "r2-storage", disk = (
+      path = ${JSON.stringify(r2StatePath)},
+      writable = true
+    )),
+    (name = "loopback", network = (
+      allow = ["local"],
+      tlsOptions = (trustBrowserCas = true)
+    )),
+` : ""}
     (name = "internet", network = (
       allow = ["public", "private"],
       tlsOptions = (trustBrowserCas = true)
@@ -207,11 +294,13 @@ const smoke :Workerd.Config = (
     ],
     {
       cwd: tempDir,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: process.env.SELFHOST_SMOKE_DEBUG === "1"
+        ? ["ignore", "inherit", "inherit"]
+        : ["ignore", "pipe", "pipe"],
     },
   );
-  child.stdout.on("data", (chunk) => logs.push(String(chunk)));
-  child.stderr.on("data", (chunk) => logs.push(String(chunk)));
+  child.stdout?.on("data", (chunk) => logs.push(String(chunk)));
+  child.stderr?.on("data", (chunk) => logs.push(String(chunk)));
 
   const response = await poll(`http://127.0.0.1:${port}/`, child, logs);
   const result = await response.json();
@@ -227,7 +316,11 @@ const smoke :Workerd.Config = (
     await new Promise((resolve) => child.once("exit", resolve));
   }
   await cleanupSmokeContainers();
-  await fs.rm(tempDir, { recursive: true, force: true });
+  if (process.env.SELFHOST_SMOKE_KEEP === "1") {
+    console.log(`Kept smoke files at ${tempDir}`);
+  } else {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
 }
 
 function run(command, args, stdio = "inherit") {
@@ -392,10 +485,13 @@ async function poll(url, workerd, logs) {
     }
     try {
       const response = await fetch(url, {
-        signal: AbortSignal.timeout(180_000),
+        signal: AbortSignal.timeout(30_000),
       });
       if (response.ok) return response;
-      lastError = new Error(`HTTP ${response.status}: ${await response.text()}`);
+      throw new Error(
+        `Container smoke returned HTTP ${response.status}: ${await response.text()}\n` +
+          logs.join("").slice(-8000),
+      );
     } catch (error) {
       lastError = error;
     }

@@ -1,6 +1,13 @@
 import { Sandbox } from "@cloudflare/sandbox";
 
-import { createSingleFlight, mountOrRecover } from "./analysis-sandbox.js";
+import {
+  createSingleFlight,
+  ensureLocalMountAlias,
+  mountOrRecover,
+  sandboxR2MountPath,
+  sandboxR2MountOptions,
+  waitForWritableLocalMount,
+} from "./analysis-sandbox.js";
 import { DB_QUERY_SLEEP_AFTER } from "./container-sizing.js";
 import type { Env } from "./types.js";
 
@@ -82,13 +89,33 @@ export class DbQuerySandbox extends Sandbox<Env> {
       this.mountGates.set(mountPath, gate);
     }
     await gate(async () => {
-      await mountOrRecover(this, WAREHOUSE_EXPORT_BUCKET_BINDING, mountPath, {
+      const mountOptions = sandboxR2MountOptions(this.env, {
         prefix: mountPath,
         readOnly: false,
         // Shrink the s3fs stat cache so a re-export of the same key doesn't
-        // read/write through a stale view (matches the analysis mounts).
+        // read/write through a stale view. Self-host local sync drops this.
         s3fsOptions: ["stat_cache_expire=1"],
       });
+      const actualMountPath = sandboxR2MountPath(mountPath, mountOptions);
+      await mountOrRecover(
+        this,
+        WAREHOUSE_EXPORT_BUCKET_BINDING,
+        actualMountPath,
+        mountOptions,
+      );
+      await ensureLocalMountAlias(this, mountPath, actualMountPath);
+      if ("localBucket" in mountOptions && mountOptions.localBucket) {
+        const bucket = this.env.WAREHOUSE_EXPORT_BUCKET;
+        if (!bucket) {
+          throw new Error("WAREHOUSE_EXPORT_BUCKET is required for self-host local synchronization");
+        }
+        await waitForWritableLocalMount(
+          this,
+          bucket,
+          actualMountPath,
+          mountOptions.prefix ?? "",
+        );
+      }
       this.mountedPaths.add(mountPath);
     });
   }

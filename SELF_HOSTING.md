@@ -102,7 +102,7 @@ versioned `capabilities` object:
         "implementation": "workerd-local-docker",
         "verification": {
           "status": "not_checked",
-          "command": "bun run selfhost:container:smoke:project"
+          "command": "bun run selfhost:container:smoke:mount && bun run selfhost:container:smoke:project"
         }
       },
       "notebooks": {
@@ -145,6 +145,11 @@ versioned `capabilities` object:
   }
 }
 ```
+
+Self-hosted sandbox storage uses the Sandbox SDK's local R2 synchronization
+mode. It does not require `/dev/fuse`, `SYS_ADMIN`, or an unconfined AppArmor
+profile. `selfhost:doctor` runs a bidirectional mount smoke whenever the images
+are already local; it must pass before treating app build/deploy as healthy.
 
 Intentionally disabled capabilities do not make the service unhealthy. Failed
 runtime checks still return HTTP 503 and `status: "fail"`. In particular,

@@ -34,6 +34,9 @@ describe("self-host capability contract", () => {
     expect(contract.features.project_builds.verification?.command).toBe(
       "bun run selfhost:container:smoke:project",
     );
+    expect(contract.features.project_deploys.verification?.command).toBe(
+      "bun run selfhost:container:smoke:mount && bun run selfhost:container:smoke:project",
+    );
     expect(contract.features.notebooks.verification?.command).toBe(
       "bun run selfhost:container:smoke:analysis",
     );

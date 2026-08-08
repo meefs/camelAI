@@ -109,7 +109,7 @@ export function getSelfhostCapabilityContract(
       project_deploys: localDockerCapability(
         bindings.projectBuild,
         "PROJECT_BUILD_SANDBOX",
-        "bun run selfhost:container:smoke:project",
+        "bun run selfhost:container:smoke:mount && bun run selfhost:container:smoke:project",
       ),
       notebooks: localDockerCapability(
         bindings.analysis,

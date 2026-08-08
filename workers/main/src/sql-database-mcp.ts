@@ -1,4 +1,5 @@
 import { decryptCredentials } from '../../../src/lib/integration-crypto';
+import { retryR2Read } from '../../../src/lib/r2-read-retry';
 import { parseJsonObject, requireString, textToolResult } from './mcp-values.js';
 import {
   mysqlQuery,
@@ -218,7 +219,11 @@ async function runSqlWarehouseExport(
     );
   }
   await sqlExportToWarehouse(env, context, { engine: plan.engine, body: plan.body, r2Key: plan.r2Key });
-  const head = await bucket.head(plan.r2Key);
+  // Self-host local mounts synchronize container writes back to the R2 binding
+  // asynchronously. Cloudflare R2 can also have a brief read-after-reference
+  // window, so use the same bounded retry as the other freshly-written R2
+  // surfaces before declaring the export lost.
+  const head = await retryR2Read(() => bucket.head(plan.r2Key));
   if (!head) {
     throw Object.assign(
       new Error(`warehouse export did not persist: no object at ${plan.r2Key} after write`),

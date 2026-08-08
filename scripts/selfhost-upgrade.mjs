@@ -322,7 +322,7 @@ async function restoreReleaseState(snapshotDir) {
 }
 
 async function runDeepSmokes(env) {
-  for (const runtime of ["project", "analysis", "db-query"]) {
+  for (const runtime of ["mount", "project", "analysis", "db-query"]) {
     await run(
       "bun",
       ["run", `selfhost:container:smoke:${runtime}`],

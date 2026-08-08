@@ -1,5 +1,11 @@
-import { InvalidMountConfigError, S3FSMountError, Sandbox } from "@cloudflare/sandbox";
+import {
+  InvalidMountConfigError,
+  S3FSMountError,
+  Sandbox,
+  type MountBucketOptions,
+} from "@cloudflare/sandbox";
 
+import { isSelfhostRuntime, type SelfhostRuntimeEnv } from "../../../src/lib/selfhost-runtime.js";
 import { ANALYSIS_SLEEP_AFTER } from "./container-sizing.js";
 import { handleAuthenticatedConnectionsRpc } from "./routes/connections-rpc.js";
 import type { Env } from "./types.js";
@@ -34,24 +40,134 @@ export function isMountAlreadyPresent(error: unknown): boolean {
   return false;
 }
 
-/** Options forwarded to `Sandbox.mountBucket` for R2 binding mounts. */
-export type R2MountBucketOptions = {
+/** R2-binding options before choosing Cloudflare s3fs or self-host local sync. */
+export type R2BindingMountOptions = {
   prefix: string;
   readOnly?: boolean;
   s3fsOptions?: string[];
 };
 
 /**
+ * Cloudflare Containers can mount R2 through credential-less s3fs. Local
+ * workerd containers do not receive /dev/fuse and should use the Sandbox SDK's
+ * local R2 synchronization mode instead. That mode uses the R2 binding plus
+ * container file/watch APIs, so self-host never needs SYS_ADMIN or an
+ * unconfined AppArmor profile.
+ */
+export function sandboxR2MountOptions(
+  env: SelfhostRuntimeEnv,
+  options: R2BindingMountOptions,
+): MountBucketOptions {
+  if (isSelfhostRuntime(env)) {
+    return {
+      localBucket: true,
+      prefix: options.prefix,
+      readOnly: options.readOnly,
+    };
+  }
+  return options;
+}
+
+/** Writable local-sync watches are restricted by the sandbox server to /workspace. */
+export function sandboxR2MountPath(
+  requestedMountPath: string,
+  options: MountBucketOptions,
+): string {
+  if (
+    "localBucket" in options &&
+    options.localBucket &&
+    options.readOnly === false &&
+    requestedMountPath !== "/workspace" &&
+    !requestedMountPath.startsWith("/workspace/")
+  ) {
+    return `/workspace/.camelai-mounts${requestedMountPath}`;
+  }
+  return requestedMountPath;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+export async function ensureLocalMountAlias(
+  target: Pick<MountRecoverTarget, "exec">,
+  requestedMountPath: string,
+  actualMountPath: string,
+): Promise<void> {
+  if (requestedMountPath === actualMountPath) return;
+  const parent = requestedMountPath.slice(0, requestedMountPath.lastIndexOf("/")) || "/";
+  const result = await target.exec(
+    `mkdir -p ${shellQuote(parent)} && rm -rf ${shellQuote(requestedMountPath)} && ` +
+      `ln -s ${shellQuote(actualMountPath)} ${shellQuote(requestedMountPath)}`,
+  );
+  if (result.exitCode !== 0) {
+    throw new Error(
+      `Failed to expose local R2 mount at ${requestedMountPath}: ${result.stderr || result.stdout}`,
+    );
+  }
+}
+
+/**
  * Minimal surface `mountOrRecover` needs from a Sandbox. Kept narrow so the
  * recovery path is unit-testable without spinning a container.
  */
 export interface MountRecoverTarget {
-  mountBucket(bucket: string, mountPath: string, options: R2MountBucketOptions): Promise<void>;
+  mountBucket(bucket: string, mountPath: string, options: MountBucketOptions): Promise<void>;
   unmountBucket(mountPath: string): Promise<void>;
   exec(
     command: string,
     options?: { timeout?: number },
   ): Promise<{ exitCode?: number; stdout?: string; stderr?: string }>;
+}
+
+interface WritableLocalMountTarget {
+  writeFile(path: string, content: string): Promise<unknown>;
+  deleteFile(path: string): Promise<unknown>;
+}
+
+interface LocalMountBucket {
+  head(key: string): Promise<unknown | null>;
+  delete(key: string): Promise<unknown>;
+}
+
+const LOCAL_MOUNT_READY_DELAYS_MS = [50, 100, 200, 400, 800, 1_200] as const;
+
+/**
+ * `localBucket` starts its writable container watcher asynchronously after the
+ * initial R2 -> container sync. Prove that watcher is accepting events before
+ * returning a writable mount, otherwise the first generated output/export can
+ * be written during the startup gap and never reach R2.
+ */
+export async function waitForWritableLocalMount(
+  target: WritableLocalMountTarget,
+  bucket: LocalMountBucket,
+  mountPath: string,
+  prefix: string,
+  delaysMs: readonly number[] = LOCAL_MOUNT_READY_DELAYS_MS,
+): Promise<void> {
+  const sentinelName = `.camelai-mount-ready-${crypto.randomUUID()}`;
+  const sentinelPath = `${mountPath.replace(/\/$/, "")}/${sentinelName}`;
+  const normalizedPrefix = prefix.replace(/^\/+|\/+$/g, "");
+  const sentinelKey = normalizedPrefix ? `${normalizedPrefix}/${sentinelName}` : sentinelName;
+
+  try {
+    for (let attempt = 0; ; attempt += 1) {
+      // Rewriting creates a fresh modify event if the initial create happened
+      // just before the SDK's inotify stream became ready.
+      await target.writeFile(sentinelPath, `ready-${attempt}`);
+      if (await bucket.head(sentinelKey)) return;
+      const delayMs = delaysMs[attempt];
+      if (delayMs == null) break;
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+    throw new Error(
+      `Writable local R2 synchronization did not start for ${mountPath}; ` +
+      "sandbox output would not persist",
+    );
+  } finally {
+    await target.deleteFile(sentinelPath).catch(() => undefined);
+    await bucket.delete(sentinelKey).catch(() => undefined);
+  }
 }
 
 /**
@@ -73,7 +189,7 @@ export async function mountOrRecover(
   target: MountRecoverTarget,
   bucket: string,
   mountPath: string,
-  options: R2MountBucketOptions,
+  options: MountBucketOptions,
 ): Promise<void> {
   try {
     await target.mountBucket(bucket, mountPath, options);
@@ -262,15 +378,31 @@ export class AnalysisSandbox extends Sandbox<Env> {
     }
     const readOnly = options.readOnly ?? true;
     await gate(async () => {
-      await mountOrRecover(this, bucketBinding, resolvedMountPath, {
+      const mountOptions = sandboxR2MountOptions(this.env, {
         prefix: `/${prefix}`,
         readOnly,
         // Shrink the s3fs stat cache (default 60s + negative caching) so a
-        // just-staged export/upload isn't read through a stale/partial view —
-        // which otherwise surfaces as a read failure. The stage → read gap
-        // exceeds 1s, so this adds no real overhead. Matches WarehouseSandbox.
+        // just-staged export/upload isn't read through a stale/partial view.
+        // Self-host local sync deliberately drops this s3fs-only option.
         s3fsOptions: ["stat_cache_expire=1"],
       });
+      const actualMountPath = sandboxR2MountPath(resolvedMountPath, mountOptions);
+      await mountOrRecover(
+        this,
+        bucketBinding,
+        actualMountPath,
+        mountOptions,
+      );
+      await ensureLocalMountAlias(this, resolvedMountPath, actualMountPath);
+      if ("localBucket" in mountOptions && mountOptions.localBucket && !readOnly) {
+        const bucket = this.env[bucketBinding as keyof Env];
+        await waitForWritableLocalMount(
+          this,
+          bucket as unknown as LocalMountBucket,
+          actualMountPath,
+          mountOptions.prefix ?? "",
+        );
+      }
       this.mountedPaths.add(resolvedMountPath);
     });
   }

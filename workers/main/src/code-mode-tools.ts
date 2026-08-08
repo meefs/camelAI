@@ -1441,7 +1441,22 @@ function normalizeDeployScriptName(value: unknown): string {
 
 const PROJECT_BUILD_SERVICE_UNAVAILABLE_MESSAGE =
   "Build service temporarily unavailable. Please try again in a moment.";
+const PROJECT_BUILD_STORAGE_MOUNT_MESSAGE =
+  "Build sandbox storage is not available in this installation. Retrying will not help. " +
+  "Self-hosted installations should upgrade to a release that uses FUSE-free local R2 synchronization, " +
+  "then run the self-host container smoke checks.";
 const PROJECT_BUILD_SERVICE_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000] as const;
+
+function isProjectBuildStorageMountError(error: unknown): boolean {
+  const message = String(
+    error instanceof Error
+      ? `${error.name}: ${error.message}`
+      : error,
+  );
+  return /S3FS mount failed/i.test(message) ||
+    /fuse:\s*device not found/i.test(message) ||
+    /try ['"]?modprobe fuse/i.test(message);
+}
 
 function isProjectBuildServiceUnavailableError(error: unknown): boolean {
   const message = String(
@@ -1464,6 +1479,9 @@ async function withProjectBuildServiceErrorMapping<T>(
     try {
       return await operation();
     } catch (error) {
+      if (isProjectBuildStorageMountError(error)) {
+        throw new Error(PROJECT_BUILD_STORAGE_MOUNT_MESSAGE, { cause: error });
+      }
       if (!isProjectBuildServiceUnavailableError(error)) throw error;
       const retryDelayMs = PROJECT_BUILD_SERVICE_RETRY_DELAYS_MS[attempt];
       if (retryDelayMs == null) {

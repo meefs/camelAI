@@ -42,6 +42,7 @@ const selectedVolumeNames = volumeNamesForEnv(env);
 const minimumAllocatedMemoryGiB = 8;
 const minimumUsableMemoryGiB = 7.5;
 let current;
+const localImageKeys = new Set();
 
 await check("env file", async () => {
   if (!(await pathExists(envFile))) {
@@ -101,6 +102,7 @@ await check("container images", async () => {
       env: effectiveEnv,
     });
     if (result.code !== 0) unavailable.push(key);
+    else localImageKeys.add(key);
   }
   if (unavailable.length > 0) {
     warn(
@@ -174,6 +176,32 @@ await check("Docker socket", async () => {
     fail(`Docker socket is not readable and writable: ${socketPath}`);
   });
   note(socketPath);
+});
+
+await check("sandbox storage synchronization", async () => {
+  const required = [
+    "SELFHOST_PROJECT_BUILD_IMAGE",
+    "SELFHOST_CONTAINER_EGRESS_IMAGE",
+  ];
+  const missing = required.filter((key) => !localImageKeys.has(key));
+  if (missing.length > 0) {
+    warn("container images are not local yet; storage synchronization smoke skipped");
+    note(`run after selfhost:up: bun run selfhost:container:smoke:mount`);
+    return;
+  }
+  const result = await capture(
+    "bun",
+    ["run", "selfhost:container:smoke:mount"],
+    { env: effectiveEnv },
+  );
+  if (result.code !== 0) {
+    fail(
+      result.stderr.trim() ||
+        result.stdout.trim() ||
+        "bidirectional sandbox storage synchronization failed",
+    );
+  }
+  note("bidirectional R2/container synchronization passed without FUSE privileges");
 });
 
 await check("self-host app domains", async () => {
