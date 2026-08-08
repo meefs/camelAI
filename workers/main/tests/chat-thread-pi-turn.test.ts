@@ -5678,7 +5678,6 @@ describe('ChatThreadDO Pi turn handling', () => {
       },
     };
     fake.env = {
-      IMAGES: { input: vi.fn() },
       R2_BUCKET: {
         head: vi.fn(async () => head),
         get,
@@ -5706,6 +5705,51 @@ describe('ChatThreadDO Pi turn handling', () => {
         truncated: false,
         outputLines: 3,
       },
+    });
+  });
+
+  it('reads uploaded source files without a Cloudflare Images binding', async () => {
+    const raw = 'export default function App() {\n  return <main>Hello</main>;\n}\n';
+    const bytes = new TextEncoder().encode(raw);
+    const key = 'org1/workspace1/user-uploads/App.tsx';
+    const head = {
+      key,
+      size: bytes.byteLength,
+      etag: 'etag-upload',
+      uploaded: new Date('2026-08-08T00:00:00Z'),
+      httpMetadata: { contentType: 'application/octet-stream' },
+      customMetadata: {},
+    };
+    const fake = Object.create(CodeModeToolsBinding.prototype) as any;
+    fake.ctx = {
+      props: { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+    };
+    fake.env = {
+      R2_BUCKET: {
+        head: vi.fn(async () => head),
+        get: vi.fn(async () => ({
+          ...head,
+          body: new ReadableStream({
+            start(controller) {
+              controller.enqueue(bytes);
+              controller.close();
+            },
+          }),
+        })),
+      },
+    };
+    fake.recordCodeModeArtifactBestEffort = vi.fn();
+
+    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'read', {
+      location: 'r2',
+      path: 'uploads/App.tsx',
+    });
+
+    expect((result as any).text).toContain(raw.trim());
+    expect((result as any).details).toMatchObject({
+      location: 'r2',
+      path: 'uploads/App.tsx',
+      contentType: 'application/octet-stream',
     });
   });
 

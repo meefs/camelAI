@@ -2195,8 +2195,6 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     if (!object) {
       throw new Error(`R2 object not found: ${target.path}`);
     }
-    const images = this.env.IMAGES;
-    if (!images) throw new Error("IMAGES binding is required for image reads");
     let bytes: Uint8Array;
     if (object.body) {
       const sniffed = await readImageSniffBytesAndReplayStream(object.body);
@@ -2207,6 +2205,8 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
           ? contentTypeImageMimeType
           : null;
       if (imageMimeType) {
+        const images = this.env.IMAGES;
+        if (!images) throw new Error("IMAGES binding is required for image reads");
         const inlineImage = await prepareInlineImageFromStream(sniffed.stream, imageMimeType, images, {
           createRetryStream: async () => {
             const retryObject = await this.env.R2_BUCKET.get(target.key);

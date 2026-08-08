@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { InvalidMountConfigError, S3FSMountError } from '@cloudflare/sandbox';
 import {
+  AnalysisSandbox,
   createSingleFlight,
   isMountAlreadyPresent,
   mountAllowsList,
@@ -28,6 +29,30 @@ describe('sandboxR2MountOptions', () => {
 
   it('keeps credential-less s3fs options on Cloudflare', () => {
     expect(sandboxR2MountOptions({ CF_ACCOUNT_ID: 'cloudflare-account' }, options)).toEqual(options);
+  });
+
+  it('uses local R2 synchronization through the actual AnalysisSandbox mount path', async () => {
+    const sandbox = Object.create(AnalysisSandbox.prototype) as any;
+    sandbox.env = { CF_ACCOUNT_ID: 'selfhost' };
+    sandbox.mountedPaths = new Set<string>();
+    sandbox.mountGates = new Map();
+    sandbox.mountBucket = vi.fn(async () => undefined);
+    sandbox.unmountBucket = vi.fn(async () => undefined);
+    sandbox.exec = vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' }));
+
+    await AnalysisSandbox.prototype.ensureMounted.call(
+      sandbox,
+      'R2_BUCKET',
+      'org1/workspace1/uploads',
+      '/uploads',
+      { readOnly: true },
+    );
+
+    expect(sandbox.mountBucket).toHaveBeenCalledWith('R2_BUCKET', '/uploads', {
+      localBucket: true,
+      prefix: '/org1/workspace1/uploads',
+      readOnly: true,
+    });
   });
 });
 
