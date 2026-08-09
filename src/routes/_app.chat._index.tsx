@@ -616,6 +616,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 
   return {
     workspaceId: workspaceId ?? null,
+    orgSlug: authContext.currentOrg.slug,
     initialChatError: getDevChatInitialError(url.searchParams),
     isOrgAdmin: authContext.orgs.some(
       (org) =>
@@ -1063,6 +1064,7 @@ function ChatWelcomeContent({
     | undefined;
   const {
     workspaceId,
+    orgSlug,
     initialChatError,
     hostname,
     userId,
@@ -1262,6 +1264,7 @@ function ChatWelcomeContent({
         <Chat
           workspaceId={workspaceId}
           hostname={hostname}
+          orgSlug={orgSlug}
           chatGroupId={liveActiveChatGroup?.id ?? resolvedActiveGroupId}
           welcomeData={{
             userId,

@@ -100,7 +100,7 @@ describe('new chat loader sales prompt handling', () => {
     vi.clearAllMocks();
     requireAuthContextMock.mockResolvedValue({
       currentWorkspace: { id: 'ws_123' },
-      currentOrg: { id: 'org_123' },
+      currentOrg: { id: 'org_123', slug: 'acme' },
       currentOrgLlmProviderConfig: null,
       orgs: [{ org_id: 'org_123', role: 'admin' }],
       user: { id: 'user_123', name: 'Illiana' },
@@ -140,6 +140,7 @@ describe('new chat loader sales prompt handling', () => {
     } as never);
 
     expect(result.workspaceId).toBe('ws_123');
+    expect(result.orgSlug).toBe('acme');
     expect((await result.interactive).salesPrompt).toBe('Build me a dashboard now');
     expect(consumePendingSalesPromptMock).not.toHaveBeenCalled();
     await expect(kv.get('sales_prompt:sales-key-123')).resolves.toBeNull();
