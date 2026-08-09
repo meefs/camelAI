@@ -191,7 +191,7 @@ jobs:
       - name: Smoke FUSE-free local R2 synchronization
         run: node scripts/selfhost-container-smoke.mjs mount
 
-      - name: Smoke analysis notebook runtime
+      - name: Smoke analysis notebook and ZIP runtime
         run: node scripts/selfhost-container-smoke.mjs analysis
 
       - name: Smoke DB query drivers

@@ -29,6 +29,14 @@ const sourceOverrideSource = readFileSync(
   "utf8",
 );
 const sourceOverride = parse(sourceOverrideSource) as ComposeConfig;
+const analysisDockerfile = readFileSync(
+  "workers/main/analysis-sandbox.Dockerfile",
+  "utf8",
+);
+const containerSmoke = readFileSync(
+  "scripts/selfhost-container-smoke.mjs",
+  "utf8",
+);
 
 describe("self-host Docker container runtime", () => {
   it("runs the app from an operator-selected immutable image", () => {
@@ -110,6 +118,15 @@ describe("self-host Docker container runtime", () => {
       scriptEnv({ SELFHOST_DEPLOYMENT_MODE: "source" })
         .SELFHOST_CONTAINER_EGRESS_IMAGE,
     ).toBe("camelai-selfhost-container-egress:0.12.0");
+  });
+
+  it("ships and exercises safe ZIP handling in the self-host analysis image", () => {
+    expect(analysisDockerfile).toContain(
+      "COPY analysis-sandbox-assets/archive-tool.py /usr/local/bin/camelai-archive",
+    );
+    expect(containerSmoke).toContain("archiveTest: true");
+    expect(containerSmoke).toContain("CAMELAI_ARCHIVE_PATH=/uploads/source.zip");
+    expect(containerSmoke).toContain("camelai-analysis-archive-ok");
   });
 
   it("explicitly reloads bind-mounted Caddy configuration", () => {

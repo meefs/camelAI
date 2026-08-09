@@ -43,6 +43,8 @@ const notebook = Buffer.from(
     nbformat_minor: 5,
   }),
 ).toString("base64");
+const archive =
+  "UEsDBBQAAAAAAK9kCV0kaUB3GwAAABsAAAAJAAAAcHJvYmUudHh0Y2FtZWxhaS1hbmFseXNpcy1hcmNoaXZlLW9rUEsBAhQDFAAAAAAAr2QJXSRpQHcbAAAAGwAAAAkAAAAAAAAAAAAAAIABAAAAAHByb2JlLnR4dFBLBQYAAAAAAQABADcAAABCAAAAAAA=";
 const runtimes = {
   mount: {
     className: "ProjectBuildSandbox",
@@ -78,6 +80,7 @@ const runtimes = {
       `assert ''.join(d['cells'][0]['outputs'][0]['text']) == '42\\\\n'; ` +
       `print('camelai-analysis-notebook-ok')"`,
     marker: "camelai-analysis-notebook-ok",
+    archiveTest: true,
   },
   "db-query": {
     className: "DbQuerySandbox",
@@ -131,6 +134,7 @@ let child;
 try {
   await fs.mkdir(statePath);
   await fs.mkdir(r2StatePath);
+  const needsR2 = runtime.mountTest || runtime.archiveTest;
   const fetchBody = runtime.mountTest
     ? `
       await env.SMOKE_BUCKET.put("smoke/input.txt", "from-r2");
@@ -159,6 +163,43 @@ try {
         throw new Error("Container to R2 synchronization failed");
       }
       return Response.json({ success: true, stdout: ${JSON.stringify(runtime.marker)} });
+    `
+    : runtime.archiveTest
+    ? `
+      const archiveBytes = Uint8Array.from(
+        atob(${JSON.stringify(archive)}),
+        (character) => character.charCodeAt(0),
+      );
+      await env.SMOKE_BUCKET.put("uploads/source.zip", archiveBytes);
+      await sandbox.mountBucket("SMOKE_BUCKET", "/uploads", {
+        localBucket: true,
+        prefix: "/uploads",
+        readOnly: true,
+      });
+      const archiveResult = await sandbox.exec(
+        "rm -rf /tmp/camelai-archive-smoke " +
+        "&& mkdir -p /tmp/camelai-archive-smoke " +
+        "&& cd /tmp/camelai-archive-smoke " +
+        "&& CAMELAI_ARCHIVE_ACTION=list CAMELAI_ARCHIVE_PATH=/uploads/source.zip " +
+        "python /usr/local/bin/camelai-archive > /tmp/camelai-archive-list.json " +
+        "&& grep -q 'extractable.*true' /tmp/camelai-archive-list.json " +
+        "&& CAMELAI_ARCHIVE_ACTION=extract CAMELAI_ARCHIVE_PATH=/uploads/source.zip " +
+        "CAMELAI_ARCHIVE_DESTINATION=imported python /usr/local/bin/camelai-archive " +
+        "> /tmp/camelai-archive-extract.json " +
+        "&& grep -qx camelai-analysis-archive-ok imported/probe.txt " +
+        "&& echo camelai-analysis-archive-ok",
+      );
+      if (!archiveResult.success) {
+        throw new Error(
+          "Analysis archive smoke failed: " +
+          (archiveResult.stderr || archiveResult.stdout),
+        );
+      }
+      const result = await sandbox.exec(${JSON.stringify(runtime.command)});
+      return Response.json({
+        ...result,
+        stdout: (archiveResult.stdout || "") + "\\n" + (result.stdout || ""),
+      });
     `
     : `
       const result = await sandbox.exec(${JSON.stringify(runtime.command)});
@@ -211,7 +252,7 @@ const smoke :Workerd.Config = (
       bindings = [
         (name = "SANDBOX", durableObjectNamespace = (
           className = ${JSON.stringify(runtime.className)}
-        ))${runtime.mountTest ? ',\n        (name = "SMOKE_BUCKET", r2Bucket = (name = "r2:bucket:smoke"))' : ""}
+        ))${needsR2 ? ',\n        (name = "SMOKE_BUCKET", r2Bucket = (name = "r2:bucket:smoke"))' : ""}
       ],
       globalOutbound = "internet",
       durableObjectNamespaces = [(
@@ -230,7 +271,7 @@ const smoke :Workerd.Config = (
       path = ${JSON.stringify(statePath)},
       writable = true
     )),
-${runtime.mountTest ? `    (name = "r2:bucket:smoke", worker = (
+${needsR2 ? `    (name = "r2:bucket:smoke", worker = (
       compatibilityDate = "2023-07-24",
       modules = [(name = "object-entry.worker.js", esModule = embed ${JSON.stringify(path.relative(tempDir, path.join(repoRoot, "node_modules/miniflare/dist/src/workers/shared/object-entry.worker.js")))})],
       bindings = [

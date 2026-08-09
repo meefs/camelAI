@@ -89,6 +89,12 @@ RUN chmod +x /usr/local/bin/validate-notebook
 COPY analysis-sandbox-assets/execute-notebook.py /usr/local/bin/execute-notebook
 RUN chmod +x /usr/local/bin/execute-notebook
 
+# --- uploaded archive inspector/extractor -----------------------------------
+# Purpose-built ZIP handling for agents. It lists/reads entries without copying
+# the archive and stages extraction before touching a materialized project tree.
+COPY analysis-sandbox-assets/archive-tool.py /usr/local/bin/camelai-archive
+RUN chmod +x /usr/local/bin/camelai-archive
+
 # --- camelai Python helper package --------------------------------------------
 # In-sandbox helpers for workspace connections and BigQuery (`from camelai
 # import bq`): RPC plumbing, MCP response parsing, and export→DuckDB loading.

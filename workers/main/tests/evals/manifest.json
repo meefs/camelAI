@@ -178,6 +178,11 @@
       "kind": "skill"
     },
     {
+      "id": "zip-upload-project-import-live",
+      "description": "Inspect an uploaded ZIP safely and extract its reviewed contents into an existing DO-backed project",
+      "kind": "skill"
+    },
+    {
       "id": "analysis-tools-reachable-live",
       "description": "Reach the analysis sandbox by name without a not-found dead end, and report ground-truth totals",
       "kind": "unit"

@@ -108,7 +108,7 @@ jobs:
           workers/main
       - name: Smoke project build runtime
         run: node scripts/selfhost-container-smoke.mjs project
-      - name: Smoke analysis notebook runtime
+      - name: Smoke analysis notebook and ZIP runtime
         run: node scripts/selfhost-container-smoke.mjs analysis
       - name: Smoke DB query drivers
         run: node scripts/selfhost-container-smoke.mjs db-query

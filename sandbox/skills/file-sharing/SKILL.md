@@ -42,6 +42,36 @@ await tools.move({
 
 Files persist across sessions, so users can reference previously uploaded files.
 
+### ZIP Archives
+
+Do not pass an uploaded ZIP to the text `read` tool or extract it with an
+unchecked shell command. Inspect its manifest first, then read any scripts,
+Dockerfiles, dependency manifests, or other executable configuration directly
+from the archive:
+
+```js
+await tools.inspect_archive({ path: "uploads/source.zip" });
+await tools.inspect_archive({
+  path: "uploads/source.zip",
+  entry: "scripts/setup.sh",
+});
+```
+
+After the archive and its executable/configuration entries are understood, use
+the purpose-built extractor. It rejects traversal paths, links, encrypted or
+special entries, ZIP bombs, and archives too large to persist safely:
+
+```js
+await tools.extract_archive({
+  path: "uploads/source.zip",
+  project: "website",
+  destination: ".",
+});
+```
+
+Extraction writes into an existing project so the resulting files are durable
+and available to the normal project file and deployment tools.
+
 ## Creating Output Files
 
 Files the user should download or preview must be written to workspace-scoped R2 under `outputs/`. Do not create a project-local `outputs/` directory and link to it; those links will not use the workspace outputs API.

@@ -198,7 +198,8 @@ function extractCapabilitySources(text: string): Array<{ url: string }> {
 // intentionally STAY top-level, because dropping them led the agent to
 // guess tool names on complex build+deploy tasks instead of searching.
 //
-// "analysis" (run_notebook / run_code / analysis_exec / add_python_dependency)
+// "analysis" (run_notebook / run_code / analysis_exec / inspect_archive /
+// extract_archive / add_python_dependency)
 // is top-level for exactly that reason. Those tools used to be filed under
 // "connections" and were therefore hidden, so a data-analysis request burned
 // turns on `Tool run_notebook not found` / `Tool analysis_exec not found`

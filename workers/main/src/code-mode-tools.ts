@@ -221,6 +221,7 @@ export const CODE_MODE_DEFAULT_MAX_OUTPUT_CHARACTERS = 60_000;
 export const CODE_MODE_MAX_OUTPUT_CHARACTERS = 200_000;
 const CODE_MODE_R2_READ_NOTICE_RESERVED_BYTES = 1024;
 const CODE_MODE_R2_MAX_WRITE_BYTES = 10 * 1024 * 1024;
+const ARCHIVE_TOOL_COMMAND = "python /usr/local/bin/camelai-archive";
 
 /**
  * File extensions whose contents are binary. Writing text to one of these
@@ -999,6 +1000,32 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
     },
   ),
   codeModePassthroughTool(
+    "inspect_archive",
+    "Safely inspect an uploaded ZIP before extracting it. Pass the uploads/<name>.zip path. With no entry, returns a paginated manifest, size totals, safety issues, and whether the archive is extractable. Pass entry to read one UTF-8 text member (such as a script or Dockerfile) without extracting it. Always inspect an archive and any executable/configuration entries before calling extract_archive. Arguments: { path, entry?, offset?, limit? }.",
+    Type.Object({
+      path: Type.String({ description: "Read-only R2 upload path, starting with uploads/." }),
+      entry: Type.Optional(Type.String({ description: "Exact archive member path to read as UTF-8 text." })),
+      offset: Type.Optional(Type.Number({ description: "Zero-based manifest offset. Defaults to 0." })),
+      limit: Type.Optional(Type.Number({ description: "Manifest entries to return. Defaults to 200; maximum 500." })),
+    }, { additionalProperties: false }),
+    {
+      category: "analysis",
+    },
+  ),
+  codeModePassthroughTool(
+    "extract_archive",
+    "Safely extract an uploaded ZIP into an existing DO-backed project after inspect_archive. The archive is fully validated and staged before project files are changed. Extraction rejects absolute/traversal paths, symlinks, special or encrypted entries, duplicate/conflicting paths, unsupported compression, more than 2,000 entries, files over 25 MiB, or more than 250 MiB expanded. Existing files at matching paths are replaced. Arguments: { path, project, destination? }.",
+    Type.Object({
+      path: Type.String({ description: "Read-only R2 upload path, starting with uploads/." }),
+      project: Type.String({ description: "Existing destination project name." }),
+      destination: Type.Optional(Type.String({ description: "Relative directory inside the project. Defaults to the project root." })),
+    }, { additionalProperties: false }),
+    {
+      category: "analysis",
+      sideEffect: true,
+    },
+  ),
+  codeModePassthroughTool(
     "add_python_dependency",
     "Add one or more PyPI packages to a DO-backed project's Python environment (`uv add`), persisting pyproject.toml + uv.lock back to the project. The default data stack is already preinstalled — only use this for packages beyond it. The first add on a project initializes a pyproject.toml seeded with the default stack plus your packages, so notebooks keep the full environment. Arguments: { project, packages: string[], dev? }.",
     Type.Object({
@@ -1759,6 +1786,8 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     take_screenshot: (binding, args) => binding.takeScreenshot(args),
     run_notebook: (binding, args) => binding.analysisRunNotebook(args),
     analysis_exec: (binding, args) => binding.analysisExecCommand(args),
+    inspect_archive: (binding, args) => binding.inspectArchive(args),
+    extract_archive: (binding, args) => binding.extractArchive(args),
     run_code: (binding, args) => binding.analysisRunCode(args),
     add_python_dependency: (binding, args) => binding.analysisAddDependency(args),
     add_shadcn_component: (binding, args) => binding.addShadcnComponent(args),
@@ -3728,6 +3757,101 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     const timeoutMs = typeof args.timeoutMs === "number" ? args.timeoutMs : undefined;
     const result = await this.analysisService().exec({ projectId, command, cwd, env, timeoutMs });
     return { ...(result as Record<string, unknown>), ...(projectName ? { project: projectName } : {}) };
+  }
+
+  private archiveUploadTarget(args: Record<string, unknown>): CodeModeR2Path {
+    const target = this.resolveCodeModeR2Path({ path: args.path });
+    if (target.mount !== "uploads") {
+      throw new Error("archive path must start with uploads/");
+    }
+    return target;
+  }
+
+  private archiveCommandResult(
+    raw: unknown,
+    target: CodeModeR2Path,
+    projectName?: string,
+  ): Record<string, unknown> {
+    const execution = raw && typeof raw === "object" && !Array.isArray(raw)
+      ? raw as Record<string, unknown>
+      : {};
+    const stdout = typeof execution.stdout === "string" ? execution.stdout.trim() : "";
+    let archive: Record<string, unknown> | null = null;
+    if (stdout) {
+      try {
+        const parsed = JSON.parse(stdout) as unknown;
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          archive = parsed as Record<string, unknown>;
+        }
+      } catch {
+        archive = null;
+      }
+    }
+    if (!archive) {
+      const stderr = typeof execution.stderr === "string" ? execution.stderr.trim() : "";
+      throw new Error(stderr || "archive helper returned an invalid response");
+    }
+    return {
+      ...archive,
+      path: target.path,
+      ...(projectName ? { project: projectName } : {}),
+      durationMs: execution.durationMs ?? 0,
+      changedFiles: execution.changedFiles ?? [],
+      removedFiles: execution.removedFiles ?? [],
+      skippedOversize: execution.skippedOversize ?? [],
+    };
+  }
+
+  private async inspectArchive(args: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const target = this.archiveUploadTarget(args);
+    const entry = typeof args.entry === "string" ? args.entry.trim() : "";
+    const action = entry ? "read" : "list";
+    const result = await this.analysisService().exec({
+      command: ARCHIVE_TOOL_COMMAND,
+      env: {
+        CAMELAI_ARCHIVE_ACTION: action,
+        CAMELAI_ARCHIVE_PATH: `/uploads/${target.relativePath}`,
+        ...(entry ? { CAMELAI_ARCHIVE_ENTRY: entry } : {}),
+        ...(!entry ? {
+          CAMELAI_ARCHIVE_OFFSET: String(clampCodeModeInteger(args.offset, 0, 0, Number.MAX_SAFE_INTEGER)),
+          CAMELAI_ARCHIVE_LIMIT: String(clampCodeModeInteger(args.limit, 200, 1, 500)),
+        } : {}),
+      },
+    });
+    return this.archiveCommandResult(result, target);
+  }
+
+  private normalizeArchiveDestination(value: unknown): string {
+    const raw = typeof value === "string" ? value.trim().replace(/\\/g, "/") : ".";
+    if (!raw || raw === ".") return ".";
+    if (raw.startsWith("/") || /^[A-Za-z]:/.test(raw)) {
+      throw new Error("archive destination must be relative to the project root");
+    }
+    const parts = raw.replace(/\/+$/, "").split("/");
+    if (parts.some((part) => part === "..")) {
+      throw new Error("archive destination must not contain '..'");
+    }
+    const normalized = parts.filter((part) => part && part !== ".").join("/");
+    if (normalized.length > 1024) {
+      throw new Error("archive destination exceeds 1024 characters");
+    }
+    return normalized || ".";
+  }
+
+  private async extractArchive(args: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const target = this.archiveUploadTarget(args);
+    const project = await this.resolveDoBackedProjectForAction(args, "extract_archive");
+    const destination = this.normalizeArchiveDestination(args.destination);
+    const result = await this.analysisService().exec({
+      projectId: project.id,
+      command: ARCHIVE_TOOL_COMMAND,
+      env: {
+        CAMELAI_ARCHIVE_ACTION: "extract",
+        CAMELAI_ARCHIVE_PATH: `/uploads/${target.relativePath}`,
+        CAMELAI_ARCHIVE_DESTINATION: destination,
+      },
+    });
+    return this.archiveCommandResult(result, target, project.name);
   }
 
   private async analysisAddDependency(args: Record<string, unknown>): Promise<unknown> {

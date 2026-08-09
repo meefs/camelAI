@@ -402,7 +402,7 @@ includesAll(
     "validate-bundled-images:",
     "validate-runtimes:",
     "Smoke project build runtime",
-    "Smoke analysis notebook runtime",
+    "Smoke analysis notebook and ZIP runtime",
     "Smoke DB query drivers",
     "Smoke release app nested-Docker topology",
     "Validate Caddy DNS providers",
