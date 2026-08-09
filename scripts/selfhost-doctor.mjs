@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import net from "node:net";
+import http from "node:http";
 import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -24,7 +25,10 @@ import {
   caddySecretsDirectory,
   writeCaddyConfig,
 } from "./selfhost-caddy-config.mjs";
-import { writePomeriumConfig } from "./selfhost-pomerium-config.mjs";
+import {
+  previewContentSecurityPolicy,
+  writePomeriumConfig,
+} from "./selfhost-pomerium-config.mjs";
 
 const checks = [];
 const env = await readSelfhostEnv(false);
@@ -345,6 +349,56 @@ await check("authentication", async () => {
   warn("local authentication bypass is for smoke tests only");
 });
 
+await check("in-chat app preview framing", async () => {
+  const mode = (env.SELFHOST_AUTH_MODE || "").trim();
+  if (mode !== "bundled-pomerium") {
+    note("external ingress must allow the camelAI origin in CSP frame-ancestors");
+    return;
+  }
+
+  const publicUrl = new URL(env.SELFHOST_PUBLIC_BASE_URL);
+  const expectedPolicy = previewContentSecurityPolicy(publicUrl.origin);
+  const appDomain = (
+    env.LOCAL_APP_IFRAME_DOMAIN || env.LOCAL_APP_VANITY_DOMAIN || ""
+  ).trim();
+  if (!appDomain) fail("missing deployed-app domain for preview framing check");
+  note(`required policy: ${expectedPolicy}`);
+
+  if (!(await canConnect("127.0.0.1", 5444))) {
+    warn("stack is not running; live Pomerium framing check skipped");
+    return;
+  }
+
+  let response;
+  let contentSecurityPolicy;
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    try {
+      response = await requestPomeriumAppRoute(
+        `camelai-preview-doctor.${appDomain}`,
+      );
+      contentSecurityPolicy = response.headers["content-security-policy"];
+      if (hasFrameAncestorsPolicy(contentSecurityPolicy, expectedPolicy)) break;
+    } catch (error) {
+      if (attempt === 11) throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  if (!response) fail("Pomerium app-route check returned no response");
+  const policies = Array.isArray(contentSecurityPolicy)
+    ? contentSecurityPolicy
+    : [contentSecurityPolicy || ""];
+  if (!hasFrameAncestorsPolicy(contentSecurityPolicy, expectedPolicy)) {
+    fail(
+      `Pomerium app route is not framable by ${publicUrl.origin}; ` +
+        `expected ${JSON.stringify(expectedPolicy)}, got ${JSON.stringify(
+          contentSecurityPolicy || "no Content-Security-Policy header",
+        )}`,
+    );
+  }
+  note(`Pomerium app route: HTTP ${response.statusCode}`);
+  note(`Content-Security-Policy: ${policies.join(", ")}`);
+});
+
 await check("TLS front door", async () => {
   const mode = selfhostTlsMode(env);
   if (!new Set(["automatic", "external", "provided"]).has(mode)) {
@@ -519,4 +573,47 @@ function canConnect(host, port) {
     });
     socket.on("error", () => resolve(false));
   });
+}
+
+function requestPomeriumAppRoute(hostname) {
+  return new Promise((resolve, reject) => {
+    const request = http.request(
+      {
+        hostname: "127.0.0.1",
+        port: 5444,
+        path: "/",
+        method: "GET",
+        headers: {
+          Host: hostname,
+          "X-Forwarded-Proto": "https",
+        },
+        timeout: 2000,
+      },
+      (response) => {
+        response.resume();
+        response.on("end", () =>
+          resolve({
+            headers: response.headers,
+            statusCode: response.statusCode || 0,
+          }),
+        );
+      },
+    );
+    request.on("timeout", () =>
+      request.destroy(new Error("Pomerium app-route request timed out")),
+    );
+    request.on("error", reject);
+    request.end();
+  });
+}
+
+function hasFrameAncestorsPolicy(contentSecurityPolicy, expectedPolicy) {
+  const policies = Array.isArray(contentSecurityPolicy)
+    ? contentSecurityPolicy
+    : [contentSecurityPolicy || ""];
+  return policies.some((policy) =>
+    policy
+      .split(";")
+      .some((directive) => directive.trim() === expectedPolicy),
+  );
 }

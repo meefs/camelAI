@@ -18,6 +18,39 @@ export const pomeriumConfigFile = path.join(
 
 export async function writePomeriumConfig(env, { strict = true } = {}) {
   env = { ...env };
+  const config = buildPomeriumConfig(env, { strict });
+  if (!config) return null;
+
+  await fs.mkdir(path.dirname(pomeriumConfigFile), {
+    recursive: true,
+    mode: 0o700,
+  });
+  await fs.writeFile(
+    pomeriumConfigFile,
+    `${JSON.stringify(config, null, 2)}\n`,
+    { mode: 0o600 },
+  );
+  const secretsDir = path.join(path.dirname(pomeriumConfigFile), "secrets");
+  await fs.mkdir(secretsDir, { recursive: true, mode: 0o700 });
+  for (const [name, value] of [
+    ["idp-client-secret", env.POMERIUM_IDP_CLIENT_SECRET],
+    ["cookie-secret", env.POMERIUM_COOKIE_SECRET],
+    ["shared-secret", env.POMERIUM_SHARED_SECRET],
+  ]) {
+    const secretPath = path.join(secretsDir, name);
+    if (String(value || "").trim()) {
+      await fs.writeFile(secretPath, String(value), {
+        mode: 0o600,
+      });
+    } else {
+      await fs.rm(secretPath, { force: true });
+    }
+  }
+  return pomeriumConfigFile;
+}
+
+export function buildPomeriumConfig(env, { strict = true } = {}) {
+  env = { ...env };
   if ((env.SELFHOST_AUTH_MODE || "").trim() !== "bundled-pomerium") {
     return null;
   }
@@ -98,12 +131,16 @@ export async function writePomeriumConfig(env, { strict = true } = {}) {
       `https://${mainHostname}`,
       `http://127.0.0.1:${appPort}`,
     ),
+    ...appDomains.map((domain) =>
+      publicAppRoute(
+        `https://*.${domain}`,
+        `http://127.0.0.1:${appPort}`,
+        publicUrl.origin,
+      ),
+    ),
   ];
-  for (const domain of appDomains) {
-    routes.push(publicAppRoute(`https://*.${domain}`, `http://127.0.0.1:${appPort}`));
-  }
 
-  const config = {
+  return {
     address: tlsMode === "direct" ? ":443" : "127.0.0.1:5444",
     ...(tlsMode === "direct"
       ? {
@@ -117,33 +154,6 @@ export async function writePomeriumConfig(env, { strict = true } = {}) {
     jwt_issuer_format: "hostOnly",
     routes,
   };
-
-  await fs.mkdir(path.dirname(pomeriumConfigFile), {
-    recursive: true,
-    mode: 0o700,
-  });
-  await fs.writeFile(
-    pomeriumConfigFile,
-    `${JSON.stringify(config, null, 2)}\n`,
-    { mode: 0o600 },
-  );
-  const secretsDir = path.join(path.dirname(pomeriumConfigFile), "secrets");
-  await fs.mkdir(secretsDir, { recursive: true, mode: 0o700 });
-  for (const [name, value] of [
-    ["idp-client-secret", env.POMERIUM_IDP_CLIENT_SECRET],
-    ["cookie-secret", env.POMERIUM_COOKIE_SECRET],
-    ["shared-secret", env.POMERIUM_SHARED_SECRET],
-  ]) {
-    const secretPath = path.join(secretsDir, name);
-    if (String(value || "").trim()) {
-      await fs.writeFile(secretPath, String(value), {
-        mode: 0o600,
-      });
-    } else {
-      await fs.rm(secretPath, { force: true });
-    }
-  }
-  return pomeriumConfigFile;
 }
 
 function protectedRoute(from, to) {
@@ -157,14 +167,25 @@ function protectedRoute(from, to) {
   };
 }
 
-function publicAppRoute(from, to) {
+function publicAppRoute(from, to, previewOrigin) {
   return {
     from,
     to,
     preserve_host_header: true,
     allow_websockets: true,
     allow_public_unauthenticated_access: true,
+    // Pomerium defaults X-Frame-Options to SAMEORIGIN. Deployed apps are
+    // cross-origin from the camelAI UI, so the more expressive CSP directive
+    // must explicitly authorize the one parent origin used by chat preview.
+    set_response_headers: {
+      "Content-Security-Policy": previewContentSecurityPolicy(previewOrigin),
+    },
   };
+}
+
+export function previewContentSecurityPolicy(previewOrigin) {
+  const parsed = requiredHttpsUrl(previewOrigin, "preview origin");
+  return `frame-ancestors 'self' ${parsed.origin}`;
 }
 
 function uniqueDomains(values) {

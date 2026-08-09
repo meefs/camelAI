@@ -161,6 +161,8 @@ includesAll(
     "preserve_host_header: true",
     "allow_websockets: true",
     "allow_public_unauthenticated_access: true",
+    '"Content-Security-Policy"',
+    "frame-ancestors",
     "POMERIUM_AUTHENTICATE_HOSTNAME must differ",
   ],
   "bundled Pomerium configuration generator",
