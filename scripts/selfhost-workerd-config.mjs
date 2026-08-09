@@ -784,6 +784,9 @@ async function main() {
   delete vars.SELFHOST_AGENT_DIR;
   delete vars.SELFHOST_AGENT_SKILLS_DIR;
   delete vars.SELFHOST_AGENT_HOST_DIR;
+  // Production self-host app access always passes through dispatcher auth.
+  // SKIP_AUTH remains available only in isolated development/smoke configs.
+  delete vars.SKIP_AUTH;
 
   for (const [name, value] of Object.entries(vars)) {
     bindings.push(bindingText(name, value));
@@ -938,9 +941,12 @@ async function main() {
     )}` +
   `))`;
 
+  const dispatcherVars = {
+    ...vars,
+    MAIN_APP_URL: String(vars.MAIN_APP_URL || vars.WORKER_BASE_URL || '').trim(),
+  };
   const dispatcherBindings = [
-    ...Object.entries(vars).map(([name, value]) => bindingText(name, value)),
-    bindingText('SKIP_AUTH', 'true'),
+    ...Object.entries(dispatcherVars).map(([name, value]) => bindingText(name, value)),
     bindingService('DISPATCHER', mainServiceName),
     bindingWorkerLoader('SELFHOST_WORKER_LOADER', 'selfhost-user-workers'),
     bindingDurableObject('SELFHOST_APP_RUNNER', 'SelfhostAppRunner'),

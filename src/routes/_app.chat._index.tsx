@@ -765,7 +765,7 @@ export async function action({ request, context }: Route.ActionArgs) {
           await chatDO.setThreadPreviewTarget(context, thread.id, {
             kind: "app",
             scriptName,
-            isPublic: script?.is_public ?? false,
+            isPublic: isSelfhostRuntime(env) ? false : script?.is_public ?? false,
           });
         }
         recordChatCreateThreadStage(

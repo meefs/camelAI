@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { getWorkerAccessInfo } from '../workers/dispatcher/src/access-control';
+import {
+  getWorkerAccessInfo,
+  isPublicAppRequest,
+} from '../workers/dispatcher/src/access-control';
 
 function createKv(seed: Record<string, string>) {
   return {
@@ -35,5 +38,35 @@ describe('dispatcher visibility enforcement', () => {
     await expect(
       getWorkerAccessInfo(createKv({}), 'my-app--acme-85b'),
     ).resolves.toBeNull();
+  });
+
+  it('never treats a self-host app as public, including stale public records', () => {
+    expect(
+      isPublicAppRequest(
+        { is_public: true },
+        { CF_ACCOUNT_ID: 'selfhost' },
+      ),
+    ).toBe(false);
+    expect(
+      isPublicAppRequest(
+        { is_public: true },
+        { CF_DISPATCH_NAMESPACE: 'selfhost' },
+      ),
+    ).toBe(false);
+  });
+
+  it('preserves configurable visibility for hosted deployments', () => {
+    expect(
+      isPublicAppRequest(
+        { is_public: true },
+        { CF_ACCOUNT_ID: 'hosted-account' },
+      ),
+    ).toBe(true);
+    expect(
+      isPublicAppRequest(
+        { is_public: false },
+        { CF_ACCOUNT_ID: 'hosted-account' },
+      ),
+    ).toBe(false);
   });
 });

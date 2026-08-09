@@ -12,6 +12,23 @@ interface KvReader {
   get(key: string): Promise<string | null>;
 }
 
+export function isSelfhostPublishingMode(env: {
+  CF_ACCOUNT_ID?: string;
+  CF_DISPATCH_NAMESPACE?: string;
+}): boolean {
+  return (
+    env.CF_ACCOUNT_ID?.trim().toLowerCase() === "selfhost" ||
+    env.CF_DISPATCH_NAMESPACE?.trim().toLowerCase() === "selfhost"
+  );
+}
+
+export function isPublicAppRequest(
+  accessInfo: Pick<WorkerAccessInfo, "is_public">,
+  env: { CF_ACCOUNT_ID?: string; CF_DISPATCH_NAMESPACE?: string },
+): boolean {
+  return !isSelfhostPublishingMode(env) && accessInfo.is_public;
+}
+
 /**
  * Get worker script access info from KV index.
  */

@@ -28,6 +28,7 @@ import {
 } from "../code-mode-tools";
 import { PI_CONTAINER_TOOL_DEFINITIONS } from "../pi-container-tools";
 import { connectionsBindingEnabled } from "../../../../src/lib/connections-binding";
+import { isSelfhostRuntime, type SelfhostRuntimeEnv } from "../../../../src/lib/selfhost-runtime";
 import { createPiSubagentSystemPrompt as buildPiSubagentSystemPrompt } from "../pi-system-prompt";
 import {
   resolveAgentSkillCatalog,
@@ -58,6 +59,8 @@ export interface PiToolDefinitionOptions {
   includeWebTools?: boolean;
   /** Self-host mode disables outbound email and omits it from js_exec discovery. */
   outboundEmailEnabled?: boolean;
+  /** Self-host mode fixes app access to SSO and omits visibility controls. */
+  appVisibilityConfigurable?: boolean;
 }
 
 const RESEARCH_CAPABILITY_MODEL = "gpt-5.6-luna";
@@ -460,6 +463,7 @@ export function createPiToolDefinitions(
   for (const definition of CODE_MODE_PI_PASSTHROUGH_TOOL_DEFINITIONS) {
     const { name } = definition;
     if (definition.hidden) continue;
+    if (name === "set_app_visibility" && options.appVisibilityConfigurable === false) continue;
     // Web schemas and execution are reserved for the focused Research child.
     if (!includeWebTools && (name === "WebSearch" || name === "WebFetch")) continue;
     // Drop long-tail-category passthrough tools from the top-level list; they stay
@@ -950,7 +954,7 @@ export async function runPiCapabilityAgentTool(
 export async function createPiSubagentSystemPrompt(
   context: ChatContextState,
   isExplore: boolean,
-  env?: SelfhostAgentPackEnv & { CONNECTIONS_BINDING_ENABLED?: string },
+  env?: SelfhostAgentPackEnv & SelfhostRuntimeEnv & { CONNECTIONS_BINDING_ENABLED?: string },
 ): Promise<string> {
   const catalog = resolveAgentSkillCatalog(env);
   return buildPiSubagentSystemPrompt(
@@ -962,6 +966,7 @@ export async function createPiSubagentSystemPrompt(
       promptPrepend: catalog.promptPrepend,
       promptAppend: catalog.promptAppend,
       deployedConnectionsBindingEnabled: connectionsBindingEnabled(env),
+      selfhostAppAccessSsoOnly: isSelfhostRuntime(env),
     },
   );
 }

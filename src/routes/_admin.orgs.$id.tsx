@@ -61,6 +61,7 @@ import {
 import { getByokProviderLabel } from "@/lib/byok-providers";
 import { buildPublicLlmProviderConfig } from "@/lib/llm-provider-config";
 import { cn } from "@/lib/utils";
+import { isSelfhostRuntime } from "@/lib/selfhost-runtime";
 import type { BillingStatus, LlmProviderConfigPublic } from "@/types";
 import { Plus, RefreshCw } from "lucide-react";
 
@@ -346,6 +347,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     creditGrantUsers: creditGrantUsers.filter(
       (user): user is CreditGrantUser => Boolean(user),
     ),
+    selfhostRuntime: isSelfhostRuntime(env),
   };
 }
 
@@ -1098,6 +1100,7 @@ export default function AdminOrgDetailPage() {
     creditGrantsUnavailable,
     creditGrantsError,
     creditGrantUsers,
+    selfhostRuntime,
   } = useLoaderData<typeof loader>();
   return (
     <>
@@ -1386,7 +1389,7 @@ export default function AdminOrgDetailPage() {
                       <TableRow>
                         <TableHead>App</TableHead>
                         <TableHead>Workspace</TableHead>
-                        <TableHead>Visibility</TableHead>
+                        {!selfhostRuntime ? <TableHead>Visibility</TableHead> : null}
                         <TableHead>Updated</TableHead>
                       </TableRow>
                     </TableHeader>
@@ -1409,13 +1412,15 @@ export default function AdminOrgDetailPage() {
                               {app.workspace_name || app.workspace_id}
                             </Link>
                           </TableCell>
-                          <TableCell>
-                            <Badge
-                              variant={app.is_public ? "default" : "secondary"}
-                            >
-                              {app.is_public ? "Public" : "Private"}
-                            </Badge>
-                          </TableCell>
+                          {!selfhostRuntime ? (
+                            <TableCell>
+                              <Badge
+                                variant={app.is_public ? "default" : "secondary"}
+                              >
+                                {app.is_public ? "Public" : "Private"}
+                              </Badge>
+                            </TableCell>
+                          ) : null}
                           <TableCell className="text-muted-foreground">
                             {formatTimestamp(app.updated_at)}
                           </TableCell>

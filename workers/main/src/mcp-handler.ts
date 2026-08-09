@@ -48,6 +48,7 @@ import {
   discordChannelCatalogAvailable,
   type DiscordBridgeFetcher,
 } from './discord-types';
+import { isSelfhostRuntime } from '../../../src/lib/selfhost-runtime';
 
 export interface McpEnv {
   ORG: DurableObjectNamespace<OrgDO>;
@@ -71,6 +72,8 @@ export interface McpEnv {
   WORKER_SELF_REFERENCE?: Fetcher;
   APP_DB?: D1Database;
   RUN_AGENT_EVALS?: string;
+  CF_ACCOUNT_ID?: string;
+  CF_DISPATCH_NAMESPACE?: string;
   DISCORD_CHANNEL_ENABLED?: string;
   DISCORD_CLIENT_ID?: string;
   DISCORD_CLIENT_SECRET?: string;
@@ -324,7 +327,9 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
     // List deployed apps/workers
     this.server.tool(
       'list_apps',
-      'List deployed apps/workers for the current workspace. Returns script names, URLs, visibility status, and creation info.',
+      isSelfhostRuntime(this.env)
+        ? 'List deployed apps/workers for the current workspace. Returns script names, SSO-protected URLs, and creation info.'
+        : 'List deployed apps/workers for the current workspace. Returns script names, URLs, visibility status, and creation info.',
       {},
       async () => {
         const { workspaceId } = this.requireAuth();
@@ -339,7 +344,7 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
         const apps = await Promise.all(scripts.map(async (s: WorkerScript) => ({
           name: s.script_name,
           url: await this.getAppUrl(s),
-          is_public: s.is_public,
+          ...(!isSelfhostRuntime(this.env) ? { is_public: s.is_public } : {}),
           created_by: s.created_by,
           created_at: new Date(s.created_at).toISOString(),
           updated_at: new Date(s.updated_at).toISOString(),
@@ -350,48 +355,50 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
       }
     );
 
-    // Set app visibility (public/private)
-    this.server.tool(
-      'set_app_visibility',
-      'Change the visibility of a deployed app in the current workspace. Public apps are accessible to anyone, private apps require authentication.',
-      {
-        script_name: z.string().describe('The name of the app/worker script'),
-        is_public: z.boolean().describe('Set to true for public access, false for private (org members only)'),
-      },
-      async ({ script_name, is_public }) => {
-        const { userId, workspaceId } = this.requireAuth();
-        if (!workspaceId) {
-          return this.textResponse({ error: 'No workspace context available' });
-        }
+    if (!isSelfhostRuntime(this.env)) {
+      // Set app visibility (public/private)
+      this.server.tool(
+        'set_app_visibility',
+        'Change the visibility of a deployed app in the current workspace. Public apps are accessible to anyone, private apps require authentication.',
+        {
+          script_name: z.string().describe('The name of the app/worker script'),
+          is_public: z.boolean().describe('Set to true for public access, false for private (org members only)'),
+        },
+        async ({ script_name, is_public }) => {
+          const { userId, workspaceId } = this.requireAuth();
+          if (!workspaceId) {
+            return this.textResponse({ error: 'No workspace context available' });
+          }
 
-        const orgStub = this.getOrgStub();
+          const orgStub = this.getOrgStub();
 
-        // Verify script belongs to current workspace
-        const script: WorkerScript | null = await orgStub.getWorkerScript(script_name);
-        if (!script) {
-          return this.textResponse({ success: false, error: `App '${script_name}' not found` });
-        }
-        if (script.workspace_id !== workspaceId) {
-          return this.textResponse({ success: false, error: `App '${script_name}' belongs to a different workspace` });
-        }
+          // Verify script belongs to current workspace
+          const script: WorkerScript | null = await orgStub.getWorkerScript(script_name);
+          if (!script) {
+            return this.textResponse({ success: false, error: `App '${script_name}' not found` });
+          }
+          if (script.workspace_id !== workspaceId) {
+            return this.textResponse({ success: false, error: `App '${script_name}' belongs to a different workspace` });
+          }
 
-        const result = await orgStub.setWorkerScriptPublic(script_name, is_public, userId);
-        if (!result) {
-          return this.textResponse({ success: false, error: `Failed to update app '${script_name}'` });
-        }
+          const result = await orgStub.setWorkerScriptPublic(script_name, is_public, userId);
+          if (!result) {
+            return this.textResponse({ success: false, error: `Failed to update app '${script_name}'` });
+          }
 
-        return this.textResponse({
-          success: true,
-          app: {
-            name: result.script_name,
-            url: await this.getAppUrl(result),
-            is_public: result.is_public,
-            updated_at: new Date(result.updated_at).toISOString(),
-          },
-          message: `App '${script_name}' is now ${is_public ? 'public' : 'private'}`,
-        });
-      }
-    );
+          return this.textResponse({
+            success: true,
+            app: {
+              name: result.script_name,
+              url: await this.getAppUrl(result),
+              is_public: result.is_public,
+              updated_at: new Date(result.updated_at).toISOString(),
+            },
+            message: `App '${script_name}' is now ${is_public ? 'public' : 'private'}`,
+          });
+        }
+      );
+    }
 
     // Set preview panel to a file
     this.server.tool(
@@ -535,7 +542,7 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
         const target: PreviewTarget = {
           kind: 'app',
           scriptName: script.script_name,
-          isPublic: script.is_public,
+          isPublic: isSelfhostRuntime(this.env) ? false : script.is_public,
         };
 
         const chatThreadStub = this.getChatThreadStub(threadId);
@@ -547,7 +554,9 @@ export class ChiridionMcp extends McpAgent<any, Record<string, unknown>, Record<
           app: {
             name: script.script_name,
             url: await this.getAppUrl(script),
-            is_public: script.is_public,
+            ...(!isSelfhostRuntime(this.env)
+              ? { is_public: script.is_public }
+              : {}),
           },
           message: `Preview set to app '${script.script_name}'`,
         });

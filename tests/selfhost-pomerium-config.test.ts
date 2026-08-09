@@ -45,12 +45,14 @@ describe("self-host Pomerium configuration", () => {
     );
   });
 
-  it("preserves same-origin framing and allows the camelAI origin", () => {
+  it("requires SSO on app routes and allows the camelAI origin to frame them", () => {
     const config = buildPomeriumConfig(bundledPomeriumEnv());
     expect(config).not.toBeNull();
 
     const appRoutes = config!.routes.filter(
-      (route) => "allow_public_unauthenticated_access" in route,
+      (route) =>
+        route.from.startsWith("https://*.") &&
+        "set_response_headers" in route,
     );
     expect(appRoutes).toHaveLength(2);
     expect(appRoutes.map((route) => route.from)).toEqual([
@@ -58,7 +60,13 @@ describe("self-host Pomerium configuration", () => {
       "https://*.preview.example.com",
     ]);
     for (const route of appRoutes) {
-      expect(route.set_response_headers).toEqual({
+      expect(route.allow_any_authenticated_user).toBe(true);
+      expect(route).not.toHaveProperty("allow_public_unauthenticated_access");
+      expect(
+        "set_response_headers" in route
+          ? route.set_response_headers
+          : undefined,
+      ).toEqual({
         "Content-Security-Policy":
           "frame-ancestors 'self' https://camel.example.com",
       });
@@ -69,11 +77,15 @@ describe("self-host Pomerium configuration", () => {
     const env = bundledPomeriumEnv();
     env.SELFHOST_PUBLIC_BASE_URL = "https://camel.example.com:8443";
     const config = buildPomeriumConfig(env);
-    const appRoute = config!.routes.find(
-      (route) => "allow_public_unauthenticated_access" in route,
+    const appRoute = config!.routes.find((route) =>
+      "set_response_headers" in route && route.from.startsWith("https://*.")
     );
 
-    expect(appRoute?.set_response_headers).toEqual({
+    expect(
+      appRoute && "set_response_headers" in appRoute
+        ? appRoute.set_response_headers
+        : undefined,
+    ).toEqual({
       "Content-Security-Policy":
         "frame-ancestors 'self' https://camel.example.com:8443",
     });

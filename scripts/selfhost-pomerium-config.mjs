@@ -132,7 +132,7 @@ export function buildPomeriumConfig(env, { strict = true } = {}) {
       `http://127.0.0.1:${appPort}`,
     ),
     ...appDomains.map((domain) =>
-      publicAppRoute(
+      protectedAppRoute(
         `https://*.${domain}`,
         `http://127.0.0.1:${appPort}`,
         publicUrl.origin,
@@ -167,13 +167,13 @@ function protectedRoute(from, to) {
   };
 }
 
-function publicAppRoute(from, to, previewOrigin) {
+function protectedAppRoute(from, to, previewOrigin) {
   return {
     from,
     to,
     preserve_host_header: true,
     allow_websockets: true,
-    allow_public_unauthenticated_access: true,
+    allow_any_authenticated_user: true,
     // Pomerium defaults X-Frame-Options to SAMEORIGIN. Deployed apps are
     // cross-origin from the camelAI UI, so the more expressive CSP directive
     // must explicitly authorize the one parent origin used by chat preview.

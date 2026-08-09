@@ -37,6 +37,8 @@ import {
 } from '../../main/src/worker-auth';
 import {
   getWorkerAccessInfo,
+  isPublicAppRequest,
+  isSelfhostPublishingMode,
   type WorkerAccessInfo,
 } from './access-control';
 import {
@@ -93,6 +95,7 @@ interface Env {
   SKIP_AUTH?: string;
   MAIN_APP_URL?: string;
   CF_ACCOUNT_ID?: string;
+  CF_DISPATCH_NAMESPACE?: string;
   CF_GATEWAY_NAME?: string;
   CF_GATEWAY_TOKEN?: string;
   AI_GATEWAY_AUTH_TOKEN?: string;
@@ -115,11 +118,6 @@ type UserWorkerBinding = ReturnType<typeof getUserWorker>;
 
 async function fetchUserWorker(worker: UserWorkerBinding, request: Request): Promise<Response> {
   return worker.fetch(request);
-}
-
-function isSelfhostPublishingMode(env: Env): boolean {
-  const accountId = env.CF_ACCOUNT_ID?.trim().toLowerCase();
-  return accountId === 'selfhost';
 }
 
 function selfhostDoBridgeSecret(env: Env): string {
@@ -809,6 +807,10 @@ function getRequestHostname(request: Request, url: URL): string {
   return host.replace(/:\d+$/, '').toLowerCase();
 }
 
+function appendCurrentPort(url: URL, hostname: string): string {
+  return url.port ? `${hostname}:${url.port}` : hostname;
+}
+
 function preparePlatformDispatchRequest(request: Request): Request {
   const url = new URL(request.url);
   const headers = new Headers(request.headers);
@@ -978,26 +980,13 @@ function getCookieValue(cookieHeader: string | null, name: string): string | nul
 }
 
 // Create Set-Cookie header for session
-function createSessionCookie(
+export function createSessionCookie(
   sessionId: string,
-  hostname: string,
-  cookieDomain?: string,
   maxAge = SESSION_MAX_AGE,
 ): string {
-  // Get domain for cookie (e.g., .camelai.app to cover all subdomains)
-  // For custom domains, the caller provides the exact hostname.
-  let domain: string;
-  if (cookieDomain) {
-    domain = `.${cookieDomain}`;
-  } else {
-    const parts = hostname.split('.');
-    domain = parts.length >= 2 ? `.${parts.slice(-2).join('.')}` : hostname;
-  }
-
   return [
     `${DISPATCHER_SESSION_COOKIE}=${sessionId}`,
     `Path=/`,
-    `Domain=${domain}`,
     `Max-Age=${Math.max(1, Math.min(SESSION_MAX_AGE, Math.floor(maxAge)))}`,
     `HttpOnly`,
     `Secure`,
@@ -1020,7 +1009,7 @@ const AUTH_CALLBACK_PATH = '/__chiridion_auth/callback';
 async function resolveCustomDomainRoute(
   env: Env,
   hostname: string
-): Promise<{ scriptName: string; orgSlug: string; dispatchScriptName: string; cookieDomain: string } | null> {
+): Promise<{ scriptName: string; orgSlug: string; dispatchScriptName: string } | null> {
   const kvData = await env.APP_KV.get(`custom_domain_host:${hostname}`);
   if (!kvData) return null;
 
@@ -1036,7 +1025,6 @@ async function resolveCustomDomainRoute(
       scriptName: data.script_name,
       orgSlug: data.org_slug,
       dispatchScriptName,
-      cookieDomain: hostname,
     };
   } catch (e) {
     console.error(`[dispatcher] Error parsing custom domain host data for ${hostname}:`, e);
@@ -1155,9 +1143,9 @@ export default class DispatcherEntrypoint extends WorkerEntrypoint<Env> {
     // Look up exact custom hostname in KV
     const customDomainRoute = await resolveCustomDomainRoute(env, hostname);
     if (customDomainRoute) {
-      const { scriptName, orgSlug, dispatchScriptName, cookieDomain } = customDomainRoute;
+      const { scriptName, orgSlug, dispatchScriptName } = customDomainRoute;
       if (url.pathname === AUTH_CALLBACK_PATH) {
-        return handleAuthCallback(request, env, scriptName, orgSlug, dispatchScriptName, undefined, cookieDomain);
+        return handleAuthCallback(request, env, scriptName, orgSlug, dispatchScriptName);
       }
       return handleWorkerRequest(request, env, ctx, scriptName, dispatchScriptName);
     }
@@ -1192,7 +1180,6 @@ async function handleAuthCallback(
   scriptName: string,
   _orgSlug: string,
   _dispatchScriptName: string,
-  cookieDomain?: string
 ): Promise<Response> {
   const url = new URL(request.url);
   const hostname = getRequestHostname(request, url);
@@ -1245,7 +1232,7 @@ async function handleAuthCallback(
     status: 302,
     headers: {
       'Location': redirectUrl.toString(),
-      'Set-Cookie': createSessionCookie(sessionId, hostname, cookieDomain, cookieMaxAge),
+      'Set-Cookie': createSessionCookie(sessionId, cookieMaxAge),
     },
   });
 }
@@ -1253,7 +1240,7 @@ async function handleAuthCallback(
 /**
  * Handle worker request - checks access and dispatches or redirects
  */
-async function handleWorkerRequest(
+export async function handleWorkerRequest(
   request: Request,
   env: Env,
   ctx: ExecutionContext,
@@ -1296,8 +1283,9 @@ async function handleWorkerRequest(
     return response;
   }
 
-  // If public, dispatch directly
-  if (accessInfo.is_public) {
+  // Hosted deployments honor per-app public access. Self-host deployments
+  // always continue through authenticated app access, even for stale records.
+  if (isPublicAppRequest(accessInfo, env)) {
     return dispatchToWorker(request, env, ctx, dispatchScriptName, scriptName);
   }
 
@@ -1394,11 +1382,12 @@ async function dispatchToWorker(
 ): Promise<Response> {
   try {
     console.log(`[dispatcher] Routing to worker: ${dispatchScriptName}`);
+    const headers = new Headers(request.headers);
+    stripPlatformAuthMaterial(headers, getRequestHostname(request, new URL(request.url)));
     if (isSelfhostPublishingMode(env)) {
       if (!env.SELFHOST_APP_RUNNER) {
         throw new Error('Self-host app runner is not configured');
       }
-      const headers = new Headers(request.headers);
       headers.set('x-camelai-selfhost-app-id', dispatchScriptName);
       const runner = env.SELFHOST_APP_RUNNER.get(
         env.SELFHOST_APP_RUNNER.idFromName(dispatchScriptName),
@@ -1409,7 +1398,7 @@ async function dispatchToWorker(
     }
 
     const userWorker = getUserWorker(env, dispatchScriptName);
-    return fetchUserWorker(userWorker, request);
+    return fetchUserWorker(userWorker, new Request(request, { headers }));
   } catch (e) {
     const error = e as Error;
     console.error('[dispatcher] failed to route user worker', {
@@ -1424,6 +1413,36 @@ async function dispatchToWorker(
       return errorResponse(error404Page(pageHomeUrl, userFacingScriptName));
     }
     return errorResponse(error500Page(pageHomeUrl));
+  }
+}
+
+const PLATFORM_AUTH_COOKIE_NAMES = new Set([
+  DISPATCHER_SESSION_COOKIE,
+  'CF_Authorization',
+  '_pomerium',
+  '_pomerium_csrf',
+]);
+
+export function stripPlatformAuthMaterial(headers: Headers, hostname: string): void {
+  const reservedCookieNames = new Set(PLATFORM_AUTH_COOKIE_NAMES);
+  reservedCookieNames.add(getSessionCookieName(hostname));
+  const cookies = headers.get('Cookie')
+    ?.split(';')
+    .map((cookie) => cookie.trim())
+    .filter((cookie) => {
+      const separator = cookie.indexOf('=');
+      const name = separator >= 0 ? cookie.slice(0, separator).trim() : cookie;
+      return !reservedCookieNames.has(name);
+    });
+  if (cookies?.length) headers.set('Cookie', cookies.join('; '));
+  else headers.delete('Cookie');
+
+  for (const header of [
+    'CF-Access-Jwt-Assertion',
+    'CF-Access-Authenticated-User-Email',
+    'X-Pomerium-Jwt-Assertion',
+  ]) {
+    headers.delete(header);
   }
 }
 

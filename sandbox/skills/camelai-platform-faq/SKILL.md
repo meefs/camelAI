@@ -21,11 +21,17 @@ Prompt the user to submit a Get Help request when:
 
 ### What is the difference between a public, private, and password-protected app?
 
-A public app can be viewed by anyone on the internet with the app URL.
+On hosted camelAI, a public app can be viewed by anyone on the internet with
+the app URL, while a private app can only be viewed by signed-in members of
+your organization.
 
-A private app can only be viewed by signed-in members of your organization.
+On self-hosted enterprise installations, there is no per-app public/private
+setting. Every deployed app is private and requires the installation's
+configured Pomerium or Cloudflare Access sign-in.
 
-Password protection is not a camelAI setting. If you want a password gate, I can build one into your app, but the URL is still public. For sensitive data, make the app private instead.
+Password protection is not a separate camelAI visibility mode. An app-level
+password gate can be built as an additional check, but it does not replace the
+platform's access control.
 
 ### What is a workspace?
 
@@ -41,7 +47,11 @@ Files you upload in chat, files saved in the workspace, and files inside a proje
 
 ### Why doesn't a report or download link work for someone else?
 
-Report and download links are workspace-scoped: they require signing in with access to the workspace. To share something with people outside the workspace, deploy it as an app or send them the file itself.
+Report and download links are workspace-scoped: they require signing in with
+access to the workspace. On hosted camelAI, a public deployed app can be shared
+outside the organization. On self-hosted enterprise installations, deployed
+apps remain SSO-protected, so recipients must satisfy the enterprise access
+policy. Otherwise, send the file through an approved external channel.
 
 ### Can camelAI connect to external services?
 

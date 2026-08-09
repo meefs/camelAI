@@ -4568,6 +4568,7 @@ export default function Chat({
     currentMembership?.role === "owner" || currentMembership?.role === "admin";
   const previewShareButton = useMemo(() => {
     if (readOnly) return undefined;
+    if (billingAccessMode === "selfhost") return undefined;
     if (previewTarget?.kind !== "app") return undefined;
     return (
       <ShareStatusButton
@@ -4578,7 +4579,7 @@ export default function Chat({
         onStatusChange={setAppIsPublic}
       />
     );
-  }, [readOnly, previewTarget, threadId, appIsPublic, isAdmin, setAppIsPublic]);
+  }, [readOnly, billingAccessMode, previewTarget, threadId, appIsPublic, isAdmin, setAppIsPublic]);
   const previewPanelBody = (
     <PreviewPanelShell
       previewTabs={previewTabs}

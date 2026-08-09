@@ -18,6 +18,7 @@ import type { RouteContext } from '../types.js';
 import { redirect, text } from '../helpers/response.js';
 import { getSignedSessionFromRequest } from '../cookies.js';
 import {
+  getAuthState,
   validateAndConsumeAuthState,
   createWorkerAuthToken,
 } from '../worker-auth.js';
@@ -32,6 +33,12 @@ function getOrgStub(env: RouteContext['env'], orgId: string) {
   return namespace.get(namespace.idFromName(orgId));
 }
 
+function loginRedirect(url: URL): Response {
+  const loginUrl = new URL('/login', url.origin);
+  loginUrl.searchParams.set('redirect', `${url.pathname}${url.search}`);
+  return redirect(loginUrl.toString());
+}
+
 export async function handleWorkerAuth({ req, env, url }: RouteContext): Promise<Response> {
   const state = url.searchParams.get('state');
 
@@ -39,18 +46,18 @@ export async function handleWorkerAuth({ req, env, url }: RouteContext): Promise
     return text('Missing state parameter', 400);
   }
 
-  // Validate the auth state (consume it from KV)
-  const stateData = await validateAndConsumeAuthState(env.APP_KV, state);
-  if (!stateData) {
-    return text('Invalid or expired state', 400);
-  }
-
   // Check if user is authenticated via signed session cookie
   const session = await getSignedSessionFromRequest(req, env.TOKEN_SIGNING_SECRET);
 
   if (!session) {
-    const loginUrl = new URL('/login', url.origin);
-    return redirect(loginUrl.toString());
+    return loginRedirect(url);
+  }
+
+  // Peek without consuming so proxy silent login can return to this exact
+  // continuation. Consume only after identity and membership checks pass.
+  const stateData = await getAuthState(env.APP_KV, state);
+  if (!stateData) {
+    return text('Invalid or expired state', 400);
   }
   // Re-validate the live proxy identity against the org we're about to mint a
   // token for (the private worker's org), NOT the cookie's current org_id. The
@@ -67,8 +74,7 @@ export async function handleWorkerAuth({ req, env, url }: RouteContext): Promise
     return text('Identity proxy validation is temporarily unavailable', 503);
   }
   if (proxyValidation !== 'valid') {
-    const loginUrl = new URL('/login', url.origin);
-    return redirect(loginUrl.toString());
+    return loginRedirect(url);
   }
 
   // Check if this session was invalidated (e.g. by logout)
@@ -77,8 +83,7 @@ export async function handleWorkerAuth({ req, env, url }: RouteContext): Promise
     .get(userNs.idFromName(session.user_id))
     .getSessionInvalidatedAt();
   if (invalidatedAt && session.created_at < invalidatedAt) {
-    const loginUrl = new URL('/login', url.origin);
-    return redirect(loginUrl.toString());
+    return loginRedirect(url);
   }
 
   // Check if user is a member of the required org
@@ -89,13 +94,23 @@ export async function handleWorkerAuth({ req, env, url }: RouteContext): Promise
     return text('Forbidden - not a member of this organization', 403);
   }
 
+  const consumedStateData = await validateAndConsumeAuthState(env.APP_KV, state);
+  if (
+    !consumedStateData ||
+    consumedStateData.required_org_id !== stateData.required_org_id ||
+    consumedStateData.script_name !== stateData.script_name ||
+    consumedStateData.return_url !== stateData.return_url
+  ) {
+    return text('Invalid or expired state', 400);
+  }
+
   // Create one-time token for the dispatcher
   const token = await createWorkerAuthToken(env.APP_KV, {
     user_id: session.user_id,
-    org_id: stateData.required_org_id,
+    org_id: consumedStateData.required_org_id,
     state: state,
-    script_name: stateData.script_name,
-    callback_origin: new URL(stateData.return_url).origin,
+    script_name: consumedStateData.script_name,
+    callback_origin: new URL(consumedStateData.return_url).origin,
     auth_source: session.auth_source ?? null,
     user_email: session.user_email ?? null,
     expires_at: session.expires_at ?? null,
@@ -104,7 +119,7 @@ export async function handleWorkerAuth({ req, env, url }: RouteContext): Promise
   });
 
   // Build callback URL on the dispatcher domain
-  const callbackUrl = new URL(AUTH_CALLBACK_PATH, stateData.return_url);
+  const callbackUrl = new URL(AUTH_CALLBACK_PATH, consumedStateData.return_url);
   callbackUrl.searchParams.set('token', token);
   callbackUrl.searchParams.set('state', state);
 

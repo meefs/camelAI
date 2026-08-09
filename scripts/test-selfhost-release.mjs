@@ -162,12 +162,16 @@ includesAll(
     "pass_identity_headers: true",
     "preserve_host_header: true",
     "allow_websockets: true",
-    "allow_public_unauthenticated_access: true",
+    "allow_any_authenticated_user: true",
     '"Content-Security-Policy"',
     "frame-ancestors",
     "POMERIUM_AUTHENTICATE_HOSTNAME must differ",
   ],
   "bundled Pomerium configuration generator",
+);
+assert(
+  !pomeriumConfig.includes("allow_public_unauthenticated_access"),
+  "bundled Pomerium must require authentication on deployed-app routes",
 );
 assert(
   !pomeriumConfig.includes("...process.env"),

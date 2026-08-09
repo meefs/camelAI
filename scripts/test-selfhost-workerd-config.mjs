@@ -28,6 +28,8 @@ async function main() {
   const outPath = path.join(tempDir, 'camelai.capnp');
   const stateDir = path.join(tempDir, 'state');
   const agentDir = path.join(tempDir, 'agent');
+  const selfhostEnvPath = path.join(tempDir, '.env.selfhost');
+  await fs.writeFile(selfhostEnvPath, 'SKIP_AUTH=true\n');
   await fs.mkdir(path.join(agentDir, 'skills/acme-runbooks'), { recursive: true });
   await fs.writeFile(path.join(agentDir, 'prompt.append.md'), 'Prefer internal mirrors.');
   await fs.writeFile(
@@ -52,7 +54,7 @@ description: Follow ACME runbooks. Use when shipping internal tools.
     cwd: repoRoot,
     env: {
       ...process.env,
-      SELFHOST_ENV_FILE: path.join(tempDir, 'intentionally-missing.env'),
+      SELFHOST_ENV_FILE: selfhostEnvPath,
       SELFHOST_AGENT_DIR: agentDir,
       SELFHOST_AI_PROVIDER: 'bedrock',
       SELFHOST_AI_API_KEY: 'test-bedrock-key',
@@ -164,6 +166,14 @@ description: Follow ACME runbooks. Use when shipping internal tools.
   }
   assert(config.includes('infra/selfhost/ai-binding.worker.js'), 'config should embed the self-host AI binding module');
   assert(config.includes('name = "dispatcher"'), 'config should contain dispatcher service');
+  assert(
+    !config.includes('(name = "SKIP_AUTH", text = "true")'),
+    'production self-host dispatcher must not bypass app authentication',
+  );
+  assert(
+    config.includes('(name = "MAIN_APP_URL", text = "http://localhost:3001")'),
+    'dispatcher should redirect authentication through the configured self-host main URL',
+  );
   assert(config.includes('name = "SELFHOST_WORKER_LOADER"'), 'config should contain self-host worker loader binding');
   assert(config.includes('name = "SELFHOST_APP_RUNNER"'), 'config should contain self-host app runner binding');
   assert(config.includes('SelfhostAppRunner'), 'config should contain self-host app runner DO');

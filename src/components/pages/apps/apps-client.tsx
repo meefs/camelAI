@@ -28,6 +28,7 @@ interface AppsClientProps {
   hostname?: AppUrlInput;
   initialNow: number;
   orgCustomDomain?: string | null;
+  selfhostRuntime?: boolean;
 }
 
 export default function AppsClient({
@@ -36,6 +37,7 @@ export default function AppsClient({
   hostname,
   initialNow,
   orgCustomDomain,
+  selfhostRuntime = false,
 }: AppsClientProps) {
   const {
     currentOrg,
@@ -196,7 +198,9 @@ export default function AppsClient({
               <div>
                 <h1 className="text-2xl font-semibold">Apps</h1>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  Manage your deployed applications and their access settings.
+                  {selfhostRuntime
+                    ? 'Manage applications protected by your deployment SSO.'
+                    : 'Manage your deployed applications and their access settings.'}
                 </p>
               </div>
             </div>
@@ -253,6 +257,7 @@ export default function AppsClient({
                       orgSlug={orgSlug}
                       orgCustomDomain={orgCustomDomain}
                       now={referenceTime}
+                      showVisibility={!selfhostRuntime}
                       onOpenSettings={handleOpenSettings}
                       onStartChat={handleStartChat}
                     />
@@ -273,6 +278,7 @@ export default function AppsClient({
           isAdmin={isAdmin}
           hostname={hostname}
           orgCustomDomain={orgCustomDomain}
+          visibilityConfigurable={!selfhostRuntime}
           onSuccess={handleSettingsSuccess}
         />
       )}

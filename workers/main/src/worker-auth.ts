@@ -143,6 +143,17 @@ export async function createAuthState(
   return state;
 }
 
+/** Read and validate an auth state without consuming its single-use token. */
+export async function getAuthState(
+  kv: KVNamespace,
+  state: string,
+): Promise<WorkerAuthState | null> {
+  const data = await kv.get<WorkerAuthState>(`${AUTH_STATE_PREFIX}${state}`, 'json');
+  if (!data) return null;
+  const age = Date.now() - data.created_at;
+  return age <= AUTH_STATE_TTL_SECONDS * 1000 ? data : null;
+}
+
 /**
  * Validate and consume an auth state.
  * Returns the state data and deletes it (single-use).
@@ -153,17 +164,11 @@ export async function validateAndConsumeAuthState(
   state: string
 ): Promise<WorkerAuthState | null> {
   const key = `${AUTH_STATE_PREFIX}${state}`;
-  const data = await kv.get<WorkerAuthState>(key, 'json');
+  const data = await getAuthState(kv, state);
   if (!data) return null;
 
   // Delete immediately (single-use)
   await kv.delete(key);
-
-  // Additional timestamp validation (belt and suspenders with TTL)
-  const age = Date.now() - data.created_at;
-  if (age > AUTH_STATE_TTL_SECONDS * 1000) {
-    return null;
-  }
 
   return data;
 }

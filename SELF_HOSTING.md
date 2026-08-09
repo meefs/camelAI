@@ -317,9 +317,11 @@ the server boundary.
 
 The chat preview embeds a deployed-app hostname inside the camelAI page, so it
 is cross-origin even when `LOCAL_APP_IFRAME_DOMAIN` and
-`LOCAL_APP_VANITY_DOMAIN` are the same. In bundled-Pomerium mode,
-`selfhost:configure` adds this response policy to both deployed-app wildcard
-routes:
+`LOCAL_APP_VANITY_DOMAIN` are the same. Self-host deployments do not expose a
+per-app public/private setting: every deployed app requires the configured
+Pomerium or Cloudflare Access identity proxy. In bundled-Pomerium mode,
+`selfhost:configure` requires an authenticated user and adds this response
+policy to both deployed-app wildcard routes:
 
 ```http
 Content-Security-Policy: frame-ancestors 'self' <SELFHOST_PUBLIC_BASE_URL origin>
@@ -331,15 +333,18 @@ It preserves same-origin app framing and permits only the configured camelAI
 origin as an additional parent. The live `selfhost:doctor` check sends a
 synthetic app-host request through Pomerium and verifies that policy whenever
 the stack is running. Operators using external Pomerium, Cloudflare Access, or
-another ingress must configure the equivalent response policy there.
+another ingress must configure an authenticated policy on both
+`*.LOCAL_APP_VANITY_DOMAIN` and `*.LOCAL_APP_IFRAME_DOMAIN`, plus the equivalent
+response policy there. Do not create an authentication bypass for either
+wildcard; camelAI also treats every self-host app as private at the dispatcher
+in case stale app metadata says it was public.
 
 The preview pane is not a supported container for full-page, redirect-based
-application sign-in. Identity providers commonly refuse to render their login
-pages in an iframe, and browser third-party-cookie restrictions can also break
-the callback session. An authenticated app may work when its provider uses a
-popup flow and its cookie policy permits it, but that is provider-dependent.
-Use the preview pane for the unauthenticated app shell and use **Open in new
-tab** to test sign-in and authenticated behavior.
+sign-in. Identity providers commonly refuse to render their login pages in an
+iframe, and browser third-party-cookie restrictions can also break the callback
+session. A preview works when the browser already has a usable proxy session
+for the app hostname; otherwise use **Open in new tab** to establish the SSO
+session and test the app.
 
 Do not add a fake local SMTP service, silently discard messages, or accept
 unencrypted SMTP credentials merely to make these flows appear successful.

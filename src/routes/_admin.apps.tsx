@@ -17,6 +17,8 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
+import { getEnv } from '@/lib/cloudflare.server';
+import { isSelfhostRuntime } from '@/lib/selfhost-runtime';
 
 const LIMIT = 50;
 
@@ -44,6 +46,7 @@ export function meta() {
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   await requireSuperuser(request, context);
+  const selfhostRuntime = isSelfhostRuntime(getEnv(context));
 
   const url = new URL(request.url);
   const offset = parseInt(url.searchParams.get('offset') || '0', 10);
@@ -61,11 +64,11 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 
   const vanityDomain = await getVanityDomain(request);
 
-  return { apps, total, offset, search, baseUrl, vanityDomain };
+  return { apps, total, offset, search, baseUrl, vanityDomain, selfhostRuntime };
 }
 
 export default function AdminAppsPage() {
-  const { apps, total, offset, baseUrl, vanityDomain } = useLoaderData<typeof loader>();
+  const { apps, total, offset, baseUrl, vanityDomain, selfhostRuntime } = useLoaderData<typeof loader>();
 
   return (
     <>
@@ -97,7 +100,7 @@ export default function AdminAppsPage() {
                   <TableHead>App</TableHead>
                   <TableHead>Organization</TableHead>
                   <TableHead>Workspace</TableHead>
-                  <TableHead>Status</TableHead>
+                  {!selfhostRuntime ? <TableHead>Status</TableHead> : null}
                   <TableHead>Preview</TableHead>
                   <TableHead>Updated</TableHead>
                 </TableRow>
@@ -105,7 +108,7 @@ export default function AdminAppsPage() {
               <TableBody>
                 {apps.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
+                    <TableCell colSpan={selfhostRuntime ? 5 : 6} className="text-center text-muted-foreground py-8">
                       No apps found
                     </TableCell>
                   </TableRow>
@@ -156,11 +159,13 @@ export default function AdminAppsPage() {
                             </div>
                           </Link>
                         </TableCell>
-                        <TableCell>
-                          <Badge variant={app.is_public ? 'default' : 'secondary'}>
-                            {app.is_public ? 'Public' : 'Private'}
-                          </Badge>
-                        </TableCell>
+                        {!selfhostRuntime ? (
+                          <TableCell>
+                            <Badge variant={app.is_public ? 'default' : 'secondary'}>
+                              {app.is_public ? 'Public' : 'Private'}
+                            </Badge>
+                          </TableCell>
+                        ) : null}
                         <TableCell>
                           <div className="space-y-1">
                             <Badge

@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Download } from 'lucide-react';
+import { isSelfhostRuntime } from '@/lib/selfhost-runtime';
 
 const dateFormatter = new Intl.DateTimeFormat('en-US', {
   dateStyle: 'medium',
@@ -139,6 +140,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     preview_target,
     vanityDomain,
     jsonlDownloadUrl,
+    selfhostRuntime: isSelfhostRuntime(getEnv(context)),
   };
 }
 
@@ -153,6 +155,7 @@ export default function AdminThreadDetailPage() {
     preview_target,
     vanityDomain,
     jsonlDownloadUrl,
+    selfhostRuntime,
   } = useLoaderData<typeof loader>();
 
   return (
@@ -259,9 +262,11 @@ export default function AdminThreadDetailPage() {
                         https://{preview_target.scriptName}.{vanityDomain}
                       </a>
                     </div>
-                    <p className="text-xs text-muted-foreground">
-                      Visibility: {preview_target.isPublic ? 'Public' : 'Private'}
-                    </p>
+                    {!selfhostRuntime ? (
+                      <p className="text-xs text-muted-foreground">
+                        Visibility: {preview_target.isPublic ? 'Public' : 'Private'}
+                      </p>
+                    ) : null}
                   </div>
                 ) : preview_target.kind === 'runtime_artifact' ? (
                   <div className="space-y-2 text-sm">

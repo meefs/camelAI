@@ -33,6 +33,7 @@ interface AppCardProps {
   orgSlug: string;
   orgCustomDomain?: string | null;
   now?: number;
+  showVisibility?: boolean;
   onOpenSettings: (app: WorkerScriptWithCreator) => void;
   onStartChat: (app: WorkerScriptWithCreator) => void;
 }
@@ -82,6 +83,7 @@ export function AppCard({
   orgSlug,
   orgCustomDomain,
   now,
+  showVisibility = true,
   onOpenSettings,
   onStartChat,
 }: AppCardProps) {
@@ -180,15 +182,17 @@ export function AppCard({
         ) : null}
 
         {/* Visibility badge - top-right */}
-        <div className="absolute right-2 top-2 z-10">
-          <Badge
-            variant={app.is_public ? 'default' : 'secondary'}
-            className="shrink-0"
-          >
-            {app.is_public ? <Globe className="size-3" /> : <Lock className="size-3" />}
-            {app.is_public ? 'Public' : 'Private'}
-          </Badge>
-        </div>
+        {showVisibility ? (
+          <div className="absolute right-2 top-2 z-10">
+            <Badge
+              variant={app.is_public ? 'default' : 'secondary'}
+              className="shrink-0"
+            >
+              {app.is_public ? <Globe className="size-3" /> : <Lock className="size-3" />}
+              {app.is_public ? 'Public' : 'Private'}
+            </Badge>
+          </div>
+        ) : null}
 
         {/* Preview image or placeholder - with zoom on hover */}
         {showPreview ? (

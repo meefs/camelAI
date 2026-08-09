@@ -29,4 +29,6 @@ export interface DOEnv {
   GOOGLE_ANALYTICS_CLIENT_SECRET?: string;
   SLACK_CLIENT_ID?: string;
   SLACK_CLIENT_SECRET?: string;
+  CF_ACCOUNT_ID?: string;
+  CF_DISPATCH_NAMESPACE?: string;
 }

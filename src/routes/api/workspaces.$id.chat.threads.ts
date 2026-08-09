@@ -10,6 +10,7 @@ import {
   createGroupForNewThread,
 } from '@/lib/chat-groups.server';
 import type { LlmModel } from '@/types';
+import { isSelfhostRuntime } from '@/lib/selfhost-runtime';
 
 type CreateThreadRequestBody = {
   initialTitle?: string;
@@ -82,7 +83,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
       await chatDO.setThreadPreviewTarget(context, thread.id, {
         kind: 'app',
         scriptName,
-        isPublic: script?.is_public ?? false,
+        isPublic: isSelfhostRuntime(env) ? false : script?.is_public ?? false,
       });
     }
   }

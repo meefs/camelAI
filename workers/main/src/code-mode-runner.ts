@@ -149,7 +149,7 @@ const TOOL_CATEGORY_DESCRIPTIONS = Object.freeze({
   workspace: "Read, edit, search, and run commands in the workspace.",
   user_interaction: "Ask the user questions or update visible chat state.",
   communication: "Send external channel messages. These are side-effecting delivery actions.",
-  apps: "Inspect deployed apps, previews, visibility, logs, and screenshots.",
+  apps: "Inspect deployed apps, previews, logs, and screenshots.",
   schedules: "Manage scheduled prompts.",
   workflows: "Manage deterministic JavaScript workflows.",
   integrations: "List, create, and set up workspace integrations.",
@@ -331,7 +331,7 @@ const RUNTIME_HELP_ENTRIES = Object.freeze([
     category: "apps",
     kind: "runtime_binding",
     description:
-      "Opt-in visual verification for deployed workspace apps, including private apps, via Browser Rendering. Do not capture screenshots automatically after every successful deploy; use this when the user or task explicitly calls for a visual check or when diagnosing a deployed UI issue.",
+      "Opt-in visual verification for deployed workspace apps, including access-controlled apps, via Browser Rendering. Do not capture screenshots automatically after every successful deploy; use this when the user or task explicitly calls for a visual check or when diagnosing a deployed UI issue.",
     examples: [
       "await env.SCREENSHOT.capture({ scriptName: \"web-app\", path: \"/\" })",
       "await tools.take_screenshot({ script_name: \"web-app\", path: \"/dashboard\" })",
@@ -349,7 +349,7 @@ const RUNTIME_HELP_ENTRIES = Object.freeze([
     category: "apps",
     kind: "runtime_binding",
     description:
-      "Opt-in Interactive Browser Rendering for requested or task-required testing of deployed workspace apps (including private apps). Do not launch a session automatically after every successful deploy. Supports Playwright-style scripts: navigate, click, fill, wait for text, evaluate JS in the page, screenshot, and read console/page errors. Always await session.close() when done. Sessions auto-close after 5 minutes. When this workspace (or the account) already has too many browser sessions running, launch() throws — close finished sessions or retry shortly. Note: for PRIVATE apps, server-streamed responses (SSE / streaming fetch) are buffered, so realtime/SSE-driven UI won't update mid-session — exercise those flows on a public deploy.",
+      "Opt-in Interactive Browser Rendering for requested or task-required testing of deployed workspace apps (including access-controlled apps). Do not launch a session automatically after every successful deploy. Supports Playwright-style scripts: navigate, click, fill, wait for text, evaluate JS in the page, screenshot, and read console/page errors. Always await session.close() when done. Sessions auto-close after 5 minutes. When this workspace (or the account) already has too many browser sessions running, launch() throws — close finished sessions or retry shortly. Note: for access-controlled apps, server-streamed responses (SSE / streaming fetch) are buffered, so realtime/SSE-driven UI will not update mid-session. Where public visibility is available, use it for those flows only when the user authorizes public access; otherwise use direct authenticated E2E coverage where available or test the streaming path at the unit/integration layer.",
     examples: [
       "const b = await env.BROWSER.launch({ scriptName: \"web-app\", path: \"/\" });\ntry {\n  await b.fill(\"#todo-input\", \"buy milk\");\n  await b.click(\"button[type=submit]\");\n  await b.waitForText(\"buy milk\");\n  const count = await b.count(\".todo-item\");\n  const logs = await b.logs();\n  console.log({ count, pageErrors: logs.pageErrors });\n} finally {\n  await b.close();\n}",
     ],

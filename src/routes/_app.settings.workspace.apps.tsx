@@ -29,6 +29,7 @@ import { getPreferredAppUrl } from '@/lib/app-url';
 import { refreshWorkerScriptCustomDomainStates } from '@/lib/custom-domain.server';
 import { loadUserProfileSummaries } from '@/lib/user-profiles.server';
 import type { WorkerScriptWithCreator } from '@/types';
+import { isSelfhostRuntime } from '@/lib/selfhost-runtime';
 
 interface AppRow extends WorkerScriptWithCreator {
   workspace_name: string;
@@ -120,7 +121,14 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const orgSlug = authContext.currentOrg.slug;
 
   if (!workspaceId) {
-    return { apps: [] as AppRow[], hasWorkspace: false, filter, orgSlug, orgCustomDomain: null };
+    return {
+      apps: [] as AppRow[],
+      hasWorkspace: false,
+      filter,
+      orgSlug,
+      orgCustomDomain: null,
+      selfhostRuntime: isSelfhostRuntime(env),
+    };
   }
 
   const workspaces = authContext.workspaces ?? [];
@@ -163,11 +171,24 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     };
   });
 
-  return { apps, hasWorkspace: true, filter, orgSlug, orgCustomDomain: null };
+  return {
+    apps,
+    hasWorkspace: true,
+    filter,
+    orgSlug,
+    orgCustomDomain: null,
+    selfhostRuntime: isSelfhostRuntime(env),
+  };
 }
 
 export default function WorkspaceAppsPage() {
-  const { apps, hasWorkspace, orgSlug, orgCustomDomain } = useLoaderData<typeof loader>();
+  const {
+    apps,
+    hasWorkspace,
+    orgSlug,
+    orgCustomDomain,
+    selfhostRuntime,
+  } = useLoaderData<typeof loader>();
   const [searchParams, setSearchParams] = useSearchParams();
   const fetcher = useFetcher<{ success?: boolean; error?: string }>();
   const [deleteTarget, setDeleteTarget] = useState<AppRow | null>(null);
@@ -201,7 +222,9 @@ export default function WorkspaceAppsPage() {
     <div className="space-y-6">
       <SettingsHeader
         title="Apps"
-        description="View and manage deployed apps across workspaces."
+        description={selfhostRuntime
+          ? 'View and manage apps protected by your deployment SSO.'
+          : 'View and manage deployed apps across workspaces.'}
       />
       <Separator />
 
@@ -225,7 +248,7 @@ export default function WorkspaceAppsPage() {
               <TableHead>Created By</TableHead>
               <TableHead>Created</TableHead>
               <TableHead>Last Modified</TableHead>
-              <TableHead>Visibility</TableHead>
+              {!selfhostRuntime ? <TableHead>Visibility</TableHead> : null}
               <TableHead></TableHead>
             </TableRow>
           </TableHeader>
@@ -256,11 +279,13 @@ export default function WorkspaceAppsPage() {
                 <TableCell className="text-muted-foreground text-sm">
                   {formatDate(app.updated_at)}
                 </TableCell>
-                <TableCell>
-                  <Badge variant={app.is_public ? 'secondary' : 'outline'}>
-                    {app.is_public ? 'Public' : 'Private'}
-                  </Badge>
-                </TableCell>
+                {!selfhostRuntime ? (
+                  <TableCell>
+                    <Badge variant={app.is_public ? 'secondary' : 'outline'}>
+                      {app.is_public ? 'Public' : 'Private'}
+                    </Badge>
+                  </TableCell>
+                ) : null}
                 <TableCell>
                   <div className="flex items-center gap-1">
                     <Button

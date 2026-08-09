@@ -329,6 +329,11 @@ Rules:
     Assertions:
       - Assert: !Equals [!Ref AuthProvider, bundled-pomerium]
         AssertDescription: automatic and provided TLS require bundled-pomerium authentication.
+  ExternalTlsRequiresRestrictedOrigin:
+    RuleCondition: !Equals [!Ref TlsMode, external]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref WebIngressCidr, "0.0.0.0/0"]]
+        AssertDescription: External TLS requires WebIngressCidr to be restricted to the trusted upstream proxy.
   CloudflareAccessRequiresSettings:
     RuleCondition: !Equals [!Ref AuthProvider, cloudflare-access]
     Assertions:

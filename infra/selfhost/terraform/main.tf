@@ -154,6 +154,15 @@ resource "aws_security_group" "selfhost" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  lifecycle {
+    precondition {
+      condition = var.tls_mode != "external" || alltrue([
+        for cidr in var.web_ingress_cidrs : cidr != "0.0.0.0/0"
+      ])
+      error_message = "external TLS requires web_ingress_cidrs to contain only trusted upstream proxy CIDRs, not 0.0.0.0/0."
+    }
+  }
+
   tags = local.common_tags
 }
 

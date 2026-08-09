@@ -6536,6 +6536,37 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(subagentPrompt).toContain('Deployed-app CONNECTIONS binding is disabled on this deployment');
   });
 
+  it('tells primary and isolated agents that self-host app access is fixed to SSO', async () => {
+    const context = {
+      orgId: 'org1',
+      workspaceId: 'workspace1',
+      threadId: 'thread1',
+      userId: 'user1',
+    };
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.env = { CF_ACCOUNT_ID: 'selfhost' };
+    fake.ctx = {
+      exports: {
+        CodeModeToolsBinding: vi.fn(() => ({ callTool: vi.fn() })),
+      },
+    };
+
+    const prompt = ChatThreadDO.prototype['createPiSystemPrompt'].call(fake, context);
+    expect(prompt).toContain('There is no per-app public/private setting');
+    expect(prompt).toContain('Pomerium or Cloudflare Access SSO policy');
+    expect(prompt).not.toContain('public publishing, schedules, visibility changes');
+
+    const subagentPrompt = await ChatThreadDO.prototype['createPiSubagentSystemPrompt'].call(
+      fake,
+      context,
+      false,
+    );
+    expect(subagentPrompt).toContain('There is no per-app public/private setting');
+
+    const tools = ChatThreadDO.prototype['createPiToolDefinitions'].call(fake, context);
+    expect(tools.map((tool: any) => tool.name)).not.toContain('set_app_visibility');
+  });
+
   it('tells isolated subagents to hand external research back to the primary agent', async () => {
     const context = {
       orgId: 'org1',

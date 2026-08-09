@@ -1,14 +1,18 @@
 import { describe, expect, it, vi } from "vitest";
 import { env } from "cloudflare:test";
 import {
+  createAuthState,
   createDispatcherSession,
   createWorkerAuthToken,
+  getAuthState,
   getDispatcherSession,
   isWorkerAuthCallbackOriginValid,
   touchDispatcherSession,
+  validateAndConsumeAuthState,
   validateAndConsumeAuthToken,
   validateWorkerSessionForOrg,
 } from "../src/worker-auth";
+import { handleWorkerAuth } from "../src/routes/worker-auth";
 import { createOrg, createUser, type TestEnv } from "./test-helpers";
 import type { OrgSsoConfig } from "../src/org-sso";
 
@@ -25,6 +29,43 @@ function constraints(expiresAt: number | null = Date.now() + 60 * 60 * 1000) {
 }
 
 describe("private-app constrained sessions", () => {
+  it("keeps auth state available until the authenticated continuation consumes it", async () => {
+    const state = await createAuthState(testEnv.APP_KV, {
+      return_url: "https://private-app.example.test",
+      script_name: "private-app",
+      required_org_id: "org-1",
+    });
+
+    await expect(getAuthState(testEnv.APP_KV, state)).resolves.toMatchObject({
+      script_name: "private-app",
+      required_org_id: "org-1",
+    });
+    await expect(getAuthState(testEnv.APP_KV, state)).resolves.not.toBeNull();
+    await expect(validateAndConsumeAuthState(testEnv.APP_KV, state)).resolves.not.toBeNull();
+    await expect(getAuthState(testEnv.APP_KV, state)).resolves.toBeNull();
+  });
+
+  it("preserves the app-auth continuation when login is required", async () => {
+    const url = new URL("https://camel.example.test/auth/worker?state=state-1");
+    const kvGet = vi.fn();
+    const response = await handleWorkerAuth({
+      req: new Request(url),
+      url,
+      env: {
+        TOKEN_SIGNING_SECRET: "test-secret",
+        APP_KV: { get: kvGet },
+      },
+    } as never);
+
+    expect(response.status).toBe(302);
+    const location = new URL(response.headers.get("Location")!);
+    expect(location.pathname).toBe("/login");
+    expect(location.searchParams.get("redirect")).toBe(
+      "/auth/worker?state=state-1",
+    );
+    expect(kvGet).not.toHaveBeenCalled();
+  });
+
   it("binds one-time tokens to the exact dispatcher callback origin", () => {
     expect(isWorkerAuthCallbackOriginValid(
       "https://private-app-acme85.camelai.app",

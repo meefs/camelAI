@@ -265,11 +265,18 @@ await env.SCREENSHOT.capture({ scriptName: "my-app", path: "/" });
 await tools.take_screenshot({ script_name: "my-app", path: "/" });
 ```
 
-This uses Cloudflare Browser Rendering through the platform binding, including for private apps. Prefer unit/integration tests with Vitest for logic and API behavior.
+This uses Cloudflare Browser Rendering through the platform binding, including
+for access-controlled apps. Prefer unit/integration tests with Vitest for logic
+and API behavior.
 
 ## Interactive Browser Testing
 
-For requested or task-required end-to-end checks of a deployed app — clicking buttons, filling forms, asserting rendered text, catching console errors — launch an interactive browser session in js_exec with `env.BROWSER`. Do not add this pass automatically after a successful deploy. It runs on Cloudflare Browser Rendering (private apps included) and exposes a Playwright-style API:
+For requested or task-required end-to-end checks of a deployed app — clicking
+buttons, filling forms, asserting rendered text, catching console errors —
+launch an interactive browser session in js_exec with `env.BROWSER`. Do not add
+this pass automatically after a successful deploy. It runs on Cloudflare
+Browser Rendering (access-controlled apps included) and exposes a
+Playwright-style API:
 
 ```javascript
 const b = await env.BROWSER.launch({ scriptName: "my-app", path: "/" });
@@ -289,7 +296,14 @@ try {
 
 Other session methods: `goto`, `type`, `press`, `select`, `hover`, `waitForSelector`, `waitForFunction`, `waitForTimeout` (fixed sleep in ms — prefer the condition-based waits), `evaluate` (run JS in the page), `textContent` (no selector returns visible body text), `hasText` (immediate boolean check), `getAttribute`, `exists`, `content` (HTML), `url`, `title`, `screenshot`. `press(key)` dispatches to the currently focused element/page; pass `{ selector }` to focus first, and verify its effect from UI state rather than assuming an application listener handled it. Run `await tools.help({ runtime: "env.BROWSER" })` for full usage. Keep the whole test inside one js_exec call, always `close()` the session, and note sessions auto-close after 5 minutes.
 
-**Limitation:** for **private** apps, server-streamed responses (Server-Sent Events / streaming `fetch`) are buffered by the session's request proxy, so realtime/SSE-driven UI updates won't arrive mid-session. Standard request/response and interaction testing works normally; to exercise realtime/streaming flows, test against a public deploy of the app.
+**Limitation:** for **access-controlled** apps, server-streamed responses (Server-Sent
+Events / streaming `fetch`) are buffered by the session's request proxy, so
+realtime/SSE-driven UI updates will not arrive mid-session. Standard
+request/response and interaction testing works normally. On hosted camelAI, a
+public deploy avoids this proxy limitation only when the user has authorized
+public visibility. Self-hosted enterprise apps cannot be made public; use
+direct authenticated browser/E2E coverage where available, or unit/integration
+tests for the streaming path.
 
 ### When to Use Visual Checks vs Unit Tests
 

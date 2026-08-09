@@ -374,8 +374,10 @@ terminates on the VM, `selfhost:up` also adds
 `docker-compose.selfhost.pomerium-loopback.yml` so the app retrieves signing
 keys through the VM's local HTTPS endpoint. Pomerium runs in all-in-one mode
 with a persistent file-backed databroker. The control-plane hostname requires
-an authenticated user and forwards a signed `X-Pomerium-Jwt-Assertion`;
-deployed app wildcard hostnames remain public and route separately.
+an authenticated user and forwards a signed `X-Pomerium-Jwt-Assertion`.
+Deployed app wildcard hostnames route separately but also require an
+authenticated Pomerium user; self-host deployments have no per-app public
+access mode.
 
 Pomerium is pinned by immutable digest. Its client, cookie, and shared secrets
 are passed through mounted files rather than container environment values.

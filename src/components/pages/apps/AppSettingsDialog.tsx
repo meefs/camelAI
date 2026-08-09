@@ -30,6 +30,7 @@ interface AppSettingsDialogProps {
   isAdmin: boolean;
   hostname?: AppUrlInput;
   orgCustomDomain?: string | null;
+  visibilityConfigurable?: boolean;
   onSuccess: () => void;
 }
 
@@ -85,6 +86,7 @@ export function AppSettingsDialog({
   isAdmin,
   hostname,
   orgCustomDomain,
+  visibilityConfigurable = true,
   onSuccess,
 }: AppSettingsDialogProps) {
   const fetcher = useFetcher<{ success?: boolean; error?: string }>();
@@ -228,7 +230,7 @@ export function AppSettingsDialog({
                 </div>
               </div>
 
-              <div className="space-y-3">
+              {visibilityConfigurable ? <div className="space-y-3">
                 <p className="text-sm font-medium">Access</p>
                 <div className="rounded-lg border p-4">
                   <div className="flex items-start justify-between gap-4">
@@ -254,7 +256,7 @@ export function AppSettingsDialog({
                     />
                   </div>
                 </div>
-              </div>
+              </div> : null}
 
               <div className="space-y-3">
                 <p className="text-sm font-medium text-destructive">Danger Zone</p>
@@ -292,11 +294,13 @@ export function AppSettingsDialog({
                 onClick={handleClose}
                 disabled={submitting}
               >
-                Cancel
+                {visibilityConfigurable ? 'Cancel' : 'Close'}
               </Button>
-              <Button type="submit" disabled={!isAdmin || submitting}>
-                {submitting ? 'Saving...' : 'Save Changes'}
-              </Button>
+              {visibilityConfigurable ? (
+                <Button type="submit" disabled={!isAdmin || submitting}>
+                  {submitting ? 'Saving...' : 'Save Changes'}
+                </Button>
+              ) : null}
             </DialogFooter>
           </form>
         </DialogContent>

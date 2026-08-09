@@ -905,11 +905,10 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
   ),
   codeModePassthroughTool(
     "set_preview",
-    "Manually set the active preview to exactly one existing app or file. deploy_project already previews a successful new deploy, so a follow-up call is not required, but this tool remains available whenever you explicitly want to reopen, switch, or override the preview. App example: { app_name: 'poll-maker' }. Durable workspace file example: { location: 'workspace', path: '/notes.md' }. DO-backed project file example: { location: 'project', project: 'menu-app', path: 'index.html' }. R2 file example: { location: 'r2', path: 'outputs/report.html' }. Successful file previews are validated before the preview changes. Arguments: { script_name?, app_name?, is_public?, path?, content_type?, location?, project? }.",
+    "Manually set the active preview to exactly one existing app or file. deploy_project already previews a successful new deploy, so a follow-up call is not required, but this tool remains available whenever you explicitly want to reopen, switch, or override the preview. App example: { app_name: 'poll-maker' }. Durable workspace file example: { location: 'workspace', path: '/notes.md' }. DO-backed project file example: { location: 'project', project: 'menu-app', path: 'index.html' }. R2 file example: { location: 'r2', path: 'outputs/report.html' }. Successful file previews are validated before the preview changes. Arguments: { script_name?, app_name?, path?, content_type?, location?, project? }.",
     Type.Object({
       script_name: Type.Optional(Type.String()),
       app_name: Type.Optional(Type.String()),
-      is_public: Type.Optional(Type.Boolean()),
       path: Type.Optional(Type.String()),
       content_type: Type.Optional(Type.String()),
       location: Type.Optional(Type.Union([
@@ -2810,6 +2809,9 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         definition.name !== "send_email" || !isSelfhostRuntime(this.env)
       ))
       .filter((definition) => (
+        definition.name !== "set_app_visibility" || !isSelfhostRuntime(this.env)
+      ))
+      .filter((definition) => (
         this.ctx?.props?.allowWebTools !== false || !AGENT_WEB_TOOL_NAMES.has(definition.name)
       ));
   }
@@ -2897,6 +2899,11 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   async callTool(name: string, rawArgs: unknown = {}): Promise<unknown> {
     if (name === "send_email" && isSelfhostRuntime(this.env)) {
       throw new Error(SELFHOST_OUTBOUND_EMAIL_DISABLED_MESSAGE);
+    }
+    if (name === "set_app_visibility" && isSelfhostRuntime(this.env)) {
+      throw new Error(
+        "App visibility is fixed to private by the self-host SSO policy",
+      );
     }
     if (this.ctx?.props?.allowWebTools === false && AGENT_WEB_TOOL_NAMES.has(name)) {
       throw new Error(`${name} is reserved for the Research agent; delegate web lookup to Research instead`);
@@ -3418,7 +3425,11 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       const target: PreviewTarget = {
         kind: "app",
         scriptName,
-        isPublic: typeof args.is_public === "boolean" ? args.is_public : script.is_public,
+        isPublic: isSelfhostRuntime(this.env)
+          ? false
+          : typeof args.is_public === "boolean"
+            ? args.is_public
+            : script.is_public,
       };
       await this.chatThreadStub.setPreviewTarget(target);
       return { success: true, target, app: { name: scriptName, url: await this.getAppUrl(script), is_public: target.isPublic } };
@@ -3552,7 +3563,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       apps: await Promise.all(scripts.map(async (script) => ({
         name: script.script_name,
         url: await this.getAppUrl(script),
-        is_public: script.is_public,
+        ...(!isSelfhostRuntime(this.env) ? { is_public: script.is_public } : {}),
         created_by: script.created_by,
         created_at: new Date(script.created_at).toISOString(),
         updated_at: new Date(script.updated_at).toISOString(),
@@ -3565,6 +3576,11 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   }
 
   private async setAppVisibility(args: Record<string, unknown>): Promise<unknown> {
+    if (isSelfhostRuntime(this.env)) {
+      throw new Error(
+        "App visibility is fixed to private by the self-host SSO policy",
+      );
+    }
     const scriptName = typeof args.script_name === "string" ? args.script_name.trim() : "";
     if (!scriptName) throw new Error("script_name is required");
     if (typeof args.is_public !== "boolean") throw new Error("is_public must be a boolean");
