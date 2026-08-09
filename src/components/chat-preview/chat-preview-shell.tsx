@@ -19,6 +19,17 @@ export const DEFAULT_NOTEBOOK_PREVIEW_STATE: NotebookPreviewLoadState = {
   status: "idle",
 };
 
+export const DEPLOYED_APP_PREVIEW_SANDBOX = [
+  "allow-downloads",
+  "allow-forms",
+  "allow-modals",
+  "allow-popups",
+  "allow-popups-to-escape-sandbox",
+  "allow-same-origin",
+  "allow-scripts",
+  "allow-top-navigation-by-user-activation",
+].join(" ");
+
 export function coercePreviewTarget(value: unknown): PreviewTarget | null {
   if (!value || typeof value !== "object") return null;
   const record = value as Record<string, unknown>;
@@ -369,7 +380,7 @@ export const PreviewPanelShell = memo(function PreviewPanelShell({
                 ref={iframeRef}
                 key={activeTabState.iframeKey}
                 src={activeTabState.appPreviewUrl || "about:blank"}
-                sandbox="allow-downloads allow-forms allow-modals allow-popups allow-same-origin allow-scripts"
+                sandbox={DEPLOYED_APP_PREVIEW_SANDBOX}
                 className="h-full w-full bg-white"
                 title="Deployed App Preview"
               />

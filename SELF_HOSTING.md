@@ -339,12 +339,13 @@ response policy there. Do not create an authentication bypass for either
 wildcard; camelAI also treats every self-host app as private at the dispatcher
 in case stale app metadata says it was public.
 
-The preview pane is not a supported container for full-page, redirect-based
-sign-in. Identity providers commonly refuse to render their login pages in an
-iframe, and browser third-party-cookie restrictions can also break the callback
-session. A preview works when the browser already has a usable proxy session
-for the app hostname; otherwise use **Open in new tab** to establish the SSO
-session and test the app.
+The preview sandbox lets user-initiated popups escape into a normal top-level
+window and permits top-level navigation only after a user gesture. This supports
+popup-based OAuth and explicit "continue in this tab" flows without allowing a
+deployed app to redirect camelAI automatically. It does not override an identity
+provider that refuses to render its login page in an iframe. Browser
+third-party-cookie restrictions can also affect embedded sessions. Use **Open
+in new tab** when a provider requires an ordinary full-page redirect.
 
 Do not add a fake local SMTP service, silently discard messages, or accept
 unencrypted SMTP credentials merely to make these flows appear successful.

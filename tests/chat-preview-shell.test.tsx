@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   coercePreviewTarget,
   DEFAULT_NOTEBOOK_PREVIEW_STATE,
+  DEPLOYED_APP_PREVIEW_SANDBOX,
   PreviewPanelShell,
   type TabRenderState,
 } from "@/components/chat-preview/chat-preview-shell";
@@ -149,6 +150,19 @@ describe("PreviewPanelShell", () => {
     expect(container.querySelector("iframe")).toHaveAttribute(
       "src",
       "https://demo.example.test",
+    );
+    expect(container.querySelector("iframe")).toHaveAttribute(
+      "sandbox",
+      DEPLOYED_APP_PREVIEW_SANDBOX,
+    );
+    expect(DEPLOYED_APP_PREVIEW_SANDBOX).toContain(
+      "allow-popups-to-escape-sandbox",
+    );
+    expect(DEPLOYED_APP_PREVIEW_SANDBOX).toContain(
+      "allow-top-navigation-by-user-activation",
+    );
+    expect(DEPLOYED_APP_PREVIEW_SANDBOX).not.toMatch(
+      /(?:^| )allow-top-navigation(?: |$)/,
     );
     expect(fetchMock).not.toHaveBeenCalled();
   });
