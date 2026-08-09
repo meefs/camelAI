@@ -32,7 +32,10 @@ import {
 import { truncateThreadPreviewText } from "./thread-preview";
 import { waitUntil } from "./wait-until";
 import { deriveCheapRecentActivityCounts } from "./admin-recent-activity";
-import { deleteDispatchScript } from "../../workers/main/src/cf-api-proxy";
+import {
+  deleteDeployedAppRuntime,
+  getDispatchScriptName,
+} from "./deployed-app-delete.server";
 import {
   getAppIndexDatabase,
   getAppIndexReadDatabase,
@@ -1171,34 +1174,16 @@ export async function hardDeleteAdminOrgWithEnv(
 
   // Delete deployed dispatch scripts first to avoid orphaned public apps.
   if (scriptNames.length > 0) {
-    const accountId = env.CF_ACCOUNT_ID;
-    const dispatchNamespace = env.CF_DISPATCH_NAMESPACE;
-    const apiToken = env.CF_API_TOKEN;
-
-    if (!accountId || !dispatchNamespace || !apiToken) {
-      throw new Error(
-        "Cannot delete org with deployed apps: missing Cloudflare dispatch credentials",
-      );
-    }
-
     const failedDeletes: string[] = [];
     await Promise.all(
       scriptNames.map(async (scriptName) => {
-        const candidateScriptNames = new Set<string>([
-          `${orgInfo.slug}--${scriptName}`,
-          scriptName,
-        ]);
-
-        for (const candidateScriptName of candidateScriptNames) {
-          const ok = await deleteDispatchScript(
-            accountId,
-            dispatchNamespace,
-            candidateScriptName,
-            apiToken,
-          );
-          if (!ok) {
-            failedDeletes.push(candidateScriptName);
-          }
+        try {
+          await deleteDeployedAppRuntime(env, {
+            scriptName,
+            orgSlug: orgInfo.slug,
+          });
+        } catch {
+          failedDeletes.push(scriptName);
         }
       }),
     );
@@ -1272,7 +1257,7 @@ export async function hardDeleteAdminOrgWithEnv(
 
   // Best-effort cleanup of related KV indexes and sessions.
   const dispatchNames = scriptNames.map(
-    (scriptName) => `${orgInfo.slug}--${scriptName}`,
+    (scriptName) => getDispatchScriptName(scriptName, orgInfo.slug),
   );
   await Promise.all([
     authEnv.APP_KV.delete(`${SPEND_PREFIX}${orgId}`),

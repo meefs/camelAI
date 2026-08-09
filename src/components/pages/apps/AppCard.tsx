@@ -30,7 +30,7 @@ interface AppCardProps {
   showWorkspaceBadge?: boolean;
   isAdmin: boolean;
   hostname?: AppUrlInput;
-  orgSlug?: string;
+  orgSlug: string;
   orgCustomDomain?: string | null;
   now?: number;
   onOpenSettings: (app: WorkerScriptWithCreator) => void;

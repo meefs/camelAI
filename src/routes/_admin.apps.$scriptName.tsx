@@ -4,7 +4,7 @@ import { requireSuperuser, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import * as authDO from '@/lib/auth-do.server';
 import { setWorkerScriptPublic, deleteWorkerScript } from '@/lib/auth-do';
-import { deleteDispatchScript } from '../../workers/main/src/cf-api-proxy';
+import { deleteDeployedAppRuntime } from '@/lib/deployed-app-delete.server';
 import { getVanityDomain } from '@/lib/app-url.server';
 import { buildAppLabel } from '@/lib/app-url';
 import { AdminPageHeader } from '@/components/admin/admin-page-header';
@@ -60,30 +60,24 @@ export async function action({ request, context, params }: Route.ActionArgs) {
 
   if (intent === 'deleteApp') {
     const env = getEnv(context);
-    const accountId = env.CF_ACCOUNT_ID;
-    const dispatchNamespace = env.CF_DISPATCH_NAMESPACE;
-    const apiToken = env.CF_API_TOKEN;
-
-    if (!accountId || !dispatchNamespace || !apiToken) {
-      console.error('[admin/deleteApp] Missing Cloudflare credentials');
-      return { error: 'Server configuration error: Missing Cloudflare credentials' };
+    if (!app.org_slug) {
+      return { error: 'Organization slug is required to delete this app' };
     }
 
-    // First, delete from Cloudflare Workers for Platforms
-    const cfDeleteSuccess = await deleteDispatchScript(
-      accountId,
-      dispatchNamespace,
-      decodedScriptName,
-      apiToken
-    );
+    try {
+      await deleteDeployedAppRuntime(env, {
+        scriptName: decodedScriptName,
+        orgSlug: app.org_slug,
+      });
 
-    if (!cfDeleteSuccess) {
-      return { error: 'Failed to delete app from Cloudflare' };
+      // Then, delete from database and KV index
+      await deleteWorkerScript(authEnv, app.org_id, decodedScriptName, 'system-admin');
+      return redirect('/qaml-backdoor/apps');
+    } catch (error) {
+      return {
+        error: error instanceof Error ? error.message : 'Failed to delete app',
+      };
     }
-
-    // Then, delete from database and KV index
-    await deleteWorkerScript(authEnv, app.org_id, decodedScriptName, 'system-admin');
-    return redirect('/qaml-backdoor/apps');
   }
 
   return { error: 'Unknown action' };

@@ -8,7 +8,7 @@ import {
   getWorkerScript,
   deleteWorkerScript,
 } from '@/lib/auth-do';
-import { deleteDispatchScript } from '../../workers/main/src/cf-api-proxy';
+import { deleteDeployedAppRuntime } from '@/lib/deployed-app-delete.server';
 import { Separator } from '@/components/ui/separator';
 import { SettingsHeader } from '@/components/settings/settings-header';
 import {
@@ -73,14 +73,6 @@ export async function action({ request, context }: Route.ActionArgs) {
       return { error: 'Script name is required' };
     }
 
-    const accountId = env.CF_ACCOUNT_ID;
-    const dispatchNamespace = env.CF_DISPATCH_NAMESPACE;
-    const apiToken = env.CF_API_TOKEN;
-
-    if (!accountId || !dispatchNamespace || !apiToken) {
-      return { error: 'Server configuration error: Missing Cloudflare credentials' };
-    }
-
     try {
       // Verify the script belongs to the current org
       const script = await getWorkerScript(
@@ -93,17 +85,10 @@ export async function action({ request, context }: Route.ActionArgs) {
         return { error: 'App not found or you do not have permission to delete it' };
       }
 
-      // Delete from Cloudflare first
-      const cfDeleteSuccess = await deleteDispatchScript(
-        accountId,
-        dispatchNamespace,
+      await deleteDeployedAppRuntime(env, {
         scriptName,
-        apiToken
-      );
-
-      if (!cfDeleteSuccess) {
-        return { error: 'Failed to delete app from Cloudflare. Please try again.' };
-      }
+        orgSlug: authContext.currentOrg.slug,
+      });
 
       // Delete from database and KV index
       await deleteWorkerScript(

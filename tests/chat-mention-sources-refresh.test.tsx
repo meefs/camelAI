@@ -30,7 +30,13 @@ vi.mock('@/lib/use-pi-chat-stream', () => ({
 }));
 
 import Chat from '@/components/Chat';
-import type { AtMentionEntity, Integration, Message, PreviewTarget } from '@/types';
+import type {
+  AtMentionEntity,
+  Integration,
+  Message,
+  PreviewTarget,
+  WorkerScriptWithCreator,
+} from '@/types';
 
 const { latestPreviewContextValue } = vi.hoisted(() => ({
   latestPreviewContextValue: {
@@ -170,7 +176,17 @@ vi.mock('@/components/message-bubble', () => ({
 }));
 
 vi.mock('@/components/welcome-screen', () => ({
-  WelcomeScreen: () => null,
+  WelcomeScreen: ({
+    allApps,
+    onStartChatForApp,
+  }: {
+    allApps: WorkerScriptWithCreator[] | Promise<WorkerScriptWithCreator[]>;
+    onStartChatForApp: (app: WorkerScriptWithCreator) => void;
+  }) => Array.isArray(allApps) && allApps[0] ? (
+    <button type="button" onClick={() => onStartChatForApp(allApps[0]!)}>
+      Edit {allApps[0].script_name}
+    </button>
+  ) : null,
 }));
 
 vi.mock('@/components/floating-todo', () => ({
@@ -363,6 +379,59 @@ describe('Chat mention source refresh', () => {
         unobserve() {}
         disconnect() {}
       },
+    );
+  });
+
+  it('starts an app-edit chat with the namespaced app URL from welcome data', () => {
+    const app: WorkerScriptWithCreator = {
+      script_name: 'token-trail',
+      workspace_id: 'ws-1',
+      created_by: 'user-1',
+      created_at: 1,
+      updated_at: 1,
+      is_public: false,
+      preview_key: null,
+      preview_updated_at: null,
+      preview_status: null,
+      preview_error: null,
+      config_path: null,
+      project_id: 'project-1',
+      custom_domain_hostname: null,
+      custom_domain_cf_hostname_id: null,
+      custom_domain_status: null,
+      custom_domain_ssl_status: null,
+      custom_domain_error: null,
+      custom_domain_updated_at: null,
+    };
+
+    render(
+      <Chat
+        workspaceId="ws-1"
+        hostname="camelai.dev"
+        orgSlug="valmark"
+        welcomeData={{
+          userId: 'user-1',
+          userName: 'Geoff',
+          allApps: [app],
+          connections: [],
+          projects: [],
+          recentThreads: [],
+          renderedAt: 1,
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit token-trail' }));
+
+    expect(mockSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        intent: 'createThreadAndStart',
+        previewApps: 'token-trail',
+        firstMessage: expect.stringContaining(
+          'https://token-trail-valmark.camelai.app',
+        ),
+      }),
+      { method: 'post', action: '/chat' },
     );
   });
 

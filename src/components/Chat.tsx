@@ -315,7 +315,7 @@ function getThreadRunningState(
   return { isRunning: false, startedAt: null };
 }
 
-interface ChatProps {
+interface ChatBaseProps {
   threadId?: string;
   workspaceId: string;
   /**
@@ -355,8 +355,6 @@ interface ChatProps {
   initialActiveTabId?: string | null;
   /** Hostname from server for consistent URL generation (avoids hydration mismatch) */
   hostname?: AppUrlInput;
-  /** Org slug for namespaced app URLs */
-  orgSlug?: string;
   /** True when messages are still loading (deferred data) */
   isLoadingMessages?: boolean;
   /** Superuser admin read-only viewer */
@@ -379,17 +377,32 @@ interface ChatProps {
    * whatever the loader/broadcast says instead).
    */
   bridgedStreamingMessageId?: string | null;
-  welcomeData?: {
-    userId: string | null;
-    userName: string | null;
-    allApps: WorkerScriptWithCreator[] | Promise<WorkerScriptWithCreator[]>;
-    connections: Integration[] | Promise<Integration[]>;
-    projects: MentionableProject[] | Promise<MentionableProject[]>;
-    recentThreads: Thread[] | Promise<Thread[]>;
-    renderedAt: number;
-    group?: GroupNewChatPayload;
-  };
 }
+
+interface ChatWelcomeData {
+  userId: string | null;
+  userName: string | null;
+  allApps: WorkerScriptWithCreator[] | Promise<WorkerScriptWithCreator[]>;
+  connections: Integration[] | Promise<Integration[]>;
+  projects: MentionableProject[] | Promise<MentionableProject[]>;
+  recentThreads: Thread[] | Promise<Thread[]>;
+  renderedAt: number;
+  group?: GroupNewChatPayload;
+}
+
+type ChatProps = ChatBaseProps &
+  (
+    | {
+        /** New-chat app actions require the slug to build their app URL. */
+        welcomeData: ChatWelcomeData;
+        orgSlug: string;
+      }
+    | {
+        welcomeData?: undefined;
+        /** Existing/admin thread views may not have an owning org anymore. */
+        orgSlug?: string;
+      }
+  );
 
 interface CreditPacksResourceData {
   packs: TopUpDialogPack[];
@@ -780,6 +793,9 @@ export default function Chat({
     error?: string;
   }>();
   const { user, currentWorkspace, currentOrg, orgs } = useAuthData();
+  // Route data is authoritative, while auth context is a safe fallback during
+  // client transitions and for older cached route payloads.
+  const resolvedOrgSlug = orgSlug ?? currentOrg?.slug;
   const { isSidebarBillingDialogOpen } = useBillingDialogPresence();
   const isMobile = useIsMobile();
   const resolvedWorkspaceId = readOnly
@@ -1923,7 +1939,9 @@ export default function Chat({
   const IFRAME_MAX_RETRIES = 3;
   const IFRAME_RETRY_DELAY_MS = 2000;
   useEffect(() => {
-    const appOriginContext = hostname && orgSlug ? { hostname, orgSlug } : null;
+    const appOriginContext = hostname && resolvedOrgSlug
+      ? { hostname, orgSlug: resolvedOrgSlug }
+      : null;
 
     function handlePreviewError(event: MessageEvent) {
       if (
@@ -1967,7 +1985,7 @@ export default function Chat({
 
     window.addEventListener("message", handlePreviewError);
     return () => window.removeEventListener("message", handlePreviewError);
-  }, [hostname, orgSlug]);
+  }, [hostname, resolvedOrgSlug]);
 
   const clearIframeTimersForTab = useCallback((tabId: string) => {
     const refreshTimeout = iframeRefreshTimeoutsRef.current[tabId];
@@ -4136,14 +4154,14 @@ export default function Chat({
         );
         return;
       }
-      if (!orgSlug) {
+      if (!resolvedOrgSlug) {
         toast.error("Organization slug is unavailable");
         return;
       }
 
       if (isSubmittingNewThread) return;
 
-      const appUrl = getAppUrl(app.script_name, hostname, orgSlug);
+      const appUrl = getAppUrl(app.script_name, hostname, resolvedOrgSlug);
       const systemMessage = buildAppWorkSystemMessage({
         scriptName: app.script_name,
         appUrl,
@@ -4166,7 +4184,7 @@ export default function Chat({
     },
     [
       hostname,
-      orgSlug,
+      resolvedOrgSlug,
       resolvedWorkspaceId,
       submit,
       isSubmittingNewThread,
@@ -4521,7 +4539,7 @@ export default function Chat({
     tabNotebookViewModes,
     tabFileViewModes,
     hostname,
-    orgSlug,
+    orgSlug: resolvedOrgSlug,
   });
 
   const handlePreviewRefresh = useCallback(() => {

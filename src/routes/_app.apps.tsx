@@ -9,7 +9,7 @@ import {
   deleteWorkerScript,
   getWorkerScript,
 } from '@/lib/auth-do';
-import { deleteDispatchScript } from '../../workers/main/src/cf-api-proxy';
+import { deleteDeployedAppRuntime } from '@/lib/deployed-app-delete.server';
 import * as chatDO from '@/lib/chat-do.server';
 import { refreshWorkerScriptCustomDomainStates } from '@/lib/custom-domain.server';
 import { getAppUrlContext } from '@/lib/app-url.server';
@@ -93,19 +93,6 @@ export async function action({ request, context }: Route.ActionArgs) {
       return { error: 'Script name is required' };
     }
 
-    const accountId = env.CF_ACCOUNT_ID;
-    const dispatchNamespace = env.CF_DISPATCH_NAMESPACE;
-    const apiToken = env.CF_API_TOKEN;
-
-    if (!accountId || !dispatchNamespace || !apiToken) {
-      console.error('[deleteApp] Missing Cloudflare credentials', {
-        hasAccountId: !!accountId,
-        hasDispatchNamespace: !!dispatchNamespace,
-        hasApiToken: !!apiToken,
-      });
-      return { error: 'Server configuration error: Missing Cloudflare credentials' };
-    }
-
     try {
       // First, verify the script belongs to the current org (without deleting)
       const script = await getWorkerScript(
@@ -122,21 +109,12 @@ export async function action({ request, context }: Route.ActionArgs) {
         return { error: 'App not found or you do not have permission to delete it' };
       }
 
-      // Delete from Cloudflare first - if this fails, user can retry
-      const cfDeleteSuccess = await deleteDispatchScript(
-        accountId,
-        dispatchNamespace,
+      // Remove the served runtime first so a metadata failure can be retried
+      // without leaving a public app orphaned.
+      await deleteDeployedAppRuntime(env, {
         scriptName,
-        apiToken
-      );
-
-      if (!cfDeleteSuccess) {
-        console.error('[deleteApp] Failed to delete from Cloudflare', {
-          scriptName,
-          orgId: authContext.currentOrg.id,
-        });
-        return { error: 'Failed to delete app from Cloudflare. Please try again.' };
-      }
+        orgSlug: authContext.currentOrg.slug,
+      });
 
       // Finally, delete from database and KV index
       await deleteWorkerScript(
