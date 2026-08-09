@@ -464,7 +464,17 @@ separate copy. Restore only into a stopped stack:
 bun run selfhost:restore -- .selfhost/backups/<timestamp>
 ```
 
-For a manual release upgrade, download `selfhost-release.json` from the matching
+Upgrade to the latest published release with:
+
+```bash
+bun run selfhost:upgrade
+```
+
+This resolves the latest GitHub release once and then pins the checkout and all
+eight image references to that release's immutable revision and digests. Use
+`bun run selfhost:upgrade -- --latest` when an explicit spelling is preferable.
+
+To select a specific release, download `selfhost-release.json` from the matching
 [GitHub Release](https://github.com/qaml-ai/camelAI/releases), keep it outside
 the repository checkout, and run:
 
@@ -508,13 +518,16 @@ command prints the exact explicit rollback command, which has this form:
 bun run selfhost:upgrade -- --rollback .selfhost/releases/<timestamp>
 ```
 
-Running `bun run selfhost:upgrade` without `--release` and `--manifest` only
-backs up and refreshes the current checkout and currently configured image
-references; it does not select a new release.
+To back up and reapply the current checkout and currently configured image
+references without selecting a new release, run `bun run selfhost:refresh`.
 
 AWS-provisioned hosts also install:
 
 ```bash
+# Upgrade to the latest published release:
+sudo camelai-selfhost-upgrade
+
+# Or select a specific release:
 sudo camelai-selfhost-upgrade \
   --release selfhost-vX.Y.Z \
   --manifest /secure/path/selfhost-release.json

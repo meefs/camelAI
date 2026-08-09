@@ -43,6 +43,7 @@ const [
   imageWorkflow,
   upScript,
   upgradeScript,
+  latestReleaseScript,
   upgradeBootstrapScript,
   backupScript,
   restoreScript,
@@ -66,6 +67,7 @@ const [
   read(".github/workflows/selfhost-images.yml"),
   read("scripts/selfhost-up.mjs"),
   read("scripts/selfhost-upgrade.mjs"),
+  read("scripts/selfhost-latest-release.mjs"),
   read("scripts/selfhost-upgrade-bootstrap.mjs"),
   read("scripts/selfhost-backup.mjs"),
   read("scripts/selfhost-restore.mjs"),
@@ -421,17 +423,12 @@ includesAll(
 includesAll(
   upgradeScript,
   [
+    "downloadLatestReleaseManifest",
+    "--latest",
+    "--refresh",
     "--release",
     "--manifest",
     "--rollback",
-    "SELFHOST_APP_IMAGE",
-    "SELFHOST_LOCAL_ARTIFACTS_IMAGE",
-    "SELFHOST_PROJECT_BUILD_IMAGE",
-    "SELFHOST_ANALYSIS_IMAGE",
-    "SELFHOST_DB_QUERY_IMAGE",
-    "SELFHOST_CONTAINER_EGRESS_IMAGE",
-    "SELFHOST_CADDY_IMAGE",
-    "SELFHOST_POMERIUM_IMAGE",
     "@sha256:",
     "snapshotReleaseState",
     "restoreReleaseState",
@@ -444,6 +441,35 @@ includesAll(
     "selfhost:container:smoke:",
   ],
   "self-host release upgrade helper",
+);
+includesAll(
+  latestReleaseScript,
+  [
+    "releases/latest/download/selfhost-release.json",
+    'redirect: "follow"',
+    "manifest.release",
+    "manifest.revision",
+    "SELFHOST_APP_IMAGE",
+    "SELFHOST_LOCAL_ARTIFACTS_IMAGE",
+    "SELFHOST_PROJECT_BUILD_IMAGE",
+    "SELFHOST_ANALYSIS_IMAGE",
+    "SELFHOST_DB_QUERY_IMAGE",
+    "SELFHOST_CONTAINER_EGRESS_IMAGE",
+    "SELFHOST_CADDY_IMAGE",
+    "SELFHOST_POMERIUM_IMAGE",
+    "@sha256:",
+  ],
+  "latest self-host release resolver",
+);
+assert(
+  packageJson.scripts?.["selfhost:upgrade"] ===
+    "node scripts/selfhost-upgrade.mjs",
+  "selfhost:upgrade must resolve the latest release by default",
+);
+assert(
+  packageJson.scripts?.["selfhost:refresh"] ===
+    "node scripts/selfhost-upgrade.mjs --refresh",
+  "selfhost:refresh must preserve the current-release refresh behavior",
 );
 includesAll(
   upgradeBootstrapScript,

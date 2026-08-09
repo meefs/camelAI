@@ -432,10 +432,21 @@ curl --fail --silent http://127.0.0.1:3001/api/selfhost/health
 bun run selfhost:doctor
 ```
 
-For a release upgrade, download the durable `selfhost-release.json` asset from
-the matching [GitHub Release](https://github.com/qaml-ai/camelAI/releases). The
-manifest is also retained as a workflow artifact for release engineering, but
-operators should use the release asset:
+Upgrade to the latest published self-host release with:
+
+```bash
+bun run selfhost:upgrade
+```
+
+The upgrader resolves GitHub's latest release once, then pins the checkout and
+all eight dependency images to the immutable revision and digests in that
+release's `selfhost-release.json`. `--latest` is also accepted explicitly.
+
+To select a particular version instead, download the durable
+`selfhost-release.json` asset from the matching
+[GitHub Release](https://github.com/qaml-ai/camelAI/releases). The manifest is
+also retained as a workflow artifact for release engineering, but operators
+should use the release asset:
 
 ```bash
 bun run selfhost:upgrade -- \
@@ -465,6 +476,13 @@ declaring success the helper waits for Compose health, runs the doctor, and
 executes the project, analysis, and database-query deep smokes.
 Normal upgrades re-exec the target checkout's upgrader before applying images,
 so the target release owns its manifest and migration rules.
+
+To back up and reapply the current checkout and its already configured image
+references without selecting a newer release, run:
+
+```bash
+bun run selfhost:refresh
+```
 
 The detailed Compose variables, reverse-proxy examples, backups, and provider
 configuration remain in [`infra/selfhost/README.md`](infra/selfhost/README.md).

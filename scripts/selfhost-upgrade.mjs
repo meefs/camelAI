@@ -14,21 +14,16 @@ import {
   writeEnvValue,
 } from "./selfhost-common.mjs";
 import { writeCaddyConfig } from "./selfhost-caddy-config.mjs";
+import {
+  downloadLatestReleaseManifest,
+  SELFHOST_IMAGE_ENV_BY_MANIFEST_KEY,
+} from "./selfhost-latest-release.mjs";
 import { writePomeriumConfig } from "./selfhost-pomerium-config.mjs";
-
-const IMAGE_ENV_BY_MANIFEST_KEY = {
-  app: "SELFHOST_APP_IMAGE",
-  "local-artifacts": "SELFHOST_LOCAL_ARTIFACTS_IMAGE",
-  "project-build": "SELFHOST_PROJECT_BUILD_IMAGE",
-  analysis: "SELFHOST_ANALYSIS_IMAGE",
-  "db-query": "SELFHOST_DB_QUERY_IMAGE",
-  "container-egress": "SELFHOST_CONTAINER_EGRESS_IMAGE",
-  caddy: "SELFHOST_CADDY_IMAGE",
-  pomerium: "SELFHOST_POMERIUM_IMAGE",
-};
 
 const args = parseArgs(process.argv.slice(2));
 const skipBackup = args.flags.has("skip-backup");
+const latest = args.flags.has("latest");
+const refresh = args.flags.has("refresh");
 const releaseRef = args.values.get("release");
 const manifestArg = args.values.get("manifest");
 const rollbackArg = args.values.get("rollback");
@@ -39,12 +34,20 @@ if (args.unknown.length > 0) {
 }
 if (
   resumeUpgradeArg &&
-  (releaseRef || manifestArg || rollbackArg || skipBackup)
+  (releaseRef || manifestArg || rollbackArg || latest || refresh || skipBackup)
 ) {
   usage("--resume-upgrade is internal and cannot be combined with other arguments");
 }
-if (rollbackArg && (releaseRef || manifestArg)) {
-  usage("--rollback cannot be combined with --release or --manifest");
+if (rollbackArg && (releaseRef || manifestArg || latest || refresh)) {
+  usage(
+    "--rollback cannot be combined with --release, --manifest, --latest, or --refresh",
+  );
+}
+if (refresh && (releaseRef || manifestArg || latest)) {
+  usage("--refresh cannot be combined with --release, --manifest, or --latest");
+}
+if (latest && (releaseRef || manifestArg)) {
+  usage("--latest cannot be combined with --release or --manifest");
 }
 if (Boolean(releaseRef) !== Boolean(manifestArg)) {
   usage("--release and --manifest must be provided together");
@@ -54,6 +57,8 @@ if (resumeUpgradeArg) {
   await resumeReleaseUpgrade(path.resolve(repoRoot, resumeUpgradeArg));
 } else if (rollbackArg) {
   await rollbackRelease(path.resolve(repoRoot, rollbackArg), { skipBackup });
+} else if (refresh) {
+  await refreshCurrentRelease({ skipBackup });
 } else if (releaseRef && manifestArg) {
   await upgradeRelease({
     releaseRef,
@@ -61,7 +66,14 @@ if (resumeUpgradeArg) {
     skipBackup,
   });
 } else {
-  await refreshCurrentRelease({ skipBackup });
+  console.log("Resolving the latest camelAI self-host release...");
+  const latestRelease = await downloadLatestReleaseManifest();
+  console.log(`Latest self-host release: ${latestRelease.releaseRef}`);
+  await upgradeRelease({
+    releaseRef: latestRelease.releaseRef,
+    manifestPath: latestRelease.manifestPath,
+    skipBackup,
+  });
 }
 
 async function refreshCurrentRelease({ skipBackup: shouldSkipBackup }) {
@@ -334,7 +346,7 @@ async function runDeepSmokes(env) {
 async function updateReleaseEnvironment(manifest) {
   const updates = { SELFHOST_DEPLOYMENT_MODE: "release" };
   for (const [manifestKey, envKey] of Object.entries(
-    IMAGE_ENV_BY_MANIFEST_KEY,
+    SELFHOST_IMAGE_ENV_BY_MANIFEST_KEY,
   )) {
     updates[envKey] = manifest.images[manifestKey];
   }
@@ -361,7 +373,7 @@ async function readReleaseManifest(manifestPath) {
   ) {
     throw new Error(`Invalid self-host release manifest: ${manifestPath}`);
   }
-  for (const key of Object.keys(IMAGE_ENV_BY_MANIFEST_KEY)) {
+  for (const key of Object.keys(SELFHOST_IMAGE_ENV_BY_MANIFEST_KEY)) {
     const image = manifest.images[key];
     if (
       typeof image !== "string" ||
@@ -415,8 +427,9 @@ function parseArgs(argv) {
   const unknown = [];
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
-    if (arg === "--skip-backup") {
-      flags.add("skip-backup");
+    const flag = /^--(skip-backup|latest|refresh)$/.exec(arg);
+    if (flag) {
+      flags.add(flag[1]);
       continue;
     }
     const inline = /^--(release|manifest|rollback|resume-upgrade)=(.+)$/.exec(arg);
@@ -440,8 +453,10 @@ function usage(message) {
   console.error(
     "Usage:\n" +
       "  bun run selfhost:upgrade\n" +
+      "  bun run selfhost:upgrade -- --latest [--skip-backup]\n" +
       "  bun run selfhost:upgrade -- --release <git-ref> --manifest <selfhost-release.json>\n" +
-      "  bun run selfhost:upgrade -- --rollback <snapshot-directory>",
+      "  bun run selfhost:upgrade -- --rollback <snapshot-directory>\n" +
+      "  bun run selfhost:refresh [-- --skip-backup]",
   );
   process.exit(2);
 }
