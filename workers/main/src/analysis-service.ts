@@ -97,8 +97,19 @@ export interface AnalysisSandboxLike {
     options?: { cwd?: string; env?: Record<string, string | undefined>; timeout?: number },
   ): Promise<{ success?: boolean; stdout?: string; stderr?: string; exitCode?: number }>;
   mkdir(path: string, options?: { recursive?: boolean }): Promise<unknown>;
-  writeFile(path: string, content: string, options?: { encoding?: "base64" | "utf8" }): Promise<unknown>;
-  readFile(path: string, options?: { encoding?: "base64" | "utf8" }): Promise<{ content: string }>;
+  writeFile(
+    path: string,
+    content: string | ReadableStream<Uint8Array>,
+    options?: { encoding?: "base64" | "utf8" },
+  ): Promise<unknown>;
+  readFile(
+    path: string,
+    options?: { encoding?: "base64" | "utf8" | "none" },
+  ): Promise<{
+    content: string | ReadableStream<Uint8Array>;
+    size?: number;
+    mimeType?: string;
+  }>;
 }
 
 /** The full DO-RPC stub surface the service drives (custom AnalysisSandbox methods). */
@@ -166,10 +177,10 @@ export interface AnalysisRunCodeResult {
 // Pure helpers (exported for tests)
 // ---------------------------------------------------------------------------
 
-/** A materialized source file, path relative to the project root. */
+/** Source-file metadata, with no file payload retained in isolate memory. */
 export interface AnalysisSourceFile {
   path: string;
-  bytes: Uint8Array;
+  size: number;
 }
 
 /**
@@ -241,12 +252,6 @@ export function diffManifests(
     if (!next.has(path)) removed.push(path);
   }
   return { changed: changed.sort(), removed: removed.sort() };
-}
-
-/** SHA-256 hex of bytes, matching `sha256sum` output. */
-export async function sha256Hex(bytes: Uint8Array): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", bytes as unknown as ArrayBuffer);
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 /**
@@ -462,7 +467,7 @@ export async function runAnalysisNotebook(
       return emptyNotebookResult(startedAt, `notebook ${notebookRel} not found in project`);
     }
     const hasPyproject = before.some((f) => f.path === "pyproject.toml");
-    const beforeManifest = await manifestFromSourceFiles(before);
+    const beforeManifest = await snapshotProjectManifest(deps.sandbox, workdir);
     await deps.sandbox.mkdir(scratchDir, { recursive: true });
 
     const nb = normalizeExec(
@@ -533,8 +538,8 @@ export async function runAnalysisExec(
   const workdir = analysisRunWorkdir(deps.projectId, runId);
   const scratchDir = analysisRunScratchDir(runId);
   try {
-    const before = await materializeProject(deps.sandbox, workdir, deps.files);
-    const beforeManifest = await manifestFromSourceFiles(before);
+    await materializeProject(deps.sandbox, workdir, deps.files);
+    const beforeManifest = await snapshotProjectManifest(deps.sandbox, workdir);
     await deps.sandbox.mkdir(scratchDir, { recursive: true });
     const cwd = request.cwd ? joinWithin(workdir, request.cwd) : workdir;
     const res = normalizeExec(
@@ -656,18 +661,92 @@ async function materializeProject(
     const targetPath = `${workdir}/${file.path}`;
     const parent = dirname(targetPath);
     if (parent && parent !== workdir) await sandbox.mkdir(parent, { recursive: true });
-    await sandbox.writeFile(targetPath, base64FromBytes(file.bytes), { encoding: "base64" });
+    const read = await files.readFileStream(`/${file.path}`);
+    if (!read.success || !read.stream) {
+      throw new Error(read.error || `Failed to stream /${file.path} from the project store`);
+    }
+    if (typeof read.size === "number" && read.size !== file.size) {
+      await read.stream.cancel().catch(() => {});
+      throw new Error(
+        `Project file /${file.path} changed size during analysis materialization ` +
+        `(${file.size} -> ${read.size} bytes)`,
+      );
+    }
+    try {
+      // ReadableStream ownership transfers through RPC: project R2 ->
+      // WorkspaceFilesystemDO -> AnalysisService -> AnalysisSandbox. No file
+      // bytes or base64 copy are retained in a Worker/DO isolate.
+      await sandbox.writeFile(targetPath, read.stream);
+    } catch (error) {
+      await read.stream.cancel().catch(() => {});
+      throw error;
+    }
   }
   return sourceFiles;
 }
 
-async function manifestFromSourceFiles(files: AnalysisSourceFile[]): Promise<Map<string, string>> {
-  const manifest = new Map<string, string>();
-  for (const file of files) {
-    if (shouldIgnoreAnalysisPath(file.path)) continue;
-    manifest.set(file.path, await sha256Hex(file.bytes));
+async function snapshotProjectManifest(
+  sandbox: AnalysisSandboxLike,
+  workdir: string,
+): Promise<Map<string, string>> {
+  const manifest = normalizeExec(await sandbox.exec(treeManifestCommand(), { cwd: workdir }));
+  if (manifest.exitCode !== 0) {
+    throw new Error(
+      `analysis persist aborted: tree manifest failed with exit code ${manifest.exitCode}` +
+        (manifest.stderr ? `: ${manifest.stderr.slice(0, 500)}` : ""),
+    );
   }
-  return manifest;
+  return parseSha256Manifest(manifest.stdout);
+}
+
+interface StreamedSandboxFile {
+  stream: ReadableStream<Uint8Array>;
+  size: number;
+  mimeType?: string;
+}
+
+async function openSandboxFileStream(
+  sandbox: AnalysisSandboxLike,
+  path: string,
+): Promise<StreamedSandboxFile> {
+  const read = await sandbox.readFile(path, { encoding: "none" });
+  if (typeof read.content === "string") {
+    throw new Error(`Sandbox did not return a binary stream for ${path}`);
+  }
+  if (!Number.isFinite(read.size) || (read.size as number) < 0) {
+    await read.content.cancel().catch(() => {});
+    throw new Error(`Sandbox did not report a valid byte size for ${path}`);
+  }
+  return {
+    stream: read.content,
+    size: Math.floor(read.size as number),
+    mimeType: read.mimeType,
+  };
+}
+
+async function persistOpenedSandboxFile(
+  files: WorkspaceFileStoreLike,
+  rel: string,
+  opened: StreamedSandboxFile,
+): Promise<"persisted" | "oversize"> {
+  if (opened.size > ANALYSIS_MAX_PERSIST_BYTES) {
+    await opened.stream.cancel().catch(() => {});
+    return "oversize";
+  }
+  if (!files.adoptR2File) {
+    await opened.stream.cancel().catch(() => {});
+    throw new Error("Project file store does not support streaming R2 adoption");
+  }
+  const result = await files.adoptR2File(
+    `/${rel}`,
+    opened.stream,
+    opened.size,
+    opened.mimeType,
+  );
+  if (!result.success) {
+    throw new Error(result.error || `Failed to persist ${rel}`);
+  }
+  return "persisted";
 }
 
 async function persistChangedFiles(
@@ -676,30 +755,21 @@ async function persistChangedFiles(
   files: WorkspaceFileStoreLike,
   beforeManifest: Map<string, string>,
 ): Promise<{ changedFiles: string[]; removedFiles: string[]; skippedOversize: string[] }> {
-  const manifest = normalizeExec(await sandbox.exec(treeManifestCommand(), { cwd: workdir }));
   // NEVER diff against a failed/partial manifest: an incomplete listing makes
   // untouched files look removed and the loop below would delete them from the
   // project store. Fail the run loudly instead.
-  if (manifest.exitCode !== 0) {
-    throw new Error(
-      `analysis persist aborted: tree manifest failed with exit code ${manifest.exitCode}` +
-        (manifest.stderr ? `: ${manifest.stderr.slice(0, 500)}` : ""),
-    );
-  }
-  const afterManifest = parseSha256Manifest(manifest.stdout);
+  const afterManifest = await snapshotProjectManifest(sandbox, workdir);
   const { changed, removed } = diffManifests(beforeManifest, afterManifest);
 
   const changedFiles: string[] = [];
   const skippedOversize: string[] = [];
   for (const rel of changed) {
-    const read = await sandbox.readFile(`${workdir}/${rel}`, { encoding: "base64" });
-    const bytes = base64ToBytes(read.content);
-    if (bytes.length > ANALYSIS_MAX_PERSIST_BYTES) {
+    const opened = await openSandboxFileStream(sandbox, `${workdir}/${rel}`);
+    const persisted = await persistOpenedSandboxFile(files, rel, opened);
+    if (persisted === "oversize") {
       skippedOversize.push(rel);
       continue;
     }
-    const result = await files.writeBinaryFile(`/${rel}`, read.content);
-    if (!result.success) throw new Error(result.error || `Failed to persist ${rel}`);
     changedFiles.push(rel);
   }
   const removedFiles: string[] = [];
@@ -720,16 +790,13 @@ async function persistSingleFile(
   files: WorkspaceFileStoreLike,
   rel: string,
 ): Promise<boolean> {
-  let read: { content: string };
+  let opened: StreamedSandboxFile;
   try {
-    read = await sandbox.readFile(`${workdir}/${rel}`, { encoding: "base64" });
+    opened = await openSandboxFileStream(sandbox, `${workdir}/${rel}`);
   } catch {
     return false;
   }
-  const content = new TextDecoder().decode(base64ToBytes(read.content));
-  const result = await files.writeFile(`/${rel}`, content);
-  if (!result.success) throw new Error(result.error || `Failed to persist ${rel}`);
-  return true;
+  return (await persistOpenedSandboxFile(files, rel, opened)) === "persisted";
 }
 
 async function collectProjectSourceFiles(files: WorkspaceFileStoreLike): Promise<AnalysisSourceFile[]> {
@@ -740,13 +807,12 @@ async function collectProjectSourceFiles(files: WorkspaceFileStoreLike): Promise
     if (entry.type !== "file") continue;
     const rel = normalizeAnalysisRelPath(entry.absolutePath);
     if (!rel || shouldIgnoreAnalysisPath(rel)) continue;
-    const read = await files.readFile(entry.absolutePath);
-    if (!read.success || typeof read.content !== "string") {
-      throw new Error(read.error || `Failed to read ${entry.absolutePath}`);
+    if (!Number.isFinite(entry.size) || entry.size < 0) {
+      throw new Error(`Project file ${entry.absolutePath} has an invalid byte size`);
     }
     out.push({
       path: rel,
-      bytes: read.encoding === "base64" ? base64ToBytes(read.content) : new TextEncoder().encode(read.content),
+      size: Math.floor(entry.size),
     });
   }
   return out.sort((a, b) => a.path.localeCompare(b.path));
@@ -881,13 +947,6 @@ function base64FromBytes(bytes: Uint8Array): string {
     binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
   }
   return btoa(binary);
-}
-
-function base64ToBytes(value: string): Uint8Array {
-  const binary = atob(value.replace(/\s/g, ""));
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-  return bytes;
 }
 
 // ---------------------------------------------------------------------------
@@ -1079,7 +1138,7 @@ export class AnalysisService extends WorkerEntrypoint<AnalysisEnv, AnalysisServi
     const sandbox = getSandbox(
       this.env.ANALYSIS_SANDBOX as Parameters<typeof getSandbox>[0],
       sandboxId,
-      { normalizeId: true },
+      { normalizeId: true, transport: "rpc" },
     ) as unknown as AnalysisSandboxStub;
     this.sandboxes.set(scope, sandbox);
     return sandbox;
@@ -1124,5 +1183,5 @@ export const __testing = {
   collectProjectSourceFiles,
   materializeProject,
   persistChangedFiles,
-  manifestFromSourceFiles,
+  snapshotProjectManifest,
 };

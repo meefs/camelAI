@@ -191,6 +191,19 @@ export type WorkspaceFileStoreLike = Pick<WorkspaceFilesystemLike,
   | "deleteFile"
 > & {
   editTextFile?: (path: string, edits: TextEdit[]) => Promise<WorkspaceEditFileResponse>;
+  /**
+   * Stream a file directly into the project store's R2 backing without
+   * materializing the payload in a Worker or Durable Object isolate.
+   * ProjectFilesystemClient provides this; it stays optional because generic
+   * workspace-file consumers and lightweight test doubles do not persist
+   * analysis artifacts.
+   */
+  adoptR2File?: (
+    path: string,
+    stream: ReadableStream<Uint8Array>,
+    expectedSize: number,
+    contentType?: string,
+  ) => Promise<WorkspaceAdoptR2FileResponse>;
 };
 
 export interface ProjectArtifactToken {

@@ -16,6 +16,7 @@ import {
   parseSha256Manifest,
   parseValidateNotebookOutput,
   runAnalysisCode,
+  runAnalysisExec,
   runAnalysisNotebook,
   shouldIgnoreAnalysisPath,
   treeManifestCommand,
@@ -124,12 +125,45 @@ describe("command builders", () => {
 // runAnalysisNotebook — end to end over a fake sandbox + file store
 // ---------------------------------------------------------------------------
 
+function streamFromBytes(bytes: Uint8Array): ReadableStream<Uint8Array> {
+  return new ReadableStream({
+    start(controller) {
+      controller.enqueue(bytes);
+      controller.close();
+    },
+  });
+}
+
+async function collectStreamBytes(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> {
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for await (const chunk of stream) {
+    chunks.push(chunk);
+    size += chunk.byteLength;
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
 /** In-memory project file store implementing the bits the service touches. */
-function fakeFiles(initial: Record<string, string>, opts?: { failDelete?: boolean }): WorkspaceFileStoreLike & { store: Map<string, string> } {
+function fakeFiles(
+  initial: Record<string, string>,
+  opts?: { failDelete?: boolean },
+): WorkspaceFileStoreLike & {
+  store: Map<string, string>;
+  io: { bufferedReads: number; bufferedWrites: number; streamReads: number; streamAdoptions: number };
+} {
   const store = new Map(Object.entries(initial));
+  const io = { bufferedReads: 0, bufferedWrites: 0, streamReads: 0, streamAdoptions: 0 };
   const norm = (p: string) => p.replace(/^\/+/, "");
   return {
     store,
+    io,
     async listFiles() {
       return {
         success: true,
@@ -146,6 +180,7 @@ function fakeFiles(initial: Record<string, string>, opts?: { failDelete?: boolea
       };
     },
     async readFile(path: string) {
+      io.bufferedReads += 1;
       const rel = norm(path);
       if (!store.has(rel)) return { success: false, error: "not found" };
       return { success: true, content: store.get(rel) as string, encoding: "utf8" as const };
@@ -155,8 +190,18 @@ function fakeFiles(initial: Record<string, string>, opts?: { failDelete?: boolea
       return { success: true };
     },
     async writeBinaryFile(path: string, base64: string) {
+      io.bufferedWrites += 1;
       store.set(norm(path), Buffer.from(base64, "base64").toString("utf8"));
       return { success: true };
+    },
+    async adoptR2File(path: string, stream: ReadableStream<Uint8Array>, expectedSize: number) {
+      io.streamAdoptions += 1;
+      const bytes = await collectStreamBytes(stream);
+      if (bytes.byteLength !== expectedSize) {
+        return { success: false, error: "stream size mismatch" };
+      }
+      store.set(norm(path), new TextDecoder().decode(bytes));
+      return { success: true, size: bytes.byteLength };
     },
     async deleteFile(path: string) {
       if (opts?.failDelete) return { success: false, error: "simulated storage failure" };
@@ -169,10 +214,23 @@ function fakeFiles(initial: Record<string, string>, opts?: { failDelete?: boolea
     async mkdir() {
       return { success: true };
     },
-    async readFileStream() {
-      return { success: false, error: "unsupported" };
+    async readFileStream(path: string) {
+      io.streamReads += 1;
+      const rel = norm(path);
+      const content = store.get(rel);
+      if (content === undefined) return { success: false, error: "not found" };
+      const bytes = new TextEncoder().encode(content);
+      return {
+        success: true,
+        stream: streamFromBytes(bytes),
+        size: bytes.byteLength,
+        mimeType: "application/octet-stream",
+      };
     },
-  } as unknown as WorkspaceFileStoreLike & { store: Map<string, string> };
+  } as unknown as WorkspaceFileStoreLike & {
+    store: Map<string, string>;
+    io: { bufferedReads: number; bufferedWrites: number; streamReads: number; streamAdoptions: number };
+  };
 }
 
 /**
@@ -181,7 +239,12 @@ function fakeFiles(initial: Record<string, string>, opts?: { failDelete?: boolea
  * notebook-execute command (mutates the notebook + emits a chart PNG), the
  * validator, and the sha256sum tree manifest — to drive the persist-back path.
  */
-function fakeSandbox(opts?: { failManifest?: boolean; removeOnRun?: string; notebookFailure?: { stderr: string } }): AnalysisSandboxLike & { execCwds: string[] } {
+function fakeSandbox(opts?: {
+  failManifest?: boolean;
+  removeOnRun?: string;
+  notebookFailure?: { stderr: string };
+  createOnRun?: { command: string; path: string; bytes: Uint8Array };
+}): AnalysisSandboxLike & { execCwds: string[] } {
   const execCwds: string[] = [];
   const fs = new Map<string, Uint8Array>();
   const sha = async (bytes: Uint8Array) => {
@@ -194,14 +257,29 @@ function fakeSandbox(opts?: { failManifest?: boolean; removeOnRun?: string; note
     async mkdir() {
       return {};
     },
-    async writeFile(path: string, content: string, options?: { encoding?: string }) {
-      const bytes = options?.encoding === "base64" ? new Uint8Array(Buffer.from(content, "base64")) : new TextEncoder().encode(content);
+    async writeFile(
+      path: string,
+      content: string | ReadableStream<Uint8Array>,
+      options?: { encoding?: string },
+    ) {
+      const bytes = typeof content === "string"
+        ? options?.encoding === "base64"
+          ? new Uint8Array(Buffer.from(content, "base64"))
+          : new TextEncoder().encode(content)
+        : await collectStreamBytes(content);
       fs.set(path, bytes);
       return {};
     },
-    async readFile(path: string) {
+    async readFile(path: string, options?: { encoding?: string }) {
       const bytes = fs.get(path);
       if (!bytes) throw new Error(`missing ${path}`);
+      if (options?.encoding === "none") {
+        return {
+          content: streamFromBytes(bytes),
+          size: bytes.byteLength,
+          mimeType: "application/octet-stream",
+        };
+      }
       return { content: Buffer.from(bytes).toString("base64") };
     },
     async exec(command: string, options?: { cwd?: string }) {
@@ -210,12 +288,12 @@ function fakeSandbox(opts?: { failManifest?: boolean; removeOnRun?: string; note
       // Run-workdir cleanup: drop everything under the removed tree.
       if (command.startsWith("rm -rf ")) {
         const target = command.slice("rm -rf ".length).replace(/'/g, "");
-        for (const key of [...fs.keys()]) if (key.startsWith(`${target}/`)) fs.delete(key);
+        for (const key of fs.keys()) if (key.startsWith(`${target}/`)) fs.delete(key);
         return { exitCode: 0, stdout: "", stderr: "" };
       }
       // Wipe glob before materialize: drop all files under cwd.
       if (command.startsWith("find . -mindepth 1")) {
-        for (const key of [...fs.keys()]) if (key.startsWith(`${cwd}/`)) fs.delete(key);
+        for (const key of fs.keys()) if (key.startsWith(`${cwd}/`)) fs.delete(key);
         return { exitCode: 0, stdout: "", stderr: "" };
       }
       // Notebook execution: mark the notebook executed and emit a chart artifact.
@@ -231,6 +309,10 @@ function fakeSandbox(opts?: { failManifest?: boolean; removeOnRun?: string; note
       }
       if (command.startsWith("validate-notebook")) {
         return { exitCode: 0, stdout: "OK", stderr: "" };
+      }
+      if (opts?.createOnRun && command === opts.createOnRun.command) {
+        fs.set(`${cwd}/${opts.createOnRun.path}`, opts.createOnRun.bytes);
+        return { exitCode: 0, stdout: "", stderr: "" };
       }
       // Tree manifest: sha256sum over the in-memory fs under cwd (skip ignored).
       if (command.includes("sha256sum")) {
@@ -374,6 +456,40 @@ describe("notebook failure output", () => {
 });
 
 describe("persist safety", () => {
+  it("streams a 25 MiB changed file without buffered/base64 project RPCs", async () => {
+    const largeBytes = new Uint8Array(ANALYSIS_MAX_PERSIST_BYTES).fill(0x61);
+    const files = fakeFiles({ "seed.txt": "seed" });
+    const result = await runAnalysisExec(
+      { command: "create-large-archive-entry" },
+      {
+        sandbox: fakeSandbox({
+          createOnRun: {
+            command: "create-large-archive-entry",
+            path: "imported/large.bin",
+            bytes: largeBytes,
+          },
+        }),
+        files,
+        projectId: "ca-test-proj",
+        newRunId: () => "run1",
+        hasProject: true,
+        scratchId: "scratch1",
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.changedFiles).toContain("imported/large.bin");
+    expect(files.io).toEqual({
+      bufferedReads: 0,
+      bufferedWrites: 0,
+      streamReads: 1,
+      streamAdoptions: 1,
+    });
+    expect(files.store.get("imported/large.bin")).toHaveLength(
+      ANALYSIS_MAX_PERSIST_BYTES,
+    );
+  });
+
   it("aborts (throws) instead of diffing when the tree manifest fails", async () => {
     const files = fakeFiles({ "analysis.ipynb": '{"cells":[]}', "keep.csv": "a,b\n" });
     await expect(
