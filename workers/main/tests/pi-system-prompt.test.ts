@@ -21,6 +21,9 @@ describe("createPiSystemPrompt deployed CONNECTIONS binding", () => {
     expect(prompt).toContain('await env.CONNECTIONS.find("provider-or-type")');
     expect(prompt).toContain("`integration-dashboard` for apps centered on workspace connections");
     expect(prompt).not.toContain(DEPLOYED_CONNECTIONS_BINDING_DISABLED_PROMPT);
+    expect(prompt).toContain("Use top-level `delete_app`");
+    expect(prompt).toContain("Use top-level `delete_project`");
+    expect(prompt).toContain("always deletes every linked deployed app first");
   });
 
   it("adds a deployed-app CONNECTIONS disable caveat and softens the integration-dashboard template", () => {

@@ -1,4 +1,3 @@
-import type { CloudflareEnv } from "./cloudflare.server";
 import { isSelfhostRuntime } from "./selfhost-runtime";
 import { deleteDispatchScript } from "../../workers/main/src/cf-api-proxy";
 import {
@@ -9,6 +8,14 @@ import {
 import { selfhostWorkerKey } from "../../workers/main/src/selfhost-worker-registry";
 
 const R2_DELETE_BATCH_SIZE = 1_000;
+
+export interface DeployedAppDeleteEnv {
+  CF_ACCOUNT_ID?: string;
+  CF_DISPATCH_NAMESPACE?: string;
+  CF_API_TOKEN?: string;
+  APP_KV: KVNamespace;
+  R2_BUCKET: R2Bucket;
+}
 
 export function getDispatchScriptName(
   scriptName: string,
@@ -53,7 +60,7 @@ function parseSelfhostAssetsRecord(
 }
 
 async function deleteSelfhostAppRuntime(
-  env: CloudflareEnv,
+  env: DeployedAppDeleteEnv,
   dispatchScriptName: string,
 ): Promise<void> {
   const assetsKey = selfhostAssetsKey(dispatchScriptName);
@@ -89,7 +96,7 @@ async function deleteSelfhostAppRuntime(
  * accidentally requiring Cloudflare credentials in self-host installations.
  */
 export async function deleteDeployedAppRuntime(
-  env: CloudflareEnv,
+  env: DeployedAppDeleteEnv,
   input: { scriptName: string; orgSlug: string },
 ): Promise<string> {
   const dispatchScriptName = getDispatchScriptName(

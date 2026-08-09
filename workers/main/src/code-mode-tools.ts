@@ -15,6 +15,10 @@ import type { WorkspaceCronDO } from "./workspace-cron";
 import { ProjectFilesystemClient, WorkspaceFilesystemClient, normalizeWorkspacePath as normalizeDurableWorkspacePath, type WorkspaceFileStoreLike, type WorkspaceProject, type WorkspaceProjectCloneSummary, projectNameKey } from "./workspace-filesystem-do";
 import type { RuntimeCallArtifact, RuntimeCallArtifactKind } from "../../../src/lib/runtime-artifacts";
 import { getPreferredAppUrl } from "../../../src/lib/app-url";
+import {
+  deleteDeployedAppRuntime,
+  getDispatchScriptName,
+} from "../../../src/lib/deployed-app-delete.server";
 import { findConnectionMethodEntry, getConnection, invokeConnectionMethod, listConnectionMethods, listConnections, listConnectionTools, testConnectionMethodEntry, verifyConnection } from "./connections-runtime";
 import { confirmDestructiveAction, DESTRUCTIVE_CONFIRM_LABEL } from "./confirmed-destructive-action";
 import { collectProjectDeletionTargets } from "./project-deletion";
@@ -270,6 +274,7 @@ const JS_EXEC_EXCLUDED_TOOL_NAMES = new Set([
   // timeout. Keep it as a top-level Pi tool so the agent sees the submission.
   "prompt_connection_setup",
   "delete_connection",
+  "delete_app",
   "delete_project",
   // Blocks on human input the same way; keep it out of the js_exec catalog so
   // tools.search() can't advertise burying a user prompt inside the sandbox
@@ -844,8 +849,19 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
     { category: "apps" },
   ),
   codeModePassthroughTool(
+    "delete_app",
+    "Delete a deployed app after the user confirms in chat. This removes the live deployment but keeps its source project. Use this as a top-level tool, not from js_exec. Arguments: { script_name }.",
+    Type.Object({
+      script_name: Type.String(),
+    }, { additionalProperties: false }),
+    {
+      category: "apps",
+      sideEffect: true,
+    },
+  ),
+  codeModePassthroughTool(
     "delete_project",
-    "Delete a project after the user confirms in chat. Use this as a top-level tool, not from js_exec. Accepts the unique workspace project name. Deleting a source project also deletes its clone projects. Arguments: { project }.",
+    "Delete a project after the user confirms in chat. Any deployed apps linked to the project are always deleted first so no live app is orphaned. Use this as a top-level tool, not from js_exec. Accepts the unique workspace project name. Deleting a source project also deletes its clone projects and their linked apps. Arguments: { project }.",
     Type.Object({
       project: Type.String(),
     }, { additionalProperties: false }),
@@ -1812,6 +1828,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     create_integration: (binding, args) => binding.createIntegration(args),
     prompt_connection_setup: (binding, args) => binding.promptConnectionSetup(args),
     delete_connection: (binding, args) => binding.deleteConnection(args),
+    delete_app: (binding, args) => binding.deleteApp(args),
     delete_project: (binding, args) => binding.deleteProject(args),
     send_email: (binding, args) => binding.sendEmail(args),
     send_slack_message: (binding, args) => binding.sendSlackMessage(args),
@@ -4569,6 +4586,74 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     return script ? this.getAppUrl(script) : this.getAppUrl({ script_name: scriptName, custom_domain_hostname: null } as WorkerScript);
   }
 
+  private async deleteAppDeployment(script: WorkerScript): Promise<void> {
+    if (script.workspace_id !== this.ctx.props.workspaceId) {
+      throw new Error(`App '${script.script_name}' belongs to a different workspace`);
+    }
+    const orgSlug = await this.getOrgSlug();
+    if (!orgSlug) {
+      throw new Error(`Organization slug is required to delete app '${script.script_name}'`);
+    }
+
+    await deleteDeployedAppRuntime(this.env, {
+      scriptName: script.script_name,
+      orgSlug,
+    });
+    const deleted = await this.orgStub.deleteWorkerScript(
+      script.script_name,
+      this.ctx.props.userId || "system",
+    );
+    if (!deleted) {
+      throw new Error(`Failed to delete app metadata for '${script.script_name}'`);
+    }
+    await this.env.APP_KV.delete(
+      `script:${getDispatchScriptName(script.script_name, orgSlug)}`,
+    );
+  }
+
+  private async deleteApp(args: Record<string, unknown>): Promise<unknown> {
+    const scriptName = typeof args.script_name === "string" ? args.script_name.trim() : "";
+    if (!scriptName) throw new Error("script_name is required");
+    const script = await this.orgStub.getWorkerScript(scriptName);
+    if (!script) throw new Error(`App '${scriptName}' not found`);
+    if (script.workspace_id !== this.ctx.props.workspaceId) {
+      throw new Error(`App '${scriptName}' belongs to a different workspace`);
+    }
+
+    const question =
+      `Delete deployed app "${script.script_name}"? This permanently removes its live deployment and URL. Its source project will be kept.`;
+    const confirmation = await confirmDestructiveAction(
+      (questionArgs) => this.askUserQuestion(questionArgs),
+      {
+        question,
+        header: "Delete app?",
+        confirmLabel: DESTRUCTIVE_CONFIRM_LABEL,
+      },
+    );
+    if (confirmation.unavailableReason) {
+      return {
+        success: false,
+        cancelled: true,
+        unavailable_reason: confirmation.unavailableReason,
+        message: confirmation.unavailableReason,
+      };
+    }
+    if (!confirmation.confirmed) {
+      return {
+        success: false,
+        cancelled: true,
+        message: "App deletion cancelled.",
+      };
+    }
+
+    await this.deleteAppDeployment(script);
+    return {
+      success: true,
+      deleted: script.script_name,
+      message: `Deleted deployed app "${script.script_name}"`,
+    };
+  }
+
   private async deleteProject(args: Record<string, unknown>): Promise<unknown> {
     const projectName = typeof args.project === "string" ? args.project.trim() : "";
     if (!projectName) throw new Error("project is required");
@@ -4581,12 +4666,25 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     }
 
     const confirmedTargets = collectProjectDeletionTargets(projects, target);
+    const confirmedTargetIds = new Set(confirmedTargets.map((project) => project.id));
+    const linkedApps = (
+      await this.orgStub.listWorkerScriptsByWorkspace(this.ctx.props.workspaceId)
+    ).filter(
+      (script) =>
+        typeof script.project_id === "string" &&
+        confirmedTargetIds.has(script.project_id),
+    );
     const cloneNames = confirmedTargets
       .filter((project) => project.id !== target.id)
       .map((project) => project.name);
-    const question = cloneNames.length > 0
-      ? `Delete project "${target.name}" and its ${cloneNames.length} clone project(s) (${cloneNames.join(", ")})? This removes their project files and metadata. This cannot be undone.`
-      : `Delete project "${target.name}"? This removes its project files and metadata. This cannot be undone.`;
+    const projectScope = cloneNames.length > 0
+      ? `project "${target.name}" and its ${cloneNames.length} clone project(s) (${cloneNames.join(", ")})`
+      : `project "${target.name}"`;
+    const appScope = linkedApps.length > 0
+      ? ` It will also permanently delete ${linkedApps.length} linked deployed app(s) and their live URLs: ${linkedApps.map((script) => script.script_name).join(", ")}.`
+      : "";
+    const question =
+      `Delete ${projectScope}? This removes the project files and metadata.${appScope} This cannot be undone.`;
     const confirmation = await confirmDestructiveAction(
       (questionArgs) => this.askUserQuestion(questionArgs),
       {
@@ -4613,6 +4711,13 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
 
     const deletedNames: string[] = [];
 
+    // Live deployments are part of the project lifecycle. Remove them first;
+    // if any deployment deletion fails, retain all project source so the user
+    // can retry without creating an uneditable orphan app.
+    for (const script of linkedApps) {
+      await this.deleteAppDeployment(script);
+    }
+
     let deletedFileEntries = 0;
     let deletedSourceSnapshots = 0;
     let deletedSourceSnapshotBlobs = 0;
@@ -4633,6 +4738,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       deleted_file_entries: deletedFileEntries,
       deleted_source_snapshots: deletedSourceSnapshots,
       deleted_source_snapshot_blobs: deletedSourceSnapshotBlobs,
+      deleted_apps: linkedApps.map((script) => script.script_name),
       message:
         deletedNames.length === 1
           ? `Deleted project "${deletedNames[0]}"`

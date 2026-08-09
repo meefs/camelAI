@@ -220,6 +220,7 @@ const TOP_LEVEL_EXCLUDED_CATEGORIES = new Set<string>([
 const ALWAYS_TOP_LEVEL_PASSTHROUGH_NAMES = new Set<string>([
   "prompt_connection_setup",
   "delete_connection",
+  "delete_app",
   "delete_project",
   "AskUserQuestion",
 ]);
@@ -261,7 +262,7 @@ export function buildJsExecDescription(outboundEmailEnabled = true): string {
     "Tool calls return `{ ok, data?, error?, completionEvidence? }`; branch on `result.ok` and assert only `completionEvidence.supportedClaims`. Unknown tools suggest replacements and equivalent failures have retry budgets. " +
     `Tools reachable ONLY here (not in your tool list) — ${inventory}. ` +
     "`run_notebook` and `deploy_project` open successful results in preview automatically; failures leave preview unchanged. No follow-up `set_preview` or `list_apps` call is needed; use `set_preview` only for an explicit switch. " +
-    "Interactive tools that wait for the user (prompt_connection_setup, delete_connection, delete_project, AskUserQuestion) are top-level tools and cannot be called from js_exec."
+    "Interactive tools that wait for the user (prompt_connection_setup, delete_connection, delete_app, delete_project, AskUserQuestion) are top-level tools and cannot be called from js_exec."
   );
 }
 

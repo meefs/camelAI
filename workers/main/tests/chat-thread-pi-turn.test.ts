@@ -419,6 +419,7 @@ function createProjectToolFake({
   const script = {
     script_name: 'demo-app',
     workspace_id: 'workspace1',
+    project_id: null,
     is_public: false,
     custom_domain_hostname: null,
     updated_at: 123,
@@ -429,6 +430,8 @@ function createProjectToolFake({
     registerWorkerScript: vi.fn(async () => script),
     updateWorkerScriptPreview: vi.fn(async () => ({ stale: false })),
     getWorkerScript: vi.fn(async () => script),
+    listWorkerScriptsByWorkspace: vi.fn(async () => []),
+    deleteWorkerScript: vi.fn(async () => true),
   };
   const chatThreadStub = {
     recordProjectActivity: vi.fn(async () => undefined),
@@ -451,7 +454,9 @@ function createProjectToolFake({
       get: vi.fn(() => chatThreadStub),
     },
     APP_KV: {
+      get: vi.fn(async () => null),
       put: vi.fn(async () => undefined),
+      delete: vi.fn(async () => undefined),
     },
     R2_BUCKET: deploy ? {
       put: vi.fn(async () => undefined),
@@ -4858,7 +4863,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     ]));
     // Human-blocking tools stay top-level only: they must not be in the js_exec
     // catalog where tools.search() would advertise them inside the sandbox timeout.
-    for (const name of ['AskUserQuestion', 'prompt_connection_setup', 'delete_connection', 'delete_project']) {
+    for (const name of ['AskUserQuestion', 'prompt_connection_setup', 'delete_connection', 'delete_app', 'delete_project']) {
       expect(byName.has(name)).toBe(false);
     }
     expect((byName.get('read') as any).parameters.properties.path).toBeDefined();
@@ -7940,6 +7945,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       deleted_file_entries: 2,
       deleted_source_snapshots: 1,
       deleted_source_snapshot_blobs: 2,
+      deleted_apps: [],
       message: 'Deleted project "Demo App"',
     });
     expect(askUserQuestion).toHaveBeenCalledWith({
@@ -7953,6 +7959,102 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(projectStub.projectListFiles).toHaveBeenCalledWith('/', { recursive: true, includeHidden: true, limit: 50000 });
     expect(projectStub.projectDeleteSourceSnapshots).toHaveBeenCalled();
     expect(workspaceStub.removeProjects).toHaveBeenCalledWith(['project-1']);
+  });
+
+  it('deletes linked deployed apps before deleting project source', async () => {
+    const { fake, env, workspaceStub, projectStub, orgStub } = createProjectToolFake();
+    const linkedApp = {
+      script_name: 'demo-app',
+      workspace_id: 'workspace1',
+      project_id: 'project-1',
+      is_public: true,
+      custom_domain_hostname: null,
+      updated_at: 123,
+    };
+    env.CF_ACCOUNT_ID = 'selfhost';
+    env.CF_DISPATCH_NAMESPACE = 'selfhost';
+    orgStub.listWorkerScriptsByWorkspace.mockResolvedValue([linkedApp]);
+    const askUserQuestion = vi.fn(async ({ questions }: any) => ({
+      [questions[0].question]: 'Delete',
+    }));
+    fake.askUserQuestion = askUserQuestion;
+
+    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'delete_project', {
+      project: 'Demo App',
+    });
+
+    expect(result).toMatchObject({
+      success: true,
+      deleted: ['Demo App'],
+      deleted_apps: ['demo-app'],
+    });
+    expect(askUserQuestion).toHaveBeenCalledWith({
+      questions: [expect.objectContaining({
+        question: expect.stringContaining('linked deployed app'),
+        header: 'Delete project?',
+      })],
+    });
+    expect(orgStub.deleteWorkerScript).toHaveBeenCalledWith('demo-app', 'user1');
+    expect(env.APP_KV.delete).toHaveBeenCalledWith('selfhost:worker:demo-app--test-org');
+    expect(env.APP_KV.delete).toHaveBeenCalledWith('selfhost:assets:demo-app--test-org');
+    expect(env.APP_KV.delete).toHaveBeenCalledWith('script:demo-app--test-org');
+    expect(orgStub.deleteWorkerScript.mock.invocationCallOrder[0]).toBeLessThan(
+      projectStub.projectDeleteFile.mock.invocationCallOrder[0],
+    );
+    expect(workspaceStub.removeProjects).toHaveBeenCalledWith(['project-1']);
+  });
+
+  it('retains project source when a linked app cannot be deleted', async () => {
+    const { fake, workspaceStub, projectStub, orgStub } = createProjectToolFake();
+    orgStub.listWorkerScriptsByWorkspace.mockResolvedValue([{
+      script_name: 'demo-app',
+      workspace_id: 'workspace1',
+      project_id: 'project-1',
+      is_public: true,
+      custom_domain_hostname: null,
+      updated_at: 123,
+    }]);
+    fake.askUserQuestion = vi.fn(async ({ questions }: any) => ({
+      [questions[0].question]: 'Delete',
+    }));
+
+    await expect(
+      CodeModeToolsBinding.prototype.callTool.call(fake, 'delete_project', {
+        project: 'Demo App',
+      }),
+    ).rejects.toThrow('Missing Cloudflare credentials');
+
+    expect(projectStub.projectDeleteFile).not.toHaveBeenCalled();
+    expect(projectStub.projectDeleteSourceSnapshots).not.toHaveBeenCalled();
+    expect(workspaceStub.removeProjects).not.toHaveBeenCalled();
+  });
+
+  it('deletes a deployed app independently while retaining its source project', async () => {
+    const { fake, env, workspaceStub, orgStub } = createProjectToolFake();
+    env.CF_ACCOUNT_ID = 'selfhost';
+    env.CF_DISPATCH_NAMESPACE = 'selfhost';
+    const askUserQuestion = vi.fn(async ({ questions }: any) => ({
+      [questions[0].question]: 'Delete',
+    }));
+    fake.askUserQuestion = askUserQuestion;
+
+    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'delete_app', {
+      script_name: 'demo-app',
+    });
+
+    expect(result).toEqual({
+      success: true,
+      deleted: 'demo-app',
+      message: 'Deleted deployed app "demo-app"',
+    });
+    expect(askUserQuestion).toHaveBeenCalledWith({
+      questions: [expect.objectContaining({
+        question: expect.stringContaining('source project will be kept'),
+        header: 'Delete app?',
+      })],
+    });
+    expect(orgStub.deleteWorkerScript).toHaveBeenCalledWith('demo-app', 'user1');
+    expect(workspaceStub.removeProjects).not.toHaveBeenCalled();
   });
 
   it('includes deploy artifact metadata in list_apps results', async () => {
@@ -9778,7 +9880,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(toolNames.has('WebFetch')).toBe(false);
 
     // Human-input passthrough tools stay top-level (cannot run inside js_exec).
-    for (const name of ['prompt_connection_setup', 'delete_connection', 'delete_project', 'AskUserQuestion']) {
+    for (const name of ['prompt_connection_setup', 'delete_connection', 'delete_app', 'delete_project', 'AskUserQuestion']) {
       expect(toolNames.has(name)).toBe(true);
     }
 

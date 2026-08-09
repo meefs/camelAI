@@ -447,7 +447,7 @@ const JS_EXEC_GUIDE = Object.freeze([
   "Deploy results: deploy_project returns the live app URL and opens successful deploys in preview automatically, so no manual set_preview or list_apps call is needed. set_preview remains available for an explicit preview switch.",
   "Hosted helpers: env.AI.run(\"auto\", { messages }) with tiers cheap/fast/auto/smart or any OpenRouter id, env.CAMELAI.generateImage/transcribeAudio, env.WORKSPACE.info(). Global fetch() auto-authenticates to this workspace's deployed apps and supports direct app and API requests.",
   "Scratch state: text(value) appends user-visible output; store(key, value)/load(key) keep per-runner scratch state.",
-  "Interactive tools that wait for the user (prompt_connection_setup, delete_connection, delete_project, AskUserQuestion) are top-level only and cannot be called from js_exec.",
+  "Interactive tools that wait for the user (prompt_connection_setup, delete_connection, delete_app, delete_project, AskUserQuestion) are top-level only and cannot be called from js_exec.",
 ]);
 
 function createToolHelp(allTools) {
