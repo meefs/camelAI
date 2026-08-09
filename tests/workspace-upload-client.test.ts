@@ -61,6 +61,50 @@ describe('uploadWorkspaceFile', () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
+  it('uses the self-host direct streaming upload mode', async () => {
+    const actions: string[] = [];
+    const progressValues: number[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const { action, url } = parseAction(input);
+      actions.push(action ?? 'unknown-action');
+      if (action === 'mpu-create') {
+        return jsonResponse({
+          uploadMode: 'direct',
+          filename: 'archive-1.zip',
+          path: 'uploads/archive-1.zip',
+        });
+      }
+      if (action === 'direct') {
+        expect(init?.method).toBe('PUT');
+        expect(init?.body).toBeInstanceOf(File);
+        expect(url.searchParams.get('filename')).toBe('archive-1.zip');
+        expect(url.searchParams.get('originalName')).toBe('source archive.zip');
+        return jsonResponse({
+          path: 'uploads/archive-1.zip',
+          filename: 'archive-1.zip',
+          size: 7,
+        });
+      }
+      throw new Error(`Unexpected action ${action}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const file = new File(['zipdata'], 'source archive.zip', { type: 'application/zip' });
+    const result = await uploadWorkspaceFile('ws-1', file, {
+      onProgress: (progress) => progressValues.push(progress),
+    });
+
+    expect(result).toMatchObject({
+      path: 'uploads/archive-1.zip',
+      filename: 'archive-1.zip',
+      originalName: 'source archive.zip',
+      size: 7,
+      contentType: 'application/zip',
+    });
+    expect(actions).toEqual(['mpu-create', 'direct']);
+    expect(progressValues).toEqual([0, 100]);
+  });
+
   it('uploads multiple parts and sends all part descriptors on complete', async () => {
     const seenPartNumbers: number[] = [];
 

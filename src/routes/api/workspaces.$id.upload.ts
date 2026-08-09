@@ -1,6 +1,7 @@
 import type { Route } from './+types/workspaces.$id.upload';
 import { requireWorkspaceAccess } from './workspaces.utils';
 import { getEnv } from '@/lib/cloudflare.server';
+import { isSelfhostRuntime } from '@/lib/selfhost-runtime';
 import { buildWorkspaceScopedR2Key } from '@/lib/workspace-r2-paths';
 
 function generateUniqueFilename(originalName: string): string {
@@ -106,6 +107,14 @@ async function handleMultipartCreate(
   const filename = generateUniqueFilename(originalName);
   const r2Key = buildUploadKey(orgId, workspaceId, filename);
 
+  if (isSelfhostRuntime(env)) {
+    return Response.json({
+      uploadMode: 'direct',
+      filename,
+      path: toMountPath(filename),
+    });
+  }
+
   const multipartUpload = await env.R2_BUCKET.createMultipartUpload(r2Key, {
     httpMetadata: { contentType },
     customMetadata: {
@@ -118,6 +127,45 @@ async function handleMultipartCreate(
     uploadId: multipartUpload.uploadId,
     filename,
     path: toMountPath(filename),
+  });
+}
+
+async function handleDirectUpload(
+  request: Request,
+  env: ReturnType<typeof getEnv>,
+  orgId: string,
+  workspaceId: string,
+  url: URL
+) {
+  if (!isSelfhostRuntime(env)) {
+    return Response.json({ error: 'Direct upload is only available in self-hosted installs' }, { status: 400 });
+  }
+
+  const filename = parseStoredFilename(url.searchParams.get('filename'));
+  if (!filename) {
+    return Response.json({ error: 'filename is required' }, { status: 400 });
+  }
+  if (!request.body) {
+    return Response.json({ error: 'Missing request body' }, { status: 400 });
+  }
+
+  const originalName = url.searchParams.get('originalName')?.slice(0, MAX_FILENAME_LENGTH)
+    || filename;
+  const contentType = request.headers.get('Content-Type')?.trim() || DEFAULT_CONTENT_TYPE;
+  const r2Key = buildUploadKey(orgId, workspaceId, filename);
+  const object = await env.R2_BUCKET.put(r2Key, request.body, {
+    httpMetadata: { contentType },
+    customMetadata: {
+      originalName,
+      uploadedAt: new Date().toISOString(),
+    },
+  });
+
+  return Response.json({
+    path: toMountPath(filename),
+    filename,
+    size: object.size,
+    etag: object.httpEtag,
   });
 }
 
@@ -245,6 +293,9 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     }
 
     if (request.method === 'PUT') {
+      if (actionType === 'direct') {
+        return await handleDirectUpload(request, env, orgId, workspaceId, url);
+      }
       if (actionType === 'mpu-uploadpart') {
         return await handleMultipartUploadPart(request, env, orgId, workspaceId, url);
       }

@@ -7,7 +7,8 @@ const MAX_PARTS = 10_000;
 const DEFAULT_MAX_CONCURRENCY = 6;
 
 interface MultipartCreateResponse {
-  uploadId: string;
+  uploadId?: string;
+  uploadMode?: 'direct';
   filename: string;
   path: string;
 }
@@ -164,11 +165,47 @@ export async function uploadWorkspaceFile(
     }
 
     const createPayload = await createResponse.json() as Partial<MultipartCreateResponse>;
-    if (
-      typeof createPayload.uploadId !== 'string'
-      || typeof createPayload.filename !== 'string'
-      || typeof createPayload.path !== 'string'
-    ) {
+    if (typeof createPayload.filename !== 'string' || typeof createPayload.path !== 'string') {
+      throw new Error('Upload API returned an invalid multipart create response');
+    }
+
+    if (createPayload.uploadMode === 'direct') {
+      const directResponse = await fetch(
+        getActionUrl(workspaceId, 'direct', {
+          filename: createPayload.filename,
+          originalName: file.name,
+        }),
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': contentType },
+          body: file,
+        }
+      );
+      if (!directResponse.ok) {
+        throw new Error(await readUploadError(directResponse));
+      }
+
+      const directPayload = await directResponse.json() as MultipartCompleteResponse;
+      const directPath = typeof directPayload.path === 'string'
+        ? directPayload.path
+        : createPayload.path;
+      if (!isUserUploadMountPath(directPath)) {
+        throw new Error('Upload API returned an invalid direct upload response');
+      }
+
+      emitProgress(file.size);
+      return {
+        path: directPath,
+        filename: typeof directPayload.filename === 'string'
+          ? directPayload.filename
+          : createPayload.filename,
+        originalName: file.name,
+        size: typeof directPayload.size === 'number' ? directPayload.size : file.size,
+        contentType,
+      };
+    }
+
+    if (typeof createPayload.uploadId !== 'string') {
       throw new Error('Upload API returned an invalid multipart create response');
     }
 
