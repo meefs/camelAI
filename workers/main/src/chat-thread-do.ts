@@ -3996,6 +3996,11 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     const enqueue = this.enqueueRunnerUserMessage(data, {
       sendAttemptId,
       startedAt,
+      // Match the durable-submit invariant used by the initial-message path:
+      // a resolved "accepted" response means the new-turn user row is already
+      // in pi_core. The render skeleton and recovery journal still use the same
+      // timestamp/id, so the eventual turn-end commit remains idempotent.
+      persistUserMessageImmediately: true,
     });
     if (clientMessageId) {
       this.getPendingClientMessageEnqueues().set(clientMessageId, enqueue);

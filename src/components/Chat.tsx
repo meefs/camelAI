@@ -150,6 +150,7 @@ import {
   type BillingDialogState,
 } from "@/lib/billing-dialog-state";
 import {
+  SEND_ACK_TIMEOUT_MS,
   trackChatReconnectFlush,
   trackChatSendDispatched,
   trackChatSendQueuedOffline,
@@ -252,7 +253,11 @@ type ChatAgentClient = {
   readyState: number;
   send(data: string): void;
   reconnect(): void;
-  call<T = unknown>(method: string, args?: unknown[]): Promise<T>;
+  call<T = unknown>(
+    method: string,
+    args?: unknown[],
+    options?: { timeout?: number },
+  ): Promise<T>;
 };
 
 type SendMessageResult = {
@@ -2227,7 +2232,7 @@ export default function Chat({
       setResolvedMentionProjects(data.projects);
     }
   }, [mentionSourcesFetcher.data]);
-  const preserveDraftBeforeOptimisticClear = useCallback(
+  const preserveDraftForDelivery = useCallback(
     (
       clientMessageId: string,
       draftThreadId: string | null,
@@ -2287,16 +2292,30 @@ export default function Chat({
     (pendingDraft: PendingDeliveryDraft) => {
       const currentInput = inputRef.current;
       const currentAttachments = attachmentsRef.current;
-      const canRemoveNormalDraft =
-        isComposerVisiblyEmpty(currentInput, currentAttachments) ||
-        isSubmittedDraftStillVisible(
-          currentInput,
-          currentAttachments,
-          pendingDraft.text,
-          pendingDraft.attachments,
-        );
+      const submittedDraftStillVisible = isSubmittedDraftStillVisible(
+        currentInput,
+        currentAttachments,
+        pendingDraft.text,
+        pendingDraft.attachments,
+      );
 
-      if (canRemoveNormalDraft) {
+      // Cloudflare OS-style submit semantics: leave the submitted content in
+      // the composer until the server has durably accepted it. Clear only the
+      // exact snapshot that was sent; if the user edited the composer while the
+      // RPC was in flight, their newer draft wins and must remain untouched.
+      if (submittedDraftStillVisible) {
+        inputRef.current = "";
+        attachmentsRef.current = [];
+        setInput("");
+        for (const attachment of currentAttachments) {
+          revokeAttachmentPreviewUrl(attachment.previewUrl);
+        }
+        setAttachments([]);
+        removeDraft(pendingDraft.workspaceId, pendingDraft.threadId);
+        return;
+      }
+
+      if (isComposerVisiblyEmpty(currentInput, currentAttachments)) {
         removeDraft(pendingDraft.workspaceId, pendingDraft.threadId);
         return;
       }
@@ -2308,7 +2327,7 @@ export default function Chat({
         currentAttachments,
       );
     },
-    [],
+    [revokeAttachmentPreviewUrl],
   );
 
   const markPendingDeliveryDraftAccepted = useCallback(
@@ -2393,6 +2412,15 @@ export default function Chat({
       return;
     }
 
+    // An accepted message is already part of the conversation. A later model
+    // or stream failure must not put it back into the composer and invite a
+    // duplicate send. Just retire its delivery backup.
+    if (pendingDraft.acceptedAt) {
+      syncNormalDraftAfterSubmitted(pendingDraft);
+      removeDeliveryDraft(pendingDraft.workspaceId, pendingDraft.threadId);
+      return;
+    }
+
     if (
       !isComposerVisiblyEmpty(inputRef.current, attachmentsRef.current) &&
       !isSubmittedDraftStillVisible(
@@ -2417,7 +2445,7 @@ export default function Chat({
       pendingDraft.attachments,
     );
     removeDeliveryDraft(pendingDraft.workspaceId, pendingDraft.threadId);
-  }, [getStoredPendingDeliveryDraft]);
+  }, [getStoredPendingDeliveryDraft, syncNormalDraftAfterSubmitted]);
 
   const normalizeChatError = useCallback(
     (
@@ -2875,7 +2903,11 @@ export default function Chat({
         getReadyState: () => chatAgentRef.current?.readyState ?? null,
       });
       void agent
-        .call<SendMessageResult>("sendMessage", [content, clientMessageId])
+        .call<SendMessageResult>(
+          "sendMessage",
+          [content, clientMessageId],
+          { timeout: SEND_ACK_TIMEOUT_MS },
+        )
         .then((result) => {
           if (result.status === "accepted") {
             sendTracker.accepted();
@@ -2904,16 +2936,23 @@ export default function Chat({
           if (activeThreadId !== pendingThreadContextRef.current.threadId) {
             return;
           }
-          // Keep ready=true when the socket is still OPEN. Clearing ready on an
-          // RPC timeout left the UI queueing forever with no onOpen to flush.
+          // A rejected AgentClient call is a transport failure, not a server
+          // rejection (sendMessage reports those as a resolved status). The
+          // server may already have accepted the message and lost only the RPC
+          // response, so keep the same clientMessageId queued and retransmit it
+          // after reconnect. ChatThreadDO durably deduplicates/re-acks that id.
+          //
+          // A half-open socket can remain OPEN until the RPC timeout. Force a
+          // reconnect in that case so the normal onOpen queue flush runs instead
+          // of leaving the composer busy forever. A socket that already closed
+          // is reconnecting automatically.
           const socketOpen =
             chatAgentRef.current?.readyState === WebSocket.OPEN;
-          failPendingMessageDelivery(
-            error instanceof Error
-              ? error.message
-              : "The message did not reach the server. I restored it as a draft so you can try again.",
-            { preserveReady: socketOpen },
-          );
+          setReady(false);
+          setLoading(true);
+          if (socketOpen) {
+            agent.reconnect();
+          }
         });
     },
     [failPendingMessageDelivery, markPendingDeliveryDraftAccepted],
@@ -3123,15 +3162,21 @@ export default function Chat({
           wasClean,
         });
       }
-      toast.error(
-        terminalChatWebSocketUserMessage(
-          code,
-          normalized.reason ?? error.reason,
-        ),
-        { id: "chat-ws-terminal-close", duration: 12_000 },
+      const message = terminalChatWebSocketUserMessage(
+        code,
+        normalized.reason ?? error.reason,
       );
+      // Terminal closes do not reconnect, so a queued delivery cannot make
+      // progress. This is the one transport failure that should release the
+      // pending bubble and restore its durable draft.
+      if (!failPendingMessageDelivery(message)) {
+        toast.error(message, {
+          id: "chat-ws-terminal-close",
+          duration: 12_000,
+        });
+      }
     },
-    [threadId],
+    [failPendingMessageDelivery, threadId],
   );
 
   const handleAgentStateUpdate = useCallback(
@@ -4337,17 +4382,6 @@ export default function Chat({
       .toString(36)
       .slice(2, 10)}`;
 
-    if (!opts?.preserveDraft && !opts?.contentOverride) {
-      preserveDraftBeforeOptimisticClear(
-        clientMessageId,
-        threadId,
-        currentInput,
-        currentAttachments,
-      );
-      inputRef.current = "";
-      setInput("");
-    }
-
     const shouldIncludeAttachmentRefs =
       !opts?.skipAttachmentRefs && !opts?.contentOverride;
     let finalContent: string;
@@ -4360,21 +4394,19 @@ export default function Chat({
       return false;
     }
 
+    if (!opts?.preserveDraft && !opts?.contentOverride) {
+      preserveDraftForDelivery(
+        clientMessageId,
+        threadId,
+        currentInput,
+        currentAttachments,
+      );
+    }
+
     const shouldShowCompactingIndicator = isManualCompactCommand(finalContent);
 
     if (shouldShowCompactingIndicator) {
       queueManualCompaction();
-    }
-
-    if (shouldIncludeAttachmentRefs) {
-      // Clear attachments after building message (revoke any blob URLs to avoid memory leaks)
-      attachmentsRef.current = [];
-      setAttachments((prev) => {
-        for (const a of prev) {
-          revokeAttachmentPreviewUrl(a.previewUrl);
-        }
-        return [];
-      });
     }
 
     // Clear any previous error

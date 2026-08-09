@@ -1735,6 +1735,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       expect.objectContaining({
         sendAttemptId: 'client-msg-1',
         startedAt: expect.any(Number),
+        persistUserMessageImmediately: true,
       }),
     );
     expect(fake.ctx.storage.kv.put).toHaveBeenCalled();

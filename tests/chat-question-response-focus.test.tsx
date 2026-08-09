@@ -73,18 +73,28 @@ vi.mock("@/components/prompt-input", () => ({
   PromptInput: ({
     value,
     onChange,
+    onSubmit,
     textareaRef,
   }: {
     value: string;
     onChange: (value: string) => void;
+    onSubmit: () => void;
     textareaRef?: React.RefObject<HTMLTextAreaElement | null>;
   }) => (
-    <textarea
-      aria-label="Prompt"
-      ref={textareaRef}
-      value={value}
-      onChange={(event) => onChange(event.currentTarget.value)}
-    />
+    <form
+      onSubmit={(event) => {
+        event.preventDefault();
+        onSubmit();
+      }}
+    >
+      <textarea
+        aria-label="Prompt"
+        ref={textareaRef}
+        value={value}
+        onChange={(event) => onChange(event.currentTarget.value)}
+      />
+      <button type="submit">Send message</button>
+    </form>
   ),
 }));
 
@@ -201,7 +211,13 @@ const agentRuntime = vi.hoisted(() => {
     // 0 = CONNECTING, 1 = OPEN, 3 = CLOSED (mirrors WebSocket.readyState).
     readyState = 0;
     send = vi.fn();
-    call = vi.fn(() => Promise.resolve());
+    call = vi.fn(
+      async (
+        _method: string,
+        _args?: unknown[],
+        _options?: { timeout?: number },
+      ): Promise<unknown> => undefined,
+    );
     reconnect = vi.fn();
     close = vi.fn();
 
@@ -310,6 +326,7 @@ describe("Chat AskUserQuestion composer focus", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     agentRuntime.reset();
+    localStorage.clear();
   });
 
   afterEach(() => {
@@ -367,6 +384,126 @@ describe("Chat AskUserQuestion composer focus", () => {
     await waitFor(() => {
       expect(screen.getByLabelText("Prompt")).toHaveFocus();
     });
+  });
+
+  it("reconnects and retransmits an unacknowledged send instead of restoring it as failed", async () => {
+    const user = userEvent.setup();
+    let rejectFirstSend: (error: Error) => void = () => {};
+
+    render(
+      <Chat
+        threadId="thread-1"
+        workspaceId="ws-1"
+        initialMessages={[]}
+      />,
+    );
+
+    const agent = getMainAgent();
+    agent.call
+      .mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            rejectFirstSend = reject;
+          }),
+      )
+      .mockResolvedValueOnce({ status: "accepted" });
+
+    act(() => {
+      agent.emitOpen();
+    });
+
+    const prompt = screen.getByLabelText("Prompt");
+    await user.type(prompt, "keep this message");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(agent.call).toHaveBeenCalledWith(
+      "sendMessage",
+      ["keep this message", expect.stringMatching(/^client_/)],
+      { timeout: 15_000 },
+    );
+    expect(prompt).toHaveValue("keep this message");
+
+    await act(async () => {
+      rejectFirstSend(new Error("Connection closed"));
+      await Promise.resolve();
+    });
+
+    expect(agent.reconnect).toHaveBeenCalledTimes(1);
+    expect(prompt).toHaveValue("keep this message");
+
+    act(() => {
+      agent.emitClose();
+      agent.emitOpen();
+    });
+
+    await waitFor(() => {
+      const sends = agent.call.mock.calls.filter(
+        ([method]) => method === "sendMessage",
+      );
+      expect(sends).toHaveLength(2);
+      expect(sends[1]?.[1]).toEqual(sends[0]?.[1]);
+      expect(prompt).toHaveValue("");
+    });
+
+    expect(screen.queryByText(/restored your message/i)).not.toBeInTheDocument();
+  });
+
+  it("keeps a rejected message in the composer without reconnecting", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <Chat
+        threadId="thread-1"
+        workspaceId="ws-1"
+        initialMessages={[]}
+      />,
+    );
+
+    const agent = getMainAgent();
+    agent.call.mockResolvedValueOnce({
+      status: "busy",
+      error: "Thread is busy",
+    });
+    act(() => agent.emitOpen());
+
+    const prompt = screen.getByLabelText("Prompt");
+    await user.type(prompt, "try this later");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() => expect(prompt).toHaveValue("try this later"));
+    expect(agent.reconnect).not.toHaveBeenCalled();
+  });
+
+  it("does not restore an accepted message after a later agent error", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <Chat
+        threadId="thread-1"
+        workspaceId="ws-1"
+        initialMessages={[]}
+      />,
+    );
+
+    const agent = getMainAgent();
+    agent.call.mockResolvedValueOnce({ status: "accepted" });
+    act(() => agent.emitOpen());
+
+    const prompt = screen.getByLabelText("Prompt");
+    await user.type(prompt, "already accepted");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(prompt).toHaveValue(""));
+
+    act(() => {
+      agent.emitStateUpdate({
+        lastError: {
+          id: "post-accept-error",
+          error: "The model failed after accepting the message",
+        },
+      });
+    });
+
+    expect(prompt).toHaveValue("");
   });
 
   it("uses worker provider metadata for BYOK rate-limit errors via agent state", async () => {
