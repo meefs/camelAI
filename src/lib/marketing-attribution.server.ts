@@ -5,6 +5,7 @@ const COOKIE_NAME = "camel_attribution_id";
 const KV_PREFIX = "marketing_attribution:";
 const USER_PREFIX = "user_marketing_attribution:";
 const ACTIVATION_PREFIX = "new_camel_activation:";
+const PURCHASE_PREFIX = "stream_purchase:";
 const TTL_SECONDS = 60 * 60 * 24 * 90;
 const ATTRIBUTION_KEYS = [
   "gclid",
@@ -54,6 +55,15 @@ export type NewCamelActivationRecord = {
   attributionId: string | null;
   firstTouch: MarketingFirstTouch | null;
   campaign: MarketingAttribution;
+};
+
+export type StreamPurchaseRecord = {
+  eventId: string;
+  eventName: "purchase";
+  orgId: string;
+  purchasedAt: string;
+  billingStatus: "active" | "trialing";
+  subscriptionId: string | null;
 };
 
 function validId(value: string | null | undefined): value is string {
@@ -167,4 +177,31 @@ export async function recordNewCamelActivation(
   } satisfies NewCamelActivationRecord;
   await kv.put(key, JSON.stringify(record));
   return record;
+}
+
+export async function recordStreamPurchase(
+  kv: KVNamespace,
+  input: {
+    orgId: string;
+    purchasedAt: number;
+    billingStatus: "active" | "trialing";
+    subscriptionId: string | null;
+  },
+): Promise<{ record: StreamPurchaseRecord; isFirst: boolean }> {
+  const key = `${PURCHASE_PREFIX}${input.orgId}`;
+  const existing = await kv.get<StreamPurchaseRecord>(key, "json");
+  if (existing) {
+    return { record: existing, isFirst: false };
+  }
+
+  const record = {
+    eventId: crypto.randomUUID(),
+    eventName: "purchase",
+    orgId: input.orgId,
+    purchasedAt: new Date(input.purchasedAt).toISOString(),
+    billingStatus: input.billingStatus,
+    subscriptionId: input.subscriptionId,
+  } satisfies StreamPurchaseRecord;
+  await kv.put(key, JSON.stringify(record));
+  return { record, isFirst: true };
 }

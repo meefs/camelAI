@@ -23,6 +23,7 @@ import { ChatThreadSnapshotsProvider } from "@/hooks/use-chat-thread-snapshots";
 import { BillingDialogPresenceProvider } from "@/hooks/use-billing-dialog-presence";
 import type { AuthState } from "@/types";
 import type { ChatGroupView } from "@/types";
+import { StreamPurchaseTracker } from "@/components/stream-purchase-tracker";
 import {
   isOrgBillingAccessReady,
   resolveOrgBillingAccess,
@@ -244,6 +245,7 @@ export default function AppLayout() {
       <ChatGroupsProvider disableLiveStatus={embedMode}>
         <BillingDialogPresenceProvider>
           <ChatThreadSnapshotsProvider>
+            <StreamPurchaseTracker />
             {embedMode ? null : (
               <AppSidebar
                 billingAccessMode={billingAccessMode}
