@@ -3,13 +3,19 @@ import {
   env,
   runDurableObjectAlarm,
   runInDurableObject,
+  SELF,
 } from "cloudflare:test";
 import {
   createOrg,
   createUser,
   createWorkspace,
+  listOrgWorkspaces,
   type TestEnv,
 } from "./test-helpers";
+import {
+  createSignedSession,
+  type SignedSessionData,
+} from "../src/signed-session";
 
 type WorkspaceStatusStub = DurableObjectStub<{
   recordThreadStreaming(
@@ -37,6 +43,63 @@ type WorkspaceStatusStub = DurableObjectStub<{
 
 const testEmail = () =>
   `workspace-status-${Date.now()}-${Math.random().toString(36).slice(2)}@example.com`;
+
+type StatusFrame = Record<string, unknown>;
+
+/**
+ * Read a never-ending `text/event-stream` body incrementally: `response.text()`
+ * would hang on a status stream, which only ends when the reader cancels.
+ */
+function readStatusStream(response: Response): {
+  frames: StatusFrame[];
+  comments: string[];
+  cancel: () => Promise<void>;
+} {
+  const reader = response
+    .body!.pipeThrough(new TextDecoderStream())
+    .getReader();
+  const frames: StatusFrame[] = [];
+  const comments: string[] = [];
+  void (async () => {
+    let buffer = "";
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += value;
+        let boundary = buffer.indexOf("\n\n");
+        while (boundary !== -1) {
+          const event = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
+          for (const line of event.split("\n")) {
+            if (line.startsWith("data:")) {
+              frames.push(JSON.parse(line.slice("data:".length).trim()));
+            } else if (line.startsWith(":")) {
+              comments.push(line);
+            }
+          }
+          boundary = buffer.indexOf("\n\n");
+        }
+      }
+    } catch {
+      // Cancelling the reader is how these tests end a stream.
+    }
+  })();
+  return { frames, comments, cancel: () => reader.cancel() };
+}
+
+async function waitForFrames(
+  frames: StatusFrame[],
+  count: number,
+): Promise<void> {
+  for (let i = 0; i < 100; i++) {
+    if (frames.length >= count) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(
+    `Timed out waiting for ${count} status frames, saw ${frames.length}`,
+  );
+}
 
 describe("WorkspaceDO thread status", () => {
   const testEnv = env as unknown as TestEnv;
@@ -247,23 +310,180 @@ describe("WorkspaceDO thread status", () => {
     expect(alarm!).toBeLessThanOrEqual(Date.now() + 5 * 60 * 1000 + 2_000);
   });
 
+  it("streams a snapshot as the first event on every attach", async () => {
+    const workspaceStub = await createWorkspaceStatusStub();
+    const threadId = crypto.randomUUID();
+
+    await workspaceStub.recordThreadStreaming(threadId, true);
+    await workspaceStub.recordThreadStreaming(threadId, true, {
+      activityText: "Reading  files",
+      activityAt: 4242,
+    });
+
+    const response = await workspaceStub.fetch(
+      "https://workspace/status/stream",
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe(
+      "text/event-stream; charset=utf-8",
+    );
+    expect(response.headers.get("cache-control")).toBe("no-cache, no-transform");
+    expect(response.headers.get("x-accel-buffering")).toBe("no");
+
+    const stream = readStatusStream(response);
+    try {
+      await waitForFrames(stream.frames, 1);
+      const snapshot = stream.frames[0] as {
+        type: string;
+        runningThreadIds: string[];
+        runningThreads: Array<Record<string, unknown>>;
+      };
+      expect(snapshot.type).toBe("thread_status_snapshot");
+      expect(snapshot.runningThreadIds).toEqual([threadId]);
+      // Both alias pairs stay on the wire: the client reads either one.
+      expect(snapshot.runningThreads[0]).toEqual({
+        threadId,
+        startedAt: expect.any(Number),
+        updatedAt: expect.any(Number),
+        runningActivityText: "Reading files",
+        runningActivityAt: 4242,
+        latestActivityText: "Reading files",
+        latestActivityAt: 4242,
+      });
+    } finally {
+      await stream.cancel();
+    }
+  });
+
+  it("fans incremental frames out to every attached stream with omitted null fields", async () => {
+    const workspaceStub = await createWorkspaceStatusStub();
+    const threadId = crypto.randomUUID();
+
+    const first = readStatusStream(
+      await workspaceStub.fetch("https://workspace/status/stream"),
+    );
+    const second = readStatusStream(
+      await workspaceStub.fetch("https://workspace/status/stream"),
+    );
+
+    try {
+      await waitForFrames(first.frames, 1);
+      await waitForFrames(second.frames, 1);
+
+      await workspaceStub.recordThreadStreaming(threadId, true);
+      await waitForFrames(first.frames, 2);
+      await waitForFrames(second.frames, 2);
+      expect(first.frames[1]).toEqual({
+        type: "thread_status",
+        threadId,
+        status: "running",
+        runningActivityText: null,
+        runningActivityAt: null,
+        runningStartedAt: expect.any(Number),
+      });
+      expect(second.frames[1]).toEqual(first.frames[1]);
+
+      await workspaceStub.recordThreadStreaming(threadId, false, {
+        completedAt: Date.now(),
+        summaryStatus: "pending",
+      });
+      await waitForFrames(first.frames, 3);
+      expect(first.frames[2]).toMatchObject({
+        type: "thread_status",
+        threadId,
+        status: "unread",
+        summaryStatus: "pending",
+        runningActivityText: null,
+        runningActivityAt: null,
+        runningStartedAt: null,
+      });
+      expect(first.frames[2]).not.toHaveProperty("summary");
+    } finally {
+      await first.cancel();
+      await second.cancel();
+    }
+  });
+
+  it("drops an abandoned stream once its writes stop draining", async () => {
+    const workspaceStub = await createWorkspaceStatusStub();
+    const threadId = crypto.randomUUID();
+
+    const stream = readStatusStream(
+      await workspaceStub.fetch("https://workspace/status/stream"),
+    );
+    await waitForFrames(stream.frames, 1);
+    await stream.cancel();
+
+    await workspaceStub.recordThreadStreaming(threadId, true);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(stream.frames).toHaveLength(1);
+
+    // The runtime does not propagate the cancel into the DO, so the stall sweep
+    // (heartbeat-driven in production) is what reclaims the writer.
+    const streamCount = await runInDurableObject(
+      workspaceStub,
+      async (instance) => {
+        const internals = instance as unknown as {
+          statusStreams: Set<{ pending: number; pendingSince: number }>;
+          sweepStalledThreadStatusStreams: () => void;
+          publishThreadStatusEvent: (event: string) => void;
+        };
+        internals.publishThreadStatusEvent(":hb\n\n");
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        for (const entry of internals.statusStreams) {
+          expect(entry.pending).toBeGreaterThan(0);
+          entry.pendingSince -= 60_000;
+        }
+        internals.sweepStalledThreadStatusStreams();
+        return internals.statusStreams.size;
+      },
+    );
+    expect(streamCount).toBe(0);
+  });
+
+  it("404s unknown durable object paths", async () => {
+    const workspaceStub = await createWorkspaceStatusStub();
+
+    const response = await workspaceStub.fetch("https://workspace/nope");
+    expect(response.status).toBe(404);
+  });
+
+  it("still serves the legacy status websocket", async () => {
+    const workspaceStub = await createWorkspaceStatusStub();
+    const threadId = crypto.randomUUID();
+
+    await workspaceStub.recordThreadStreaming(threadId, true);
+    const response = await workspaceStub.fetch("https://workspace/status", {
+      headers: { Upgrade: "websocket" },
+    });
+    expect(response.status).toBe(101);
+    const socket = response.webSocket;
+    expect(socket).not.toBeNull();
+    const frames: StatusFrame[] = [];
+    socket!.addEventListener("message", (event) => {
+      frames.push(JSON.parse(event.data as string));
+    });
+    socket!.accept();
+
+    await waitForFrames(frames, 1);
+    expect(frames[0]).toMatchObject({
+      type: "thread_status_snapshot",
+      runningThreadIds: [threadId],
+    });
+    socket!.close();
+  });
+
   it("sweeps an expired lease via the alarm and broadcasts idle", async () => {
     const workspaceStub = await createWorkspaceStatusStub();
     const threadId = crypto.randomUUID();
 
     await workspaceStub.recordThreadStreaming(threadId, true);
 
-    const response = await workspaceStub.fetch("https://workspace/status", {
-      headers: { Upgrade: "websocket" },
-    });
-    const socket = response.webSocket;
-    expect(socket).not.toBeNull();
-    socket!.accept();
-    const frames: Array<{ type?: string; threadId?: string; status?: string }> =
-      [];
-    socket!.addEventListener("message", (event) => {
-      frames.push(JSON.parse(event.data as string));
-    });
+    const stream = readStatusStream(
+      await workspaceStub.fetch("https://workspace/status/stream"),
+    );
+    const frames = stream.frames;
+    await waitForFrames(frames, 1);
 
     // Backdate the lease past the TTL: the turn's heartbeats "stopped".
     await runInDurableObject(workspaceStub, (instance) => {
@@ -277,8 +497,8 @@ describe("WorkspaceDO thread status", () => {
     await expect(runDurableObjectAlarm(workspaceStub)).resolves.toBe(true);
     await expect(workspaceStub.listStreamingThreadIds()).resolves.toEqual([]);
 
-    // The prune broadcast an idle frame to connected status sockets.
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    // The prune broadcast an idle frame to attached status streams.
+    await waitForFrames(frames, 2);
     expect(frames).toContainEqual(
       expect.objectContaining({
         type: "thread_status",
@@ -286,6 +506,7 @@ describe("WorkspaceDO thread status", () => {
         status: "idle",
       }),
     );
+    await stream.cancel();
 
     // Nothing left running and no managed tokens: the alarm is cleared
     // instead of leaving the 1h dead-man fallback armed.
@@ -294,5 +515,89 @@ describe("WorkspaceDO thread status", () => {
       (_instance, state) => state.storage.getAlarm(),
     );
     expect(alarmAfter).toBeNull();
+  });
+});
+
+describe("workspace status stream route", () => {
+  const testEnv = env as unknown as TestEnv;
+  const signingSecret = (env as unknown as { TOKEN_SIGNING_SECRET: string })
+    .TOKEN_SIGNING_SECRET;
+
+  async function setupSession() {
+    const { userId } = await createUser(
+      testEnv,
+      testEmail(),
+      "password123",
+      "Status Route User",
+    );
+    const { org } = await createOrg(testEnv, "Status Route Org", userId);
+    const [defaultWorkspace] = await listOrgWorkspaces(testEnv, org.id);
+    const other = await createWorkspace(
+      testEnv,
+      org.id,
+      "Other Workspace",
+      userId,
+    );
+    const sessionData: SignedSessionData = {
+      user_id: userId,
+      org_id: org.id,
+      // The session is parked on a different workspace than the URL: this used
+      // to 403 every status socket in a tab another tab had navigated away from.
+      workspace_id: defaultWorkspace!.id,
+      created_at: Date.now(),
+      user_name: "Status Route User",
+      user_email: testEmail(),
+    };
+    return {
+      userId,
+      orgId: org.id,
+      sessionWorkspaceId: defaultWorkspace!.id,
+      workspaceId: other.id,
+      signedToken: await createSignedSession(signingSecret, sessionData),
+    };
+  }
+
+  const attach = (workspaceId: string, signedToken?: string) =>
+    SELF.fetch(
+      `http://example/api/workspaces/${encodeURIComponent(workspaceId)}/status/stream`,
+      {
+        headers: {
+          Accept: "text/event-stream",
+          ...(signedToken ? { "X-Chiridion-Session-Id": signedToken } : {}),
+        },
+      },
+    );
+
+  it("streams the workspace named in the URL, not the session-selected one", async () => {
+    const { workspaceId, signedToken } = await setupSession();
+
+    const response = await attach(workspaceId, signedToken);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe(
+      "text/event-stream; charset=utf-8",
+    );
+    // Never read to completion — the stream only ends when the viewer leaves.
+    await response.body?.cancel();
+  });
+
+  it("rejects an unauthenticated attach", async () => {
+    const { workspaceId } = await setupSession();
+
+    const response = await attach(workspaceId);
+
+    expect(response.status).toBe(401);
+    expect(response.headers.get("content-type")).not.toBe(
+      "text/event-stream; charset=utf-8",
+    );
+  });
+
+  it("rejects a workspace the session's user does not belong to", async () => {
+    const { workspaceId } = await setupSession();
+    const outsider = await setupSession();
+
+    const response = await attach(workspaceId, outsider.signedToken);
+
+    expect(response.status).toBe(403);
   });
 });

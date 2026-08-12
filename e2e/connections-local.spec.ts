@@ -8,7 +8,7 @@ import { expect, test } from './base';
  */
 test.describe('connections (local, UI interactions)', () => {
   test('Add connection opens the dialog and Escape dismisses it', async ({ page }) => {
-    await page.goto('/connections', { waitUntil: 'networkidle' });
+    await page.goto('/connections', { waitUntil: 'domcontentloaded' });
     await page.getByRole('button', { name: 'Add connection' }).first().click();
     const dialog = page.getByRole('dialog');
     await expect(dialog).toBeVisible();
@@ -20,7 +20,7 @@ test.describe('connections (local, UI interactions)', () => {
   test('picking a connection type opens its setup form, and Cancel dismisses it', async ({
     page,
   }) => {
-    await page.goto('/connections', { waitUntil: 'networkidle' });
+    await page.goto('/connections', { waitUntil: 'domcontentloaded' });
     await page.getByRole('button', { name: 'Add connection' }).first().click();
     const dialog = page.getByRole('dialog');
     await expect(dialog).toBeVisible();

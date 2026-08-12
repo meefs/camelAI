@@ -38,6 +38,8 @@ import {
   shouldMarkActiveUnreadThreadViewed,
   shouldRevalidateThreadStatusUpdate,
   useChatGroups,
+  workspaceStatusStream,
+  type WorkspaceStatusStreamOptions,
 } from "@/hooks/use-chat-groups";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import type { ChatGroup, ChatGroupThreadSummary, ChatGroupView } from "@/types";
@@ -232,63 +234,40 @@ function authLoaderState(chatGroups: ChatGroupView[] | Promise<ChatGroupView[]>)
   };
 }
 
-// The status socket in use-chat-groups is a partysocket ReconnectingWebSocket, so
-// mock the `partysocket` module (not the global WebSocket) — the mock IS the socket
-// the hook constructs, so `instances[0].emit(...)` drives its message listener
-// directly, as before. Defined via vi.hoisted so the hoisted vi.mock factory can
-// reference it.
-const { MockStatusWebSocket } = vi.hoisted(() => {
-  class MockStatusWebSocket {
-    static instances: MockStatusWebSocket[] = [];
+// Captured before the per-test override below replaces it, so the transport's
+// own reader/backoff loop stays testable.
+const realStatusStreamOpen = workspaceStatusStream.open;
 
-    readonly url: string;
-    readonly listeners = new Map<
-      string,
-      Set<(event: MessageEvent | Event) => void>
-    >();
+// The status transport in use-chat-groups is a fetch+reader SSE loop behind the
+// module-level `workspaceStatusStream` seam, so swap `open` for a fake stream:
+// the fake IS what the hook attaches, so `instances[0].emit(...)` drives its
+// message callback directly, as the partysocket module mock used to.
+class MockStatusStream {
+  static instances: MockStatusStream[] = [];
 
-    constructor(url: string) {
-      this.url = url;
-      MockStatusWebSocket.instances.push(this);
-    }
+  readonly url: string;
+  closed = false;
+  private readonly onMessage: (data: string) => void;
 
-    addEventListener(
-      type: string,
-      listener: (event: MessageEvent | Event) => void,
-    ) {
-      const listeners = this.listeners.get(type) ?? new Set();
-      listeners.add(listener);
-      this.listeners.set(type, listeners);
-    }
-
-    removeEventListener(
-      type: string,
-      listener: (event: MessageEvent | Event) => void,
-    ) {
-      this.listeners.get(type)?.delete(listener);
-    }
-
-    close() {
-      for (const listener of this.listeners.get("close") ?? []) {
-        listener(new Event("close"));
-      }
-    }
-
-    emit(payload: unknown) {
-      const event = { data: JSON.stringify(payload) } as MessageEvent;
-      for (const listener of this.listeners.get("message") ?? []) {
-        listener(event);
-      }
-    }
+  constructor(options: WorkspaceStatusStreamOptions) {
+    this.url = options.url;
+    this.onMessage = options.onMessage;
+    MockStatusStream.instances.push(this);
   }
 
-  return { MockStatusWebSocket };
-});
+  close() {
+    this.closed = true;
+  }
 
-vi.mock("partysocket", () => ({ WebSocket: MockStatusWebSocket }));
+  emit(payload: unknown) {
+    if (this.closed) return;
+    this.onMessage(JSON.stringify(payload));
+  }
+}
 
 beforeEach(() => {
-  MockStatusWebSocket.instances = [];
+  MockStatusStream.instances = [];
+  workspaceStatusStream.open = (options) => new MockStatusStream(options);
   window.localStorage.removeItem(CLOSE_CHAT_GROUP_CONFIRMATION_SUPPRESSED_KEY);
   window.localStorage.removeItem(
     "camelai:close-chat-group-confirmation-suppressed",
@@ -2704,7 +2683,6 @@ describe("ChatGroupsProvider summary patches", () => {
   });
 
   it("refreshes inactive thread metadata from status completions without broad revalidation", async () => {
-    vi.stubGlobal("WebSocket", MockStatusWebSocket as unknown as typeof WebSocket);
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -2752,11 +2730,14 @@ describe("ChatGroupsProvider summary patches", () => {
         "UI polish",
       );
       await waitFor(() => {
-        expect(MockStatusWebSocket.instances).toHaveLength(1);
+        expect(MockStatusStream.instances).toHaveLength(1);
       });
+      expect(MockStatusStream.instances[0].url).toBe(
+        "/api/workspaces/workspace_1/status/stream",
+      );
 
       act(() => {
-        MockStatusWebSocket.instances[0].emit({
+        MockStatusStream.instances[0].emit({
           type: "thread_status",
           threadId: "thread_2",
           status: "unread",
@@ -2777,6 +2758,91 @@ describe("ChatGroupsProvider summary patches", () => {
       });
       expect(loader).toHaveBeenCalledTimes(1);
     } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe("workspace status stream transport", () => {
+  function sseResponse(body: string) {
+    return new Response(body, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+  }
+
+  it("delivers data frames, ignores heartbeats, and reattaches when a stream ends", async () => {
+    const bodies = [
+      `:hb\n\ndata: {"type":"thread_status_snapshot","runningThreadIds":[]}\n\n`,
+      `data: {"type":"thread_status","threadId":"thread_1","status":"idle"}\n\n`,
+    ];
+    const fetchMock = vi.fn(async () => sseResponse(bodies.shift() ?? ""));
+    vi.stubGlobal("fetch", fetchMock);
+    const messages: string[] = [];
+    const stream = realStatusStreamOpen({
+      url: "/api/workspaces/workspace_1/status/stream",
+      onMessage: (data) => messages.push(data),
+    });
+
+    try {
+      await waitFor(() => {
+        expect(messages).toHaveLength(2);
+      });
+      expect(JSON.parse(messages[0]).type).toBe("thread_status_snapshot");
+      expect(JSON.parse(messages[1]).threadId).toBe("thread_1");
+      expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+    } finally {
+      stream.close();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("stops reattaching once closed", async () => {
+    const fetchMock = vi.fn(async () =>
+      sseResponse(`data: {"type":"thread_status_snapshot"}\n\n`),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const messages: string[] = [];
+    const stream = realStatusStreamOpen({
+      url: "/api/workspaces/workspace_1/status/stream",
+      onMessage: (data) => messages.push(data),
+    });
+
+    try {
+      await waitFor(() => {
+        expect(messages.length).toBeGreaterThan(0);
+      });
+      stream.close();
+      const callsAtClose = fetchMock.mock.calls.length;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(fetchMock.mock.calls.length).toBe(callsAtClose);
+    } finally {
+      stream.close();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("retries a denied attach without surfacing a frame", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("Forbidden", { status: 403 }))
+      .mockResolvedValue(
+        sseResponse(`data: {"type":"thread_status_snapshot"}\n\n`),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const messages: string[] = [];
+    const stream = realStatusStreamOpen({
+      url: "/api/workspaces/workspace_1/status/stream",
+      onMessage: (data) => messages.push(data),
+    });
+
+    try {
+      await waitFor(() => {
+        expect(messages).toHaveLength(1);
+      });
+      expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+    } finally {
+      stream.close();
       vi.unstubAllGlobals();
     }
   });

@@ -11,6 +11,7 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import React from "react";
 import { BYOK_PROVIDERS } from "@/lib/byok-providers";
+import { CHAT_SSE_CLOSE_UNAUTHORIZED } from "@/lib/chat-sse-close";
 
 const mockNavigate = vi.fn();
 const mockRevalidate = vi.fn();
@@ -48,8 +49,10 @@ vi.mock("react-router", async () => {
   };
 });
 
+const mockToast = vi.hoisted(() => Object.assign(vi.fn(), { error: vi.fn() }));
+
 vi.mock("sonner", () => ({
-  toast: { error: vi.fn() },
+  toast: mockToast,
 }));
 
 vi.mock("@/hooks/use-auth-data", () => ({
@@ -192,15 +195,22 @@ vi.mock("@/components/ui/dropdown-menu", () => ({
   ),
 }));
 
-// Chat connects through the Agents SDK (`useAgent`/PartySocket). Mock the hook so
-// tests can drive the agent connection directly instead of emulating PartySocket.
+// Chat connects through the SSE transport (`useSseAgent`). Mock the hook so tests
+// can drive the connection directly instead of scripting fetch/SSE frames.
 const agentRuntime = vi.hoisted(() => {
   type AgentOptions = {
     agent: string;
     name: string;
+    enabled?: boolean;
+    query?: Record<string, string | null | undefined>;
     onOpen?: () => void;
     onMessage?: (event: { data: string }) => void;
-    onClose?: () => void;
+    onClose?: (event?: unknown) => void;
+    onConnectionError?: (error: {
+      code?: number;
+      reason?: string;
+      wasClean?: boolean;
+    }) => void;
     onStateUpdate?: (state: unknown) => void;
   };
 
@@ -208,7 +218,7 @@ const agentRuntime = vi.hoisted(() => {
     static instances: MockAgentClient[] = [];
 
     options: AgentOptions;
-    // 0 = CONNECTING, 1 = OPEN, 3 = CLOSED (mirrors WebSocket.readyState).
+    // 0 = CONNECTING, 1 = OPEN, 3 = CLOSED (SseAgentClient keeps the numbers).
     readyState = 0;
     send = vi.fn();
     call = vi.fn(
@@ -219,6 +229,7 @@ const agentRuntime = vi.hoisted(() => {
       ): Promise<unknown> => undefined,
     );
     reconnect = vi.fn();
+    start = vi.fn();
     close = vi.fn();
 
     constructor(options: AgentOptions) {
@@ -239,15 +250,36 @@ const agentRuntime = vi.hoisted(() => {
       this.options.onStateUpdate?.(state);
     }
 
-    emitClose() {
+    emitClose(event?: unknown) {
       this.readyState = 3;
-      this.options.onClose?.();
+      this.options.onClose?.(event);
+    }
+
+    /** Server parked the stream (`bye {"reason":"idle"}`): still OPEN for sends. */
+    emitIdlePark() {
+      this.readyState = 1;
+      this.options.onClose?.({
+        byeReason: "idle",
+        status: null,
+        reason: "idle",
+        aborted: false,
+        wasClean: true,
+      });
+    }
+
+    emitConnectionError(error: {
+      code?: number;
+      reason?: string;
+      wasClean?: boolean;
+    }) {
+      this.readyState = 3;
+      this.options.onConnectionError?.(error);
     }
   }
 
   const registry = new Map<string, MockAgentClient>();
 
-  function useAgent(options: AgentOptions) {
+  function useSseAgent(options: AgentOptions) {
     const key = `${options.agent}:${options.name}`;
     let instance = registry.get(key);
     if (!instance) {
@@ -265,11 +297,11 @@ const agentRuntime = vi.hoisted(() => {
     MockAgentClient.instances = [];
   }
 
-  return { useAgent, reset, MockAgentClient };
+  return { useSseAgent, reset, MockAgentClient };
 });
 
-vi.mock("agents/react", () => ({
-  useAgent: agentRuntime.useAgent,
+vi.mock("@/lib/use-sse-agent", () => ({
+  useSseAgent: agentRuntime.useSseAgent,
 }));
 
 // Chat owns its transcript through ai-chat (useAgentChat) now; this test drives
@@ -572,5 +604,68 @@ describe("Chat AskUserQuestion composer focus", () => {
       name: /Open Anthropic API settings/,
     });
     expect(link).toHaveAttribute("href", BYOK_PROVIDERS.anthropic.getKeyUrl);
+  });
+
+  it("mounts the SSE transport for the thread without the WebSocket timing knobs", () => {
+    render(
+      <Chat threadId="thread-1" workspaceId="ws-1" initialMessages={[]} />,
+    );
+
+    const agent = getMainAgent();
+    expect(agent.options.enabled).toBe(true);
+    expect(agent.options.query).toEqual({
+      threadId: "thread-1",
+      workspaceId: "ws-1",
+    });
+    // PartySocket knobs have no meaning for fetch+SSE; passing them through
+    // would silently do nothing.
+    expect(agent.options).not.toHaveProperty("connectionTimeout");
+    expect(agent.options).not.toHaveProperty("minReconnectionDelay");
+    expect(agent.options).not.toHaveProperty("maxReconnectionDelay");
+  });
+
+  it("still dispatches a send while the server has parked the stream as idle", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <Chat threadId="thread-1" workspaceId="ws-1" initialMessages={[]} />,
+    );
+
+    const agent = getMainAgent();
+    agent.call.mockResolvedValue({ status: "accepted" });
+    act(() => {
+      agent.emitOpen();
+      agent.emitIdlePark();
+    });
+
+    await user.type(screen.getByLabelText("Prompt"), "wake the stream");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(agent.call).toHaveBeenCalledWith(
+      "sendMessage",
+      ["wake the stream", expect.stringMatching(/^client_/)],
+      { timeout: 15_000 },
+    );
+  });
+
+  it("surfaces the SSE terminal-close copy when the transport gives up", () => {
+    render(
+      <Chat threadId="thread-1" workspaceId="ws-1" initialMessages={[]} />,
+    );
+
+    const agent = getMainAgent();
+    act(() => {
+      agent.emitOpen();
+      agent.emitConnectionError({
+        code: CHAT_SSE_CLOSE_UNAUTHORIZED,
+        reason: "Unauthorized",
+        wasClean: false,
+      });
+    });
+
+    expect(mockToast.error).toHaveBeenCalledWith(
+      expect.stringMatching(/session expired/i),
+      expect.objectContaining({ id: "chat-sse-terminal-close" }),
+    );
   });
 });

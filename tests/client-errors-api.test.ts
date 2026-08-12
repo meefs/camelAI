@@ -91,11 +91,11 @@ describe('POST /api/client-errors', () => {
     const response = await action({
       request: makeRequest({
         kind: 'event',
-        source: 'chat_websocket',
-        event: 'ws_closed',
+        source: 'chat_sse',
+        event: 'chat_sse_abnormal_disconnect',
         severity: 'warn',
-        status: 'closed',
-        message: 'Chat websocket closed.',
+        status: 'eof',
+        message: 'Chat SSE stream disconnected abnormally (eof).',
         threadId: 'thread_123',
         workspaceId: 'workspace_client',
         details: {
@@ -116,17 +116,19 @@ describe('POST /api/client-errors', () => {
     expect(errorWrite).not.toHaveBeenCalled();
 
     const eventPoint = observabilityWrite.mock.calls[0][0];
-    expect(eventPoint.blobs[0]).toBe('ws_closed');
+    expect(eventPoint.blobs[0]).toBe('chat_sse_abnormal_disconnect');
     expect(eventPoint.blobs[1]).toBe('warn');
     expect(eventPoint.blobs[2]).toBe('browser');
-    expect(eventPoint.blobs[3]).toBe('chat_websocket');
-    expect(eventPoint.blobs[4]).toBe('closed');
+    expect(eventPoint.blobs[3]).toBe('chat_sse');
+    expect(eventPoint.blobs[4]).toBe('eof');
     expect(eventPoint.blobs[7]).toBe('/chat/:uuid');
     expect(eventPoint.blobs[8]).toBe('thread_123');
     expect(eventPoint.blobs[9]).toBe('workspace_123');
     expect(eventPoint.blobs[10]).toBe('org_123');
     expect(eventPoint.blobs[11]).toBe('user_123');
-    expect(eventPoint.blobs[16]).toBe('Chat websocket closed.');
+    expect(eventPoint.blobs[16]).toBe(
+      'Chat SSE stream disconnected abnormally (eof).',
+    );
     expect(eventPoint.blobs[17]).toContain('Details: {"code":1006,"reason":"closed","reconnectAttempts":5}');
   });
 
@@ -136,8 +138,8 @@ describe('POST /api/client-errors', () => {
     const response = await action({
       request: makeRequest({
         kind: 'event',
-        source: 'chat_websocket',
-        event: 'ws_closed',
+        source: 'chat_sse',
+        event: 'chat_sse_abnormal_disconnect',
         threadId: 'thread_123',
       }),
       context: {},

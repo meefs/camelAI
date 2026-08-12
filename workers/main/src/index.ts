@@ -10,7 +10,9 @@
  * - /api/integrations/telegram/webhook → Telegram Bot API webhook
  * - email() → Workspace email ingress (Cloudflare Email Routing)
  * - /api/threads/:id/preview → Thread preview API
- * - /agents/chat-thread/:thread → ChatThreadDO Agents SDK WebSocket
+ * - /agents/chat-thread/:thread → ChatThreadDO Agents SDK WebSocket (legacy)
+ * - /agents/chat-thread/:thread/sse → ChatThreadDO chat stream (SSE)
+ * - /agents/chat-thread/:thread/call → ChatThreadDO chat frames (POST)
  * - * → React Router SSR
  */
 
@@ -18,7 +20,7 @@ import { createRequestHandler } from 'react-router';
 import { DurableObject } from 'cloudflare:workers';
 import { routeAgentRequest } from 'agents';
 export { ContainerProxy, Sandbox } from '@cloudflare/sandbox';
-import type { Env, Route } from './types.js';
+import type { Env, Route, RouteContext } from './types.js';
 import { handleSlackEventsQueue } from './slack-events-queue.js';
 import type { AppScreenshotJob } from './screenshot-queue.js';
 import type { SlackEventQueueMessage } from './slack-types.js';
@@ -54,6 +56,7 @@ import {
   handleDiscordOAuthStart,
 } from './routes/discord-integrations.js';
 import { handleWorkspaceStatusWebSocket } from './routes/websocket.js';
+import { handleWorkspaceStatusStream } from './routes/status-stream.js';
 import { handleLogsWebSocket } from './routes/logs-websocket.js';
 import { handleOAuthMetadata, handleResourceMetadata } from './routes/well-known.js';
 import {
@@ -68,6 +71,8 @@ import {
 import { handleEmailSendProxy } from './routes/email-send-proxy.js';
 import { handleWorkerAuth } from './routes/worker-auth.js';
 import { requireChatWebSocketAccess } from './helpers/auth.js';
+import { getThreadStub } from './helpers/stubs.js';
+import { text } from './helpers/response.js';
 import { rejectedChatWebSocketUpgrade } from '../../../src/lib/chat-ws-close';
 import { recordObservabilityEvent } from './observability.js';
 
@@ -266,6 +271,24 @@ const routes: Route[] = [
   { method: 'GET', path: /^\/api\/integrations\/remote_mcp\/oauth$/, handler: handleRemoteMcpOAuthStart },
   { method: 'GET', path: /^\/api\/integrations\/remote_mcp\/callback$/, handler: handleRemoteMcpOAuthCallback },
 
+  // Chat transport (HTTP POST send + SSE receive). Plain HTTP: `websocket: true`
+  // would make the route loop skip them, and React Router would answer an
+  // /agents/* miss with the SPA shell, so misses 404 here instead.
+  {
+    method: 'GET',
+    path: /^\/agents\/chat-thread\/([^/]+)\/sse$/,
+    handler: (context) => handleChatTransportRequest(context, 'sse'),
+  },
+  {
+    method: 'POST',
+    path: /^\/agents\/chat-thread\/([^/]+)\/call$/,
+    handler: (context) => handleChatTransportRequest(context, 'call'),
+  },
+  { method: 'ALL', path: /^\/agents\//, handler: async () => text('Not Found', 404) },
+
+  // Workspace thread-status SSE stream (replaces the status WebSocket).
+  { method: 'GET', path: /^\/api\/workspaces\/([^/]+)\/status\/stream$/, handler: handleWorkspaceStatusStream },
+
   // WebSocket routes
   { method: 'GET', path: /^\/ws\/logs$/, handler: handleLogsWebSocket, websocket: true },
   { method: 'GET', path: /^\/ws\/workspaces\/([^/]+)\/status$/, handler: handleWorkspaceStatusWebSocket, websocket: true },
@@ -285,12 +308,28 @@ const reactRouterHandler = createRequestHandler(
 // Main Router
 // =============================================================================
 
-async function authorizeChatAgentConnect(
+/**
+ * Chat transports sharing one authorization unit. The telemetry event NAMES are
+ * identical across all three (dashboards filter on them); `operation`
+ * distinguishes them, and the WebSocket value is unchanged so existing queries
+ * keep matching.
+ */
+type ChatTransport = 'websocket' | 'sse' | 'call';
+
+const CHAT_TRANSPORT_AUTH_OPERATIONS: Record<ChatTransport, string> = {
+  websocket: 'authorizeChatAgentConnect',
+  sse: 'authorizeChatTransportRequest:sse',
+  call: 'authorizeChatTransportRequest:call',
+};
+
+async function authorizeChatTransportRequest(
   req: Request,
   env: Env,
   threadId: string,
+  transport: ChatTransport,
 ): Promise<Request | Response> {
   const startedAt = Date.now();
+  const operation = CHAT_TRANSPORT_AUTH_OPERATIONS[transport];
   const url = new URL(req.url);
   const workspaceIdParam = url.searchParams.get('workspaceId');
   let access: Awaited<ReturnType<typeof requireChatWebSocketAccess>>;
@@ -306,7 +345,7 @@ async function authorizeChatAgentConnect(
       event: 'chat_ws_auth_completed',
       severity: 'error',
       component: 'chat_ws_auth',
-      operation: 'authorizeChatAgentConnect',
+      operation,
       status: 'exception',
       durationMs: Date.now() - startedAt,
       route: '/agents/chat-thread/:threadId',
@@ -317,7 +356,11 @@ async function authorizeChatAgentConnect(
       errorName: error instanceof Error ? error.name : 'Error',
       sampleIndex: threadId,
     });
-    throw error;
+    if (transport === 'websocket') throw error;
+    // requireChatWebSocketAccess throws on a non-transient session-invalidation
+    // check failure. An HTTP transport must render that itself: an uncaught
+    // throw is an opaque 500 the client would retry against forever.
+    return text('Authorization temporarily unavailable', 503);
   }
   if ('error' in access) {
     const status = access.error.status || 403;
@@ -328,7 +371,7 @@ async function authorizeChatAgentConnect(
       event: 'chat_ws_upgrade_rejected',
       severity: status >= 500 ? 'error' : 'warn',
       component: 'chat_ws_auth',
-      operation: 'authorizeChatAgentConnect',
+      operation,
       status: String(status),
       statusCode: status,
       durationMs: Date.now() - startedAt,
@@ -340,9 +383,11 @@ async function authorizeChatAgentConnect(
       errorMessage: reasonText.slice(0, 200),
       sampleIndex: threadId,
     });
-    // Accept+close with an application code so the browser stops infinite
-    // reconnect on hard failures (401/403/404 → 44xx terminal). 5xx maps to
-    // 1013 (try again later) and remains reconnectable.
+    // HTTP transports return the denial as-is — the statuses already carry the
+    // terminal/retryable split (400/401/403/404 terminal, 409/429/5xx
+    // retryable). A WebSocket has no such channel, so accept+close with an
+    // application code instead (401/403/404 → 44xx terminal; 5xx → 1013).
+    if (transport !== 'websocket') return access.error;
     return rejectedChatWebSocketUpgrade({
       httpStatus: status,
       reason: reasonText,
@@ -357,7 +402,7 @@ async function authorizeChatAgentConnect(
       event: 'chat_ws_upgrade_degraded',
       severity: 'warn',
       component: 'chat_ws_auth',
-      operation: 'authorizeChatAgentConnect',
+      operation,
       status: 'degraded',
       durationMs: Date.now() - startedAt,
       route: '/agents/chat-thread/:threadId',
@@ -375,6 +420,9 @@ async function authorizeChatAgentConnect(
   headers.delete('X-Chiridion-User-Name');
   headers.delete('X-Chiridion-User-Email');
   headers.delete('X-Chiridion-Auth-Degraded');
+  // Hand-rolled routes bypass routePartykitRequest, which would overwrite these.
+  headers.delete('x-partykit-props');
+  headers.delete('x-partykit-room');
   headers.set('X-Chiridion-User-Id', userId);
   if (session.user_name) headers.set('X-Chiridion-User-Name', session.user_name);
   if (session.user_email) headers.set('X-Chiridion-User-Email', session.user_email);
@@ -395,7 +443,7 @@ async function authorizeChatAgentConnect(
     event: 'chat_ws_auth_completed',
     severity: 'info',
     component: 'chat_ws_auth',
-    operation: 'authorizeChatAgentConnect',
+    operation,
     status: fullAccess ? 'authorized' : 'degraded_authorized',
     durationMs: Date.now() - startedAt,
     route: '/agents/chat-thread/:threadId',
@@ -408,7 +456,34 @@ async function authorizeChatAgentConnect(
     sampleIndex: threadId,
   });
 
-  return new Request(url.toString(), { method: req.method, headers });
+  const forwardInit: RequestInit = { method: req.method, headers };
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    // The POST frame body must survive the rewrite; leaving it out authenticates
+    // the request perfectly and then delivers an empty message.
+    forwardInit.body = req.body;
+    // @ts-expect-error - duplex is required for streaming bodies
+    forwardInit.duplex = 'half';
+  }
+  return new Request(url.toString(), forwardInit);
+}
+
+async function handleChatTransportRequest(
+  { req, env, match }: RouteContext,
+  transport: 'sse' | 'call',
+): Promise<Response> {
+  // Raw, undecoded path segment: partyserver derives the DO name the same way,
+  // so an escapable character must not address a different Durable Object.
+  const threadId = match[1] ?? '';
+  if (!threadId) return text('Missing threadId', 400);
+  const authorized = await authorizeChatTransportRequest(
+    req,
+    env,
+    threadId,
+    transport,
+  );
+  if (authorized instanceof Response) return authorized;
+  // Returned unmodified: an SSE body must never be buffered here.
+  return getThreadStub(env, threadId).fetch(authorized);
 }
 
 export default {
@@ -420,7 +495,7 @@ export default {
       const agentResponse = await routeAgentRequest(req, env, {
         onBeforeConnect: (request, agent) =>
           agent.className === 'CHAT_THREAD'
-            ? authorizeChatAgentConnect(request, env, agent.name)
+            ? authorizeChatTransportRequest(request, env, agent.name, 'websocket')
             : request,
       });
       if (agentResponse) return agentResponse;

@@ -7,7 +7,7 @@ import { expect, test } from './base';
  */
 test.describe('chat UI (local, interactions)', () => {
   test('New chat button opens a fresh chat composer', async ({ page }) => {
-    await page.goto('/chat', { waitUntil: 'networkidle' });
+    await page.goto('/chat', { waitUntil: 'domcontentloaded' });
     await page.getByRole('button', { name: 'New chat' }).first().click();
     await expect(page).toHaveURL(/\/chat\b/);
     await expect(page.locator('textarea').first()).toBeVisible();

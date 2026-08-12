@@ -242,7 +242,7 @@ describe('requireChatWebSocketAccess', () => {
 
     expect('error' in access).toBe(true);
     if (!('error' in access)) return;
-    // Not an authoritative denial — client should keep retrying (1013).
+    // Not an authoritative denial — the transport keeps retrying on 5xx.
     expect(access.error.status).toBe(503);
   });
 

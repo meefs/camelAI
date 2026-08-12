@@ -1,10 +1,12 @@
 /**
- * Chat WebSocket close-code helpers shared by the Worker upgrade path and the
- * browser telemetry/lifecycle handlers.
+ * Chat WebSocket close-code helpers for the Worker upgrade path.
  *
- * Application close codes in the 4400–4499 range are treated as terminal by
- * the Agents SDK (`isTerminalCloseEvent`: 1008 or 4000–4999), so the client
- * stops infinite reconnect loops on hard auth failures.
+ * The browser no longer speaks WebSocket (see chat-sse-close.ts), but the
+ * upgrade route stays server-side for one release so stale bundles already
+ * holding a socket keep getting real close frames instead of an HTTP body.
+ * Application close codes in the 4400–4499 range are treated as terminal by the
+ * Agents SDK (`isTerminalCloseEvent`: 1008 or 4000–4999), so those old clients
+ * stop reconnect-looping on hard auth failures.
  */
 
 export const CHAT_WS_CLOSE_UNAUTHORIZED = 4401;
@@ -39,85 +41,6 @@ export function chatWebSocketCloseCodeForHttpStatus(status: number): number {
     return CHAT_WS_CLOSE_TRY_AGAIN;
   }
   return CHAT_WS_CLOSE_FORBIDDEN;
-}
-
-export function isIntentionalCleanChatWebSocketTeardown(input: {
-  code: number | null | undefined;
-  wasClean: boolean | undefined;
-  connectionWasOpen: boolean;
-}): boolean {
-  return input.connectionWasOpen && input.code === 1000 && input.wasClean !== false;
-}
-
-export function isTerminalChatWebSocketCloseCode(code: number | null | undefined): boolean {
-  if (typeof code !== "number" || !Number.isFinite(code)) return false;
-  return code === 1008 || (code >= 4000 && code <= 4999);
-}
-
-export function terminalChatWebSocketUserMessage(code: number | null | undefined, reason?: string): string {
-  const normalizedReason = (reason || "").toLowerCase();
-  if (code === CHAT_WS_CLOSE_UNAUTHORIZED || normalizedReason.includes("unauthorized")) {
-    return "Your session expired or is no longer valid. Refresh the page and sign in again.";
-  }
-  if (code === CHAT_WS_CLOSE_NOT_FOUND || normalizedReason.includes("not found")) {
-    return "This chat is no longer available.";
-  }
-  if (code === CHAT_WS_CLOSE_BAD_REQUEST) {
-    return "Chat could not connect (missing workspace). Pick a workspace and try again.";
-  }
-  if (code === CHAT_WS_CLOSE_FORBIDDEN || code === 1008) {
-    return "You no longer have access to this chat.";
-  }
-  return "Chat disconnected and will not reconnect automatically. Refresh the page.";
-}
-
-/**
- * PartySocket 1.3.x clones synthetic CloseEvents with the wrong constructor
- * signature, so handlers often see `code: "close"` (string) and the real
- * `{ code, reason, wasClean }` nested in `event.reason`. Normalize before
- * telemetry or terminal-close UX.
- */
-export function normalizeWebSocketCloseEvent(event?: CloseEvent | Event | null): {
-  code: number | null;
-  reason: string | undefined;
-  wasClean: boolean | undefined;
-} {
-  if (!event) {
-    return { code: null, reason: undefined, wasClean: undefined };
-  }
-
-  const record = event as CloseEvent & {
-    code?: unknown;
-    reason?: unknown;
-    wasClean?: unknown;
-  };
-
-  let code = typeof record.code === "number" ? record.code : null;
-  let reason = typeof record.reason === "string" ? record.reason : undefined;
-  let wasClean = typeof record.wasClean === "boolean" ? record.wasClean : undefined;
-
-  const nested =
-    record.reason && typeof record.reason === "object"
-      ? (record.reason as {
-          code?: unknown;
-          reason?: unknown;
-          wasClean?: unknown;
-        })
-      : null;
-
-  if (nested) {
-    if (code === null && typeof nested.code === "number") {
-      code = nested.code;
-    }
-    if (reason === undefined && typeof nested.reason === "string") {
-      reason = nested.reason;
-    }
-    if (wasClean === undefined && typeof nested.wasClean === "boolean") {
-      wasClean = nested.wasClean;
-    }
-  }
-
-  return { code, reason: reason || undefined, wasClean };
 }
 
 /**

@@ -55,7 +55,7 @@ describe("checkForVersionSkew", () => {
     const reload = stubReload();
     const onUpdateAvailable = vi.fn();
     await checkForVersionSkew({
-      trigger: "socket_open",
+      trigger: "stream_open",
       safeToReload: () => true,
       onUpdateAvailable,
     });
@@ -67,7 +67,7 @@ describe("checkForVersionSkew", () => {
     stubServerBuildId("build-new");
     const reload = stubReload();
     await checkForVersionSkew({
-      trigger: "socket_open",
+      trigger: "stream_open",
       safeToReload: () => true,
       onUpdateAvailable: vi.fn(),
     });
@@ -107,7 +107,7 @@ describe("checkForVersionSkew", () => {
       String(Date.now()),
     );
     await checkForVersionSkew({
-      trigger: "socket_open",
+      trigger: "stream_open",
       safeToReload: () => true,
       onUpdateAvailable,
     });
@@ -132,7 +132,7 @@ describe("checkForVersionSkew", () => {
     const reload = stubReload();
     const onUpdateAvailable = vi.fn();
     await checkForVersionSkew({
-      trigger: "socket_open",
+      trigger: "stream_open",
       safeToReload: () => true,
       onUpdateAvailable,
     });

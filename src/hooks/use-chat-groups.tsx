@@ -11,7 +11,6 @@ import {
   type ReactNode,
 } from "react";
 import { useMatches, useRouteLoaderData, useRevalidator } from "react-router";
-import { WebSocket as ReconnectingWebSocket } from "partysocket";
 import type {
   ChatGroupAvatar,
   ChatGroupAvatarStatus,
@@ -144,6 +143,125 @@ function mergeThreadMetadata(
     status: metadata.status,
   };
 }
+
+export interface WorkspaceStatusStreamOptions {
+  url: string;
+  onMessage: (data: string) => void;
+}
+
+export interface WorkspaceStatusStreamHandle {
+  close: () => void;
+}
+
+// Matches partysocket's former reconnect profile: first retry immediate, then
+// 3s * 1.3^n capped at 10s, retried forever. Anything tighter than the 3s floor
+// hammers the DO, anything slower visibly regresses spinner/unread latency.
+const STATUS_STREAM_MIN_RETRY_MS = 3000;
+const STATUS_STREAM_MAX_RETRY_MS = 10000;
+const STATUS_STREAM_RETRY_GROW_FACTOR = 1.3;
+const STATUS_STREAM_MIN_UPTIME_MS = 5000;
+
+function statusStreamRetryDelay(attempt: number): number {
+  if (attempt <= 0) return 0;
+  return Math.min(
+    STATUS_STREAM_MIN_RETRY_MS *
+      STATUS_STREAM_RETRY_GROW_FACTOR ** (attempt - 1),
+    STATUS_STREAM_MAX_RETRY_MS,
+  );
+}
+
+function parseStatusStreamEvent(frame: string): string | null {
+  const data: string[] = [];
+  for (const line of frame.split("\n")) {
+    // Comment lines (`:hb`) are heartbeats, not frames.
+    if (!line.startsWith("data:")) continue;
+    data.push(line.slice("data:".length).trimStart());
+  }
+  return data.length > 0 ? data.join("\n") : null;
+}
+
+function openWorkspaceStatusStream({
+  url,
+  onMessage,
+}: WorkspaceStatusStreamOptions): WorkspaceStatusStreamHandle {
+  const abortController = new AbortController();
+  let closed = false;
+  let attempt = 0;
+  let retryTimer: number | null = null;
+
+  const scheduleReconnect = () => {
+    if (closed) return;
+    const delay = statusStreamRetryDelay(attempt);
+    attempt += 1;
+    retryTimer = window.setTimeout(() => {
+      retryTimer = null;
+      void connect();
+    }, delay);
+  };
+
+  const connect = async () => {
+    if (closed) return;
+    let attachedAt: number | null = null;
+    try {
+      const response = await fetch(url, {
+        headers: { accept: "text/event-stream" },
+        cache: "no-store",
+        credentials: "same-origin",
+        signal: abortController.signal,
+      });
+      if (!response.ok || !response.body) {
+        scheduleReconnect();
+        return;
+      }
+      attachedAt = Date.now();
+      const reader = response.body
+        .pipeThrough(new TextDecoderStream())
+        .getReader();
+      let buffer = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += value.replace(/\r\n/g, "\n");
+        let boundary = buffer.indexOf("\n\n");
+        while (boundary !== -1) {
+          const frame = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
+          const data = parseStatusStreamEvent(frame);
+          if (data !== null) onMessage(data);
+          boundary = buffer.indexOf("\n\n");
+        }
+      }
+    } catch {
+      // Aborts and network failures both land here; the closed guard below
+      // separates teardown from a stream that needs another attempt.
+    }
+    // partysocket's minUptime rule: only a stream that stayed up resets the
+    // backoff, so a server that ends the stream at once cannot hot-loop.
+    if (
+      attachedAt !== null &&
+      Date.now() - attachedAt >= STATUS_STREAM_MIN_UPTIME_MS
+    ) {
+      attempt = 0;
+    }
+    scheduleReconnect();
+  };
+
+  void connect();
+
+  return {
+    close: () => {
+      closed = true;
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
+      abortController.abort();
+    },
+  };
+}
+
+// Module-level seam: tests replace `open` to drive status frames without a
+// server, the way the partysocket module mock used to.
+export const workspaceStatusStream: {
+  open: (options: WorkspaceStatusStreamOptions) => WorkspaceStatusStreamHandle;
+} = { open: openWorkspaceStatusStream };
 
 export function getGroupLandingHref(group: ChatGroupView): string {
   const activeThreadStillOpen =
@@ -1444,8 +1562,7 @@ export function ChatGroupsProvider({
       return;
     }
 
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const socketUrl = `${protocol}//${window.location.host}/ws/workspaces/${encodeURIComponent(workspaceId)}/status`;
+    const streamUrl = `/api/workspaces/${encodeURIComponent(workspaceId)}/status/stream`;
     let revalidateTimer: number | null = null;
     const metadataRefreshTimers = new Map<string, number>();
     let closedByEffect = false;
@@ -1499,14 +1616,9 @@ export function ChatGroupsProvider({
       }).catch(() => {});
     };
 
-    // partysocket's ReconnectingWebSocket owns reconnect/backoff; same-origin
-    // session cookies ride the upgrade like a native WebSocket, and close() in
-    // teardown also disables further reconnection.
-    const socket = new ReconnectingWebSocket(socketUrl);
-
-    socket.addEventListener("message", (event) => {
+    const handleStatusMessage = (data: string) => {
       try {
-        const payload = JSON.parse(event.data as string) as {
+        const payload = JSON.parse(data) as {
           type?: unknown;
           runningThreadIds?: unknown;
           runningThreads?: unknown;
@@ -1801,6 +1913,14 @@ export function ChatGroupsProvider({
       } catch {
         // Ignore malformed status frames.
       }
+    };
+
+    // Same-origin session cookies ride the fetch; the reader loop owns
+    // reconnect/backoff and close() aborts it without a further attempt. Every
+    // (re)attach re-receives the snapshot, which is the only resync mechanism.
+    const stream = workspaceStatusStream.open({
+      url: streamUrl,
+      onMessage: handleStatusMessage,
     });
 
     return () => {
@@ -1810,7 +1930,7 @@ export function ChatGroupsProvider({
         window.clearTimeout(timer);
       }
       metadataRefreshTimers.clear();
-      socket.close();
+      stream.close();
     };
   }, [
     currentWorkspace?.id,

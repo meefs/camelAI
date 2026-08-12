@@ -3,6 +3,7 @@ import type {
   ConnectionSetupPromptData,
   ConnectionSetupResponse,
 } from "@/components/connection-setup-prompt";
+import { SSE_READY_STATE_OPEN } from "@/lib/sse-agent-client";
 
 type ChatAgentClientLike = {
   readyState: number;
@@ -20,7 +21,7 @@ export function useConnectionSetupResponse({
   const handleConnectionSetupResponse = useCallback(
     async (response: ConnectionSetupResponse) => {
       const agent = chatAgentRef.current;
-      if (!agent || agent.readyState !== WebSocket.OPEN) {
+      if (!agent || agent.readyState !== SSE_READY_STATE_OPEN) {
         throw new Error(
           "The chat connection disconnected before the connection details could be submitted. Please try again.",
         );

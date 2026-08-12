@@ -6,7 +6,7 @@ type ClientErrorSource =
 
 export type ClientEventSource =
   | 'chat_runner'
-  | 'chat_websocket'
+  | 'chat_sse'
   | 'chat_new_thread'
   | 'version_skew';
 

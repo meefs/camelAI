@@ -9,7 +9,6 @@ import {
   useLayoutEffect,
 } from "react";
 import type { CSSProperties } from "react";
-import { useAgent } from "agents/react";
 import type { UIMessage } from "ai";
 import {
   useNavigate,
@@ -154,15 +153,18 @@ import {
   trackChatReconnectFlush,
   trackChatSendDispatched,
   trackChatSendQueuedOffline,
-  trackChatSocketClose,
-  trackChatSocketError,
-  trackChatSocketOpen,
-  trackChatSocketTerminalClose,
-} from "@/lib/chat-ws-telemetry";
+  trackChatStreamClose,
+  trackChatStreamError,
+  trackChatStreamOpen,
+  trackChatStreamTerminalClose,
+} from "@/lib/chat-sse-telemetry";
+import { terminalChatSseUserMessage } from "@/lib/chat-sse-close";
 import {
-  normalizeWebSocketCloseEvent,
-  terminalChatWebSocketUserMessage,
-} from "@/lib/chat-ws-close";
+  SSE_READY_STATE_OPEN,
+  type SseAgentCloseEvent,
+  type SseAgentMessageEvent,
+} from "@/lib/sse-agent-client";
+import { useSseAgent } from "@/lib/use-sse-agent";
 import { type AppUrlInput, getAppUrl, getAppIframeUrl } from "@/lib/app-url";
 import {
   collectProjectReferencesFromMessages,
@@ -868,13 +870,13 @@ export default function Chat({
   const [currentTodos, setCurrentTodos] = useState<TodoItem[]>(initialTodos);
 
   const agentEnabled = !readOnly && Boolean(threadId && resolvedWorkspaceId);
-  // useAgent's lifecycle callbacks reference many callbacks defined later in the
-  // component; stable wrappers read them from a ref so the socket can mount here,
-  // ahead of the render-history projection that depends on its connection.
+  // The transport's lifecycle callbacks reference many callbacks defined later in
+  // the component; stable wrappers read them from a ref so the connection can
+  // mount here, ahead of the render-history projection that depends on it.
   const agentCallbacksRef = useRef<{
     onOpen: () => void;
-    onMessage: (event: MessageEvent) => void;
-    onClose: (event?: CloseEvent) => void;
+    onMessage: (event: SseAgentMessageEvent) => void;
+    onClose: (event?: SseAgentCloseEvent) => void;
     onError: (error?: unknown) => void;
     onConnectionError: (error: {
       code?: number;
@@ -890,16 +892,10 @@ export default function Chat({
     onConnectionError: () => {},
     onStateUpdate: () => {},
   });
-  const agentSocket = useAgent<ChatAgentState>({
+  const agentSocket = useSseAgent<ChatAgentState>({
     agent: "chat-thread",
     name: threadId ?? "disabled",
     enabled: agentEnabled,
-    // PartySocket defaults to 4s; chat auth is several sequential DO RPCs plus
-    // DO routing/onConnect. 20s leaves room for degraded fallback under load
-    // without abandoning mid-handshake (which recreates flap loops).
-    connectionTimeout: 20_000,
-    maxReconnectionDelay: 15_000,
-    minReconnectionDelay: 2_000,
     query: {
       threadId: threadId ?? null,
       workspaceId: resolvedWorkspaceId ?? null,
@@ -2100,7 +2096,7 @@ export default function Chat({
     threadModel,
   ]);
 
-  // Track connection ID to ignore events from stale WebSocket instances
+  // Track connection ID to ignore events from stale transport instances
   // Ref to hold stable connect function for effect
   const resolvedWelcomeData = welcomeData ?? {
     userId: user?.id ?? null,
@@ -2653,7 +2649,7 @@ export default function Chat({
     (nextTabs: PreviewTab[], nextActiveTabId: string | null) => {
       if (!threadId) return;
       const agent = chatAgentRef.current;
-      if (!agent || agent.readyState !== WebSocket.OPEN) return;
+      if (!agent || agent.readyState !== SSE_READY_STATE_OPEN) return;
 
       void agent
         .call("setPreviewTabsState", [
@@ -2912,7 +2908,7 @@ export default function Chat({
           : JSON.stringify(message.content);
       const clientMessageId = message.clientMessageId ?? message.id;
 
-      if (!agent || agent.readyState !== WebSocket.OPEN) {
+      if (!agent || agent.readyState !== SSE_READY_STATE_OPEN) {
         return;
       }
 
@@ -2946,7 +2942,7 @@ export default function Chat({
               (result.status === "busy"
                 ? "The agent is busy. I restored your message as a draft so you can try again."
                 : "Failed to send message"),
-            { preserveReady: agent.readyState === WebSocket.OPEN },
+            { preserveReady: agent.readyState === SSE_READY_STATE_OPEN },
           );
         })
         .catch((error) => {
@@ -2960,15 +2956,16 @@ export default function Chat({
           // response, so keep the same clientMessageId queued and retransmit it
           // after reconnect. ChatThreadDO durably deduplicates/re-acks that id.
           //
-          // A half-open socket can remain OPEN until the RPC timeout. Force a
-          // reconnect in that case so the normal onOpen queue flush runs instead
-          // of leaving the composer busy forever. A socket that already closed
-          // is reconnecting automatically.
-          const socketOpen =
-            chatAgentRef.current?.readyState === WebSocket.OPEN;
+          // A half-open transport can remain OPEN until the RPC timeout (a dead
+          // receive stream still reports OPEN while parked). Force a fresh
+          // stream in that case so the normal onOpen queue flush runs instead of
+          // leaving the composer busy forever. A closed transport is
+          // reconnecting automatically.
+          const transportOpen =
+            chatAgentRef.current?.readyState === SSE_READY_STATE_OPEN;
           setReady(false);
           setLoading(true);
-          if (socketOpen) {
+          if (transportOpen) {
             agent.reconnect();
           }
         });
@@ -2993,7 +2990,7 @@ export default function Chat({
     loading,
   };
   const runVersionSkewCheck = useCallback(
-    (trigger: "socket_open" | "visibility") => {
+    (trigger: "stream_open" | "visibility") => {
       void checkForVersionSkew({
         trigger,
         safeToReload: () => {
@@ -3034,8 +3031,8 @@ export default function Chat({
     const id = threadId;
     if (!id) return;
     setReady(true);
-    trackChatSocketOpen(id);
-    runVersionSkewCheck("socket_open");
+    trackChatStreamOpen(id);
+    runVersionSkewCheck("stream_open");
 
     // History sync on (re)connect is owned by the ai-chat hook now: `resume: true`
     // replays an in-flight turn's stream and the CHAT_MESSAGES broadcast folds in
@@ -3072,7 +3069,7 @@ export default function Chat({
     threadId,
   ]);
 
-  // Apply a terminal error (delivered through Agent state, not the websocket, so
+  // Apply a terminal error (delivered through Agent state, not the stream, so
   // it survives a reconnect after a disconnected/early failure).
   const handleTerminalError = useCallback(
     (payload: NonNullable<ChatAgentState["lastError"]>) => {
@@ -3129,7 +3126,7 @@ export default function Chat({
   );
 
   const handleAgentMessage = useCallback(
-    (event: MessageEvent) => {
+    (event: SseAgentMessageEvent) => {
       const id = threadId;
       if (!id) return;
       const data = JSON.parse(event.data);
@@ -3153,43 +3150,37 @@ export default function Chat({
   );
 
   const handleAgentClose = useCallback(
-    (event?: CloseEvent) => {
-      setReady(false);
-      if (threadId) trackChatSocketClose(threadId, event);
+    (event?: SseAgentCloseEvent) => {
+      // `bye {"reason":"idle"}` parks the stream by design; the transport stays
+      // OPEN, sends are POSTs, and dispatching one wakes the stream. Clearing
+      // `ready` here would queue the next message with nothing to flush it.
+      if (event?.byeReason !== "idle") setReady(false);
+      if (threadId) trackChatStreamClose(threadId, event);
     },
     [threadId],
   );
 
   const handleAgentError = useCallback((event?: unknown) => {
-    if (threadId) trackChatSocketError(threadId, event);
+    if (threadId) trackChatStreamError(threadId, event);
   }, [threadId]);
 
   const handleAgentConnectionError = useCallback(
     (error: { code?: number; reason?: string; wasClean?: boolean }) => {
-      const normalized = normalizeWebSocketCloseEvent({
-        code: error.code,
-        reason: error.reason,
-        wasClean: error.wasClean,
-      } as CloseEvent);
-      const code = normalized.code ?? error.code ?? null;
-      const wasClean = normalized.wasClean ?? error.wasClean;
+      const code = error.code ?? null;
       if (threadId) {
-        trackChatSocketTerminalClose(threadId, {
-          code: code ?? undefined,
-          reason: normalized.reason ?? error.reason,
-          wasClean,
+        trackChatStreamTerminalClose(threadId, {
+          code: error.code,
+          reason: error.reason,
+          wasClean: error.wasClean,
         });
       }
-      const message = terminalChatWebSocketUserMessage(
-        code,
-        normalized.reason ?? error.reason,
-      );
+      const message = terminalChatSseUserMessage(code, error.reason);
       // Terminal closes do not reconnect, so a queued delivery cannot make
       // progress. This is the one transport failure that should release the
       // pending bubble and restore its durable draft.
       if (!failPendingMessageDelivery(message)) {
         toast.error(message, {
-          id: "chat-ws-terminal-close",
+          id: "chat-sse-terminal-close",
           duration: 12_000,
         });
       }
@@ -3341,8 +3332,8 @@ export default function Chat({
     ],
   );
 
-  // Route the socket's lifecycle callbacks (mounted at the top of the component)
-  // to the handlers defined above.
+  // Route the transport's lifecycle callbacks (mounted at the top of the
+  // component) to the handlers defined above.
   agentCallbacksRef.current = {
     onOpen: handleAgentOpen,
     onMessage: handleAgentMessage,
@@ -3937,7 +3928,7 @@ export default function Chat({
       const agent = chatAgentRef.current;
       if (
         lastRunnerModelSelectionRef.current !== nextSelectionKey &&
-        agent?.readyState === WebSocket.OPEN &&
+        agent?.readyState === SSE_READY_STATE_OPEN &&
         ready
       ) {
         lastRunnerModelSelectionRef.current = nextSelectionKey;
@@ -4259,14 +4250,18 @@ export default function Chat({
   }
 
   function stopGeneration() {
-    if (chatAgentRef.current?.readyState !== WebSocket.OPEN) return;
+    if (chatAgentRef.current?.readyState !== SSE_READY_STATE_OPEN) return;
     void chatAgentRef.current.call("requestStop").catch(() => {});
   }
 
   const handleQuestionResponse = useCallback(
     (answers: Record<string, string>) => {
       const agent = chatAgentRef.current;
-      if (!pendingQuestion || !agent || agent.readyState !== WebSocket.OPEN) {
+      if (
+        !pendingQuestion ||
+        !agent ||
+        agent.readyState !== SSE_READY_STATE_OPEN
+      ) {
         return;
       }
 
@@ -4306,7 +4301,7 @@ export default function Chat({
       }
 
       const agent = chatAgentRef.current;
-      if (!agent || agent.readyState !== WebSocket.OPEN) {
+      if (!agent || agent.readyState !== SSE_READY_STATE_OPEN) {
         if (target === null) {
           resetPreviewTabsState();
           setMobileView("chat");
@@ -4482,7 +4477,7 @@ export default function Chat({
       return [...prev, userMsg];
     });
 
-    // If WebSocket is connected and ready, send immediately
+    // If the transport is connected and ready, send immediately
     const previewUserMessage = normalizeThreadPreviewUserMessage(rawContent);
     const userMessageAt = Date.now();
     const isFirstUserTurn = !displayMessagesRef.current.some(
@@ -4497,13 +4492,13 @@ export default function Chat({
       runningActivityAt: userMessageAt,
       runningStartedAt: userMessageAt,
     });
-    if (chatAgentRef.current?.readyState === WebSocket.OPEN && ready) {
+    if (chatAgentRef.current?.readyState === SSE_READY_STATE_OPEN && ready) {
       setLoading(true);
       sendPendingMessageToAgent(userMsg, threadId);
       setPendingMessages((prev) => prev);
     } else {
       // Queue the full message object for later delivery (with file refs in content).
-      // useAgent reconnects automatically; the ready handler flushes the queue.
+      // The SSE client reconnects automatically; the ready handler flushes the queue.
       trackChatSendQueuedOffline(threadId, {
         readyState: chatAgentRef.current?.readyState ?? null,
         ready,

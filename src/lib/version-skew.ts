@@ -6,10 +6,10 @@ import { reportClientEvent } from "./client-error-reporting";
  *
  * Long-lived tabs keep running whatever bundle they booted with; after a
  * deploy that changes the chat transport or protocol, a stale tab can fail in
- * silent ways (e.g. a websocket that reconnect-loops forever). The fix is a
+ * silent ways (e.g. a chat stream that reconnect-loops forever). The fix is a
  * lightweight handshake: compare the compiled-in APP_BUILD_ID against
  * GET /api/version at the moments a stale tab comes back to life — the chat
- * socket (re)opening and the tab becoming visible — and reload once when the
+ * stream (re)opening and the tab becoming visible — and reload once when the
  * server has moved on.
  *
  * Reload policy: silent reload only when the caller says the tab is safe
@@ -58,7 +58,7 @@ function setReloadGuard(serverBuildId: string): boolean {
 
 export interface VersionSkewCheckOptions {
   /** What woke the check up; recorded in telemetry. */
-  trigger: "socket_open" | "visibility";
+  trigger: "stream_open" | "visibility";
   /** True when the tab can be reloaded without losing user state. */
   safeToReload: () => boolean;
   /** Surface a non-destructive "update available" prompt. `reload` applies

@@ -44,6 +44,27 @@ const THREAD_STREAMING_LEASE_TTL_MS = 5 * 60 * 1000;
 // Fire the lease-sweep alarm just past the earliest possible expiry.
 const THREAD_STREAMING_LEASE_ALARM_SLACK_MS = 1000;
 const WORKSPACE_STATUS_SOCKET_TAG = 'status';
+// SSE streams cannot hibernate and nothing else writes bytes while a workspace
+// is quiet, so a comment heartbeat is the only thing keeping intermediaries
+// from dropping an idle sidebar stream.
+const WORKSPACE_STATUS_HEARTBEAT_MS = 25 * 1000;
+const WORKSPACE_STATUS_SSE_HEADERS = {
+  'content-type': 'text/event-stream; charset=utf-8',
+  'cache-control': 'no-cache, no-transform',
+  connection: 'keep-alive',
+  // Self-hosted deployments can sit behind a buffering proxy, which would make
+  // the sidebar look frozen until the response completed.
+  'x-accel-buffering': 'no',
+} as const;
+// A write that has not drained in this long belongs to a viewer that is gone.
+const WORKSPACE_STATUS_STREAM_STALL_MS = 30 * 1000;
+const workspaceStatusEncoder = new TextEncoder();
+
+interface WorkspaceStatusStream {
+  writer: WritableStreamDefaultWriter<Uint8Array>;
+  pending: number;
+  pendingSince: number;
+}
 type BroadcastThreadStatus = 'running' | 'idle' | 'unread';
 
 export interface WorkspaceRunningThreadStatus {
@@ -209,6 +230,8 @@ export interface WorkspaceEnv {
 export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
   private sql: SqlStorage;
   private lastThreadStatusBroadcasts = new Map<string, string>();
+  private statusStreams = new Set<WorkspaceStatusStream>();
+  private statusHeartbeat: ReturnType<typeof setInterval> | null = null;
 
   constructor(ctx: DurableObjectState, env: WorkspaceEnv) {
     super(ctx, env);
@@ -593,6 +616,9 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       runningActivityAt,
       runningStartedAt,
     });
+    this.publishThreadStatusEvent(`data: ${payload}\n\n`);
+    // Legacy hibernatable status sockets: stale bundles in the field hold these
+    // for hours after a deploy, so they keep receiving fan-out this release.
     for (const socket of this.ctx.getWebSockets(WORKSPACE_STATUS_SOCKET_TAG)) {
       if (socket.readyState !== WebSocket.OPEN) {
         continue;
@@ -603,27 +629,118 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     }
   }
 
-  private sendThreadStatusSnapshot(socket: WebSocket): void {
+  private threadStatusSnapshotPayload(): string {
     const runningThreads = this.listStreamingThreadStatuses();
-    socket.send(
-      JSON.stringify({
-        type: 'thread_status_snapshot',
-        runningThreadIds: runningThreads.map((thread) => thread.threadId),
-        runningThreads: runningThreads.map((thread) => ({
-          threadId: thread.threadId,
-          startedAt: thread.startedAt,
-          updatedAt: thread.updatedAt,
-          runningActivityText: thread.latestActivityText,
-          runningActivityAt: thread.latestActivityAt,
-          latestActivityText: thread.latestActivityText,
-          latestActivityAt: thread.latestActivityAt,
-        })),
-      }),
+    return JSON.stringify({
+      type: 'thread_status_snapshot',
+      runningThreadIds: runningThreads.map((thread) => thread.threadId),
+      runningThreads: runningThreads.map((thread) => ({
+        threadId: thread.threadId,
+        startedAt: thread.startedAt,
+        updatedAt: thread.updatedAt,
+        runningActivityText: thread.latestActivityText,
+        runningActivityAt: thread.latestActivityAt,
+        latestActivityText: thread.latestActivityText,
+        latestActivityAt: thread.latestActivityAt,
+      })),
+    });
+  }
+
+  private sendThreadStatusSnapshot(socket: WebSocket): void {
+    socket.send(this.threadStatusSnapshotPayload());
+  }
+
+  private publishThreadStatusEvent(event: string): void {
+    if (this.statusStreams.size === 0) return;
+    const chunk = workspaceStatusEncoder.encode(event);
+    // Removals happen in async write callbacks, so mutation during this loop is
+    // limited to the current entry.
+    for (const stream of this.statusStreams) {
+      this.writeThreadStatusEvent(stream, chunk);
+    }
+  }
+
+  private writeThreadStatusEvent(
+    stream: WorkspaceStatusStream,
+    chunk: Uint8Array,
+  ): void {
+    try {
+      stream.pending += 1;
+      if (stream.pending === 1) stream.pendingSince = Date.now();
+      // Writes queue in call order, so the snapshot cannot be overtaken.
+      // A rejection means the viewer is gone: drop the stream, never throw.
+      void stream.writer.write(chunk).then(
+        () => {
+          stream.pending -= 1;
+          if (stream.pending === 0) stream.pendingSince = 0;
+        },
+        () => {
+          this.removeThreadStatusStream(stream);
+        },
+      );
+    } catch {
+      this.removeThreadStatusStream(stream);
+    }
+  }
+
+  private removeThreadStatusStream(stream: WorkspaceStatusStream): void {
+    if (!this.statusStreams.delete(stream)) return;
+    try {
+      void stream.writer.close().catch(() => {});
+    } catch {}
+    if (this.statusStreams.size === 0 && this.statusHeartbeat !== null) {
+      clearInterval(this.statusHeartbeat);
+      this.statusHeartbeat = null;
+    }
+  }
+
+  private sweepStalledThreadStatusStreams(): void {
+    const now = Date.now();
+    for (const stream of this.statusStreams) {
+      if (
+        stream.pending > 0 &&
+        now - stream.pendingSince >= WORKSPACE_STATUS_STREAM_STALL_MS
+      ) {
+        this.removeThreadStatusStream(stream);
+      }
+    }
+  }
+
+  private openThreadStatusStream(): Response {
+    const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+    const stream: WorkspaceStatusStream = {
+      writer: writable.getWriter(),
+      pending: 0,
+      pendingSince: 0,
+    };
+    this.statusStreams.add(stream);
+    stream.writer.closed.catch(() => {
+      this.removeThreadStatusStream(stream);
+    });
+    // The snapshot is the only resync mechanism on this seam: it has to be
+    // queued before the response escapes, never deferred to a later task, or an
+    // incremental frame can land ahead of it.
+    this.writeThreadStatusEvent(
+      stream,
+      workspaceStatusEncoder.encode(`data: ${this.threadStatusSnapshotPayload()}\n\n`),
     );
+    if (this.statusHeartbeat === null) {
+      this.statusHeartbeat = setInterval(() => {
+        // A viewer that disappears without cancelling the body leaves its
+        // writes pending forever (the runtime does not always propagate the
+        // cancel into the DO), so the heartbeat doubles as the liveness probe.
+        this.sweepStalledThreadStatusStreams();
+        this.publishThreadStatusEvent(':hb\n\n');
+      }, WORKSPACE_STATUS_HEARTBEAT_MS);
+    }
+    return new Response(readable, { headers: WORKSPACE_STATUS_SSE_HEADERS });
   }
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    if (url.pathname === '/status/stream' && request.method === 'GET') {
+      return this.openThreadStatusStream();
+    }
     if (url.pathname !== '/status' || request.headers.get('Upgrade') !== 'websocket') {
       return new Response('Not found', { status: 404 });
     }

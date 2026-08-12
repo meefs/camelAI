@@ -6,14 +6,13 @@ import {
   CHAT_WS_CLOSE_TRY_AGAIN,
   CHAT_WS_CLOSE_UNAUTHORIZED,
   chatWebSocketCloseCodeForHttpStatus,
-  isIntentionalCleanChatWebSocketTeardown,
-  isTerminalChatWebSocketCloseCode,
-  normalizeWebSocketCloseEvent,
-  terminalChatWebSocketUserMessage,
   truncateWebSocketCloseReason,
 } from "@/lib/chat-ws-close";
 
-describe("chat-ws-close helpers", () => {
+// The browser transport is SSE now (see chat-sse-close.test.ts); what remains
+// here is the Worker's legacy WS upgrade-rejection path, kept for one release
+// for stale bundles still holding a socket.
+describe("chat-ws-close upgrade-rejection helpers", () => {
   it("maps HTTP auth failures to terminal application close codes", () => {
     expect(chatWebSocketCloseCodeForHttpStatus(401)).toBe(
       CHAT_WS_CLOSE_UNAUTHORIZED,
@@ -33,68 +32,10 @@ describe("chat-ws-close helpers", () => {
     expect(chatWebSocketCloseCodeForHttpStatus(429)).toBe(
       CHAT_WS_CLOSE_TRY_AGAIN,
     );
-    expect(isTerminalChatWebSocketCloseCode(CHAT_WS_CLOSE_UNAUTHORIZED)).toBe(
-      true,
-    );
-    expect(isTerminalChatWebSocketCloseCode(CHAT_WS_CLOSE_TRY_AGAIN)).toBe(
-      false,
-    );
-  });
-
-  it("requires an opened connection before classifying clean code 1000 as intentional", () => {
-    expect(
-      isIntentionalCleanChatWebSocketTeardown({
-        code: 1000,
-        wasClean: true,
-        connectionWasOpen: false,
-      }),
-    ).toBe(false);
-    expect(
-      isIntentionalCleanChatWebSocketTeardown({
-        code: 1000,
-        wasClean: true,
-        connectionWasOpen: true,
-      }),
-    ).toBe(true);
-    expect(
-      isIntentionalCleanChatWebSocketTeardown({
-        code: 1000,
-        wasClean: false,
-        connectionWasOpen: true,
-      }),
-    ).toBe(false);
-  });
-
-  it("unwraps PartySocket nested synthetic CloseEvent payloads", () => {
-    const nested = {
-      code: 1000,
-      reason: "timeout",
-      wasClean: true,
-    };
-    const mangled = {
-      code: "close",
-      reason: nested,
-      wasClean: undefined,
-    } as unknown as CloseEvent;
-
-    expect(normalizeWebSocketCloseEvent(mangled)).toEqual({
-      code: 1000,
-      reason: "timeout",
-      wasClean: true,
-    });
   });
 
   it("truncates close reasons to the WebSocket byte budget", () => {
     const long = "x".repeat(200);
     expect(truncateWebSocketCloseReason(long).length).toBeLessThanOrEqual(123);
-  });
-
-  it("returns actionable terminal UX copy", () => {
-    expect(
-      terminalChatWebSocketUserMessage(CHAT_WS_CLOSE_UNAUTHORIZED, "Unauthorized"),
-    ).toMatch(/session/i);
-    expect(
-      terminalChatWebSocketUserMessage(CHAT_WS_CLOSE_NOT_FOUND, "Thread not found"),
-    ).toMatch(/no longer available/i);
   });
 });

@@ -8,7 +8,7 @@ import { splitUiMessagesAtSteerMarkers } from "./steer-split";
 import {
   reportChatStreamNoProgress,
   reportChatStreamStallClamped,
-} from "./chat-ws-telemetry";
+} from "./chat-sse-telemetry";
 
 /**
  * Client bridge onto ai-chat's owned render history (commit 4). Wraps

@@ -2,17 +2,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import React from 'react';
 
-// Chat connects through the Agents SDK (`useAgent`/PartySocket). This test does
-// not exercise the live connection, so mock the hook with an inert client.
-vi.mock('agents/react', () => {
+// Chat connects through the SSE transport (`useSseAgent`). This test does not
+// exercise the live connection, so mock the hook with an inert client.
+vi.mock('@/lib/use-sse-agent', () => {
   const client = {
     readyState: 0,
     send: vi.fn(),
     call: vi.fn(() => Promise.resolve()),
     reconnect: vi.fn(),
+    start: vi.fn(),
     close: vi.fn(),
   };
-  return { useAgent: () => client };
+  return { useSseAgent: () => client };
 });
 
 // Chat owns its transcript through ai-chat (useAgentChat) now; this test does

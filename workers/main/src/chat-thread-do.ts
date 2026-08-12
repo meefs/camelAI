@@ -118,6 +118,11 @@ import {
 import {
   resolveContextUsageForInit,
 } from "./chat-context-usage";
+import {
+  SseConnection,
+  createSseCaptureConnection,
+  createSseStreamSink,
+} from "./chat-thread/sse-connection";
 
 
 import { retryTransientDurableObjectRpc } from "../../../src/lib/do-rpc-retry.server";
@@ -566,6 +571,32 @@ const HEADER_USER_NAME = "X-Chiridion-User-Name";
 const HEADER_USER_EMAIL = "X-Chiridion-User-Email";
 const HEADER_USER_ID = "X-Chiridion-User-Id";
 const HEADER_AUTH_DEGRADED = "X-Chiridion-Auth-Degraded";
+
+// Client→server frames the SSE transport's POST endpoint accepts. `rpc` frames
+// are additionally restricted to the callables registered in the static block:
+// the HTTP boundary must be at least as narrow as the socket one, which drops
+// BLOCKED_CHAT_PROTOCOL_FRAME_TYPES (see the constructor's onMessage guard).
+const CHAT_TRANSPORT_CALLABLE_METHODS = new Set<string>([
+  "requestStop",
+  "setPreviewTabsState",
+  "answerQuestion",
+  "submitConnectionSetupResponse",
+  "refreshModel",
+  "sendMessage",
+  "getOlderUiMessages",
+]);
+interface ChatTransportFrame {
+  type?: unknown;
+  method?: unknown;
+  id?: unknown;
+}
+// SSE has no runtime-answered ping/pong analogue (ctx.setWebSocketAutoResponse),
+// so the DO writes its own comment keepalive. The same tick runs the idle sweep.
+const SSE_HEARTBEAT_INTERVAL_MS = 25_000;
+// How long a thread with no work must stay quiet before the stream is closed
+// with `bye {"reason":"idle"}`. The client reopens on demand (send, focus,
+// visibility), so a dormant tab stops pinning this DO.
+const SSE_IDLE_GRACE_MS = 5 * 60 * 1000;
 // The degraded-auth grant map and recent-clientMessageId dedup constants live
 // in ./chat-thread/access with the methods that use them.
 
@@ -598,6 +629,14 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
 
   // Chat bridge state
   private chatContext: ChatContextState | null = null;
+  // SSE chat transport registry. partyserver's own connection store is
+  // `ctx.getWebSockets()` under hibernation and its manager field is truly
+  // private, so synthetic connections can only live here — which is why
+  // broadcast/getConnection/getConnections are overridden below.
+  private sseConnectionRegistry?: Map<string, SseConnection>;
+  private sseCloseChainRegistry?: Map<string, Promise<void>>;
+  private sseHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private sseIdleSince: number | null = null;
   private agentEvalEventCollector: Array<Record<string, unknown>> | null = null;
   private lastError: ChatThreadAgentState["lastError"] = null;
   // Guards the one-time cold-wake reload of durable notification/error state.
@@ -1534,11 +1573,74 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     }
   }
 
+  /**
+   * Lazily created: the framework constructors can already broadcast (an
+   * `initialState` push fans out through `_broadcastProtocol`) before this
+   * class's field initializers run, and prototype-based test fakes never run
+   * them at all.
+   */
+  private get sseConnections(): Map<string, SseConnection> {
+    return (this.sseConnectionRegistry ??= new Map<string, SseConnection>());
+  }
+
+  /** In-flight onClose chains, so a reattach on the same id can wait for one. */
+  private get sseCloseChains(): Map<string, Promise<void>> {
+    return (this.sseCloseChainRegistry ??= new Map<string, Promise<void>>());
+  }
+
+  /**
+   * Fan out to the SSE registry, then delegate exactly once. `Agent.broadcast`
+   * iterates `super.getConnections()` (partyserver's hibernating store), so
+   * overriding `getConnections` alone would leave every SSE client silent — and
+   * `AIChatAgent.broadcast` has a pre-delegation side effect (agent-tool
+   * interception), so `super.broadcast` must be called once and not bypassed.
+   */
+  broadcast(msg: string | ArrayBuffer | ArrayBufferView, without?: string[]): void {
+    for (const connection of this.sseConnections.values()) {
+      if (!connection.isOpen) continue;
+      if (without?.includes(connection.id)) continue;
+      connection.send(msg);
+    }
+    super.broadcast(msg, without);
+  }
+
+  getConnection<TState = unknown>(id: string): Connection<TState> | undefined {
+    const sseConnection = this.sseConnections.get(id);
+    if (sseConnection) return sseConnection as unknown as Connection<TState>;
+    return super.getConnection<TState>(id);
+  }
+
+  /**
+   * Keeps `_isConnectionPresent` (resume-handshake ownership), `getChatSockets`,
+   * `hasAvailableBrowserUser` and onClose's last-socket auto-answer rule correct
+   * for SSE clients.
+   */
+  *getConnections<TState = unknown>(tag?: string): IterableIterator<Connection<TState>> {
+    for (const connection of this.sseConnections.values()) {
+      if (!connection.isOpen) continue;
+      if (tag && !connection.tags.includes(tag)) continue;
+      yield connection as unknown as Connection<TState>;
+    }
+    yield* super.getConnections<TState>(tag);
+  }
+
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
 
     if (request.headers.get("Upgrade") === "websocket") {
       return super.fetch(request);
+    }
+
+    // Chat transport (SSE receive + POST send). This override never delegates
+    // plain HTTP to `Server.fetch`, so startup (onStart: stream restore, chat
+    // recovery, MCP) has to be forced before any frame is served.
+    if (request.method === "GET" && url.pathname.endsWith("/sse")) {
+      await this.__unsafe_ensureInitialized();
+      return this.handleChatStreamAttach(request, url);
+    }
+    if (request.method === "POST" && url.pathname.endsWith("/call")) {
+      await this.__unsafe_ensureInitialized();
+      return this.handleChatTransportCall(request, url);
     }
 
     // HTTP API for setting preview state
@@ -1586,6 +1688,309 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     return new Response("Not found", { status: 404 });
   }
 
+  /**
+   * onConnect's two auth gates, expressed as HTTP so a denial lands before the
+   * stream body starts (a committed 200 can only carry a `bye`). Mirrors
+   * {@link onConnect}: 1008 'forbidden' → 403, 1013
+   * 'auth_temporarily_unavailable' → 503 (retryable, never a false terminal).
+   */
+  private authorizeChatTransportRequest(request: Request, url: URL): Response | null {
+    const incomingOrgId = url.searchParams.get("orgId")?.trim() || "";
+    if (
+      this.chatContext?.orgId &&
+      incomingOrgId &&
+      this.chatContext.orgId !== incomingOrgId
+    ) {
+      return new Response("forbidden", { status: 403 });
+    }
+
+    const userId = request.headers.get(HEADER_USER_ID)?.trim() || "";
+    const authDegraded = request.headers.get(HEADER_AUTH_DEGRADED)?.trim() === "1";
+    if (authDegraded) {
+      if (
+        !userId ||
+        !this.chatContext ||
+        !this.isPreviouslyAuthorizedChatUser(userId)
+      ) {
+        return new Response("auth_temporarily_unavailable", { status: 503 });
+      }
+    } else if (userId) {
+      this.recordAuthorizedChatUser(userId);
+    }
+    return null;
+  }
+
+  private async handleChatStreamAttach(request: Request, url: URL): Promise<Response> {
+    const denial = this.authorizeChatTransportRequest(request, url);
+    if (denial) return denial;
+
+    const connectionId =
+      url.searchParams.get("_pk")?.trim() || crypto.randomUUID();
+    // A reattach that reuses `_pk` must not leave the previous shim registered:
+    // broadcasts would go to a writer nobody reads. Retire it first, and let its
+    // close chain finish — that cleanup is keyed by connection id, which this
+    // attach is about to reuse, so a late run would wipe the new stream's
+    // resume-handshake registration and silently exclude it from broadcasts.
+    const previous = this.sseConnections.get(connectionId);
+    if (previous) {
+      previous.abort(1006, "stream_replaced");
+      await this.sseCloseChains.get(connectionId);
+    }
+
+    const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+    const writer = writable.getWriter();
+    const connection = new SseConnection({
+      id: connectionId,
+      uri: request.url,
+      server: this.resolvePartyServerName(),
+      sink: createSseStreamSink(writer),
+      onTeardown: (torndown, code, reason) =>
+        this.teardownSseConnection(torndown, code, reason),
+    });
+    this.sseConnections.set(connectionId, connection);
+    this.startSseHeartbeat();
+
+    // Cancelling the response body errors the writable half; the request signal
+    // covers proxies that abort without draining. Either way the stream is gone.
+    void writer.closed.then(
+      () => connection.abort(1006, "stream_closed"),
+      () => connection.abort(1006, "stream_closed"),
+    );
+    if (request.signal.aborted) {
+      connection.abort(1006, "client_aborted");
+    } else {
+      request.signal.addEventListener(
+        "abort",
+        () => connection.abort(1006, "client_aborted"),
+        { once: true },
+      );
+    }
+
+    // The FULL wrapped chain, so the frame order (resume/pending/recovering →
+    // identity → state → mcp → app history + background reconcile) is the
+    // socket's, not a reimplementation of it. Frames queue in the writer, so
+    // this can run after the response is returned.
+    this.ctx.waitUntil(
+      Promise.resolve()
+        .then(() =>
+          this.onConnect(connection as unknown as Connection, { request }),
+        )
+        .catch((error) => {
+          console.error("[ChatThreadDO] SSE connect chain failed", error);
+          connection.closeWithBye("retry", 1011, "connect_failed");
+        }),
+    );
+
+    return new Response(readable, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
+      },
+    });
+  }
+
+  private async handleChatTransportCall(request: Request, url: URL): Promise<Response> {
+    const denial = this.authorizeChatTransportRequest(request, url);
+    if (denial) return denial;
+
+    // A POST is independent of the stream, so a client's first action on a
+    // thread can land before its first attach — where the socket transport
+    // guaranteed onConnect had already filled the scope/identity sink. Bootstrap
+    // it in that case ONLY: an established thread keeps its stored context
+    // rather than having identity rewritten by whoever posted last.
+    if (!this.chatContext) this.captureChatContextFromRequest(url, request);
+
+    let raw: string;
+    try {
+      raw = await request.text();
+    } catch {
+      return new Response("Unreadable frame", { status: 400 });
+    }
+    let frame: ChatTransportFrame | null = null;
+    try {
+      frame = JSON.parse(raw) as ChatTransportFrame | null;
+    } catch {
+      return new Response("Invalid frame", { status: 400 });
+    }
+    const frameType =
+      frame && typeof frame === "object" && typeof frame.type === "string"
+        ? frame.type
+        : null;
+
+    if (
+      frameType === CHAT_MESSAGE_TYPES.STREAM_RESUME_REQUEST ||
+      frameType === CHAT_MESSAGE_TYPES.STREAM_RESUME_ACK
+    ) {
+      // The handshake reply and the replay are written to the stream's sink, and
+      // the framework keys its pending-resume/replay bookkeeping off the
+      // connection OBJECT, so this must dispatch against the live registered
+      // shim. Nothing to dispatch against → the client reattaches and retries.
+      const connectionId = url.searchParams.get("_pk")?.trim() || "";
+      const connection = connectionId
+        ? this.sseConnections.get(connectionId)
+        : undefined;
+      if (!connection || !connection.isOpen) {
+        return new Response("No live chat stream", { status: 409 });
+      }
+      await this.onMessage(connection as unknown as Connection, raw);
+      return new Response(null, { status: 204 });
+    }
+
+    if (frameType === "rpc") {
+      const method = typeof frame?.method === "string" ? frame.method : "";
+      if (!CHAT_TRANSPORT_CALLABLE_METHODS.has(method)) {
+        this.recordChatThreadObservabilityEvent("chat_ws_frame_blocked", {
+          operation: `rpc:${method || "unknown"}`,
+          status: "blocked",
+          severity: "warn",
+        });
+        return new Response("Unsupported rpc method", { status: 400 });
+      }
+      // RPCs must work while the stream is down (that is the point of POST
+      // sends), so the reply is captured off a one-shot connection sharing the
+      // stream's id rather than requiring a live sink.
+      const { connection, frames } = createSseCaptureConnection({
+        id: url.searchParams.get("_pk")?.trim() || crypto.randomUUID(),
+        uri: request.url,
+        server: this.resolvePartyServerName(),
+      });
+      await this.onMessage(connection as unknown as Connection, raw);
+      const response = frames.find((payload) => {
+        try {
+          return (JSON.parse(payload) as { type?: unknown }).type === "rpc";
+        } catch {
+          return false;
+        }
+      });
+      return new Response(
+        response ??
+          JSON.stringify({
+            type: "rpc",
+            id: typeof frame?.id === "string" ? frame.id : "",
+            success: false,
+            error: "No rpc response produced",
+          }),
+        { headers: { "Content-Type": "application/json" } },
+      );
+    }
+
+    // Everything else — including BLOCKED_CHAT_PROTOCOL_FRAME_TYPES — stays off
+    // the HTTP boundary exactly as it is off the socket one.
+    if (frameType && BLOCKED_CHAT_PROTOCOL_FRAME_TYPES.has(frameType)) {
+      this.recordChatThreadObservabilityEvent("chat_ws_frame_blocked", {
+        operation: frameType,
+        status: "blocked",
+        severity: "warn",
+      });
+    }
+    return new Response("Unsupported frame", { status: 400 });
+  }
+
+  /**
+   * `this.name` throws until partyserver has resolved the room name. The value
+   * is only a deprecated informational field on the connection, so never let it
+   * fail an attach.
+   */
+  private resolvePartyServerName(): string {
+    try {
+      return this.name;
+    } catch {
+      return this.chatContext?.threadId ?? "";
+    }
+  }
+
+  private startSseHeartbeat(): void {
+    if (this.sseHeartbeatTimer) return;
+    this.sseHeartbeatTimer = setInterval(
+      () => this.sweepSseConnections(),
+      SSE_HEARTBEAT_INTERVAL_MS,
+    );
+  }
+
+  private stopSseHeartbeat(): void {
+    if (!this.sseHeartbeatTimer) return;
+    clearInterval(this.sseHeartbeatTimer);
+    this.sseHeartbeatTimer = null;
+  }
+
+  /** Keepalive plus idle-close policy; runs on the heartbeat tick. */
+  private sweepSseConnections(): void {
+    if (this.sseConnections.size === 0) {
+      this.sseIdleSince = null;
+      this.stopSseHeartbeat();
+      return;
+    }
+    // A failed heartbeat tears the connection down, which unregisters it; Map
+    // iteration tolerates that deletion.
+    for (const connection of this.sseConnections.values()) {
+      connection.heartbeat();
+    }
+    if (this.hasLiveChatWorkForStream()) {
+      this.sseIdleSince = null;
+      return;
+    }
+    const idleSince = this.sseIdleSince ?? Date.now();
+    this.sseIdleSince = idleSince;
+    if (Date.now() - idleSince < SSE_IDLE_GRACE_MS) return;
+    this.sseIdleSince = null;
+    for (const connection of this.sseConnections.values()) {
+      connection.closeWithBye("idle", 1000, "idle");
+    }
+  }
+
+  /** Work that must keep an attached stream open regardless of client silence. */
+  private hasLiveChatWorkForStream(): boolean {
+    if (this.isThreadStreaming()) return true;
+    try {
+      if (this._resumableStream.hasActiveStream()) return true;
+    } catch {
+      // Never let a transport sweep fail on framework state.
+    }
+    if (this.hasActiveChatRecovery()) return true;
+    if ((this.browserPrompts?.pendingQuestionCount ?? 0) > 0) return true;
+    return (this.browserPrompts?.pendingConnectionSetupPrompts?.().length ?? 0) > 0;
+  }
+
+  private teardownSseConnection(
+    connection: SseConnection,
+    code: number,
+    reason: string,
+  ): void {
+    if (this.sseConnections.get(connection.id) === connection) {
+      this.sseConnections.delete(connection.id);
+    }
+    if (this.sseConnections.size === 0) {
+      this.sseIdleSince = null;
+      this.stopSseHeartbeat();
+    }
+    // ai-chat's onClose wrapper is the ONLY cleanup for _pendingResumeConnections
+    // / continuation / pre-stream registrations — skipping it leaves a dead id
+    // permanently excluded from chat broadcasts (the thread goes quiet). Run it
+    // off the current task so a send failure mid-broadcast cannot re-enter the
+    // framework from inside its own fan-out loop.
+    const chain = Promise.resolve()
+      .then(() =>
+        this.onClose(
+          connection as unknown as Connection,
+          code,
+          reason,
+          code === 1000,
+        ),
+      )
+      .catch((error) => {
+        console.error("[ChatThreadDO] SSE close chain failed", error);
+      })
+      .finally(() => {
+        if (this.sseCloseChains.get(connection.id) === chain) {
+          this.sseCloseChains.delete(connection.id);
+        }
+      });
+    this.sseCloseChains.set(connection.id, chain);
+    this.ctx.waitUntil(chain);
+  }
+
   async onMessage(
     _ws: Connection,
     message: WSMessage,
@@ -1611,7 +2016,15 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     }
   }
 
-  async onClose(): Promise<void> {
+  // Params are the framework's (partyserver calls onClose(connection, code,
+  // reason, wasClean)); this handler only cares that a client left, and the SSE
+  // teardown path calls the same wrapped chain with them.
+  async onClose(
+    _connection?: Connection,
+    _code?: number,
+    _reason?: string,
+    _wasClean?: boolean,
+  ): Promise<void> {
     if (
       this.getChatSockets().length === 0 &&
       this.browserPrompts.pendingQuestionCount > 0
