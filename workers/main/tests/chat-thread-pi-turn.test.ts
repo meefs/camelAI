@@ -1,6 +1,20 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { CHAT_RECOVERY_INCIDENT_KEY_PREFIX } from 'agents/chat';
-import { ChatThreadDO, CodeModeToolsBinding, prepareCodeModeUserCode } from '../src/chat-thread-do';
+import {
+  CHAT_LAST_TERMINAL_KEY,
+  CHAT_RECOVERING_KEY,
+  CHAT_RECOVERY_INCIDENT_KEY_PREFIX,
+  pendingChatTerminal,
+} from 'agents/chat';
+import {
+  ChatThreadDO,
+  CodeModeToolsBinding,
+  PI_TURN_ISOLATE_DEATH_DECAY_MS,
+  PI_TURN_RESUME_BUDGET,
+  PI_TURN_TOTAL_RESUME_BUDGET,
+  PI_TURN_VOLUNTARY_RESUME_BUDGET,
+  prepareCodeModeUserCode,
+} from '../src/chat-thread-do';
+import { PiTurnJournal } from '../src/chat-thread/pi-turn-journal';
 import { ChannelTools } from '../src/chat-channels';
 import { piCoreMessageToParsedChatMessage, attachPiToolResultToParsedMessages } from '../src/pi-message-export';
 import { PiModelMapping } from '../src/pi-model-resolution';
@@ -10558,8 +10572,27 @@ describe('ChatThreadDO Pi turn handling', () => {
     fake.ensurePiSessionReady = vi.fn(async () => {});
     fake.withPiTurnInactivityTimeout = vi.fn(async (fn: () => unknown) => fn());
     fake.recordChatThreadObservabilityEvent = vi.fn();
+    // Give-up paths commit the journal's accepted work before clearing it.
+    fake.loadPiTurnJournalTail = vi.fn(async () => []);
+    fake.loadPiTurnSteerJournal = vi.fn(async () => []);
+    fake.activePiStreamTurnId = null;
+    fake.piConfigChangeResumeDepth = 0;
+    // Every resume counts itself against the marker's progress-independent
+    // budgets before any heavy work; the journal-backed fakes below exercise that
+    // for real, the rest just need a well-under-budget count.
+    fake.recordPiActiveTurnResumeAttempt = vi.fn(() => ({
+      total: 1,
+      isolateDeath: 1,
+      voluntary: 0,
+      charged: 'isolate_death',
+    }));
     Object.assign(fake, overrides);
     return fake;
+  }
+
+  /** Let a `void`-ed give-up commit (an awaited chain) settle before asserting. */
+  async function flushGiveUp() {
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
   }
 
   it('commits a recovered tail that owes no model output, folding Code Mode artifacts', async () => {
@@ -10647,6 +10680,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     const fake = createResumeFake();
 
     ChatThreadDO.prototype['handlePiTurnFailure'].call(fake, providerError);
+    await flushGiveUp();
 
     expect(fake.pushChatEvent).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'error', message: 'Provider exploded' }),
@@ -10680,7 +10714,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     // to the abandoned author. The framework delivers the terminal banner itself.
     const fake = createResumeFake();
 
-    ChatThreadDO.prototype['handlePiRecoveryExhausted'].call(fake, {
+    await ChatThreadDO.prototype['handlePiRecoveryExhausted'].call(fake, {
       terminalMessage:
         'This turn was interrupted and could not be resumed automatically. Please send your message again.',
       reason: 'max_attempts_exceeded',
@@ -10699,6 +10733,502 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(fake.pushChatEvent).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'error' }),
     );
+  });
+
+  // --- Progress-independent resume budget on the active-turn marker ---
+
+  describe('resume budget on the active-turn marker', () => {
+    /** The synchronous KV surface a SQLite-backed DO gives the journal. Values are
+     *  cloned on write so a test can never assert on a live in-memory object. */
+    function createSyncKv() {
+      const store = new Map<string, unknown>();
+      return {
+        store,
+        get: <T,>(key: string) => store.get(key) as T | undefined,
+        put: (key: string, value: unknown) => {
+          store.set(key, structuredClone(value));
+        },
+        delete: (key: string) => store.delete(key),
+      };
+    }
+
+    /** The async DO storage surface the framework's terminal helpers write to. */
+    function createStorage(seed: Record<string, unknown> = {}) {
+      const store = new Map<string, unknown>(Object.entries(seed));
+      return {
+        store,
+        get: async (key: string) => store.get(key),
+        put: async (key: string, value: unknown) => {
+          store.set(key, value);
+        },
+        delete: async (key: string) => store.delete(key),
+      };
+    }
+
+    function createJournal(kv: ReturnType<typeof createSyncKv>) {
+      return new PiTurnJournal({
+        kv: () => kv,
+        sql: () => ({ exec: () => ({ toArray: () => [] }) }) as any,
+        ensureTables: () => {},
+        serializeMessageDetailed: async () => ({ payload: '{}' }),
+        hydrateStoredImages: async (value: unknown) => value,
+      });
+    }
+
+    /** A resume fake whose marker reads/writes go through a REAL PiTurnJournal over
+     *  a durable-shaped KV, so the budget counter is exercised end to end. */
+    function createJournalResumeFake(
+      marker: Record<string, unknown> | null,
+      overrides: Record<string, any> = {},
+    ) {
+      const kv = createSyncKv();
+      if (marker) kv.put('piActiveTurn', marker);
+      const journal = createJournal(kv);
+      const storage = createStorage(overrides.storageSeed ?? {});
+      delete overrides.storageSeed;
+      const fake = createResumeFake({
+        recordPiActiveTurnResumeAttempt: vi.fn((cause: any) =>
+          journal.recordResumeAttempt(cause, {
+            isolateDeathDecayMs: PI_TURN_ISOLATE_DEATH_DECAY_MS,
+          }),
+        ),
+        readPiActiveTurn: vi.fn(() => journal.readActiveTurn()),
+        clearPiActiveTurnAndJournal: vi.fn(() => journal.clearActiveTurnAndJournal()),
+        broadcastChat: vi.fn(),
+        ctx: { storage },
+        ...overrides,
+      });
+      return { fake, journal, kv, storage };
+    }
+
+    it('abandons a turn whose isolate-death budget is spent, leaving the thread free', async () => {
+      // The loop this catches: every re-drive checkpoints progress (so chatRecovery's
+      // progress-gated budget keeps resetting) and then dies with no in-isolate trace.
+      // The marker counter is progress-independent, so the (budget + 1)-th re-drive
+      // gives up instead.
+      const { fake, journal, storage } = createJournalResumeFake(
+        {
+          turnId: 't1',
+          openedAt: 1,
+          resumeAttempts: PI_TURN_RESUME_BUDGET,
+          isolateDeathResumeAttempts: PI_TURN_RESUME_BUDGET,
+          lastIsolateDeathResumeAt: Date.now(),
+        },
+        {
+          activePiStreamTurnId: 't1',
+          storageSeed: { [CHAT_RECOVERING_KEY]: { requestId: 't1', at: Date.now() } },
+        },
+      );
+
+      await ChatThreadDO.prototype['resumeActivePiTurn'].call(fake);
+
+      // No heavy work: the give-up happens before the session is even rebuilt.
+      expect(fake.ensurePiSessionReady).not.toHaveBeenCalled();
+      // Distinct status from chatRecovery's own exhaustion ('abandoned').
+      expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+        'pi_turn_resume_abandoned',
+        expect.objectContaining({
+          status: 'resume_budget_exhausted',
+          severity: 'error',
+          count: PI_TURN_RESUME_BUDGET + 1,
+        }),
+      );
+      // Same teardown as handlePiRecoveryExhausted.
+      expect(fake.updateActiveAutomationRun).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'error', clear: true }),
+      );
+      expect(fake.pushChatEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'error' }),
+      );
+      expect(fake.finishTurn).toHaveBeenCalled();
+      expect(fake.setActiveTurnUserId).toHaveBeenCalledWith(null);
+      expect(fake.clearPiActiveTurnAndJournal).toHaveBeenCalled();
+      expect(journal.readActiveTurn()).toBeNull();
+      // Marker gone => the derived busy gate is open, so a new sendMessage is
+      // accepted immediately instead of being rejected as "thread is busy".
+      expect(ChatThreadDO.prototype['isThreadStreaming'].call(fake)).toBe(false);
+      // The framework's terminalize half, which nothing else runs here: a durable
+      // terminal for a detached client, and the live recovering flag cleared.
+      await expect(pendingChatTerminal(storage as any)).resolves.toEqual({
+        requestId: 't1',
+        body: expect.stringContaining('send your message again'),
+      });
+      expect(storage.store.has(CHAT_RECOVERING_KEY)).toBe(false);
+      expect(fake.broadcastChat).toHaveBeenCalledWith(
+        expect.objectContaining({ done: true, error: true, id: 't1' }),
+      );
+      expect(fake.broadcastChat).toHaveBeenCalledWith(
+        expect.objectContaining({ recovering: false }),
+      );
+    });
+
+    it('persists the incremented count before the resume can die', async () => {
+      // The whole point of the counter: it must survive the isolate being killed
+      // seconds into this re-drive, so it is written before any awaitable work.
+      const rebuildError = new Error('OOM during session rebuild');
+      const { fake, journal, kv } = createJournalResumeFake(
+        { turnId: 't1', openedAt: 1 },
+        {
+          ensurePiSessionReady: vi.fn(async () => {
+            throw rebuildError;
+          }),
+        },
+      );
+
+      await expect(
+        ChatThreadDO.prototype['resumeActivePiTurn'].call(fake),
+      ).rejects.toThrow(rebuildError);
+
+      expect(journal.readActiveTurn()).toMatchObject({
+        turnId: 't1',
+        openedAt: 1,
+        resumeAttempts: 1,
+        isolateDeathResumeAttempts: 1,
+      });
+      // Durably, not just in memory.
+      expect(kv.store.get('piActiveTurn')).toMatchObject({
+        resumeAttempts: 1,
+        isolateDeathResumeAttempts: 1,
+      });
+    });
+
+    it('leaves a healthy resume alone and clears the counter with the turn', async () => {
+      const messages = [
+        { role: 'user', content: 'hi' },
+        { role: 'assistant', content: [{ type: 'text', text: 'done' }], stopReason: 'endTurn' },
+      ];
+      const { fake, journal } = createJournalResumeFake(
+        { turnId: 't1', openedAt: 1 },
+        {
+          piSession: { state: { isStreaming: false, messages } },
+          piMainBaselineIndex: 1,
+        },
+      );
+
+      await ChatThreadDO.prototype['resumeActivePiTurn'].call(fake);
+
+      expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+        'pi_turn_recovery_attempt',
+        expect.objectContaining({ status: 'attempting', count: 1 }),
+      );
+      expect(fake.recordChatThreadObservabilityEvent).not.toHaveBeenCalledWith(
+        'pi_turn_resume_abandoned',
+        expect.anything(),
+      );
+      expect(fake.finishTurn).toHaveBeenCalledWith(
+        expect.objectContaining({ markUnread: true }),
+      );
+      // The count lives on the marker, so completing the turn resets it — no
+      // separate reset logic to forget.
+      expect(journal.readActiveTurn()).toBeNull();
+    });
+
+    it('treats a legacy marker with no counter as zero attempts', async () => {
+      const kv = createSyncKv();
+      kv.put('piActiveTurn', { turnId: 'legacy', openedAt: 7 });
+      const journal = createJournal(kv);
+
+      expect(journal.recordResumeAttempt()).toMatchObject({
+        total: 1,
+        isolateDeath: 1,
+        voluntary: 0,
+        charged: 'isolate_death',
+      });
+      expect(journal.readActiveTurn()).toMatchObject({
+        turnId: 'legacy',
+        openedAt: 7,
+        resumeAttempts: 1,
+        isolateDeathResumeAttempts: 1,
+      });
+      expect(journal.recordResumeAttempt()).toMatchObject({ total: 2, isolateDeath: 2 });
+      // No open turn: nothing to bound (the resume fails on its own terms).
+      kv.delete('piActiveTurn');
+      expect(journal.recordResumeAttempt()).toBeNull();
+    });
+
+    // --- Cause discrimination: what may and may not spend the tight budget ---
+
+    it('survives many DO code-update resets and still completes the turn', async () => {
+      // handlePiTurnFailure deliberately leaves recovery armed for a transient DO
+      // reset because production proved it survivable (one thread absorbed 15
+      // consecutive resets and still answered). Each of those re-drives must NOT
+      // spend the isolate-death budget, or the turn is abandoned on reset #4.
+      const resetError = new Error('Durable Object reset because its code was updated.');
+      const { fake, journal } = createJournalResumeFake(
+        { turnId: 't1', openedAt: 1 },
+        {
+          ensurePiSessionReady: vi.fn(async () => {
+            throw resetError;
+          }),
+          markPiTurnBenignInterruption: vi.fn(() => journal.markBenignInterruption()),
+        },
+      );
+
+      const resets = PI_TURN_RESUME_BUDGET * 5;
+      for (let i = 0; i < resets; i += 1) {
+        await expect(
+          ChatThreadDO.prototype['resumeActivePiTurn'].call(fake),
+        ).rejects.toThrow(resetError);
+        // The isolate lived long enough to classify the reset (this is exactly
+        // what handlePiTurnFailure does before leaving the marker armed).
+        ChatThreadDO.prototype['handlePiTurnFailure'].call(fake, resetError);
+      }
+
+      expect(fake.recordChatThreadObservabilityEvent).not.toHaveBeenCalledWith(
+        'pi_turn_resume_abandoned',
+        expect.anything(),
+      );
+      expect(journal.readActiveTurn()).toMatchObject({
+        turnId: 't1',
+        resumeAttempts: resets,
+        // Only the FIRST re-drive was unclassified; every later one followed a
+        // reset this isolate caught.
+        isolateDeathResumeAttempts: 1,
+      });
+
+      // And the turn still completes normally on the next healthy re-drive.
+      fake.ensurePiSessionReady = vi.fn(async () => {});
+      fake.piSession = {
+        state: {
+          isStreaming: false,
+          messages: [
+            { role: 'user', content: 'hi' },
+            {
+              role: 'assistant',
+              content: [{ type: 'text', text: 'done' }],
+              stopReason: 'endTurn',
+            },
+          ],
+        },
+      };
+      fake.piMainBaselineIndex = 1;
+      journal.markBenignInterruption();
+
+      await ChatThreadDO.prototype['resumeActivePiTurn'].call(fake);
+
+      expect(fake.finishTurn).toHaveBeenCalledWith(
+        expect.objectContaining({ markUnread: true }),
+      );
+      expect(journal.readActiveTurn()).toBeNull();
+    });
+
+    it('keeps transient provider retries off the isolate-death budget', async () => {
+      // Two 529 regenerations, then an eviction re-drive, then another 529 — the
+      // sequence that used to hit "kept failing while it was being resumed" with a
+      // single blended counter, on a turn that was never memory-killed.
+      const { fake, journal } = createJournalResumeFake(
+        { turnId: 't1', openedAt: 1 },
+        {
+          ensurePiSessionReady: vi.fn(async () => {}),
+          piSession: {
+            state: {
+              isStreaming: false,
+              messages: [
+                { role: 'user', content: 'hi' },
+                { role: 'toolResult', toolCallId: 'c1', toolName: 'read', content: [] },
+              ],
+            },
+            continue: vi.fn(async () => {}),
+          },
+          piMainBaselineIndex: 0,
+        },
+      );
+
+      await ChatThreadDO.prototype['resumeActivePiTurn'].call(fake, {
+        cause: 'transient_retry',
+      });
+      await ChatThreadDO.prototype['resumeActivePiTurn'].call(fake, {
+        cause: 'transient_retry',
+      });
+      await ChatThreadDO.prototype['resumeActivePiTurn'].call(fake);
+      await ChatThreadDO.prototype['resumeActivePiTurn'].call(fake, {
+        cause: 'transient_retry',
+      });
+
+      expect(fake.recordChatThreadObservabilityEvent).not.toHaveBeenCalledWith(
+        'pi_turn_resume_abandoned',
+        expect.anything(),
+      );
+      expect(journal.readActiveTurn()).toMatchObject({
+        resumeAttempts: 4,
+        isolateDeathResumeAttempts: 1,
+        voluntaryResumeAttempts: 3,
+      });
+      // The turn is still live and continuing.
+      expect(fake.piSession.continue).toHaveBeenCalledTimes(4);
+    });
+
+    it('bounds the voluntary re-drives with their own budget', async () => {
+      const { fake, journal } = createJournalResumeFake({
+        turnId: 't1',
+        openedAt: 1,
+        resumeAttempts: PI_TURN_VOLUNTARY_RESUME_BUDGET,
+        voluntaryResumeAttempts: PI_TURN_VOLUNTARY_RESUME_BUDGET,
+      });
+
+      await ChatThreadDO.prototype['resumeActivePiTurn'].call(fake, {
+        cause: 'transient_retry',
+      });
+
+      expect(fake.ensurePiSessionReady).not.toHaveBeenCalled();
+      expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+        'pi_turn_resume_abandoned',
+        expect.objectContaining({
+          status: 'resume_budget_exhausted',
+          sampleKey: 'voluntary',
+        }),
+      );
+      expect(journal.readActiveTurn()).toBeNull();
+    });
+
+    it('bounds an endless benign-interruption loop with the total ceiling', async () => {
+      const { fake, journal } = createJournalResumeFake({
+        turnId: 't1',
+        openedAt: 1,
+        resumeAttempts: PI_TURN_TOTAL_RESUME_BUDGET,
+        isolateDeathResumeAttempts: 1,
+        benignInterruption: true,
+      });
+
+      await ChatThreadDO.prototype['resumeActivePiTurn'].call(fake);
+
+      expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+        'pi_turn_resume_abandoned',
+        expect.objectContaining({ sampleKey: 'total' }),
+      );
+      expect(journal.readActiveTurn()).toBeNull();
+    });
+
+    it('forgives isolate-death charges older than the decay window', async () => {
+      // Slow rollout churn (kills far apart) must not accumulate across a long
+      // turn; the ~2-minute kill loop the budget targets never decays.
+      const kv = createSyncKv();
+      kv.put('piActiveTurn', {
+        turnId: 't1',
+        openedAt: 1,
+        resumeAttempts: PI_TURN_RESUME_BUDGET,
+        isolateDeathResumeAttempts: PI_TURN_RESUME_BUDGET,
+        lastIsolateDeathResumeAt: 1_000,
+      });
+      const journal = createJournal(kv);
+
+      const tight = journal.recordResumeAttempt('recovery', {
+        now: 1_000 + PI_TURN_ISOLATE_DEATH_DECAY_MS - 1,
+        isolateDeathDecayMs: PI_TURN_ISOLATE_DEATH_DECAY_MS,
+      });
+      expect(tight).toMatchObject({ isolateDeath: PI_TURN_RESUME_BUDGET + 1 });
+
+      kv.put('piActiveTurn', {
+        turnId: 't1',
+        openedAt: 1,
+        resumeAttempts: PI_TURN_RESUME_BUDGET,
+        isolateDeathResumeAttempts: PI_TURN_RESUME_BUDGET,
+        lastIsolateDeathResumeAt: 1_000,
+      });
+      const slow = journal.recordResumeAttempt('recovery', {
+        now: 1_000 + PI_TURN_ISOLATE_DEATH_DECAY_MS,
+        isolateDeathDecayMs: PI_TURN_ISOLATE_DEATH_DECAY_MS,
+      });
+      expect(slow).toMatchObject({ isolateDeath: 1, total: PI_TURN_RESUME_BUDGET + 1 });
+    });
+
+    // --- Give-up must not destroy accepted work, and must survive the drain ---
+
+    it('commits the journal tail before the abandonment deletes it', async () => {
+      // The journal is the only durable copy of a message admitted while the marker
+      // was open (onChatMessage drops the in-memory queue on the resume branch).
+      // Clearing without committing leaves a user bubble pi_core never saw.
+      const admittedUser = { role: 'user', content: 'still queued' };
+      const steered = { role: 'user', content: 'steered too' };
+      const failedAssistant = {
+        role: 'assistant',
+        content: [],
+        stopReason: 'error',
+        errorMessage: 'boom',
+      };
+      const order: string[] = [];
+      const { fake, journal } = createJournalResumeFake(
+        {
+          turnId: 't1',
+          openedAt: 1,
+          resumeAttempts: PI_TURN_RESUME_BUDGET,
+          isolateDeathResumeAttempts: PI_TURN_RESUME_BUDGET,
+        },
+        {
+          activePiStreamTurnId: 't1',
+          loadPiTurnJournalTail: vi.fn(async () => [admittedUser, failedAssistant]),
+          loadPiTurnSteerJournal: vi.fn(async () => [steered]),
+          appendPiCoreMessagesIfMissing: vi.fn(async () => {
+            order.push('commit');
+          }),
+        },
+      );
+      const clear = fake.clearPiActiveTurnAndJournal;
+      fake.clearPiActiveTurnAndJournal = vi.fn(async () => {
+        order.push('clear');
+        await clear();
+      });
+
+      await ChatThreadDO.prototype['resumeActivePiTurn'].call(fake);
+
+      expect(fake.appendPiCoreMessagesIfMissing).toHaveBeenCalledTimes(1);
+      const committed = fake.appendPiCoreMessagesIfMissing.mock.calls[0][0];
+      expect(committed).toEqual([
+        expect.objectContaining({ content: 'still queued' }),
+        expect.objectContaining({ content: 'steered too' }),
+      ]);
+      // The failed assistant row is dropped, exactly like the user-stop give-up.
+      expect(committed).not.toContainEqual(
+        expect.objectContaining({ stopReason: 'error' }),
+      );
+      expect(order).toEqual(['commit', 'clear']);
+      expect(journal.readActiveTurn()).toBeNull();
+    });
+
+    it('re-records the durable terminal after ai-chat clears it on the drain', async () => {
+      // The abandoned turn's reply stream closes WITHOUT an error, so ai-chat's turn
+      // drain treats it as "completed" and runs _clearChatTerminal() — deleting the
+      // record we just wrote — immediately before calling onChatResponse.
+      const { fake, storage } = createJournalResumeFake(
+        {
+          turnId: 't1',
+          openedAt: 1,
+          resumeAttempts: PI_TURN_RESUME_BUDGET,
+          isolateDeathResumeAttempts: PI_TURN_RESUME_BUDGET,
+        },
+        { activePiStreamTurnId: 't1' },
+      );
+
+      await ChatThreadDO.prototype['resumeActivePiTurn'].call(fake);
+      await expect(pendingChatTerminal(storage as any)).resolves.toMatchObject({
+        requestId: 't1',
+      });
+
+      // Simulate the drain: clear, then the hook.
+      await storage.delete(CHAT_LAST_TERMINAL_KEY);
+      expect(await pendingChatTerminal(storage as any)).toBeNull();
+      await ChatThreadDO.prototype['onChatResponse'].call(fake, {
+        requestId: 't1',
+        status: 'completed',
+        continuation: false,
+        message: { id: 't1', role: 'assistant', parts: [] },
+      } as any);
+
+      await expect(pendingChatTerminal(storage as any)).resolves.toMatchObject({
+        requestId: 't1',
+        body: expect.stringContaining('send your message again'),
+      });
+
+      // Only once: a later turn's response must not resurrect it.
+      await storage.delete(CHAT_LAST_TERMINAL_KEY);
+      await ChatThreadDO.prototype['onChatResponse'].call(fake, {
+        requestId: 't1',
+        status: 'completed',
+        continuation: false,
+        message: { id: 't1', role: 'assistant', parts: [] },
+      } as any);
+      expect(await pendingChatTerminal(storage as any)).toBeNull();
+    });
   });
 
   // --- In-process transient provider-error retry (post-forwarded regeneration) ---
@@ -11087,6 +11617,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       fake.recordChatThreadObservabilityEvent = vi.fn();
       fake.trimIncompleteLiveAssistantParts = vi.fn(async () => {});
       fake.clearPiActiveTurnAndJournal = vi.fn(async () => {});
+      fake.recordPiActiveTurnResumeAttempt = vi.fn(() => 1);
 
       ChatThreadDO.prototype['disposePiSession'].call(fake);
 

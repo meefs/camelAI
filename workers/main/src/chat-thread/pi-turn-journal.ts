@@ -15,7 +15,10 @@ import { isFailedPiAssistantMessage } from "./pi-message-helpers";
 // stream/message id (turnId) so a recovery continuation re-streams into the SAME
 // ai-chat assistant message, and pairs with the `pi_turn_journal` table (the
 // not-yet-committed model tail) to tell onChatMessage's resume branch *what* to
-// continue. The retry/attempt budget lives in chatRecovery, not on the marker.
+// continue. chatRecovery owns the PROGRESS-GATED budget; the marker additionally
+// carries a progress-INDEPENDENT resume count ({@link PiTurnJournal.recordResumeAttempt})
+// for the failure mode that budget cannot see — a re-drive that checkpoints
+// progress and then kills the isolate, forever.
 const PI_ACTIVE_TURN_KEY = "piActiveTurn";
 // Durable list (sync KV) of user messages handed to steer() while a turn streams,
 // so an eviction before Pi drains them can re-deliver instead of losing them.
@@ -27,6 +30,51 @@ export interface PiActiveTurnMarker {
   // rebuilt with this id, and ai-chat's continuation clone keeps the same id).
   turnId: string;
   openedAt: number;
+  // How many times this turn has been re-driven through the resume path
+  // ({@link PiTurnJournal.recordResumeAttempt}), whatever the cause. Absent on
+  // markers written before the counter existed — and on the first attempt of a new
+  // turn — which reads as 0. Lives on the marker so it dies with the turn: no reset
+  // logic to forget. This total is telemetry plus a very loose absolute ceiling; the
+  // tight bound is {@link isolateDeathResumeAttempts}.
+  resumeAttempts?: number;
+  // Re-drives charged to the progress-INDEPENDENT isolate-death budget: a recovery
+  // re-drive whose predecessor left NO in-isolate trace (no caught DO-reset error,
+  // no config-change dispose). That is the signature of the failure mode this bound
+  // exists for — the isolate dying under memory pressure mid-turn, forever.
+  isolateDeathResumeAttempts?: number;
+  // When the last isolate-death-charged re-drive was counted. Used to decay the
+  // counter for slow churn (resets minutes apart are a rollout, not a tight loop).
+  lastIsolateDeathResumeAt?: number;
+  // Re-drives this DO chose to run in-process (transient provider-error
+  // regeneration, config-change rebuild). They rebuild the session the same way, so
+  // they stay bounded — but under their own, separate ceiling.
+  voluntaryResumeAttempts?: number;
+  // Set by an in-isolate failure handler when the interruption that ended the
+  // previous attempt was OBSERVED in-process (a "Durable Object reset because its
+  // code was updated" RPC error, a config-change dispose). The isolate lived long
+  // enough to run a handler and write this flag, so the next recovery re-drive is
+  // not an isolate death and is not charged to that budget. Consumed (cleared) by
+  // the recovery re-drive that reads it.
+  benignInterruption?: boolean;
+}
+
+/** Why a re-drive of the open turn is happening (drives which budget it spends). */
+export type PiTurnResumeCause = "recovery" | "transient_retry" | "config_change";
+
+/** The post-increment counters for one re-drive ({@link PiTurnJournal.recordResumeAttempt}). */
+export interface PiTurnResumeAttempt {
+  /** Every re-drive of this turn, whatever the cause. */
+  total: number;
+  /** Re-drives charged to the isolate-death (OOM-class) budget. */
+  isolateDeath: number;
+  /** In-process re-drives this DO chose to run. */
+  voluntary: number;
+  /** Which counter THIS entry was charged to. */
+  charged: "isolate_death" | "benign_interruption" | "voluntary";
+}
+
+function readCount(value: unknown): number {
+  return Math.max(0, Math.floor(Number(value) || 0));
 }
 
 /** The synchronous KV surface of a SQLite-backed DO (`ctx.storage.kv`). */
@@ -244,6 +292,83 @@ export class PiTurnJournal {
       turnId: crypto.randomUUID(),
       openedAt: Date.now(),
     });
+  }
+
+  /**
+   * Count one resume re-drive against the open turn and return the new counters
+   * (null when no turn is open — nothing to bound). Legacy markers with no counts
+   * read as 0, so the first re-drive of an in-flight turn written by an older build
+   * returns 1.
+   *
+   * The counters are SPLIT BY CAUSE on purpose. A re-drive after an isolate death
+   * (nothing in-process observed the interruption) is the failure mode the tight,
+   * progress-independent budget exists for. A re-drive after an interruption this
+   * isolate CAUGHT — a DO code-update reset, a config-change dispose — is
+   * demonstrably survivable (one production thread absorbed 15 consecutive resets
+   * and still answered correctly), and an in-process regeneration this DO chose to
+   * run is bounded by its own caller-side budget. Charging all of them to one
+   * 3-attempt counter abandons healthy turns on ordinary deploy/provider churn.
+   *
+   * `isolateDeathDecayMs` additionally forgives the isolate-death counter when the
+   * previous charged attempt is older than the window: kills minutes apart are a
+   * rollout walking the fleet, not the tight kill loop the bound targets.
+   *
+   * The read-modify-write is the SYNCHRONOUS kv put on purpose, with no await
+   * between read and write: the failure being counted is the isolate dying
+   * seconds later inside the very resume this call is opening, which loses
+   * anything still queued behind an await (same lesson as the wake breaker).
+   */
+  recordResumeAttempt(
+    cause: PiTurnResumeCause = "recovery",
+    options: { now?: number; isolateDeathDecayMs?: number } = {},
+  ): PiTurnResumeAttempt | null {
+    const marker = this.readActiveTurn();
+    if (!marker) return null;
+    const now = options.now ?? Date.now();
+    const decayMs = Math.max(0, Math.floor(Number(options.isolateDeathDecayMs) || 0));
+    const total = readCount(marker.resumeAttempts) + 1;
+    let isolateDeath = readCount(marker.isolateDeathResumeAttempts);
+    let voluntary = readCount(marker.voluntaryResumeAttempts);
+    let charged: PiTurnResumeAttempt["charged"];
+    const next: PiActiveTurnMarker = { ...marker, resumeAttempts: total };
+    // The flag describes the ONE interruption that preceded this re-drive, so any
+    // re-drive consumes it — a stale flag must never forgive a later isolate death.
+    delete next.benignInterruption;
+    if (cause === "recovery") {
+      if (marker.benignInterruption) {
+        // The previous attempt ended in an interruption this isolate observed and
+        // classified as recoverable; it is not evidence of memory pressure.
+        charged = "benign_interruption";
+      } else {
+        const lastAt = readCount(marker.lastIsolateDeathResumeAt);
+        if (decayMs > 0 && lastAt > 0 && now - lastAt >= decayMs) isolateDeath = 0;
+        isolateDeath += 1;
+        charged = "isolate_death";
+        next.lastIsolateDeathResumeAt = now;
+      }
+    } else {
+      voluntary += 1;
+      charged = "voluntary";
+    }
+    next.isolateDeathResumeAttempts = isolateDeath;
+    next.voluntaryResumeAttempts = voluntary;
+    this.writeActiveTurn(next);
+    return { total, isolateDeath, voluntary, charged };
+  }
+
+  /**
+   * Record that the interruption that just ended (or is about to end) this turn's
+   * attempt was observed IN-PROCESS — a DO code-update reset surfaced as a
+   * transient RPC error, or a deliberate config-change dispose. The next recovery
+   * re-drive reads and clears the flag and skips the isolate-death budget.
+   *
+   * Synchronous kv write for the same reason the counter is: the eviction it
+   * describes can land immediately after.
+   */
+  markBenignInterruption(): void {
+    const marker = this.readActiveTurn();
+    if (!marker || marker.benignInterruption) return;
+    this.writeActiveTurn({ ...marker, benignInterruption: true });
   }
 
   writeActiveTurn(marker: PiActiveTurnMarker): void {

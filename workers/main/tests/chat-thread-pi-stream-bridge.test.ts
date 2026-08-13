@@ -1824,6 +1824,13 @@ describe('ChatThreadDO recovery classification and partial reconciliation', () =
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.recordChatThreadObservabilityEvent = vi.fn();
     fake.ensurePiSessionReady = vi.fn(async () => {});
+    // Well under the marker's progress-independent resume budgets.
+    fake.recordPiActiveTurnResumeAttempt = vi.fn(() => ({
+      total: 1,
+      isolateDeath: 1,
+      voluntary: 0,
+      charged: 'isolate_death',
+    }));
     fake.activePiStreamTurnId = 'turn-1';
     fake.piMainBaselineIndex = 0;
     const order: string[] = [];
@@ -1867,6 +1874,12 @@ describe('ChatThreadDO recovery classification and partial reconciliation', () =
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.recordChatThreadObservabilityEvent = vi.fn();
     fake.ensurePiSessionReady = vi.fn(async () => {});
+    fake.recordPiActiveTurnResumeAttempt = vi.fn(() => ({
+      total: 1,
+      isolateDeath: 1,
+      voluntary: 0,
+      charged: 'isolate_death',
+    }));
     fake.activePiStreamTurnId = 'turn-1';
     fake.piMainBaselineIndex = 0;
     fake.piSession = {

@@ -9,6 +9,7 @@ import { AIChatAgent } from "@cloudflare/ai-chat";
 import type {
   ChatRecoveryConfig,
   ChatRecoveryExhaustedContext,
+  ChatResponseResult,
 } from "@cloudflare/ai-chat";
 import type {
   ChatRecoveryContext,
@@ -19,7 +20,9 @@ import {
   CHAT_RECOVERING_FLAG_TTL_MS,
   CHAT_RECOVERING_KEY,
   CHAT_RECOVERY_INCIDENT_KEY_PREFIX,
+  recordChatTerminal,
   sendIfOpen,
+  setChatRecovering,
 } from "agents/chat";
 import type {
   Agent as PiCoreAgent,
@@ -284,6 +287,8 @@ import {
 import {
   PiTurnJournal,
   type PiActiveTurnMarker,
+  type PiTurnResumeAttempt,
+  type PiTurnResumeCause,
 } from "./chat-thread/pi-turn-journal";
 
 // pi_core message persistence (PiCoreMessageStore).
@@ -521,6 +526,53 @@ const CHAT_CONTEXT_KEY = "chatContext";
 // interrupted turn exhausts its recovery budget (reused from the old resume path).
 const PI_RESUME_EXHAUSTED_MESSAGE =
   "This turn was interrupted and could not be resumed automatically. Please send your message again.";
+// How many ISOLATE-DEATH re-drives a single interrupted turn may spend through
+// {@link ChatThreadDO.resumeActivePiTurn} before it is abandoned. This bound is
+// PROGRESS-INDEPENDENT, which is the whole point: chatRecovery's budget resets on
+// forward progress, so a turn that journals a checkpoint and then OOM-kills the
+// isolate inside the same re-drive renews its budget on every pass and loops
+// forever (thread 3030f522: ~96 kills in three hours, every wake "successful").
+// The count lives on the active-turn marker, so it dies when the turn completes
+// or is cleared.
+//
+// It is charged ONLY to re-drives whose predecessor left no in-isolate trace —
+// i.e. the isolate died without any handler running, the signature of the memory
+// kill. Interruptions this isolate CAUGHT (a DO code-update reset, a config-change
+// dispose) stamp `benignInterruption` on the marker and are charged to the loose
+// total below instead: the same file documents a production thread that absorbed
+// 15 consecutive code-update resets and still completed correctly, and the SDK
+// draws the same line (`maxOomRetries` counts OOM-ended attempts only).
+export const PI_TURN_RESUME_BUDGET = 3;
+// Isolate-death charges older than this are forgiven (the counter restarts).
+// The loop this bounds kills every ~2 minutes; resets this far apart are a rollout
+// walking the fleet, and must not accumulate across a long turn into an
+// abandonment. Well under PI_TURN_ABSOLUTE_MAX_MS so a spiral still trips first.
+export const PI_TURN_ISOLATE_DEATH_DECAY_MS = 10 * 60 * 1000;
+// Ceiling on the re-drives this DO chooses to run in-process: the transient
+// provider-error regeneration ({@link PI_TURN_TRANSIENT_RETRY_ATTEMPTS}, reset per
+// stream invocation) and config-change rebuilds. They do the same rebuild work, so
+// they stay bounded — but under their own counter, so a provider-overload window
+// can never consume the eviction-recovery headroom.
+export const PI_TURN_VOLUNTARY_RESUME_BUDGET = 8;
+// Loose absolute ceiling on re-drives of ANY cause, so even an endlessly "benign"
+// interruption loop terminates. Deliberately far above the 15-reset production
+// example the transient-reset branch cites below.
+export const PI_TURN_TOTAL_RESUME_BUDGET = 32;
+
+/** Which (if any) of the marker's resume budgets this re-drive just blew. */
+export function exceededPiTurnResumeBudget(
+  attempt: PiTurnResumeAttempt,
+): "isolate_death" | "voluntary" | "total" | null {
+  if (attempt.isolateDeath > PI_TURN_RESUME_BUDGET) return "isolate_death";
+  if (attempt.voluntary > PI_TURN_VOLUNTARY_RESUME_BUDGET) return "voluntary";
+  if (attempt.total > PI_TURN_TOTAL_RESUME_BUDGET) return "total";
+  return null;
+}
+// User-facing copy for that abandonment. Distinct from
+// {@link PI_RESUME_EXHAUSTED_MESSAGE} only in saying the turn was stopped after
+// repeated failures; both end with the same "send it again" instruction.
+const PI_TURN_RESUME_BUDGET_EXHAUSTED_MESSAGE =
+  "This turn kept failing while it was being resumed, so it was stopped after several attempts. Please send your message again.";
 
 const CHAT_TODOS_KEY = "chatTodos";
 // Last thing the transport knows about a human watching this thread. Durable on
@@ -987,6 +1039,17 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   // setting the pending token; the turn body's retryPiTurnWhileTransient loop
   // consumes it. Both reset at the start of each onChatMessage execute.
   private piTurnTransientRetryAttempts = 0;
+  // >0 while {@link driveConfigChangeResume} is re-driving the interrupted turn
+  // through ai-chat's recovery entry points. The re-drive lands in onChatMessage's
+  // resume branch like an eviction recovery, but this DO caused it (a model /
+  // BYOK change), so it spends the VOLUNTARY budget, not the isolate-death one.
+  private piConfigChangeResumeDepth = 0;
+  // A terminal this DO decided by itself ({@link deliverPiTurnTerminal}) that must
+  // be re-asserted after ai-chat's turn drain clears CHAT_LAST_TERMINAL_KEY — the
+  // abandoned turn's reply stream ends WITHOUT an error, so the framework treats it
+  // as "completed" and deletes the record moments after we write it.
+  private pendingPiTurnTerminal: { requestId: string; message: string } | null =
+    null;
   private piPendingTransientTurnRetry: {
     errorText: string;
     provider: string | null;
@@ -2254,7 +2317,9 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       status: "cleared",
       severity: "warn",
     });
-    await this.clearPiActiveTurnAndJournal();
+    // Same give-up rule as every other abandonment: whatever the journal holds was
+    // already accepted, so commit it before the marker + journal are deleted.
+    await this.releasePiTurnAfterGiveUp();
     this.finishTurn();
     this.setActiveTurnUserId(null);
   }
@@ -4132,6 +4197,12 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   private async driveConfigChangeResume(): Promise<void> {
     const marker = this.readPiActiveTurn();
     if (!marker) return;
+    // The dispose that interrupted the turn was OURS and ran in this isolate, so
+    // the re-drive below is not an isolate death: it spends the voluntary budget
+    // (via piConfigChangeResumeDepth, read by resumeActivePiTurn), and the flag
+    // keeps a re-drive that arrives through chatRecovery instead off the
+    // isolate-death budget too.
+    this.markPiTurnBenignInterruption();
     const lastAssistant = [...this.messages]
       .reverse()
       .find((message) => message.role === "assistant");
@@ -4142,10 +4213,19 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         body?: unknown,
       ): Promise<{ status: string }>;
     };
-    const result =
-      lastAssistant && lastAssistant.id === marker.turnId
-        ? await agent.continueLastTurn()
-        : await agent._retryLastUserTurn();
+    this.piConfigChangeResumeDepth += 1;
+    let result: { status: string };
+    try {
+      result =
+        lastAssistant && lastAssistant.id === marker.turnId
+          ? await agent.continueLastTurn()
+          : await agent._retryLastUserTurn();
+    } finally {
+      this.piConfigChangeResumeDepth = Math.max(
+        0,
+        this.piConfigChangeResumeDepth - 1,
+      );
+    }
     if (result.status === "skipped") {
       // The recovery entry point declined to re-drive (no continuable assistant
       // / no unanswered user leaf / conversation changed). Nothing else observes
@@ -4157,7 +4237,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         status: "skipped",
         severity: "warn",
       });
-      await this.clearPiActiveTurnAndJournal();
+      await this.releasePiTurnAfterGiveUp();
       this.finishTurn();
       this.setActiveTurnUserId(null);
       this.syncAgentState();
@@ -4766,6 +4846,32 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     await this.piTurnJournal.clearActiveTurnAndJournal();
   }
 
+  private recordPiActiveTurnResumeAttempt(
+    cause: PiTurnResumeCause,
+  ): PiTurnResumeAttempt | null {
+    return this.piTurnJournal.recordResumeAttempt(cause, {
+      isolateDeathDecayMs: PI_TURN_ISOLATE_DEATH_DECAY_MS,
+    });
+  }
+
+  /**
+   * Stamp the open turn: the interruption ending this attempt was observed
+   * IN-PROCESS (a DO code-update reset, a config-change dispose), so the recovery
+   * re-drive that follows is not an isolate death and must not spend the tight
+   * {@link PI_TURN_RESUME_BUDGET}.
+   */
+  private markPiTurnBenignInterruption(): void {
+    try {
+      this.piTurnJournal.markBenignInterruption();
+    } catch (error) {
+      // Best effort: worst case the next re-drive is charged as an isolate death.
+      console.warn(
+        "[ChatThreadDO] failed to mark a benign turn interruption",
+        error,
+      );
+    }
+  }
+
   /**
    * Resume branch of {@link onChatMessage} (commit 6): re-drive an interrupted Pi
    * turn. Runs inside the stream execute when ai-chat re-invokes onChatMessage for
@@ -4777,13 +4883,49 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
    * onChatMessage already attached) or the final assistant message already landed
    * pre-eviction (commit the staged tail and finish the turn).
    *
-   * No attempt budget or fiber wrapping here — chatRecovery owns both. Errors
-   * propagate to onChatMessage's catch, which runs the shared failure cleanup.
+   * No fiber wrapping here — chatRecovery owns that. Errors propagate to
+   * onChatMessage's catch, which runs the shared failure cleanup.
+   *
+   * The bounds this path owns live on the durable marker and are counted BEFORE any
+   * heavy work, SPLIT BY CAUSE (see {@link PI_TURN_RESUME_BUDGET}):
+   *  - {@link PI_TURN_RESUME_BUDGET} — re-drives after an isolate death nothing
+   *    in-process observed. This is the loop chatRecovery cannot catch: it
+   *    checkpoints progress and then kills the isolate every pass, renewing the
+   *    SDK's progress-gated budget forever.
+   *  - {@link PI_TURN_VOLUNTARY_RESUME_BUDGET} — re-drives this DO chose to run
+   *    in-process ({@link retryPiTurnWhileTransient}, itself capped per stream
+   *    invocation at {@link PI_TURN_TRANSIENT_RETRY_ATTEMPTS}, and config-change
+   *    rebuilds). Same rebuild work, so still bounded — but on their own counter, so
+   *    a provider-overload window cannot eat the eviction-recovery headroom.
+   *  - {@link PI_TURN_TOTAL_RESUME_BUDGET} — loose ceiling on everything, including
+   *    the re-drives that follow interruptions this isolate caught and classified as
+   *    recoverable (code-update resets: survivable 15 times in production).
+   * Exceeding any of them abandons the turn ({@link abandonPiTurnOverResumeBudget}).
    */
-  private async resumeActivePiTurn(): Promise<void> {
+  private async resumeActivePiTurn(
+    options: { cause?: PiTurnResumeCause } = {},
+  ): Promise<void> {
+    // FIRST thing, before ensurePiSessionReady or any other awaitable work: the
+    // increment only bounds the loop if it survives an isolate that dies inside
+    // this very re-drive. Absent marker (null) = nothing to bound; the resume
+    // below fails its own way.
+    const cause =
+      options.cause ??
+      (this.piConfigChangeResumeDepth > 0 ? "config_change" : "recovery");
+    const attempt = this.recordPiActiveTurnResumeAttempt(cause);
+    const exceeded = attempt ? exceededPiTurnResumeBudget(attempt) : null;
+    if (attempt && exceeded) {
+      await this.abandonPiTurnOverResumeBudget(attempt, exceeded);
+      return;
+    }
     this.recordChatThreadObservabilityEvent("pi_turn_recovery_attempt", {
       operation: "resume_interrupted_turn",
       status: "attempting",
+      count: attempt?.total ?? 0,
+      // Which budget this re-drive spent, and how much of it is gone — the split
+      // is the whole point of the bound, so it has to be visible in telemetry.
+      size: attempt?.isolateDeath ?? 0,
+      sampleKey: attempt ? `${cause}/${attempt.charged}` : null,
     });
     await this.ensurePiSessionReady();
     const session = this.piSession;
@@ -9047,7 +9189,12 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       // stopped again. Not a hang (the run completes and clears the marker); left
       // as-is rather than widening the stop path on the hot turn body.
       this.disposePiSession();
-      await this.resumeActivePiTurn();
+      // VOLUNTARY re-drive: this isolate is alive and chose to regenerate after a
+      // provider 429/529. It rebuilds the session like an eviction recovery, so it
+      // is still bounded — but on its own counter
+      // ({@link PI_TURN_VOLUNTARY_RESUME_BUDGET}), never on the isolate-death
+      // budget that a real wake loop must pass through.
+      await this.resumeActivePiTurn({ cause: "transient_retry" });
       await this.piEventHandlerChain.catch(() => {});
     }
   }
@@ -9233,6 +9380,10 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         severity: "warn",
         error,
       });
+      // This handler RAN, so the isolate was alive to classify the interruption:
+      // the recovery re-drive that follows must not spend the isolate-death budget
+      // (the 15-reset production thread would otherwise be abandoned at reset #4).
+      this.markPiTurnBenignInterruption();
       return;
     }
     console.error("[ChatThreadDO] Pi turn failed", error);
@@ -9246,17 +9397,78 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     });
     this.finishTurn();
     this.setActiveTurnUserId(null);
-    void this.clearPiActiveTurnAndJournal();
+    void this.releasePiTurnAfterGiveUp();
+  }
+
+  /**
+   * Commit the journal's accepted-but-uncommitted REAL WORK, then clear the marker
+   * and journals. Every give-up path must go through here rather than calling
+   * {@link clearPiActiveTurnAndJournal} directly.
+   *
+   * The journal is the only durable copy of work the thread already accepted but
+   * pi_core has not seen: the turn's user message when the FIRST model call failed,
+   * messages admitted while the marker was open (onChatMessage discards the
+   * in-memory prompt queue on the resume branch precisely BECAUSE their journal rows
+   * are the durable copy), steered messages that never drained, and completed tool
+   * results. Deleting it leaves the render transcript showing a user bubble the
+   * model has never seen and no later turn will ever re-deliver. Mirrors
+   * {@link finishPiTurnStoppedDuringTransientRetry}, which already does this for the
+   * user-stop give-up: keep everything except the failed assistant rows, dedup
+   * against committed history (appendPiCoreMessagesIfMissing), then delete.
+   *
+   * Best effort: a storage failure here must never throw an abandoned turn back
+   * into the resume loop, and the clear still runs.
+   */
+  private async releasePiTurnAfterGiveUp(): Promise<void> {
+    try {
+      const [journalTail, steerMessages] = await Promise.all([
+        this.loadPiTurnJournalTail(),
+        this.loadPiTurnSteerJournal(),
+      ]);
+      const realWork = [...journalTail, ...steerMessages].filter(
+        (message) => !isFailedPiAssistantMessage(message),
+      );
+      if (realWork.length > 0) {
+        await this.appendPiCoreMessagesIfMissing(
+          stampPiRenderMessageId(realWork, this.activePiStreamTurnId),
+        );
+        this.recordChatThreadObservabilityEvent("pi_turn_giveup_journal_commit", {
+          operation: "resume_interrupted_turn",
+          status: "committed",
+          severity: "warn",
+          count: realWork.length,
+        });
+      }
+    } catch (error) {
+      console.error(
+        "[ChatThreadDO] failed to commit the journal tail before giving up",
+        error,
+      );
+      try {
+        this.recordChatThreadObservabilityEvent("pi_turn_giveup_journal_commit", {
+          operation: "resume_interrupted_turn",
+          status: "failed",
+          severity: "error",
+          error,
+        });
+      } catch {
+        // Telemetry is never allowed to block the clear below.
+      }
+    }
+    await this.clearPiActiveTurnAndJournal();
   }
 
   /**
    * chatRecovery `onExhausted` hook (commit 6): an interrupted turn spent its
    * recovery budget. The framework delivers `terminalMessage` to the client and
    * records the durable terminal itself; here we run the same give-up teardown the
-   * old failPiResume path did — clear the marker + journal, release turn ownership,
-   * fail any active automation run, surface durable lastError, and log.
+   * old failPiResume path did — commit the journal's accepted work and clear the
+   * marker + journal, release turn ownership, fail any active automation run,
+   * surface durable lastError, and log.
    */
-  private handlePiRecoveryExhausted(ctx: ChatRecoveryExhaustedContext): void {
+  private async handlePiRecoveryExhausted(
+    ctx: ChatRecoveryExhaustedContext,
+  ): Promise<void> {
     this.recordChatThreadObservabilityEvent("pi_turn_resume_abandoned", {
       operation: "resume_interrupted_turn",
       status: "abandoned",
@@ -9267,7 +9479,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       message: ctx.terminalMessage,
       clear: true,
     });
-    void this.clearPiActiveTurnAndJournal();
+    await this.releasePiTurnAfterGiveUp();
     this.finishTurn();
     this.setActiveTurnUserId(null);
     try {
@@ -9276,6 +9488,150 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       // Best effort: the framework already delivered the terminal banner; the
       // observability event above is the actionable signal.
     }
+  }
+
+  /**
+   * Give up on an interrupted turn that spent one of its progress-independent
+   * resume budgets ({@link PI_TURN_RESUME_BUDGET} /
+   * {@link PI_TURN_VOLUNTARY_RESUME_BUDGET} / {@link PI_TURN_TOTAL_RESUME_BUDGET}).
+   * Runs exactly the {@link handlePiRecoveryExhausted} teardown — fail the
+   * automation run, commit the journal's accepted work and clear the marker +
+   * journal, release turn ownership, surface the error — under a DISTINCT
+   * observability status, because this abandonment happens while ai-chat still
+   * considers the recovery healthy (every re-drive made progress) and is therefore
+   * a different production signal. `exceeded` says WHICH budget tripped so the
+   * three failure modes stay separable in telemetry.
+   *
+   * Since the framework is NOT giving up here, it also does not run its own
+   * terminal delivery: {@link deliverPiTurnTerminal} supplies that half.
+   * Afterwards the thread owns no turn — a new sendMessage starts a fresh one.
+   */
+  private async abandonPiTurnOverResumeBudget(
+    attempt: PiTurnResumeAttempt,
+    exceeded: "isolate_death" | "voluntary" | "total",
+  ): Promise<void> {
+    console.error(
+      `[ChatThreadDO] abandoning an interrupted Pi turn: ${exceeded} resume budget spent ` +
+        `(total=${attempt.total} isolateDeath=${attempt.isolateDeath} voluntary=${attempt.voluntary})`,
+    );
+    this.recordChatThreadObservabilityEvent("pi_turn_resume_abandoned", {
+      operation: "resume_interrupted_turn",
+      status: "resume_budget_exhausted",
+      severity: "error",
+      count: attempt.total,
+      size: attempt.isolateDeath,
+      sampleKey: exceeded,
+    });
+    this.updateActiveAutomationRun({
+      status: "error",
+      message: PI_TURN_RESUME_BUDGET_EXHAUSTED_MESSAGE,
+      clear: true,
+    });
+    await this.releasePiTurnAfterGiveUp();
+    this.finishTurn();
+    this.setActiveTurnUserId(null);
+    try {
+      this.pushChatEvent(
+        this.piProviderErrorEvent(PI_TURN_RESUME_BUDGET_EXHAUSTED_MESSAGE),
+      );
+    } catch (error) {
+      // Best effort: the durable terminal below is what a detached client reads.
+      console.error(
+        "[ChatThreadDO] failed to push the resume-budget terminal event",
+        error,
+      );
+    }
+    await this.deliverPiTurnTerminal(PI_TURN_RESUME_BUDGET_EXHAUSTED_MESSAGE);
+  }
+
+  /**
+   * The framework half of a give-up, for a terminal this DO decided by itself.
+   * Mirrors AIChatAgent's `_exhaustChatRecovery` `terminalize` step (which only
+   * runs when the SDK is the one exhausting a recovery): broadcast the terminal
+   * banner, persist the durable terminal record so a client that reconnects after
+   * the turn ended still learns the outcome (replayed over the resume handshake),
+   * and clear the live "recovering…" flag — whose only other clearer is the
+   * recovery bookkeeping this abandonment steps outside of.
+   *
+   * Best effort by design: the teardown already ran, so a storage failure here
+   * must not throw the abandoned turn back into the resume loop.
+   *
+   * The durable record alone is NOT enough: this abandonment returns normally, so
+   * the reply stream closes without an error and ai-chat's turn drain sees
+   * `status: "completed"` and calls `_clearChatTerminal()` — deleting the record we
+   * just wrote, in the same turn. The pending copy stashed here is re-asserted from
+   * {@link onChatResponse}, which the drain calls immediately AFTER that clear.
+   */
+  private async deliverPiTurnTerminal(message: string): Promise<void> {
+    try {
+      // The id the terminal frame (and its handshake replay) is keyed by: the
+      // request the live stream belongs to, falling back to the turn/stream id
+      // when no resumable stream is attached.
+      const requestId =
+        this._activeRequestId ?? this.activePiStreamTurnId ?? undefined;
+      this.broadcastChat({
+        body: message,
+        done: true,
+        error: true,
+        type: CHAT_MESSAGE_TYPES.USE_CHAT_RESPONSE,
+        ...(requestId ? { id: requestId } : {}),
+      });
+      if (requestId) {
+        await recordChatTerminal(this.ctx.storage, requestId, message);
+        this.pendingPiTurnTerminal = { requestId, message };
+      }
+      await setChatRecovering(false, requestId, {
+        storage: this.ctx.storage,
+        messageType: CHAT_MESSAGE_TYPES.CHAT_RECOVERING,
+        broadcast: (frame) => this.broadcastChat(frame),
+        now: Date.now(),
+      });
+    } catch (error) {
+      this.recordChatThreadObservabilityEvent("pi_turn_terminal_delivery", {
+        operation: "resume_interrupted_turn",
+        status: "failed",
+        severity: "warn",
+        error,
+      });
+    }
+  }
+
+  /**
+   * Re-assert a terminal this DO decided by itself ({@link deliverPiTurnTerminal})
+   * after ai-chat's turn drain deleted it.
+   *
+   * The drain (`_runExclusiveChatTurn`'s finally) runs
+   * `_clearChatTerminal()` for a `completed`/`aborted` turn and THEN calls this
+   * hook. An abandoned resume returns normally — the reply stream carries the error
+   * frame but closes cleanly — so the turn drains as `completed` and the record
+   * written moments earlier inside the same turn is deleted before any client can
+   * read it. Re-recording here (after the delete, keyed on the same requestId) is
+   * what makes `_replayTerminalOnResume` / `_replayTerminalOnAck` find it, so a
+   * client that reconnects after the turn ended still learns the outcome instead of
+   * an empty replay frame.
+   */
+  protected override async onChatResponse(
+    result: ChatResponseResult,
+  ): Promise<void> {
+    const pending = this.pendingPiTurnTerminal;
+    if (pending && pending.requestId === result.requestId) {
+      this.pendingPiTurnTerminal = null;
+      try {
+        await recordChatTerminal(
+          this.ctx.storage,
+          pending.requestId,
+          pending.message,
+        );
+      } catch (error) {
+        this.recordChatThreadObservabilityEvent("pi_turn_terminal_delivery", {
+          operation: "resume_interrupted_turn",
+          status: "replay_record_failed",
+          severity: "warn",
+          error,
+        });
+      }
+    }
+    await super.onChatResponse(result);
   }
 
   private buildUserUiSkeleton(args: {
