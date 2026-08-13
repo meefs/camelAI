@@ -95,8 +95,22 @@ describe("classifyChatSseClose", () => {
     expect(classifyChatSseClose({ aborted: true }, true)).toBe("clean_teardown");
     expect(classifyChatSseClose({ aborted: true }, false)).toBe("preopen_close");
     expect(classifyChatSseClose({ status: 503 }, false)).toBe("preopen_close");
-    expect(classifyChatSseClose({ byeReason: "retry" }, true)).toBe(
+    expect(classifyChatSseClose({}, true)).toBe("abnormal_disconnect");
+  });
+
+  it("treats a graceful server bye as a park, not a disconnect", () => {
+    // The server ended these on purpose; only `forbidden` is a verdict.
+    for (const byeReason of ["idle", "retry", "shutdown"] as const) {
+      expect(classifyChatSseClose({ byeReason, aborted: false }, true)).toBe(
+        "server_park",
+      );
+    }
+    expect(classifyChatSseClose({ byeReason: "forbidden" }, true)).toBe(
       "abnormal_disconnect",
+    );
+    // A park can only end a stream that was open.
+    expect(classifyChatSseClose({ byeReason: "idle" }, false)).toBe(
+      "preopen_close",
     );
   });
 });
@@ -209,12 +223,42 @@ describe("chat SSE telemetry events", () => {
     expect(String(timeout?.details)).toContain('"timeout":true');
   });
 
+  it("reports an idle park as an info-level park outside the flap window", async () => {
+    const beacons = captureBeacons();
+    const threadId = crypto.randomUUID();
+    // A quiet tab parks on the server's idle grace forever; that must not read
+    // as the dead-transport signal, nor crowd the reconnect-loop window.
+    for (let cycle = 0; cycle < FLAP_CLOSE_THRESHOLD + 2; cycle += 1) {
+      trackChatStreamOpen(threadId);
+      trackChatStreamClose(threadId, {
+        byeReason: "idle",
+        reason: "idle",
+        aborted: false,
+      });
+    }
+    await beacons.flush();
+
+    const events = beacons.events();
+    const parks = events.filter((event) => event.event === "chat_sse_server_park");
+    // Past the flap threshold (the per-signature budget caps the tail).
+    expect(parks.length).toBeGreaterThanOrEqual(FLAP_CLOSE_THRESHOLD);
+    expect(parks[0].severity).toBe("info");
+    expect(parks[0].status).toBe("idle");
+    expect(String(parks[0].details)).toContain('"code":1000');
+    expect(
+      events.find((event) => event.event === "chat_sse_abnormal_disconnect"),
+    ).toBeUndefined();
+    expect(
+      events.find((event) => event.event === "chat_sse_reconnect_loop"),
+    ).toBeUndefined();
+  });
+
   it("escalates to a reconnect-loop report after repeated abnormal cycles", async () => {
     const beacons = captureBeacons();
     const threadId = crypto.randomUUID();
     for (let cycle = 0; cycle < FLAP_CLOSE_THRESHOLD; cycle += 1) {
       trackChatStreamOpen(threadId);
-      trackChatStreamClose(threadId, { byeReason: "retry" });
+      trackChatStreamClose(threadId, { reason: "stream ended" });
     }
     await beacons.flush();
 

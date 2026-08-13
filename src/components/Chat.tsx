@@ -2956,11 +2956,13 @@ export default function Chat({
           // response, so keep the same clientMessageId queued and retransmit it
           // after reconnect. ChatThreadDO durably deduplicates/re-acks that id.
           //
-          // A half-open transport can remain OPEN until the RPC timeout (a dead
-          // receive stream still reports OPEN while parked). Force a fresh
-          // stream in that case so the normal onOpen queue flush runs instead of
-          // leaving the composer busy forever. A closed transport is
-          // reconnecting automatically.
+          // The transport can still report OPEN here (a parked stream does by
+          // design). Force a fresh stream so the normal onOpen queue flush runs
+          // instead of leaving the composer busy forever; a closed transport is
+          // reconnecting automatically. This is no longer the half-open
+          // detector — sends ride their own POSTs, so a dead receive path is
+          // owned by the transport's silence watchdog
+          // (STREAM_SILENCE_TIMEOUT_MS), not by an RPC failing.
           const transportOpen =
             chatAgentRef.current?.readyState === SSE_READY_STATE_OPEN;
           setReady(false);

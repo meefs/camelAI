@@ -120,8 +120,11 @@ import {
 } from "./chat-context-usage";
 import {
   SseConnection,
+  type SseQueueBudget,
   createSseCaptureConnection,
+  createSseQueueBudget,
   createSseStreamSink,
+  isClosedStreamSendError,
 } from "./chat-thread/sse-connection";
 import { withoutReservedTransportHeaders } from "./chat-thread/transport-headers";
 
@@ -518,6 +521,10 @@ const PI_RESUME_EXHAUSTED_MESSAGE =
   "This turn was interrupted and could not be resumed automatically. Please send your message again.";
 
 const CHAT_TODOS_KEY = "chatTodos";
+// Last thing the transport knows about a human watching this thread. Durable on
+// purpose: the SSE registry dies with the isolate, and the recovery re-drive that
+// asks "is a browser user available?" runs before any client can reattach.
+const CHAT_SSE_VIEWER_KEY = "chatSseViewer";
 const CHAT_CONTEXT_USED_PERCENT_KEY = "chatContextUsedPercent";
 const CHAT_CONTEXT_WINDOW_BY_MODEL_KEY = "chatContextWindowByModel";
 const CHAT_ACTIVE_TURN_USER_ID_KEY = "chatActiveTurnUserId";
@@ -598,15 +605,37 @@ const SSE_HEARTBEAT_INTERVAL_MS = 25_000;
 // with `bye {"reason":"idle"}`. The client reopens on demand (send, focus,
 // visibility), so a dormant tab stops pinning this DO.
 const SSE_IDLE_GRACE_MS = 5 * 60 * 1000;
-// An idle-parked stream is a viewer that is still THERE: the park is the
-// transport's own doing, not the client's departure, and the tab reopens the
-// stream on demand. Browser-user availability therefore has to survive it, or a
-// turn that starts while a thread is dormant tells the agent "User is not at
-// computer" and silently auto-cancels connection-setup prompts — a WebSocket
-// stayed registered through the same silence. The presumption is bounded because
-// a parked client that has since gone away is indistinguishable from one
-// watching an idle tab: past this, availability falls back to "no live stream".
-const SSE_PARKED_VIEWER_PRESUMED_MS = 30 * 60 * 1000;
+// How long a viewer we last saw (attached, or parked by the idle policy) keeps
+// counting as present. Two absences must not read as "the user left":
+//  - the idle park is the transport's own doing, and the tab reopens the stream
+//    on demand;
+//  - an eviction/redeploy destroys the registry entirely, and the client needs a
+//    reconnect delay plus a full auth round trip to come back — while recovery
+//    re-drives run on the freshly woken isolate immediately (and OOM retries
+//    wake the DO by alarm with no client involved at all).
+// A hibernating WebSocket survived both, so without a presumption a re-driven
+// turn tells the agent "User is not at computer" and silently auto-cancels
+// connection-setup prompts for a user who is sitting there. The presumption is
+// bounded because a viewer that has since gone away is indistinguishable from
+// one watching an idle tab: past this, availability falls back to "no stream".
+const SSE_PRESUMED_VIEWER_MS = 30 * 60 * 1000;
+// Refresh the durable marker for a long-lived stream at most this often, so an
+// eviction hours into a session still finds a recent viewer without writing
+// storage on every heartbeat tick.
+const SSE_PRESENCE_REFRESH_MS = 5 * 60 * 1000;
+// Concurrent streams one thread will hold, in total and per authenticated user.
+// Each attach queues its own copy of the render window (up to
+// CHAT_RENDER_WINDOW_MAX_BYTES) into its own transform, so unbounded attaches
+// are an OOM lever on a DO shared by every thread participant (the aggregate
+// SseQueueBudget bounds the bytes; these bound the slots). The per-user limit
+// keeps one member from crowding out the others, and is enforced by evicting
+// that member's OLDEST stream rather than refusing the newest: a client mints a
+// fresh `_pk` per attempt, and a peer that vanished without erroring its writer
+// lingers until the stall probe reaps it, so refusing would let a flapping
+// client lock itself out of chat with its own retries. Both are far above any
+// real multi-tab / multi-participant usage.
+const SSE_MAX_CONNECTIONS = 64;
+const SSE_MAX_CONNECTIONS_PER_USER = 16;
 // The degraded-auth grant map and recent-clientMessageId dedup constants live
 // in ./chat-thread/access with the methods that use them.
 
@@ -645,8 +674,8 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   // broadcast/getConnection/getConnections are overridden below.
   private sseConnectionRegistry?: Map<string, SseConnection>;
   private sseCloseChainRegistry?: Map<string, Promise<void>>;
-  /** Connection id → park timestamp, for streams closed by the idle policy. */
-  private sseParkedViewerRegistry?: Map<string, number>;
+  /** Undrained bytes across every registered stream (see SseQueueBudget). */
+  private sseQueueBudgetRef?: SseQueueBudget;
   private sseHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private sseIdleSince: number | null = null;
   private agentEvalEventCollector: Array<Record<string, unknown>> | null = null;
@@ -1600,9 +1629,9 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     return (this.sseCloseChainRegistry ??= new Map<string, Promise<void>>());
   }
 
-  /** Viewers whose stream the idle policy parked (see SSE_PARKED_VIEWER_PRESUMED_MS). */
-  private get sseParkedViewers(): Map<string, number> {
-    return (this.sseParkedViewerRegistry ??= new Map<string, number>());
+  /** Shared undrained-byte budget for the registry's sinks. */
+  private get sseQueueBudget(): SseQueueBudget {
+    return (this.sseQueueBudgetRef ??= createSseQueueBudget());
   }
 
   /**
@@ -1616,7 +1645,16 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     for (const connection of this.sseConnections.values()) {
       if (!connection.isOpen) continue;
       if (without?.includes(connection.id)) continue;
-      connection.send(msg);
+      try {
+        connection.send(msg);
+      } catch (error) {
+        // `SseConnection.send` throws the SDK's closed-socket TypeError so that
+        // replay loops abort (sendIfOpen contract); a fan-out must not stop at
+        // one dead peer. The throw already tore that connection down.
+        if (!isClosedStreamSendError(error)) {
+          console.error("[ChatThreadDO] SSE broadcast send failed", error);
+        }
+      }
     }
     super.broadcast(msg, without);
   }
@@ -1737,12 +1775,56 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     return null;
   }
 
+  /**
+   * Registry key for one client stream. `_pk` is CLIENT-minted and a thread is
+   * shared by every workspace member with access, so keying the registry on `_pk`
+   * alone would make one participant's stream addressable by another who guesses
+   * the value — either killing it (an attach retires the shim on that key) or
+   * driving a resume replay into it (`POST /call` dispatches against it).
+   * Namespacing by the worker-authenticated user id (the client's own header is
+   * stripped at the trust boundary) makes a shim reachable only by its owner.
+   */
+  private sseRegistryKey(request: Request, streamKey: string): string {
+    const userId = request.headers.get(HEADER_USER_ID)?.trim() || "";
+    return userId ? `${userId}::${streamKey}` : streamKey;
+  }
+
+  /**
+   * Make room for one more stream for this request's authenticated user by
+   * retiring their oldest ones (insertion-ordered registry). Evicting rather than
+   * refusing keeps the tab the user is actually looking at working; the retired
+   * stream ends without a `bye`, which the client treats as a reconnectable drop.
+   */
+  private evictExcessSseConnectionsForUser(request: Request): void {
+    const userId = request.headers.get(HEADER_USER_ID)?.trim() || "";
+    if (!userId) return;
+    const prefix = `${userId}::`;
+    const owned: SseConnection[] = [];
+    for (const [id, connection] of this.sseConnections) {
+      if (id.startsWith(prefix)) owned.push(connection);
+    }
+    // Room for the attach that is about to register, and never a negative slice.
+    const excess = owned.length - SSE_MAX_CONNECTIONS_PER_USER + 1;
+    if (excess <= 0) return;
+    for (const connection of owned.slice(0, excess)) {
+      this.recordChatThreadObservabilityEvent("chat_sse_attach_evicted", {
+        operation: "sse_attach",
+        status: "too_many_user_streams",
+        severity: "warn",
+        count: owned.length,
+      });
+      connection.abort(1006, "stream_evicted");
+    }
+  }
+
   private async handleChatStreamAttach(request: Request, url: URL): Promise<Response> {
     const denial = this.authorizeChatTransportRequest(request, url);
     if (denial) return denial;
 
-    const connectionId =
-      url.searchParams.get("_pk")?.trim() || crypto.randomUUID();
+    const connectionId = this.sseRegistryKey(
+      request,
+      url.searchParams.get("_pk")?.trim() || crypto.randomUUID(),
+    );
     // A reattach that reuses `_pk` must not leave the previous shim registered:
     // broadcasts would go to a writer nobody reads. Retire it first, and let its
     // close chain finish — that cleanup is keyed by connection id, which this
@@ -1754,23 +1836,44 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       await this.sseCloseChains.get(connectionId);
     }
 
+    // Retiring the same-key shim happens first, so a normal reattach is never
+    // what trips these. Beyond them the DO is being used as a memory amplifier:
+    // every attach queues its own copy of the render window.
+    this.evictExcessSseConnectionsForUser(request);
+    if (this.sseConnections.size >= SSE_MAX_CONNECTIONS) {
+      // Only reachable with many distinct members holding many streams each — one
+      // member's streams are bounded by the eviction above, so their own retries
+      // can never produce this. Another member's stream must not be evicted for
+      // it, so refuse: 429 is retryable for the client (never a false terminal),
+      // and it reattaches on its normal backoff.
+      this.recordChatThreadObservabilityEvent("chat_sse_attach_rejected", {
+        operation: "sse_attach",
+        status: "too_many_streams",
+        severity: "warn",
+        count: this.sseConnections.size,
+      });
+      return new Response("too_many_streams", {
+        status: 429,
+        headers: { "Retry-After": "5" },
+      });
+    }
+
     const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
     const writer = writable.getWriter();
     const connection = new SseConnection({
       id: connectionId,
       uri: request.url,
       server: this.resolvePartyServerName(),
-      sink: createSseStreamSink(writer),
+      sink: createSseStreamSink(writer, this.sseQueueBudget),
       onTeardown: (torndown, code, reason) =>
         this.teardownSseConnection(torndown, code, reason),
     });
     this.sseConnections.set(connectionId, connection);
-    // A live stream supersedes this viewer's parked record, and a new viewer
-    // restarts the idle grace: `sseIdleSince` is per-DO, so without the reset a
-    // fresh attach inherits an older stream's accumulated silence and can be
-    // parked seconds after it opened.
-    this.sseParkedViewers.delete(connectionId);
+    // A new viewer restarts the idle grace: `sseIdleSince` is per-DO, so without
+    // the reset a fresh attach inherits an older stream's accumulated silence and
+    // can be parked seconds after it opened.
     this.sseIdleSince = null;
+    this.recordSseViewerPresence(true);
     this.startSseHeartbeat();
 
     // Cancelling the response body errors the writable half; the request signal
@@ -1808,6 +1911,9 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
           }),
         )
         .catch((error) => {
+          // A peer that left mid-handshake surfaces as the closed-send TypeError;
+          // teardown already ran and the client reattaches on its own.
+          if (isClosedStreamSendError(error)) return;
           console.error("[ChatThreadDO] SSE connect chain failed", error);
           connection.closeWithBye("retry", 1011, "connect_failed");
         }),
@@ -1864,14 +1970,23 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       // the framework keys its pending-resume/replay bookkeeping off the
       // connection OBJECT, so this must dispatch against the live registered
       // shim. Nothing to dispatch against → the client reattaches and retries.
-      const connectionId = url.searchParams.get("_pk")?.trim() || "";
-      const connection = connectionId
-        ? this.sseConnections.get(connectionId)
+      const streamKey = url.searchParams.get("_pk")?.trim() || "";
+      const connection = streamKey
+        ? this.sseConnections.get(this.sseRegistryKey(request, streamKey))
         : undefined;
       if (!connection || !connection.isOpen) {
         return new Response("No live chat stream", { status: 409 });
       }
-      await this.onMessage(connection as unknown as Connection, raw);
+      try {
+        await this.onMessage(connection as unknown as Connection, raw);
+      } catch (error) {
+        // The stream died while its own replay was being written (the shim
+        // reports that as the SDK's closed-send TypeError, which is what makes
+        // replayChunks leave the stream active). Same answer as a missing shim:
+        // reattach and retry the handshake.
+        if (!isClosedStreamSendError(error)) throw error;
+        return new Response("No live chat stream", { status: 409 });
+      }
       return new Response(null, { status: 204 });
     }
 
@@ -1889,7 +2004,10 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       // sends), so the reply is captured off a one-shot connection sharing the
       // stream's id rather than requiring a live sink.
       const { connection, frames } = createSseCaptureConnection({
-        id: url.searchParams.get("_pk")?.trim() || crypto.randomUUID(),
+        id: this.sseRegistryKey(
+          request,
+          url.searchParams.get("_pk")?.trim() || crypto.randomUUID(),
+        ),
         uri: request.url,
         server: this.resolvePartyServerName(),
       });
@@ -1959,11 +2077,19 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       this.stopSseHeartbeat();
       return;
     }
-    // A failed heartbeat tears the connection down, which unregisters it; Map
-    // iteration tolerates that deletion.
+    // A failed heartbeat (write rejected, or a write that has not drained inside
+    // SSE_STREAM_STALL_MS — the only probe a quiet stream has) tears the
+    // connection down, which unregisters it; Map iteration tolerates that
+    // deletion. Done BEFORE the work check so a phantom peer cannot be pinned
+    // resident by a pending question it will never answer.
     for (const connection of this.sseConnections.values()) {
       connection.heartbeat();
     }
+    // Teardown already reset the idle clock and stopped this timer.
+    if (this.sseConnections.size === 0) return;
+    // A long-lived stream must keep its durable presence marker fresh, or an
+    // eviction hours into a session looks like a viewer who left.
+    this.refreshSseViewerPresence();
     if (this.hasLiveChatWorkForStream()) {
       this.sseIdleSince = null;
       return;
@@ -1972,33 +2098,60 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     this.sseIdleSince = idleSince;
     if (Date.now() - idleSince < SSE_IDLE_GRACE_MS) return;
     this.sseIdleSince = null;
-    const parkedAt = Date.now();
-    const parked = this.prunedParkedViewers();
     for (const connection of this.sseConnections.values()) {
-      // Recorded BEFORE the close: teardown unregisters the connection, and this
-      // is the only record that the viewer parked rather than left.
-      parked.set(connection.id, parkedAt);
+      // A park is the transport's doing, not a departure; teardown records the
+      // viewer as still present when the last stream leaves this way.
       connection.closeWithBye("idle", 1000, "idle");
     }
   }
 
   /**
-   * Parked-viewer records, minus any past the presumption window. Pruned on read
-   * (a client mints a fresh `_pk` per stream generation, so a reattach does not
-   * always retire its own record) to bound what a long-resident DO accumulates.
+   * Durable "a human was watching this thread" marker. The SSE registry is
+   * isolate-local, so it is the only thing that survives an eviction/redeploy —
+   * and recovery re-drives (including the alarm-driven OOM retry, which wakes the
+   * DO with no client involved) ask for browser availability before any client
+   * can possibly have reattached.
    */
-  private prunedParkedViewers(): Map<string, number> {
-    const parked = this.sseParkedViewers;
-    const cutoff = Date.now() - SSE_PARKED_VIEWER_PRESUMED_MS;
-    for (const [connectionId, parkedAt] of parked) {
-      if (parkedAt < cutoff) parked.delete(connectionId);
+  private recordSseViewerPresence(present: boolean): void {
+    try {
+      this.ctx.storage.kv.put(CHAT_SSE_VIEWER_KEY, {
+        at: Date.now(),
+        present,
+      });
+    } catch (error) {
+      // Transport bookkeeping must never fail an attach or a teardown.
+      console.error("[ChatThreadDO] failed to record SSE viewer presence", error);
     }
-    return parked;
   }
 
-  /** A viewer the idle policy parked recently enough to still count as present. */
-  private hasIdleParkedViewer(): boolean {
-    return this.prunedParkedViewers().size > 0;
+  private refreshSseViewerPresence(): void {
+    const record = this.readSseViewerPresence();
+    if (
+      record?.present &&
+      Date.now() - record.at < SSE_PRESENCE_REFRESH_MS
+    ) {
+      return;
+    }
+    this.recordSseViewerPresence(true);
+  }
+
+  private readSseViewerPresence(): { at: number; present: boolean } | null {
+    try {
+      const record = this.ctx.storage.kv.get<{ at?: unknown; present?: unknown }>(
+        CHAT_SSE_VIEWER_KEY,
+      );
+      if (!record || typeof record.at !== "number") return null;
+      return { at: record.at, present: record.present === true };
+    } catch {
+      return null;
+    }
+  }
+
+  /** A viewer seen recently enough (attached or idle-parked) to still count. */
+  private hasPresumedViewer(): boolean {
+    const record = this.readSseViewerPresence();
+    if (!record?.present) return false;
+    return Date.now() - record.at < SSE_PRESUMED_VIEWER_MS;
   }
 
   /** Work that must keep an attached stream open regardless of client silence. */
@@ -2025,6 +2178,12 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     if (this.sseConnections.size === 0) {
       this.sseIdleSince = null;
       this.stopSseHeartbeat();
+      // Only the LAST stream's exit says anything about the viewer, and only an
+      // idle park says the viewer is still there (the tab reopens the stream on
+      // demand). Every other exit — client abort, write failure, stall, denial —
+      // is a client that is gone as far as this transport can tell, exactly as a
+      // closed WebSocket was.
+      this.recordSseViewerPresence(reason === "idle");
     }
     // ai-chat's onClose wrapper is the ONLY cleanup for _pendingResumeConnections
     // / continuation / pre-stream registrations — skipping it leaves a dead id
@@ -5641,15 +5800,17 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   /**
    * Whether a browser is reachable for a prompt. NOT the same as "a transport
    * connection is registered right now": the SSE idle policy parks a viewer's
-   * stream after five quiet minutes, and treating that as absence makes
-   * askUserQuestion answer itself with "User is not at computer" and
-   * promptConnectionSetup cancel itself, for a user who is sitting there. A
-   * parked viewer stays available for a bounded window and picks the prompt up
+   * stream after five quiet minutes, and an eviction destroys the registry
+   * outright while the tab is still open and reconnecting. Treating either as
+   * absence makes askUserQuestion answer itself with "User is not at computer"
+   * and promptConnectionSetup cancel itself, for a user who is sitting there —
+   * and a recovery re-drive runs before any client can reattach. A recently seen
+   * viewer therefore stays available for a bounded window and picks the prompt up
    * from thread state on its next attach.
    */
   private hasAvailableBrowserUser(): boolean {
     if (this.getChatSockets().length > 0) return true;
-    return this.hasIdleParkedViewer();
+    return this.hasPresumedViewer();
   }
 
   private updateExternalChatContext(payload: {

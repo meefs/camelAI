@@ -12,6 +12,10 @@
 
 import { describe, expect, it } from 'vitest';
 import { env, runInDurableObject } from 'cloudflare:test';
+import {
+  SseConnection,
+  createSseCaptureConnection,
+} from '../src/chat-thread/sse-connection';
 
 type AnyRecord = Record<string, unknown>;
 
@@ -47,6 +51,13 @@ const identityHeaders = (extra: Record<string, string> = {}): Record<string, str
   'X-Chiridion-User-Email': 'user-1@example.com',
   ...extra,
 });
+
+/**
+ * Registry key for a stream. `_pk` is client-minted and every workspace member
+ * passes the same thread-level auth, so the shim is namespaced by the
+ * worker-authenticated user id — a participant cannot address another's stream.
+ */
+const registryKey = (pk: string, userId = 'user-1'): string => `${userId}::${pk}`;
 
 /** Minimal SSE parser: yields data frames and `bye` events, skipping heartbeats. */
 function sseReader(response: Response) {
@@ -169,7 +180,7 @@ describe('ChatThreadDO SSE attach', () => {
     await reader.cancel();
   });
 
-  it('registers the stream under the client-minted _pk', async () => {
+  it('registers the stream under the authenticated user + client-minted _pk', async () => {
     const threadId = 'thread-sse-registry';
     const stub = threadStub(threadId);
     const response = await stub.fetch(attachUrl(threadId, { pk: 'pk-registry' }), {
@@ -177,14 +188,18 @@ describe('ChatThreadDO SSE attach', () => {
     });
     expect(response.status).toBe(200);
 
+    const key = registryKey('pk-registry');
     await runInDurableObject(stub, async (instance: any) => {
-      const registered = instance.sseConnections.get('pk-registry');
+      const registered = instance.sseConnections.get(key);
       expect(registered).toBeDefined();
-      expect(registered.id).toBe('pk-registry');
+      expect(registered.id).toBe(key);
+      // The raw client value is NOT an address: it identifies a stream only
+      // within its owner's namespace.
+      expect(instance.sseConnections.get('pk-registry')).toBeUndefined();
       expect(Array.from(instance.getConnections()).some(
-        (connection: any) => connection.id === 'pk-registry',
+        (connection: any) => connection.id === key,
       )).toBe(true);
-      expect(instance.getConnection('pk-registry')?.id).toBe('pk-registry');
+      expect(instance.getConnection(key)?.id).toBe(key);
     });
 
     await response.body?.cancel();
@@ -220,7 +235,7 @@ describe('ChatThreadDO SSE attach', () => {
     expect(frameTypes(frames)).not.toContain('bye');
 
     await runInDurableObject(stub, async (instance: any) => {
-      const registered = instance.sseConnections.get('pk-subagent');
+      const registered = instance.sseConnections.get(registryKey('pk-subagent'));
       expect(registered?.isOpen).toBe(true);
       // The flag the wrapper would have stashed from the header.
       const rawState = (registered?.deserializeAttachment() ?? null) as AnyRecord | null;
@@ -228,6 +243,119 @@ describe('ChatThreadDO SSE attach', () => {
     });
 
     await reader.cancel();
+  });
+
+  it('bounds one member’s streams by evicting their oldest, not refusing them', async () => {
+    const threadId = 'thread-sse-attach-cap';
+    const stub = threadStub(threadId);
+    const bodies: Array<ReadableStream<Uint8Array> | null> = [];
+
+    // Every attach queues its own copy of the render window into its own
+    // transform, so unbounded attaches are a memory lever on a DO shared by every
+    // participant of the thread.
+    for (let index = 0; index < 16; index++) {
+      const admitted = await stub.fetch(
+        attachUrl(threadId, { pk: `pk-cap-${index}` }),
+        { headers: identityHeaders() },
+      );
+      expect(admitted.status).toBe(200);
+      bodies.push(admitted.body);
+    }
+    await runInDurableObject(stub, async (instance: any) => {
+      expect(instance.sseConnections.size).toBe(16);
+    });
+
+    // A client mints a fresh `_pk` per attempt and a vanished peer lingers until
+    // the stall probe reaps it, so refusing the newest attach would let a
+    // flapping client lock itself out of its own chat. The oldest goes instead.
+    const admitted = await stub.fetch(attachUrl(threadId, { pk: 'pk-cap-16' }), {
+      headers: identityHeaders(),
+    });
+    expect(admitted.status).toBe(200);
+    bodies.push(admitted.body);
+
+    // A different member is unaffected by the first one's limit.
+    const other = await stub.fetch(attachUrl(threadId, { pk: 'pk-cap-other' }), {
+      headers: identityHeaders({ 'X-Chiridion-User-Id': 'user-2' }),
+    });
+    expect(other.status).toBe(200);
+    bodies.push(other.body);
+
+    await runInDurableObject(stub, async (instance: any) => {
+      expect(instance.sseConnections.size).toBe(17);
+      expect(instance.sseConnections.has(registryKey('pk-cap-0'))).toBe(false);
+      expect(instance.sseConnections.get(registryKey('pk-cap-16')).isOpen).toBe(true);
+      expect(
+        instance.sseConnections.get(registryKey('pk-cap-other', 'user-2')).isOpen,
+      ).toBe(true);
+    });
+
+    for (const body of bodies) await body?.cancel();
+  });
+
+  it('429s an attach once the whole thread is at its stream ceiling', async () => {
+    const threadId = 'thread-sse-attach-ceiling';
+    const stub = threadStub(threadId);
+
+    await runInDurableObject(stub, async (instance: any) => {
+      seedChatContext(instance, threadId);
+      // Streams held by OTHER members: they must not be evicted to make room, so
+      // the ceiling is a refusal rather than a cascade of cross-user teardowns.
+      for (let index = 0; index < 64; index++) {
+        const { connection } = createSseCaptureConnection({
+          id: registryKey('pk-filler', `filler-${index}`),
+          uri: null,
+          server: threadId,
+        });
+        instance.sseConnections.set(connection.id, connection);
+      }
+    });
+
+    const rejected = await stub.fetch(attachUrl(threadId, { pk: 'pk-ceiling' }), {
+      headers: identityHeaders(),
+    });
+    // 429 is retryable for the client (never a false terminal): it reattaches on
+    // its normal backoff instead of surfacing a dead chat.
+    expect(rejected.status).toBe(429);
+    expect(rejected.headers.get('retry-after')).toBe('5');
+
+    await runInDurableObject(stub, async (instance: any) => {
+      expect(instance.sseConnections.size).toBe(64);
+      instance.sseConnections.clear();
+    });
+  });
+
+  it('does not let one participant retire another participant’s stream', async () => {
+    const threadId = 'thread-sse-cross-user-pk';
+    const stub = threadStub(threadId);
+    const victim = await stub.fetch(attachUrl(threadId, { pk: 'pk-shared' }), {
+      headers: identityHeaders(),
+    });
+    const victimReader = sseReader(victim);
+    await victimReader.collectUntil((frames) =>
+      frameTypes(frames).includes('cf_agent_mcp_servers'),
+    );
+
+    // Same thread, same `_pk`, different authenticated member. `_pk` is client
+    // input, so it must not be able to address someone else's stream.
+    const attacker = await stub.fetch(attachUrl(threadId, { pk: 'pk-shared' }), {
+      headers: identityHeaders({
+        'X-Chiridion-User-Id': 'user-2',
+        'X-Chiridion-User-Email': 'user-2@example.com',
+      }),
+    });
+    expect(attacker.status).toBe(200);
+
+    await runInDurableObject(stub, async (instance: any) => {
+      expect(instance.sseConnections.get(registryKey('pk-shared')).isOpen).toBe(true);
+      expect(
+        instance.sseConnections.get(registryKey('pk-shared', 'user-2')).isOpen,
+      ).toBe(true);
+      expect(instance.sseConnections.size).toBe(2);
+    });
+
+    await victimReader.cancel();
+    await attacker.body?.cancel();
   });
 
   it('403s an org mismatch before the stream body starts', async () => {
@@ -305,11 +433,11 @@ describe('ChatThreadDO SSE attach', () => {
 
     await runInDurableObject(stub, async (instance: any) => {
       expect(instance.sseConnections.size).toBe(1);
-      expect(instance.sseConnections.get('pk-same').isOpen).toBe(true);
+      expect(instance.sseConnections.get(registryKey('pk-same')).isOpen).toBe(true);
       // The retired shim's onClose cleanup is keyed by the id this attach
       // reuses; if it ran late it would wipe the live stream's pending-resume
       // registration and the replay would interleave with live frames.
-      expect(instance._pendingResumeConnections.has('pk-same')).toBe(true);
+      expect(instance._pendingResumeConnections.has(registryKey('pk-same'))).toBe(true);
     });
 
     await firstReader.cancel();
@@ -547,7 +675,88 @@ describe('ChatThreadDO POST /call', () => {
 
     await runInDurableObject(stub, async (instance: any) => {
       // The ack un-suppresses live broadcast for this connection.
-      expect(instance._pendingResumeConnections.has('pk-replay')).toBe(false);
+      expect(instance._pendingResumeConnections.has(registryKey('pk-replay'))).toBe(false);
+    });
+
+    await reader.cancel();
+  });
+
+  it('keeps an orphaned stream active when the replay cannot reach the client', async () => {
+    const threadId = 'thread-call-resume-dead-sink';
+    const stub = threadStub(threadId);
+    await runInDurableObject(stub, async (instance: any) => {
+      seedChatContext(instance, threadId);
+      const streamId = instance._startStream('request-orphan');
+      await instance._storeStreamChunk(
+        streamId,
+        JSON.stringify({ type: 'text-delta', delta: 'partial', id: 'part-1' }),
+      );
+      instance._flushChunkBuffer();
+      // A stream restored from SQLite after an eviction has no live reader. That
+      // is the branch where the SDK finalizes the stream (and the host persists
+      // the partial) on the strength of the replay it just wrote.
+      instance._resumableStream._isLive = false;
+    });
+
+    const attached = await stub.fetch(attachUrl(threadId, { pk: 'pk-dead-replay' }), {
+      headers: identityHeaders(),
+    });
+    const reader = sseReader(attached);
+    await reader.collectUntil((frames) =>
+      frameTypes(frames).includes('cf_agent_stream_resuming'),
+    );
+
+    await runInDurableObject(stub, async (instance: any) => {
+      // Exhaust the registry's shared write budget: the very next frame toward
+      // this client cannot be queued, i.e. the peer is gone mid-replay.
+      instance.sseQueueBudget.total = instance.sseQueueBudget.max;
+    });
+
+    const acked = await stub.fetch(callUrl(threadId, 'pk-dead-replay'), {
+      method: 'POST',
+      headers: identityHeaders(),
+      body: JSON.stringify({ type: 'cf_agent_stream_resume_ack', id: 'request-orphan' }),
+    });
+    expect(acked.status).toBe(204);
+
+    await runInDurableObject(stub, async (instance: any) => {
+      // The shim reports the dead sink as the SDK's closed-send TypeError, so
+      // `sendIfOpen` returns false and replayChunks bails instead of walking the
+      // whole replay into a writer nobody reads, emitting its `done` terminator
+      // and completing the stream. The stream must stay ACTIVE so the client's
+      // next attach retries the whole replay (a completed stream would answer
+      // that attach with `resume_none{idle}` and the replay would be lost).
+      expect(instance._resumableStream.hasActiveStream()).toBe(true);
+      const [metadata] = instance.ctx.storage.sql
+        .exec('select status from cf_ai_chat_stream_metadata order by created_at desc limit 1')
+        .toArray() as Array<{ status: string }>;
+      expect(metadata?.status).toBe('streaming');
+    });
+
+    await reader.cancel();
+  });
+
+  it('409s a resume frame addressed at another participant’s stream', async () => {
+    const threadId = 'thread-call-resume-cross-user';
+    const stub = threadStub(threadId);
+    const attached = await stub.fetch(attachUrl(threadId, { pk: 'pk-victim' }), {
+      headers: identityHeaders(),
+    });
+    const reader = sseReader(attached);
+    await reader.collectUntil((frames) =>
+      frameTypes(frames).includes('cf_agent_mcp_servers'),
+    );
+
+    const hijacked = await stub.fetch(callUrl(threadId, 'pk-victim'), {
+      method: 'POST',
+      headers: identityHeaders({ 'X-Chiridion-User-Id': 'user-2' }),
+      body: JSON.stringify({ type: 'cf_agent_stream_resume_request', probeId: 'probe-x' }),
+    });
+    // Guessing the victim's `_pk` must not drive a replay into their stream.
+    expect(hijacked.status).toBe(409);
+
+    await runInDurableObject(stub, async (instance: any) => {
+      expect(instance.sseConnections.get(registryKey('pk-victim')).isOpen).toBe(true);
     });
 
     await reader.cancel();
@@ -555,6 +764,55 @@ describe('ChatThreadDO POST /call', () => {
 });
 
 describe('ChatThreadDO SSE lifecycle', () => {
+  it('fans a broadcast out past a dead stream', async () => {
+    const threadId = 'thread-sse-broadcast-dead';
+    const stub = threadStub(threadId);
+    const attached = await stub.fetch(attachUrl(threadId, { pk: 'pk-live' }), {
+      headers: identityHeaders(),
+    });
+    const reader = sseReader(attached);
+    await reader.collectUntil((frames) =>
+      frameTypes(frames).includes('cf_agent_mcp_servers'),
+    );
+
+    await runInDurableObject(stub, async (instance: any) => {
+      const dead = new SseConnection({
+        id: registryKey('pk-dead'),
+        uri: null,
+        server: threadId,
+        // A sink whose peer is gone. `SseConnection.send` reports that as the
+        // SDK's closed-send TypeError so replay loops abort — which means a
+        // broadcast MUST guard its own fan-out, since `Agent.broadcast` does not.
+        sink: {
+          onDead: null,
+          send: () => false,
+          comment: () => true,
+          bye: () => {},
+          stalledFor: () => 0,
+          close: () => {},
+        },
+        onTeardown: () => {},
+      });
+      // Ordered ahead of the live stream: an unguarded fan-out would stop here
+      // and the live client would silently miss every later frame of the turn.
+      const live = instance.sseConnections.get(registryKey('pk-live'));
+      instance.sseConnections.delete(live.id);
+      instance.sseConnections.set(dead.id, dead);
+      instance.sseConnections.set(live.id, live);
+
+      expect(() =>
+        instance.broadcast(JSON.stringify({ type: 'chat_broadcast_probe' })),
+      ).not.toThrow();
+    });
+
+    const frames = await reader.collectUntil((collected) =>
+      frameTypes(collected).includes('chat_broadcast_probe'),
+    );
+    expect(frameTypes(frames)).toContain('chat_broadcast_probe');
+
+    await reader.cancel();
+  });
+
   it('runs the full onClose chain when the stream is torn down', async () => {
     const threadId = 'thread-sse-teardown';
     const stub = threadStub(threadId);
@@ -573,7 +831,7 @@ describe('ChatThreadDO SSE lifecycle', () => {
       frameTypes(frames).includes('cf_agent_stream_resuming'),
     );
     await runInDurableObject(stub, async (instance: any) => {
-      expect(instance._pendingResumeConnections.has('pk-teardown')).toBe(true);
+      expect(instance._pendingResumeConnections.has(registryKey('pk-teardown'))).toBe(true);
     });
 
     // What a stream cancel / request abort / failed heartbeat write all funnel
@@ -581,7 +839,7 @@ describe('ChatThreadDO SSE lifecycle', () => {
     // _pendingResumeConnections, so a teardown that skips it leaves this id
     // excluded from every later chat broadcast.
     await runInDurableObject(stub, async (instance: any) => {
-      instance.sseConnections.get('pk-teardown').abort(1006, 'stream_closed');
+      instance.sseConnections.get(registryKey('pk-teardown')).abort(1006, 'stream_closed');
       expect(instance.sseConnections.size).toBe(0);
     });
 
@@ -589,7 +847,8 @@ describe('ChatThreadDO SSE lifecycle', () => {
       () =>
         runInDurableObject(
           stub,
-          (instance: any) => !instance._pendingResumeConnections.has('pk-teardown'),
+          (instance: any) =>
+            !instance._pendingResumeConnections.has(registryKey('pk-teardown')),
         ),
       'onClose resume-state cleanup',
     );
@@ -668,7 +927,10 @@ describe('ChatThreadDO SSE lifecycle', () => {
 
     // Past the presumption window the parked viewer stops counting.
     await runInDurableObject(stub, async (instance: any) => {
-      instance.sseParkedViewers.set('pk-parked', Date.now() - 31 * 60 * 1000);
+      instance.ctx.storage.kv.put('chatSseViewer', {
+        at: Date.now() - 31 * 60 * 1000,
+        present: true,
+      });
       expect(instance.hasAvailableBrowserUser()).toBe(false);
       const unavailable = await instance.browserPrompts.askUserQuestion({
         questions: [
@@ -735,6 +997,130 @@ describe('ChatThreadDO SSE lifecycle', () => {
 
     await firstReader.cancel();
     await secondReader.cancel();
+  });
+
+  it('reaps a stalled stream so a pending question is not pinned to a phantom', async () => {
+    const threadId = 'thread-sse-stalled';
+    const stub = threadStub(threadId);
+    const attached = await stub.fetch(attachUrl(threadId, { pk: 'pk-stalled' }), {
+      headers: identityHeaders(),
+    });
+    const reader = sseReader(attached);
+    await reader.collectUntil((frames) =>
+      frameTypes(frames).includes('cf_agent_mcp_servers'),
+    );
+
+    await runInDurableObject(stub, async (instance: any) => {
+      const runnerCommands: AnyRecord[] = [];
+      instance.sendRunnerCommand = (command: AnyRecord) => {
+        runnerCommands.push(command);
+        return true;
+      };
+      void instance.browserPrompts
+        .askUserQuestion({
+          questions: [
+            { question: 'Ship it?', header: 'Deploy', options: ['Yes', 'No'] },
+          ],
+        })
+        .catch(() => {});
+      expect(instance.browserPrompts.pendingQuestionCount).toBe(1);
+
+      // A peer that vanished without the runtime erroring the writable half: the
+      // write never drains. Byte volume can never notice (`:hb` is 5 bytes, so the
+      // 8MB cap is centuries away), so the outstanding-write age is the probe.
+      const connection = instance.sseConnections.get(registryKey('pk-stalled'));
+      connection.sink.stalledFor = () => 31_000;
+
+      // The pending question pins the idle policy open, so the stall probe is the
+      // only thing that can reap this stream.
+      expect(instance.hasLiveChatWorkForStream()).toBe(true);
+      instance.sweepSseConnections();
+      expect(instance.sseConnections.size).toBe(0);
+
+      // With the phantom gone, onClose's last-socket rule answers the question as
+      // unavailable instead of blocking the turn for the 30-minute timeout.
+      await instance.sseCloseChains.get(registryKey('pk-stalled'));
+      await waitFor(
+        () => instance.browserPrompts.pendingQuestionCount === 0,
+        'pending question auto-answered after stall teardown',
+      );
+      expect(runnerCommands).toHaveLength(1);
+      expect(runnerCommands[0]).toMatchObject({ type: 'question_response' });
+      expect(
+        String((runnerCommands[0]!.answers as AnyRecord).unavailable_reason),
+      ).toContain('not at computer');
+      instance.browserPrompts.clearQuestions();
+    });
+
+    await reader.cancel();
+  });
+
+  it('presumes a viewer through an isolate loss, and forgets one that left', async () => {
+    const threadId = 'thread-sse-presence-durable';
+    const stub = threadStub(threadId);
+    const attached = await stub.fetch(attachUrl(threadId, { pk: 'pk-presence' }), {
+      headers: identityHeaders(),
+    });
+    const reader = sseReader(attached);
+    await reader.collectUntil((frames) =>
+      frameTypes(frames).includes('cf_agent_mcp_servers'),
+    );
+
+    await runInDurableObject(stub, async (instance: any) => {
+      // What an eviction/redeploy leaves behind: the registry is isolate-local, so
+      // it is empty on wake while the tab is still open and reconnecting. Recovery
+      // re-drives (including the alarm-driven OOM retry) ask for browser
+      // availability before any client can be back — a hibernating WebSocket was
+      // still registered here.
+      instance.sseConnections.clear();
+      expect(instance.getChatSockets().length).toBe(0);
+      expect(instance.hasAvailableBrowserUser()).toBe(true);
+
+      // A viewer that actually left clears the marker on the last stream's exit.
+      instance.recordSseViewerPresence(false);
+      expect(instance.hasAvailableBrowserUser()).toBe(false);
+    });
+
+    await reader.cancel();
+  });
+
+  it('records the viewer as gone when the last stream is torn down', async () => {
+    const threadId = 'thread-sse-presence-teardown';
+    const stub = threadStub(threadId);
+    const attached = await stub.fetch(attachUrl(threadId, { pk: 'pk-presence-gone' }), {
+      headers: identityHeaders(),
+    });
+    const reader = sseReader(attached);
+    await reader.collectUntil((frames) =>
+      frameTypes(frames).includes('cf_agent_mcp_servers'),
+    );
+
+    await runInDurableObject(stub, async (instance: any) => {
+      instance.sseConnections
+        .get(registryKey('pk-presence-gone'))
+        .abort(1006, 'stream_closed');
+      expect(instance.readSseViewerPresence()).toMatchObject({ present: false });
+      expect(instance.hasAvailableBrowserUser()).toBe(false);
+    });
+
+    // An idle park is the transport's own doing: the viewer is still there.
+    const parked = await stub.fetch(attachUrl(threadId, { pk: 'pk-presence-parked' }), {
+      headers: identityHeaders(),
+    });
+    const parkedReader = sseReader(parked);
+    await parkedReader.collectUntil((frames) =>
+      frameTypes(frames).includes('cf_agent_mcp_servers'),
+    );
+    await runInDurableObject(stub, async (instance: any) => {
+      instance.sseIdleSince = Date.now() - 10 * 60 * 1000;
+      instance.sweepSseConnections();
+      expect(instance.sseConnections.size).toBe(0);
+      expect(instance.readSseViewerPresence()).toMatchObject({ present: true });
+      expect(instance.hasAvailableBrowserUser()).toBe(true);
+    });
+
+    await reader.cancel();
+    await parkedReader.cancel();
   });
 
   it('holds an idle-grace stream open while the thread has work', async () => {

@@ -75,6 +75,9 @@ export function isTerminalChatSseHttpStatus(status: number): boolean {
 }
 
 export function chatSseCloseCodeForHttpStatus(status: number): number {
+  // A 2xx/3xx that still failed the handshake (an intercepting proxy answering
+  // the attach with an HTML page) is a network condition, never a verdict.
+  if (status < 400) return CHAT_SSE_CLOSE_TRY_AGAIN;
   if (status === 401) return CHAT_SSE_CLOSE_UNAUTHORIZED;
   if (status === 404) return CHAT_SSE_CLOSE_NOT_FOUND;
   if (status === 400) return CHAT_SSE_CLOSE_BAD_REQUEST;
@@ -96,6 +99,18 @@ export function isTerminalChatSseByeReason(
   reason: ChatSseByeReason | null | undefined,
 ): boolean {
   return reason === "forbidden";
+}
+
+/**
+ * A `bye` with a non-terminal reason is the server ending the stream on purpose
+ * (idle park, "try again", redeploy). It is not a transport failure: the stream
+ * ended the way the protocol says it may, so it must not be reported as an
+ * abnormal disconnect nor feed reconnect-loop detection.
+ */
+export function isGracefulServerChatSseBye(
+  reason: ChatSseByeReason | null | undefined,
+): boolean {
+  return reason != null && !isTerminalChatSseByeReason(reason);
 }
 
 export function isTerminalChatSseCloseCode(

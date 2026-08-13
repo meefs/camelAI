@@ -1,7 +1,11 @@
-import { reportClientEvent } from "./client-error-reporting";
+import {
+  reportClientEvent,
+  type ClientTelemetrySeverity,
+} from "./client-error-reporting";
 import {
   chatSseCloseCodeForByeReason,
   chatSseCloseCodeForHttpStatus,
+  isGracefulServerChatSseBye,
   isIntentionalCleanChatSseTeardown,
   type ChatSseByeReason,
 } from "./chat-sse-close";
@@ -108,15 +112,82 @@ export function shouldReportFlap(
   return now - lastFlapReportAt >= FLAP_WINDOW_MS;
 }
 
+export type ChatSseCloseClassification =
+  | "clean_teardown"
+  | "server_park"
+  | "preopen_close"
+  | "abnormal_disconnect";
+
 /** Pure core of close classification: which lifecycle event a stream end is. */
 export function classifyChatSseClose(
   info: ChatSseCloseInfo,
   connectionWasOpen: boolean,
-): "clean_teardown" | "preopen_close" | "abnormal_disconnect" {
+): ChatSseCloseClassification {
   if (isIntentionalCleanChatSseTeardown({ aborted: info.aborted, connectionWasOpen })) {
     return "clean_teardown";
   }
+  // A graceful `bye` (idle park / retry / shutdown) is the server ending the
+  // stream on purpose. Counting it as an abnormal disconnect would make a quiet
+  // parked thread indistinguishable from the dead-transport signal this module
+  // exists to measure, and would let healthy parks crowd the flap window.
+  if (connectionWasOpen && isGracefulServerChatSseBye(info.byeReason)) {
+    return "server_park";
+  }
   return connectionWasOpen ? "abnormal_disconnect" : "preopen_close";
+}
+
+/** Only genuine failures may feed reconnect-loop detection; an intentional
+ * teardown and a server park are both normal ends of a stream. */
+function isChatSseCloseFailure(
+  classification: ChatSseCloseClassification,
+): boolean {
+  return (
+    classification === "preopen_close" || classification === "abnormal_disconnect"
+  );
+}
+
+/** Per-classification event shape. `message` stays CONSTANT per event type — the
+ * abnormal case shards by cause on purpose (see the §C rename contract). */
+function chatSseCloseReport(
+  classification: ChatSseCloseClassification,
+  info: ChatSseCloseInfo,
+  statusLabel: string,
+): {
+  event: string;
+  severity: ClientTelemetrySeverity;
+  status: string;
+  message: string;
+} {
+  switch (classification) {
+    case "clean_teardown":
+      return {
+        event: "chat_sse_clean_teardown",
+        severity: "info",
+        status: "intentional_clean_teardown",
+        message: "Chat SSE stream closed cleanly during intentional teardown.",
+      };
+    case "server_park":
+      return {
+        event: "chat_sse_server_park",
+        severity: "info",
+        status: info.byeReason ?? "park",
+        message: "Chat SSE stream was parked by the server.",
+      };
+    case "preopen_close":
+      return {
+        event: "chat_sse_preopen_close",
+        severity: "error",
+        status: "handshake_close",
+        message: "Chat SSE stream ended before the first server frame.",
+      };
+    default:
+      return {
+        event: "chat_sse_abnormal_disconnect",
+        severity: "warn",
+        status: statusLabel,
+        message: `Chat SSE stream disconnected abnormally (${statusLabel}).`,
+      };
+  }
 }
 
 function closeCodeFor(info: ChatSseCloseInfo): number | null {
@@ -169,41 +240,23 @@ export function trackChatStreamClose(
   // "eof" is the SSE equivalent of a 1006: the stream died with no verdict.
   const statusLabel =
     typeof info.status === "number" ? String(info.status) : "eof";
-  if (classification !== "clean_teardown") {
+  const isFailure = isChatSseCloseFailure(classification);
+  if (isFailure) {
     stats.recentCloses.push({ at: now, code });
     stats.recentCloses = stats.recentCloses.filter(
       (close) => now - close.at <= FLAP_WINDOW_MS,
     );
   }
+  // The cause is deliberately part of the abnormal message: distinct causes get
+  // their own per-signature reporting budget.
+  const report = chatSseCloseReport(classification, info, statusLabel);
   reportClientEvent({
     source: "chat_sse",
-    event:
-      classification === "clean_teardown"
-        ? "chat_sse_clean_teardown"
-        : classification === "preopen_close"
-          ? "chat_sse_preopen_close"
-          : "chat_sse_abnormal_disconnect",
-    severity:
-      classification === "clean_teardown"
-        ? "info"
-        : classification === "preopen_close"
-          ? "error"
-          : "warn",
-    status:
-      classification === "clean_teardown"
-        ? "intentional_clean_teardown"
-        : classification === "preopen_close"
-          ? "handshake_close"
-          : statusLabel,
+    event: report.event,
+    severity: report.severity,
+    status: report.status,
     statusCode: typeof info.status === "number" ? info.status : undefined,
-    // The cause is deliberately part of the message: distinct causes get their
-    // own per-signature reporting budget.
-    message:
-      classification === "clean_teardown"
-        ? "Chat SSE stream closed cleanly during intentional teardown."
-        : classification === "preopen_close"
-          ? "Chat SSE stream ended before the first server frame."
-          : `Chat SSE stream disconnected abnormally (${statusLabel}).`,
+    message: report.message,
     threadId,
     durationMs: streamLifeMs,
     count: stats.closes,
@@ -221,7 +274,7 @@ export function trackChatStreamClose(
   });
 
   if (
-    classification !== "clean_teardown" &&
+    isFailure &&
     shouldReportFlap(stats.recentCloses, stats.lastFlapReportAt, now)
   ) {
     stats.lastFlapReportAt = now;

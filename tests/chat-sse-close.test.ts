@@ -11,6 +11,7 @@ import {
   chatSseCloseCodeForByeReason,
   chatSseCloseCodeForHttpStatus,
   isChatSseByeReason,
+  isGracefulServerChatSseBye,
   isIntentionalCleanChatSseTeardown,
   isRetryableChatSseHttpStatus,
   isTerminalChatSseByeReason,
@@ -40,6 +41,9 @@ describe("chat-sse-close helpers", () => {
     expect(chatSseCloseCodeForHttpStatus(400)).toBe(CHAT_SSE_CLOSE_BAD_REQUEST);
     expect(chatSseCloseCodeForHttpStatus(503)).toBe(CHAT_SSE_CLOSE_TRY_AGAIN);
     expect(chatSseCloseCodeForHttpStatus(429)).toBe(CHAT_SSE_CLOSE_TRY_AGAIN);
+    // A 200 that failed the handshake (intercepting proxy) is retryable, not a
+    // verdict — it must never latch a terminal close code.
+    expect(chatSseCloseCodeForHttpStatus(200)).toBe(CHAT_SSE_CLOSE_TRY_AGAIN);
     expect(isTerminalChatSseCloseCode(CHAT_SSE_CLOSE_UNAUTHORIZED)).toBe(true);
     expect(isTerminalChatSseCloseCode(CHAT_SSE_CLOSE_TRY_AGAIN)).toBe(false);
     expect(isTerminalChatSseCloseCode(null)).toBe(false);
@@ -55,6 +59,16 @@ describe("chat-sse-close helpers", () => {
     for (const reason of ["idle", "retry", "shutdown", null] as const) {
       expect(isTerminalChatSseByeReason(reason)).toBe(false);
     }
+  });
+
+  it("recognizes a graceful server bye (server-intentional, non-terminal)", () => {
+    for (const reason of ["idle", "retry", "shutdown"] as const) {
+      expect(isGracefulServerChatSseBye(reason)).toBe(true);
+    }
+    expect(isGracefulServerChatSseBye("forbidden")).toBe(false);
+    // No bye at all is an EOF/error, i.e. a genuine abnormal end.
+    expect(isGracefulServerChatSseBye(null)).toBe(false);
+    expect(isGracefulServerChatSseBye(undefined)).toBe(false);
   });
 
   it("parses bye payloads and rejects unknown reasons", () => {

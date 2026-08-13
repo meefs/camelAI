@@ -26,6 +26,13 @@ import {
  * - The upstream channel is `POST .../call`, not the stream. Only the two resume
  *   handshake frames are carried (they need the live stream shim server-side);
  *   RPCs work even while the stream is down, which is the point of the change.
+ *
+ * Because sends no longer ride the stream, nothing upstream can notice a dead
+ * receive path: two watchdogs own that here. `STREAM_SILENCE_TIMEOUT_MS` forces a
+ * reattach when an open stream stops delivering bytes (the server's `:hb` is the
+ * liveness signal), and a server-parked stream in a VISIBLE tab reattaches on a
+ * short jittered delay instead of waiting for a wake signal that a focused tab
+ * can never produce.
  */
 
 /** Same numbers as WebSocket.CONNECTING/OPEN/CLOSED — consumers gate on
@@ -41,6 +48,30 @@ const RECONNECT_JITTER_RATIO = 0.2;
 /** No response headers within this budget = dead attach; retry with backoff. */
 export const ATTACH_TIMEOUT_MS = 20_000;
 export const DEFAULT_CALL_TIMEOUT_MS = 30_000;
+/**
+ * Total silence budget on an OPEN stream. The server writes a `:hb` comment
+ * every 25s (SSE_HEARTBEAT_INTERVAL_MS) precisely so a stalled receive path is
+ * detectable: a blackholed TCP path (NAT rebind, buffering intermediary, lost
+ * FIN) never surfaces an error or EOF to the reader, and sends are independent
+ * POSTs that keep succeeding, so nothing else can notice. ~2.5 missed beats,
+ * well under the server's 5-minute idle grace. ANY byte re-arms it, comments
+ * included.
+ */
+export const STREAM_SILENCE_TIMEOUT_MS = 65_000;
+/**
+ * The server parks a stream from server-side work alone (it has no client
+ * liveness signal), so a visible tab that stays parked silently misses pushes
+ * from another author or a server-side ingress. Visible tabs reattach after a
+ * short jittered delay; hidden tabs keep full dormancy (that is the DO-pinning
+ * saving the idle policy exists for).
+ */
+export const IDLE_REATTACH_MIN_DELAY_MS = 3_000;
+const IDLE_REATTACH_JITTER_MS = 5_000;
+/** Two parks closer together than this mean the server is re-parking this client
+ * immediately; grow the dormancy interval instead of hot-looping. */
+const IDLE_PARK_CYCLE_FLOOR_MS = 60_000;
+const IDLE_PARK_BACKOFF_FACTOR = 4;
+export const MAX_IDLE_REATTACH_DELAY_MS = 5 * 60_000;
 /** A resume frame is worth exactly one retry after a reattach. */
 const MAX_RESUME_FRAME_ATTEMPTS = 2;
 const MAX_QUEUED_RESUME_FRAMES = 8;
@@ -209,6 +240,10 @@ export class SseAgentClient<State = unknown> {
   private attempt = 0;
   private abortController: AbortController | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private streamSilenceTimer: ReturnType<typeof setTimeout> | null = null;
+  private idleReattachTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastStreamOpenAt = 0;
+  private repeatIdleParks = 0;
   private wakeListenersAttached = false;
 
   constructor(options: SseAgentClientOptions<State>) {
@@ -389,6 +424,8 @@ export class SseAgentClient<State = unknown> {
     const previousPhase = this.phase;
     this.generation += 1;
     this.clearReconnectTimer();
+    this.clearIdleReattachTimer();
+    this.clearStreamSilenceTimer();
     const controller = this.abortController;
     this.abortController = null;
     controller?.abort();
@@ -407,6 +444,8 @@ export class SseAgentClient<State = unknown> {
 
   private startGeneration(): void {
     const generation = (this.generation += 1);
+    this.clearIdleReattachTimer();
+    this.clearStreamSilenceTimer();
     const previous = this.abortController;
     this.abortController = null;
     previous?.abort();
@@ -476,6 +515,26 @@ export class SseAgentClient<State = unknown> {
       return;
     }
 
+    // A 200 alone does not prove a stream: a captive portal / SSO interstitial /
+    // SPA fallback answers the attach with an HTML page, and treating that as
+    // open would enable the composer against a page that never yields a frame.
+    // Retryable, not terminal — the interception is a network condition.
+    const contentType = response.headers.get("content-type") ?? "";
+    if (!contentType.toLowerCase().includes("text/event-stream")) {
+      void response.body?.cancel().catch(() => {});
+      this.reportError(
+        new Error(
+          `Chat stream attach returned "${contentType || "no content type"}" instead of an event stream.`,
+        ),
+      );
+      this.emitClose({
+        status: response.status,
+        reason: `unexpected content type: ${contentType || "none"}`,
+      });
+      this.scheduleReconnect();
+      return;
+    }
+
     if (!response.body) {
       this.reportError(new Error("Chat stream attach returned no body."));
       this.emitClose({ status: response.status, reason: "no stream body" });
@@ -495,6 +554,23 @@ export class SseAgentClient<State = unknown> {
       reason: null,
     };
     let readError: unknown = null;
+    let wentSilent = false;
+
+    // The only watchdog that survives past the response headers: `attachTimer`
+    // is already disarmed here, and a dead receive path produces no read, no
+    // error and no EOF.
+    const armSilenceTimer = () => {
+      this.clearStreamSilenceTimer();
+      this.streamSilenceTimer = setTimeout(() => {
+        this.streamSilenceTimer = null;
+        if (this.isStale(generation) || this.phase !== "open") return;
+        wentSilent = true;
+        // Aborting rejects the pending read, so the existing abnormal-end tail
+        // does the reporting and the reattach.
+        controller.abort();
+      }, STREAM_SILENCE_TIMEOUT_MS);
+    };
+    armSilenceTimer();
 
     const dispatchPendingEvent = () => {
       const name = eventName;
@@ -514,10 +590,14 @@ export class SseAgentClient<State = unknown> {
       while (!bye.seen) {
         const chunk = await reader.read();
         if (this.isStale(generation)) {
+          this.clearStreamSilenceTimer();
           void reader.cancel().catch(() => {});
           return;
         }
         if (chunk.done) break;
+        // Bytes are bytes: a `:hb` comment is liveness even though the parser
+        // below discards it.
+        armSilenceTimer();
         buffer += decoder.decode(chunk.value, { stream: true });
         let newlineIndex = buffer.indexOf("\n");
         while (newlineIndex !== -1) {
@@ -542,6 +622,7 @@ export class SseAgentClient<State = unknown> {
       readError = error;
     }
 
+    this.clearStreamSilenceTimer();
     if (this.isStale(generation)) return;
     void reader.cancel().catch(() => {});
 
@@ -550,6 +631,18 @@ export class SseAgentClient<State = unknown> {
       return;
     }
     if (readError) {
+      if (wentSilent) {
+        // Report the stall as what it is, not as the abort it was implemented
+        // with: the receive path was dead while the transport looked healthy.
+        this.reportError(
+          new Error(
+            `TIMEOUT: chat stream went silent for ${STREAM_SILENCE_TIMEOUT_MS}ms`,
+          ),
+        );
+        this.emitClose({ reason: "stream silence timeout" });
+        this.scheduleReconnect();
+        return;
+      }
       this.reportError(readError);
       this.emitClose({ reason: errorMessage(readError) });
       this.scheduleReconnect();
@@ -573,7 +666,13 @@ export class SseAgentClient<State = unknown> {
       // Dormant by design: still OPEN for sends, reattached on demand.
       this.phase = "dormant";
       this.abortController = null;
+      const reattachDelay = this.nextIdleReattachDelay();
       this.emitClose({ byeReason: reason, reason, wasClean: true });
+      // A close listener may tear the client down or wake it; only a client that
+      // is still parked needs the timer.
+      if (reattachDelay !== null && this.phase === "dormant") {
+        this.scheduleIdleReattach(reattachDelay);
+      }
       return;
     }
     this.emitClose({ byeReason: reason, reason: reason ?? "", wasClean: true });
@@ -583,6 +682,7 @@ export class SseAgentClient<State = unknown> {
   private markOpen(): void {
     this.phase = "open";
     this.attempt = 0;
+    this.lastStreamOpenAt = Date.now();
     const event: SseAgentOpenEvent = { type: "open", target: this };
     this.safeInvoke("open", () => this.options.onOpen?.(event));
     this.dispatch("open", event);
@@ -853,7 +953,15 @@ export class SseAgentClient<State = unknown> {
     ) as AgentSseConnectionError;
     this.connectionError = error;
     this.phase = "terminal";
+    // Retire the in-flight reader with the generation bump, exactly as close()
+    // does: the abort below wakes its pending read, and without the bump it
+    // survives the stale guard and runs the whole abnormal-end tail — a second
+    // close plus an AbortError reported as a pre-open handshake failure, which
+    // is the signal this migration is measured by.
+    this.generation += 1;
     this.clearReconnectTimer();
+    this.clearIdleReattachTimer();
+    this.clearStreamSilenceTimer();
     const controller = this.abortController;
     this.abortController = null;
     controller?.abort();
@@ -901,8 +1009,66 @@ export class SseAgentClient<State = unknown> {
     }
   }
 
+  private clearStreamSilenceTimer(): void {
+    if (this.streamSilenceTimer !== null) {
+      clearTimeout(this.streamSilenceTimer);
+      this.streamSilenceTimer = null;
+    }
+  }
+
+  private clearIdleReattachTimer(): void {
+    if (this.idleReattachTimer !== null) {
+      clearTimeout(this.idleReattachTimer);
+      this.idleReattachTimer = null;
+    }
+  }
+
+  /**
+   * How long a server-parked stream may stay dormant, or null for full dormancy
+   * (wake only on a call/visibility/focus signal).
+   *
+   * A hidden tab has nothing on screen to go stale, so it stays parked and the
+   * DO stays unpinned. A visible tab must come back: the server decides to park
+   * from its own work alone, so while parked this tab silently misses a turn
+   * started by another author or by a server-side ingress.
+   *
+   * The interval grows whenever the server parks a stream it held for less than
+   * the cycle floor: a server that re-parks this client immediately degrades to
+   * a slow poll instead of a park→reopen→park hot loop. A normal 5-minute grace
+   * keeps the eager delay (that steady state is the accepted DO-pinning cost).
+   */
+  private nextIdleReattachDelay(): number | null {
+    if (
+      typeof document === "undefined" ||
+      document.visibilityState !== "visible"
+    ) {
+      return null;
+    }
+    const streamLifeMs =
+      this.lastStreamOpenAt === 0 ? Infinity : Date.now() - this.lastStreamOpenAt;
+    this.repeatIdleParks =
+      streamLifeMs < IDLE_PARK_CYCLE_FLOOR_MS ? this.repeatIdleParks + 1 : 0;
+    const base =
+      IDLE_REATTACH_MIN_DELAY_MS + Math.random() * IDLE_REATTACH_JITTER_MS;
+    return Math.round(
+      Math.min(
+        base * IDLE_PARK_BACKOFF_FACTOR ** this.repeatIdleParks,
+        MAX_IDLE_REATTACH_DELAY_MS,
+      ),
+    );
+  }
+
+  private scheduleIdleReattach(delay: number): void {
+    this.clearIdleReattachTimer();
+    this.idleReattachTimer = setTimeout(() => {
+      this.idleReattachTimer = null;
+      this.wake();
+    }, delay);
+  }
+
   private wake(): void {
     if (this.phase !== "dormant") return;
+    this.clearIdleReattachTimer();
     this.attempt = 0;
     this.clearReconnectTimer();
     this.phase = "connecting";

@@ -2,7 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   ATTACH_TIMEOUT_MS,
+  IDLE_REATTACH_MIN_DELAY_MS,
+  MAX_IDLE_REATTACH_DELAY_MS,
   SseAgentClient,
+  STREAM_SILENCE_TIMEOUT_MS,
   type SseAgentCloseEvent,
 } from "@/lib/sse-agent-client";
 
@@ -22,7 +25,13 @@ class FakeChatTransport {
   streams: StreamHandle[] = [];
   posts: Array<{ url: string; frame: Record<string, unknown> }> = [];
   /** Scripted outcomes for upcoming attaches; a missing entry means a 200 stream. */
-  attachStatuses: Array<{ status?: number; body?: string; hang?: boolean }> = [];
+  attachStatuses: Array<{
+    status?: number;
+    body?: string;
+    hang?: boolean;
+    /** Answer with a non-stream body (captive portal / SPA fallback). */
+    contentType?: string;
+  }> = [];
   postResponder: (
     frame: Record<string, unknown>,
     url: string,
@@ -52,12 +61,18 @@ class FakeChatTransport {
           );
         });
       }
+      if (scripted?.contentType) {
+        return new Response(scripted.body ?? "<html>portal</html>", {
+          status: scripted.status ?? 200,
+          headers: { "content-type": scripted.contentType },
+        });
+      }
       if (scripted?.status) {
         return new Response(scripted.body ?? "denied", {
           status: scripted.status,
         });
       }
-      return this.openStream(url);
+      return this.openStream(url, init?.signal);
     }
     const frame = JSON.parse(String(init?.body ?? "{}")) as Record<
       string,
@@ -73,7 +88,7 @@ class FakeChatTransport {
     return stream;
   }
 
-  private openStream(url: string): Response {
+  private openStream(url: string, signal?: AbortSignal | null): Response {
     const encoder = new TextEncoder();
     let controller!: ReadableStreamDefaultController<Uint8Array>;
     const body = new ReadableStream<Uint8Array>({
@@ -84,6 +99,18 @@ class FakeChatTransport {
     const write = (text: string) => {
       controller.enqueue(encoder.encode(text));
     };
+    const fail = (error: unknown) => {
+      try {
+        controller.error(error);
+      } catch {
+        // Already closed/errored: the real body reader is equally inert.
+      }
+    };
+    // Real fetch errors the body reader when the request signal aborts; the
+    // client's watchdogs rely on that to end a stalled read.
+    signal?.addEventListener("abort", () =>
+      fail(new DOMException("aborted", "AbortError")),
+    );
     this.streams.push({
       url,
       write,
@@ -91,7 +118,7 @@ class FakeChatTransport {
       bye: (reason) => write(`event: bye\ndata: {"reason":"${reason}"}\n\n`),
       heartbeat: () => write(":hb\n\n"),
       end: () => controller.close(),
-      fail: (error) => controller.error(error),
+      fail,
     });
     return new Response(body, {
       status: 200,
@@ -117,6 +144,8 @@ const WORKSPACE_ID = "99999999-8888-4777-8666-555555555555";
 describe("SseAgentClient", () => {
   let transport: FakeChatTransport;
   let clients: SseAgentClient[] = [];
+  /** jsdom hardcodes "visible"; the idle-park policy branches on it. */
+  let visibility: DocumentVisibilityState = "visible";
   let events: {
     opens: number;
     messages: string[];
@@ -173,9 +202,34 @@ describe("SseAgentClient", () => {
     return client;
   }
 
+  /** Same, but every timer the client arms is fake from the first attach on. */
+  async function openedClientOnFakeTimers(): Promise<SseAgentClient> {
+    vi.useFakeTimers();
+    const client = createClient();
+    client.start();
+    await vi.advanceTimersByTimeAsync(0);
+    if (events.opens !== 1) throw new Error("the stream did not open");
+    return client;
+  }
+
+  /** Hold the newest stream open for `ms` of fake time, heartbeating as the
+   * server does (silence past the budget would force a reattach). */
+  async function holdStreamOpen(ms: number): Promise<void> {
+    for (let elapsed = 0; elapsed < ms; elapsed += 25_000) {
+      await vi.advanceTimersByTimeAsync(25_000);
+      transport.lastStream.heartbeat();
+      await vi.advanceTimersByTimeAsync(0);
+    }
+  }
+
   beforeEach(() => {
     transport = new FakeChatTransport();
     vi.stubGlobal("fetch", transport.fetch);
+    visibility = "visible";
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => visibility,
+    });
     clients = [];
     events = {
       opens: 0,
@@ -195,6 +249,7 @@ describe("SseAgentClient", () => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+    Reflect.deleteProperty(document, "visibilityState");
   });
 
   it("exposes a stable http base url and attaches with the transport query", async () => {
@@ -372,6 +427,72 @@ describe("SseAgentClient", () => {
     document.dispatchEvent(new Event("visibilitychange"));
     await waitUntil(() => events.opens === 2, "the reattach after wake");
     expect(transport.attachUrls).toHaveLength(2);
+  });
+
+  it("reattaches a parked stream in a visible tab without a wake signal", async () => {
+    // A focused tab can never fire visibilitychange/focus, so full dormancy
+    // would silently miss a turn started by another author.
+    const client = await openedClientOnFakeTimers();
+    // The server's own grace is 5 minutes of idle before it parks a stream.
+    await holdStreamOpen(5 * 60_000);
+    transport.lastStream.bye("idle");
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(events.closes[0].byeReason).toBe("idle");
+    // Parked is still OPEN: sends are POSTs.
+    expect(client.readyState).toBe(1);
+    await vi.advanceTimersByTimeAsync(IDLE_REATTACH_MIN_DELAY_MS - 1);
+    expect(transport.attachUrls).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(transport.attachUrls).toHaveLength(2);
+    expect(events.opens).toBe(2);
+  });
+
+  it("keeps a hidden tab fully dormant after a park until it comes back", async () => {
+    visibility = "hidden";
+    const client = await openedClientOnFakeTimers();
+    transport.lastStream.bye("idle");
+    await vi.advanceTimersByTimeAsync(0);
+
+    // No eager reattach, and no silence watchdog on a parked stream either.
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(transport.attachUrls).toHaveLength(1);
+    expect(events.closes).toHaveLength(1);
+    expect(client.readyState).toBe(1);
+
+    visibility = "visible";
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(transport.attachUrls).toHaveLength(2);
+  });
+
+  it("grows the dormancy interval when the server re-parks the same client", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    await openedClientOnFakeTimers();
+
+    // The first park ends a healthy long-lived stream, so it stays eager.
+    await holdStreamOpen(75_000);
+    const delays: number[] = [];
+    for (let cycle = 0; cycle < 5; cycle += 1) {
+      // Every later park comes immediately after the attach: the eager reattach
+      // must back off instead of hot-looping at the floor.
+      transport.lastStream.bye("idle");
+      await vi.advanceTimersByTimeAsync(0);
+      const attaches = transport.attachUrls.length;
+      let waited = 0;
+      while (
+        transport.attachUrls.length === attaches &&
+        waited <= MAX_IDLE_REATTACH_DELAY_MS
+      ) {
+        await vi.advanceTimersByTimeAsync(1_000);
+        waited += 1_000;
+      }
+      delays.push(waited);
+    }
+
+    // 3s → ×4 per repeat park, capped at the 5-minute ceiling.
+    expect(delays).toEqual([3_000, 12_000, 48_000, 192_000, 300_000]);
   });
 
   it("reattaches a dormant stream when a call is dispatched", async () => {
@@ -627,6 +748,84 @@ describe("SseAgentClient", () => {
     await vi.advanceTimersByTimeAsync(3_000);
     expect(transport.attachUrls).toHaveLength(2);
     expect(events.opens).toBe(1);
+  });
+
+  it("keeps an open stream alive on heartbeats and reattaches once it goes silent", async () => {
+    const client = await openedClientOnFakeTimers();
+
+    // `:hb` comments are dropped by the parser but must still count as liveness.
+    for (let tick = 0; tick < 4; tick += 1) {
+      await vi.advanceTimersByTimeAsync(25_000);
+      transport.lastStream.heartbeat();
+      await vi.advanceTimersByTimeAsync(0);
+    }
+    expect(events.closes).toHaveLength(0);
+    expect(transport.attachUrls).toHaveLength(1);
+    expect(client.readyState).toBe(1);
+
+    // Then the receive path dies with no EOF, no error and no bye — the state
+    // POSTs cannot detect because they ride their own connections.
+    await vi.advanceTimersByTimeAsync(STREAM_SILENCE_TIMEOUT_MS + 1);
+    expect(events.closes).toHaveLength(1);
+    expect(events.closes[0].reason).toBe("stream silence timeout");
+    expect(events.closes[0].aborted).toBe(false);
+    expect(String((events.errors.at(-1) as Error).message)).toContain("TIMEOUT");
+    expect(client.readyState).toBe(0);
+    expect(client.connectionError).toBeNull();
+
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(transport.attachUrls).toHaveLength(2);
+    expect(events.opens).toBe(2);
+  });
+
+  it("treats a non-event-stream 200 attach as a retryable handshake failure", async () => {
+    transport.attachStatuses.push({ contentType: "text/html" });
+    const client = createClient();
+    vi.useFakeTimers();
+    client.start();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // A captive portal / SPA fallback must never look like a live stream.
+    expect(events.opens).toBe(0);
+    expect(client.readyState).toBe(0);
+    expect(events.connectionErrors).toHaveLength(0);
+    expect(events.closes).toHaveLength(1);
+    expect(events.closes[0].status).toBe(200);
+    expect(events.closes[0].code).toBe(1013);
+    expect(events.closes[0].reason).toContain("text/html");
+    expect(String((events.errors[0] as Error).message)).toContain("text/html");
+
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(transport.attachUrls).toHaveLength(2);
+    expect(events.opens).toBe(1);
+  });
+
+  it("retires the in-flight reader when a POST denial latches a terminal error", async () => {
+    const client = await openedClient();
+    transport.lastStream.frame({
+      type: "cf_agent_identity",
+      name: THREAD_ID,
+      agent: "chat-thread",
+    });
+    await waitUntil(() => events.identities.length === 1, "the identity frame");
+    transport.postResponder = () => new Response("forbidden", { status: 403 });
+
+    await expect(client.call("sendMessage", ["hi", "client-3"])).rejects.toThrow(
+      "Connection closed",
+    );
+    await waitUntil(
+      () => events.connectionErrors.length === 1,
+      "the terminal connection error",
+    );
+    // The aborted reader must not run the abnormal-end tail: that reported a
+    // second close plus an AbortError, both classified as pre-open handshake
+    // failures on a stream that had been open and streaming.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(events.closes).toHaveLength(1);
+    expect(events.closes[0].status).toBe(403);
+    expect(events.closes[0].code).toBe(4403);
+    expect(events.errors).toHaveLength(0);
+    expect(client.readyState).toBe(3);
   });
 
   it("reports a mid-stream reader error and reconnects", async () => {
