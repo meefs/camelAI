@@ -234,6 +234,16 @@ export function SignupForm({
                   Sign in
                 </Link>
               </div>
+
+              <div className="text-center text-xs text-muted-foreground">
+                <p>Looking for camelStream, the flat-rate inference API?</p>
+                <a
+                  href="https://stream.camelai.com/login?utm_source=camelai_dev&utm_medium=auth_rescue"
+                  className="hover:underline underline-offset-4"
+                >
+                  Log in at stream.camelai.com →
+                </a>
+              </div>
             </form>
           </div>
         </div>
