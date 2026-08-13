@@ -483,6 +483,39 @@ describe("SseAgentClient", () => {
     );
   });
 
+  it("closes the retiring generation before reconnect() opens the next one", async () => {
+    const client = await openedClient();
+    const order: string[] = [];
+    client.addEventListener("close", () => order.push("close"));
+    client.addEventListener("open", () => order.push("open"));
+
+    client.reconnect();
+    // `useAgentChat` only re-arms its resume probe on close→open; without this
+    // close the replacement stream stays excluded from the live turn.
+    expect(order).toEqual(["close"]);
+    expect(events.closes).toHaveLength(1);
+    expect(events.closes[0].aborted).toBe(true);
+    expect(events.closes[0].wasClean).toBe(true);
+    expect(events.closes[0].reason).toBe("reconnect");
+    expect(events.closes[0].byeReason).toBeNull();
+    expect(client.readyState).toBe(0);
+
+    await waitUntil(() => events.opens === 2, "the forced reattach");
+    expect(order).toEqual(["close", "open"]);
+    expect(client.connectionError).toBeNull();
+  });
+
+  it("does not double-close a dormant stream on reconnect()", async () => {
+    const client = await openedClient();
+    transport.lastStream.bye("idle");
+    await waitUntil(() => events.closes.length === 1, "the idle close");
+
+    client.reconnect();
+    await waitUntil(() => events.opens === 2, "the reattach");
+    expect(events.closes).toHaveLength(1);
+    expect(events.closes[0].byeReason).toBe("idle");
+  });
+
   it("reattaches and replays a resume frame when the shim is gone (409)", async () => {
     const client = await openedClient();
     let responded = false;
@@ -501,6 +534,69 @@ describe("SseAgentClient", () => {
       id: "req-9",
     });
     expect(client.connectionError).toBeNull();
+  });
+
+  it("does not strand a requeued resume frame on a still-open stream", async () => {
+    for (const failOnce of [
+      () => new Response("unavailable", { status: 503 }),
+      () => {
+        throw new TypeError("Failed to fetch");
+      },
+    ]) {
+      transport = new FakeChatTransport();
+      vi.stubGlobal("fetch", transport.fetch);
+      events.opens = 0;
+      const client = await openedClient();
+      let failed = false;
+      transport.postResponder = () => {
+        if (failed) return new Response(null, { status: 204 });
+        failed = true;
+        return failOnce();
+      };
+
+      // The stream itself stays live, so nothing else would ever re-drive the
+      // queue: the reattach is the only thing that flushes it.
+      client.send(
+        JSON.stringify({ type: "cf_agent_stream_resume_ack", id: "req-503" }),
+      );
+      await waitUntil(
+        () => transport.posts.length === 2,
+        "the replayed resume POST",
+      );
+
+      expect(transport.attachUrls).toHaveLength(2);
+      expect(transport.posts[1].frame).toEqual({
+        type: "cf_agent_stream_resume_ack",
+        id: "req-503",
+      });
+      expect(new URL(transport.posts[1].url).searchParams.get("_pk")).toBe(
+        client._pk,
+      );
+      expect(client.connectionError).toBeNull();
+      client.close();
+    }
+  });
+
+  it("drops a resume frame that fails again after its reattach", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const client = await openedClient();
+    transport.postResponder = () => new Response("unavailable", { status: 503 });
+
+    client.send(
+      JSON.stringify({ type: "cf_agent_stream_resume_ack", id: "req-dead" }),
+    );
+    await waitUntil(
+      () =>
+        warn.mock.calls.some((call) =>
+          String(call[0]).includes("Dropped a resume frame"),
+        ),
+      "the drop warning",
+    );
+
+    expect(transport.posts).toHaveLength(2);
+    expect(transport.attachUrls).toHaveLength(2);
+    expect(client.connectionError).toBeNull();
+    expect(client.readyState).toBe(1);
   });
 
   it("rejects one call on a 400 without latching a terminal error", async () => {

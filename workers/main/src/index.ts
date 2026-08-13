@@ -71,6 +71,7 @@ import {
 import { handleEmailSendProxy } from './routes/email-send-proxy.js';
 import { handleWorkerAuth } from './routes/worker-auth.js';
 import { requireChatWebSocketAccess } from './helpers/auth.js';
+import { stripReservedTransportHeaders } from './chat-thread/transport-headers.js';
 import { getThreadStub } from './helpers/stubs.js';
 import { text } from './helpers/response.js';
 import { rejectedChatWebSocketUpgrade } from '../../../src/lib/chat-ws-close';
@@ -420,9 +421,10 @@ async function authorizeChatTransportRequest(
   headers.delete('X-Chiridion-User-Name');
   headers.delete('X-Chiridion-User-Email');
   headers.delete('X-Chiridion-Auth-Degraded');
-  // Hand-rolled routes bypass routePartykitRequest, which would overwrite these.
-  headers.delete('x-partykit-props');
-  headers.delete('x-partykit-room');
+  // Hand-rolled routes bypass routePartykitRequest, which would overwrite the
+  // partyserver headers, and nothing overwrites the Agents SDK's sub-agent
+  // routing header — over HTTP a browser can set both, unlike on a WS handshake.
+  stripReservedTransportHeaders(headers);
   headers.set('X-Chiridion-User-Id', userId);
   if (session.user_name) headers.set('X-Chiridion-User-Name', session.user_name);
   if (session.user_email) headers.set('X-Chiridion-User-Email', session.user_email);

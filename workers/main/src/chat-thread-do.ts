@@ -123,6 +123,7 @@ import {
   createSseCaptureConnection,
   createSseStreamSink,
 } from "./chat-thread/sse-connection";
+import { withoutReservedTransportHeaders } from "./chat-thread/transport-headers";
 
 
 import { retryTransientDurableObjectRpc } from "../../../src/lib/do-rpc-retry.server";
@@ -597,6 +598,15 @@ const SSE_HEARTBEAT_INTERVAL_MS = 25_000;
 // with `bye {"reason":"idle"}`. The client reopens on demand (send, focus,
 // visibility), so a dormant tab stops pinning this DO.
 const SSE_IDLE_GRACE_MS = 5 * 60 * 1000;
+// An idle-parked stream is a viewer that is still THERE: the park is the
+// transport's own doing, not the client's departure, and the tab reopens the
+// stream on demand. Browser-user availability therefore has to survive it, or a
+// turn that starts while a thread is dormant tells the agent "User is not at
+// computer" and silently auto-cancels connection-setup prompts — a WebSocket
+// stayed registered through the same silence. The presumption is bounded because
+// a parked client that has since gone away is indistinguishable from one
+// watching an idle tab: past this, availability falls back to "no live stream".
+const SSE_PARKED_VIEWER_PRESUMED_MS = 30 * 60 * 1000;
 // The degraded-auth grant map and recent-clientMessageId dedup constants live
 // in ./chat-thread/access with the methods that use them.
 
@@ -635,6 +645,8 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   // broadcast/getConnection/getConnections are overridden below.
   private sseConnectionRegistry?: Map<string, SseConnection>;
   private sseCloseChainRegistry?: Map<string, Promise<void>>;
+  /** Connection id → park timestamp, for streams closed by the idle policy. */
+  private sseParkedViewerRegistry?: Map<string, number>;
   private sseHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private sseIdleSince: number | null = null;
   private agentEvalEventCollector: Array<Record<string, unknown>> | null = null;
@@ -1588,6 +1600,11 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     return (this.sseCloseChainRegistry ??= new Map<string, Promise<void>>());
   }
 
+  /** Viewers whose stream the idle policy parked (see SSE_PARKED_VIEWER_PRESUMED_MS). */
+  private get sseParkedViewers(): Map<string, number> {
+    return (this.sseParkedViewerRegistry ??= new Map<string, number>());
+  }
+
   /**
    * Fan out to the SSE registry, then delegate exactly once. `Agent.broadcast`
    * iterates `super.getConnections()` (partyserver's hibernating store), so
@@ -1748,6 +1765,12 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         this.teardownSseConnection(torndown, code, reason),
     });
     this.sseConnections.set(connectionId, connection);
+    // A live stream supersedes this viewer's parked record, and a new viewer
+    // restarts the idle grace: `sseIdleSince` is per-DO, so without the reset a
+    // fresh attach inherits an older stream's accumulated silence and can be
+    // parked seconds after it opened.
+    this.sseParkedViewers.delete(connectionId);
+    this.sseIdleSince = null;
     this.startSseHeartbeat();
 
     // Cancelling the response body errors the writable half; the request signal
@@ -1770,10 +1793,19 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     // identity → state → mcp → app history + background reconcile) is the
     // socket's, not a reimplementation of it. Frames queue in the writer, so
     // this can run after the response is returned.
+    //
+    // The chain reads routing input off the REQUEST HEADERS: Agent's onConnect
+    // wrapper honours `x-cf-agents-subagent-url` over `connection.uri` and would
+    // divert this attach into sub-agent resolution instead of the chat protocol.
+    // The worker strips those headers at the trust boundary; this is the DO-side
+    // backstop, and it is a no-op for a clean request.
+    const connectRequest = withoutReservedTransportHeaders(request);
     this.ctx.waitUntil(
       Promise.resolve()
         .then(() =>
-          this.onConnect(connection as unknown as Connection, { request }),
+          this.onConnect(connection as unknown as Connection, {
+            request: connectRequest,
+          }),
         )
         .catch((error) => {
           console.error("[ChatThreadDO] SSE connect chain failed", error);
@@ -1794,6 +1826,11 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   private async handleChatTransportCall(request: Request, url: URL): Promise<Response> {
     const denial = this.authorizeChatTransportRequest(request, url);
     if (denial) return denial;
+
+    // Client traffic is liveness: the idle policy measures silence, and a POST is
+    // the only silence-breaking signal a client can send while a turn is not
+    // running (the stream carries nothing upstream).
+    this.sseIdleSince = null;
 
     // A POST is independent of the stream, so a client's first action on a
     // thread can land before its first attach — where the socket transport
@@ -1935,9 +1972,33 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     this.sseIdleSince = idleSince;
     if (Date.now() - idleSince < SSE_IDLE_GRACE_MS) return;
     this.sseIdleSince = null;
+    const parkedAt = Date.now();
+    const parked = this.prunedParkedViewers();
     for (const connection of this.sseConnections.values()) {
+      // Recorded BEFORE the close: teardown unregisters the connection, and this
+      // is the only record that the viewer parked rather than left.
+      parked.set(connection.id, parkedAt);
       connection.closeWithBye("idle", 1000, "idle");
     }
+  }
+
+  /**
+   * Parked-viewer records, minus any past the presumption window. Pruned on read
+   * (a client mints a fresh `_pk` per stream generation, so a reattach does not
+   * always retire its own record) to bound what a long-resident DO accumulates.
+   */
+  private prunedParkedViewers(): Map<string, number> {
+    const parked = this.sseParkedViewers;
+    const cutoff = Date.now() - SSE_PARKED_VIEWER_PRESUMED_MS;
+    for (const [connectionId, parkedAt] of parked) {
+      if (parkedAt < cutoff) parked.delete(connectionId);
+    }
+    return parked;
+  }
+
+  /** A viewer the idle policy parked recently enough to still count as present. */
+  private hasIdleParkedViewer(): boolean {
+    return this.prunedParkedViewers().size > 0;
   }
 
   /** Work that must keep an attached stream open regardless of client silence. */
@@ -5577,8 +5638,18 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   }
 
 
+  /**
+   * Whether a browser is reachable for a prompt. NOT the same as "a transport
+   * connection is registered right now": the SSE idle policy parks a viewer's
+   * stream after five quiet minutes, and treating that as absence makes
+   * askUserQuestion answer itself with "User is not at computer" and
+   * promptConnectionSetup cancel itself, for a user who is sitting there. A
+   * parked viewer stays available for a bounded window and picks the prompt up
+   * from thread state on its next attach.
+   */
   private hasAvailableBrowserUser(): boolean {
-    return this.getChatSockets().length > 0;
+    if (this.getChatSockets().length > 0) return true;
+    return this.hasIdleParkedViewer();
   }
 
   private updateExternalChatContext(payload: {

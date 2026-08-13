@@ -190,6 +190,46 @@ describe('ChatThreadDO SSE attach', () => {
     await response.body?.cancel();
   });
 
+  it('ignores a client-supplied sub-agent routing header', async () => {
+    const threadId = 'thread-sse-subagent-header';
+    const stub = threadStub(threadId);
+    await runInDurableObject(stub, async (instance: any) => {
+      seedChatContext(instance, threadId);
+    });
+
+    // `x-cf-agents-subagent-url` is the Agents SDK's SUB_AGENT_OUTER_URL_HEADER:
+    // its onConnect wrapper prefers that client-supplied string over
+    // `connection.uri` for sub-agent routing, so an honoured value diverts the
+    // attach out of the chat protocol chain (and can instantiate an unrelated
+    // sub-agent facet inside this shared thread DO). A WS handshake could not
+    // carry it; an HTTP attach can, so it is stripped at both ends.
+    const response = await stub.fetch(attachUrl(threadId, { pk: 'pk-subagent' }), {
+      headers: identityHeaders({
+        Accept: 'text/event-stream',
+        'x-cf-agents-subagent-url': `https://camelai.dev/agents/chat-thread/${threadId}/sub/chat-thread-d-o/injected`,
+        'x-partykit-room': 'someone-elses-room',
+      }),
+    });
+    expect(response.status).toBe(200);
+
+    const reader = sseReader(response);
+    const frames = await reader.collectUntil((collected) =>
+      frameTypes(collected).includes('cf_agent_mcp_servers'),
+    );
+    expect(frameTypes(frames)[0]).toBe('cf_agent_identity');
+    expect(frameTypes(frames)).not.toContain('bye');
+
+    await runInDurableObject(stub, async (instance: any) => {
+      const registered = instance.sseConnections.get('pk-subagent');
+      expect(registered?.isOpen).toBe(true);
+      // The flag the wrapper would have stashed from the header.
+      const rawState = (registered?.deserializeAttachment() ?? null) as AnyRecord | null;
+      expect(Object.keys(rawState ?? {})).not.toContain('_cf_subAgentOuterUrl');
+    });
+
+    await reader.cancel();
+  });
+
   it('403s an org mismatch before the stream body starts', async () => {
     const threadId = 'thread-sse-org-mismatch';
     const stub = threadStub(threadId);
@@ -579,6 +619,122 @@ describe('ChatThreadDO SSE lifecycle', () => {
       frameTypes(collected).includes('bye'),
     );
     expect(frames.at(-1)).toMatchObject({ type: 'bye', reason: 'idle' });
+  });
+
+  it('keeps the browser user available while a viewer is idle-parked', async () => {
+    const threadId = 'thread-sse-parked-viewer';
+    const stub = threadStub(threadId);
+    const attached = await stub.fetch(attachUrl(threadId, { pk: 'pk-parked' }), {
+      headers: identityHeaders(),
+    });
+    const reader = sseReader(attached);
+    await reader.collectUntil((frames) =>
+      frameTypes(frames).includes('cf_agent_mcp_servers'),
+    );
+
+    await runInDurableObject(stub, async (instance: any) => {
+      expect(instance.hasAvailableBrowserUser()).toBe(true);
+
+      instance.sseIdleSince = Date.now() - 10 * 60 * 1000;
+      instance.sweepSseConnections();
+      expect(instance.sseConnections.size).toBe(0);
+
+      // The park is the transport's doing, not the user leaving: the tab is
+      // still open and reopens the stream on demand. Reporting absence here
+      // makes askUserQuestion answer itself with "User is not at computer" and
+      // promptConnectionSetup cancel itself for a user who is sitting there.
+      expect(instance.hasAvailableBrowserUser()).toBe(true);
+
+      const answers = instance.browserPrompts.askUserQuestion({
+        questions: [
+          { question: 'Ship it?', header: 'Deploy', options: ['Yes', 'No'] },
+        ],
+      });
+      const pending = instance.browserPrompts.getOldestPendingQuestion();
+      expect(pending?.questionId).toBeTruthy();
+      // Held for the parked tab, which renders it from thread state on reattach.
+      expect(
+        instance.agentState().pendingQuestion?.questionId,
+      ).toBe(pending.questionId);
+      // Pending work also pins the stream policy open again.
+      expect(instance.hasLiveChatWorkForStream()).toBe(true);
+
+      instance.browserPrompts.answerQuestion({
+        questionId: pending.questionId,
+        answers: { Deploy: 'Yes' },
+      });
+      await expect(answers).resolves.toMatchObject({ Deploy: 'Yes' });
+    });
+
+    // Past the presumption window the parked viewer stops counting.
+    await runInDurableObject(stub, async (instance: any) => {
+      instance.sseParkedViewers.set('pk-parked', Date.now() - 31 * 60 * 1000);
+      expect(instance.hasAvailableBrowserUser()).toBe(false);
+      const unavailable = await instance.browserPrompts.askUserQuestion({
+        questions: [
+          { question: 'Ship it?', header: 'Deploy', options: ['Yes', 'No'] },
+        ],
+      });
+      expect(String(unavailable.unavailable_reason)).toContain(
+        'not at computer',
+      );
+    });
+
+    await reader.cancel();
+  });
+
+  it('restarts the idle grace on a new attach and on client POSTs', async () => {
+    const threadId = 'thread-sse-idle-reset';
+    const stub = threadStub(threadId);
+    const first = await stub.fetch(attachUrl(threadId, { pk: 'pk-idle-1' }), {
+      headers: identityHeaders(),
+    });
+    const firstReader = sseReader(first);
+    await firstReader.collectUntil((frames) =>
+      frameTypes(frames).includes('cf_agent_mcp_servers'),
+    );
+
+    // `sseIdleSince` is per-DO, so a fresh viewer must not inherit an older
+    // stream's accumulated silence and get parked seconds after attaching.
+    await runInDurableObject(stub, async (instance: any) => {
+      instance.sseIdleSince = Date.now() - 10 * 60 * 1000;
+    });
+    const second = await stub.fetch(attachUrl(threadId, { pk: 'pk-idle-2' }), {
+      headers: identityHeaders(),
+    });
+    const secondReader = sseReader(second);
+    await secondReader.collectUntil((frames) =>
+      frameTypes(frames).includes('cf_agent_mcp_servers'),
+    );
+    await runInDurableObject(stub, async (instance: any) => {
+      expect(instance.sseIdleSince).toBeNull();
+      instance.sweepSseConnections();
+      expect(instance.sseConnections.size).toBe(2);
+    });
+
+    // A POST is the only upstream signal a client can send between turns.
+    await runInDurableObject(stub, async (instance: any) => {
+      instance.sseIdleSince = Date.now() - 10 * 60 * 1000;
+    });
+    const called = await stub.fetch(callUrl(threadId, 'pk-idle-2'), {
+      method: 'POST',
+      headers: identityHeaders(),
+      body: JSON.stringify({
+        type: 'rpc',
+        id: 'call-idle-reset',
+        method: 'setPreviewTabsState',
+        args: [[], null],
+      }),
+    });
+    expect(called.status).toBe(200);
+    await runInDurableObject(stub, async (instance: any) => {
+      expect(instance.sseIdleSince).toBeNull();
+      instance.sweepSseConnections();
+      expect(instance.sseConnections.size).toBe(2);
+    });
+
+    await firstReader.cancel();
+    await secondReader.cancel();
   });
 
   it('holds an idle-grace stream open while the thread has work', async () => {

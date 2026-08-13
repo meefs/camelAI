@@ -363,10 +363,23 @@ export class SseAgentClient<State = unknown> {
   /** Force a fresh stream generation (the half-open recovery path). */
   reconnect(): void {
     if (this.phase === "closed" || this.phase === "terminal") return;
+    // A live generation is about to be aborted mid-flight, and the retiring
+    // reader exits through its stale-generation guard without reaching a close
+    // path. Announce the end here: `useAgentChat` only re-arms its resume probe
+    // on close→open, and with no probe the replacement stream stays in the
+    // server's pending-resume set, which excludes it from every chunk of a live
+    // turn. A dormant stream already reported its close (bye "idle"), so it must
+    // not be closed twice.
+    const wasOpen = this.phase === "open";
     this.attempt = 0;
     this.clearReconnectTimer();
     this.attachWakeListeners();
     this.phase = "connecting";
+    if (wasOpen) {
+      this.emitClose({ reason: "reconnect", aborted: true, wasClean: true });
+      // A close listener may tear the client down; do not revive it.
+      if (this.phase !== "connecting") return;
+    }
     this.startGeneration();
   }
 
@@ -677,14 +690,7 @@ export class SseAgentClient<State = unknown> {
       const status = response.status;
       if (status === 409) {
         // The stream shim is gone: reattach, then replay the frame once.
-        if (attempts >= MAX_RESUME_FRAME_ATTEMPTS) {
-          console.warn(
-            "[sse-agent] Dropped a resume frame: no live stream shim after a reattach.",
-          );
-          return;
-        }
-        this.requeueResumeFrame({ body: frame.body, attempts });
-        this.reconnect();
+        this.retryResumeFrameAfterReattach(frame.body, attempts);
         return;
       }
       if (status === 400) {
@@ -702,10 +708,29 @@ export class SseAgentClient<State = unknown> {
         });
         return;
       }
-      this.requeueResumeFrame({ body: frame.body, attempts });
+      this.retryResumeFrameAfterReattach(frame.body, attempts);
     } catch {
-      this.requeueResumeFrame({ body: frame.body, attempts });
+      this.retryResumeFrameAfterReattach(frame.body, attempts);
     }
+  }
+
+  /**
+   * The queue is drained only on stream open, so the reattach IS the retry
+   * driver for a failed resume frame — and the frame needs a live shim anyway.
+   * Requeueing without forcing one strands the frame on a stream that is still
+   * open (a network blip or a 503 on the POST while the stream survives), and
+   * the server keeps this connection excluded from the rest of the turn.
+   */
+  private retryResumeFrameAfterReattach(body: string, attempts: number): void {
+    if (this.phase === "closed" || this.phase === "terminal") return;
+    if (attempts >= MAX_RESUME_FRAME_ATTEMPTS) {
+      console.warn(
+        "[sse-agent] Dropped a resume frame: it did not land after a reattach.",
+      );
+      return;
+    }
+    this.requeueResumeFrame({ body, attempts });
+    this.reconnect();
   }
 
   private requeueResumeFrame(frame: QueuedResumeFrame): void {

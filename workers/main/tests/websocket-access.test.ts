@@ -107,6 +107,34 @@ describe('Chat transport access guard', () => {
     expect(response.status).toBe(403);
   });
 
+  it('strips client-supplied framework routing headers from the attach', async () => {
+    const { workspaceId, threadId, signedToken } = await setupMemberSession();
+
+    // Unlike a WS handshake, an HTTP attach lets the browser set any header.
+    // `x-cf-agents-subagent-url` is the Agents SDK's sub-agent routing input and
+    // is preferred over the connection's own uri, so a forwarded value diverts
+    // the attach out of the chat protocol chain entirely (bye instead of
+    // identity/state/history). The route must not forward it.
+    const response = await SELF.fetch(
+      `http://example/agents/chat-thread/${threadId}/sse?workspaceId=${workspaceId}&_pk=pk-hdr`,
+      {
+        headers: {
+          Accept: 'text/event-stream',
+          'X-Chiridion-Session-Id': signedToken,
+          'x-cf-agents-subagent-url': `http://example/agents/chat-thread/${threadId}/sub/chat-thread-d-o/injected`,
+          'x-partykit-room': 'someone-elses-room',
+        },
+      },
+    );
+
+    expect(response.status).toBe(200);
+    const reader = response.body!.getReader();
+    const first = new TextDecoder().decode((await reader.read()).value);
+    expect(first).toContain('cf_agent_identity');
+    expect(first).not.toContain('event: bye');
+    await reader.cancel();
+  });
+
   it('rejects an unauthenticated POST send', async () => {
     const { workspaceId, threadId } = await setupMemberSession();
 
