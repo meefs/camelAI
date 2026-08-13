@@ -1,5 +1,5 @@
 diff --git a/dist/index.d.ts b/dist/index.d.ts
-index 4c78cfd00e1b7ac8df16f5b4b405e297d8aea9cc..b6f9dd3b8e8ce899d3bf3aa15df3160bf96208bb 100644
+index 4c78cfd00e1b7ac8df16f5b4b405e297d8aea9cc..88b20f9a19e1c71cb9235964467c325b6549e35a 100644
 --- a/dist/index.d.ts
 +++ b/dist/index.d.ts
 @@ -51,6 +51,19 @@ type ChatRecoveryContinueData = {
@@ -49,7 +49,56 @@ index 4c78cfd00e1b7ac8df16f5b4b405e297d8aea9cc..b6f9dd3b8e8ce899d3bf3aa15df3160b
    /**
     * Shared auto-continuation barrier (#1649 / #1650): owns the coalesce timer
     * and the double-fire guard. Parameterized by this agent's stream-active
-@@ -1600,6 +1633,8 @@ declare class AIChatAgent<
+@@ -458,6 +491,48 @@ declare class AIChatAgent<
+   /** @internal Delegate to _resumableStream. Also advances the recovery
+    *  progress counter at production time (see `_maybeBumpRecoveryProgress`). */
+   protected _storeStreamChunk(streamId: string, body: string): Promise<void>;
++  /**
++   * Whether this chunk must stay OUT of the replay buffer: a transient data
++   * chunk (nothing to replay) or a stream past its byte ceiling (degraded).
++   * Live delivery is unaffected — callers broadcast separately from storing.
++   */
++  protected _shouldSkipStreamChunkStorage(streamId: string, body: string): boolean;
++  /** Top-level `{"transient":true}` on a `data-*` chunk: applied live, never
++   *  worth replaying. Fails open on anything unparseable. */
++  protected _isTransientStreamChunk(body: string): boolean;
++  /** Cumulative stored bytes per stream id; cleared on `_startStream`. */
++  private _streamStoredBytes;
++  private _streamStoredBytesMap;
++  /** Stored bytes for a stream, computed from SQLite the first time the stream
++   *  is seen (re-detects a degraded stream adopted by restore) and tracked
++   *  incrementally after that. */
++  protected _streamStoredBytesFor(streamId: string): number;
++  /** Stream ids whose replay buffer is capped; cleared on `_startStream`. */
++  private _replayDegradedStreams;
++  /**
++   * Whether a stream's replay buffer is incomplete, so replaying it would show
++   * the client a truncated turn. Settles an unknown stream from stored bytes,
++   * so it answers correctly after hibernation.
++   */
++  protected _isStreamReplayDegraded(streamId: string | null): boolean;
++  protected _markStreamReplayDegraded(streamId: string, storedBytes: number): void;
++  /**
++   * Called ONCE per stream when its replay buffer hits the ceiling. Hosts
++   * override to record telemetry; the default logs.
++   */
++  protected _onStreamReplayDegraded(info: {
++    streamId: string;
++    storedBytes: number;
++    limitBytes: number;
++  }): void;
++  /** Per-instance replay-buffer ceiling override (tests). */
++  protected _streamReplayMaxStoredBytesOverride?: number;
++  protected _streamReplayMaxStoredBytes(): number;
++  /**
++   * Host-level replay-buffer ceiling in bytes. Static because the funnel runs
++   * before subclass fields are initialized.
++   */
++  static streamReplayMaxStoredBytes?: number;
+   /** Per-isolate throttle for crediting recovery progress from mid-segment
+    *  streaming-content deltas (the shared `agents/chat` rule); reset per isolate
+    *  so the first delta after a restart always credits. */
+@@ -1600,6 +1675,8 @@ declare class AIChatAgent<
  export {
    AIChatAgent,
    ChatMessage,
@@ -59,10 +108,28 @@ index 4c78cfd00e1b7ac8df16f5b4b405e297d8aea9cc..b6f9dd3b8e8ce899d3bf3aa15df3160b
    type ChatRecoveryContext,
    type ChatRecoveryExhaustedContext,
 diff --git a/dist/index.js b/dist/index.js
-index 2aceaf4f6f9364cf972a6cfcb3c3446c35d37f03..0960378bc697beef2623c08d20102bcc71631193 100644
+index 2aceaf4f6f9364cf972a6cfcb3c3446c35d37f03..c45341fdb271adca0d8f3c35efd6a7d473ac5a7b 100644
 --- a/dist/index.js
 +++ b/dist/index.js
-@@ -187,8 +187,12 @@ var AIChatAgent = class AIChatAgent extends Agent {
+@@ -40,6 +40,17 @@ function isValidMessageStructure(msg) {
+ const decoder = new TextDecoder();
+ const agentToolChunkEncoder = new TextEncoder();
+ /**
++* Default ceiling on the bytes ONE stream may keep in its replay buffer.
++* Unbounded buffers are what OOM-kill a chat DO on wake: every resume and every
++* recovery classification materializes the whole buffer at once, and the aged-
++* buffer sweep never gets to run because the read dies first. 16MB is far above
++* any real turn's persisted content (transient tool output is not stored at all,
++* see `_isTransientStreamChunk`) and far below the isolate's memory budget.
++* Override per host via `static streamReplayMaxStoredBytes`.
++*/
++const STREAM_REPLAY_MAX_STORED_BYTES = 16 * 1024 * 1024;
++const streamChunkEncoder = new TextEncoder();
++/**
+ * Extension of Agent with built-in chat capabilities
+ * @template Env Environment type containing bindings
+ */
+@@ -187,8 +198,12 @@ var AIChatAgent = class AIChatAgent extends Agent {
  				this.sql`create table if not exists cf_ai_chat_agent_messages (
                id text primary key,
                message text not null,
@@ -76,7 +143,137 @@ index 2aceaf4f6f9364cf972a6cfcb3c3446c35d37f03..0960378bc697beef2623c08d20102bcc
  				this.sql`create table if not exists cf_ai_chat_request_context (
                key text primary key,
                value text not null
-@@ -881,8 +885,80 @@ var AIChatAgent = class AIChatAgent extends Agent {
+@@ -584,6 +599,8 @@ var AIChatAgent = class AIChatAgent extends Agent {
+ 	}
+ 	/** @internal Delegate to _resumableStream */
+ 	_startStream(requestId, options = {}) {
++		this._streamStoredBytes?.clear();
++		this._replayDegradedStreams?.clear();
+ 		const streamId = this._resumableStream.start(requestId, options);
+ 		this._preStream.flushOnStreamStart((c) => this._notifyStreamResuming(c));
+ 		if (this._continuation.pending?.requestId === requestId) {
+@@ -631,13 +648,119 @@ var AIChatAgent = class AIChatAgent extends Agent {
+ 	/** @internal Delegate to _resumableStream. Also advances the recovery
+ 	*  progress counter at production time (see `_maybeBumpRecoveryProgress`). */
+ 	async _storeStreamChunk(streamId, body) {
+-		this._resumableStream.storeChunk(streamId, body);
++		if (!this._shouldSkipStreamChunkStorage(streamId, body)) this._resumableStream.storeChunk(streamId, body);
+ 		let type;
+ 		try {
+ 			type = JSON.parse(body).type;
+ 		} catch {}
+ 		await this._maybeBumpRecoveryProgress(type);
+ 	}
++	/**
++	* Whether this chunk must stay OUT of the replay buffer. Live clients are
++	* unaffected either way — every caller broadcasts separately from storing.
++	* Both reasons bound what one buffer read can ever materialize:
++	*   - a transient data chunk appends no message part on the client, so
++	*     replaying it is pure waste (see {@link _isTransientStreamChunk});
++	*   - past the byte ceiling the stream is marked degraded and stops storing,
++	*     so a resume attaches to live instead of replaying (the host repairs the
++	*     gap from persisted history).
++	* Fails OPEN: anything unrecognized or unreadable is stored as before.
++	* @internal
++	*/
++	_shouldSkipStreamChunkStorage(streamId, body) {
++		if (this._isTransientStreamChunk(body)) return true;
++		const limit = this._streamReplayMaxStoredBytes();
++		const stored = this._streamStoredBytesFor(streamId);
++		if (stored >= limit) {
++			this._markStreamReplayDegraded(streamId, stored);
++			return true;
++		}
++		this._streamStoredBytesMap().set(streamId, stored + streamChunkEncoder.encode(body).byteLength);
++		return false;
++	}
++	/**
++	* A chunk the client applies live and then forgets: top-level
++	* `{"transient":true}` on a `data-*` part (streaming tool output tails,
++	* heartbeats). The settled value arrives in the part's final chunk, so replay
++	* only re-sends bytes the client throws away.
++	* @internal
++	*/
++	_isTransientStreamChunk(body) {
++		if (typeof body !== "string" || !body.includes("\"transient\":true")) return false;
++		try {
++			const parsed = JSON.parse(body);
++			return parsed?.transient === true && typeof parsed.type === "string" && parsed.type.startsWith("data-");
++		} catch {
++			return false;
++		}
++	}
++	/** @internal */
++	_streamStoredBytesMap() {
++		return this._streamStoredBytes ??= /* @__PURE__ */ new Map();
++	}
++	/**
++	* Bytes already stored for a stream. Computed from SQLite the first time a
++	* stream is seen — which is what re-detects a degraded stream ADOPTED BY
++	* RESTORE after an eviction, without reading a single body into memory — and
++	* tracked incrementally from then on.
++	* @internal
++	*/
++	_streamStoredBytesFor(streamId) {
++		const bytesByStream = this._streamStoredBytesMap();
++		const known = bytesByStream.get(streamId);
++		if (known !== void 0) return known;
++		let stored = 0;
++		try {
++			const rows = this.sql`
++        select sum(length(cast(body as blob))) as bytes from cf_ai_chat_stream_chunks
++        where stream_id = ${streamId}
++      `;
++			const bytes = rows?.[0]?.bytes;
++			if (typeof bytes === "number" && Number.isFinite(bytes)) stored = bytes;
++		} catch {}
++		bytesByStream.set(streamId, stored);
++		if (stored >= this._streamReplayMaxStoredBytes()) this._markStreamReplayDegraded(streamId, stored);
++		return stored;
++	}
++	/**
++	* Whether a stream's replay buffer is incomplete (capped). Settles an unknown
++	* stream from stored bytes, so this answers correctly for a stream restored
++	* after hibernation — callers use it to skip chunk replay entirely.
++	* @internal
++	*/
++	_isStreamReplayDegraded(streamId) {
++		if (!streamId) return false;
++		if (this._replayDegradedStreams?.has(streamId)) return true;
++		this._streamStoredBytesFor(streamId);
++		return this._replayDegradedStreams?.has(streamId) === true;
++	}
++	/** @internal */
++	_markStreamReplayDegraded(streamId, storedBytes) {
++		const degraded = this._replayDegradedStreams ??= /* @__PURE__ */ new Set();
++		if (degraded.has(streamId)) return;
++		degraded.add(streamId);
++		try {
++			this._onStreamReplayDegraded({
++				streamId,
++				storedBytes,
++				limitBytes: this._streamReplayMaxStoredBytes()
++			});
++		} catch {}
++	}
++	/**
++	* Called ONCE per stream when its replay buffer hits the ceiling. Hosts
++	* override to record telemetry; the default keeps the signal in logs.
++	* @internal
++	*/
++	_onStreamReplayDegraded({ streamId, storedBytes, limitBytes }) {
++		console.warn(`[AIChatAgent] stream ${streamId} exceeded the replay buffer ceiling (${storedBytes} >= ${limitBytes} bytes); further chunks are not stored and resumes attach to live instead of replaying.`);
++	}
++	/** @internal Effective replay-buffer ceiling: per-instance override (tests),
++	*  then the host subclass's static, then {@link STREAM_REPLAY_MAX_STORED_BYTES}. */
++	_streamReplayMaxStoredBytes() {
++		const override = this._streamReplayMaxStoredBytesOverride ?? this.constructor.streamReplayMaxStoredBytes;
++		return Number.isFinite(override) && override > 0 ? Math.floor(override) : STREAM_REPLAY_MAX_STORED_BYTES;
++	}
+ 	/** Advance the recovery-progress counter when a chunk represents genuinely
+ 	*  new produced content. Uses the shared host-agnostic rule
+ 	*  ({@link shouldCreditStreamProgress}): a milestone (started segment / settled
+@@ -881,8 +1004,80 @@ var AIChatAgent = class AIChatAgent extends Agent {
  		});
  	}
  	_loadMessagesFromDb() {
@@ -159,7 +356,7 @@ index 2aceaf4f6f9364cf972a6cfcb3c3446c35d37f03..0960378bc697beef2623c08d20102bcc
  		return rows.map((row) => {
  			try {
  				const messageStr = row.message;
-@@ -891,7 +967,7 @@ var AIChatAgent = class AIChatAgent extends Agent {
+@@ -891,7 +1086,7 @@ var AIChatAgent = class AIChatAgent extends Agent {
  					console.warn(`[AIChatAgent] Skipping invalid message ${row.id}: missing or malformed id, role, or parts`);
  					return null;
  				}
@@ -168,7 +365,7 @@ index 2aceaf4f6f9364cf972a6cfcb3c3446c35d37f03..0960378bc697beef2623c08d20102bcc
  				return parsed;
  			} catch (error) {
  				console.error(`Failed to parse message ${row.id}:`, error);
-@@ -899,6 +975,59 @@ var AIChatAgent = class AIChatAgent extends Agent {
+@@ -899,6 +1094,59 @@ var AIChatAgent = class AIChatAgent extends Agent {
  			}
  		}).filter((msg) => msg !== null);
  	}
@@ -228,7 +425,7 @@ index 2aceaf4f6f9364cf972a6cfcb3c3446c35d37f03..0960378bc697beef2623c08d20102bcc
  	async _tryCatchChat(fn) {
  		try {
  			return await fn();
-@@ -2894,20 +3023,17 @@ var AIChatAgent = class AIChatAgent extends Agent {
+@@ -2894,20 +3142,17 @@ var AIChatAgent = class AIChatAgent extends Agent {
  			const safe = this._enforceRowSizeLimit(resolved);
  			const json = JSON.stringify(safe);
  			if (this._persistedMessageCache.get(safe.id) === json) continue;
@@ -253,7 +450,7 @@ index 2aceaf4f6f9364cf972a6cfcb3c3446c35d37f03..0960378bc697beef2623c08d20102bcc
  				this._deleteMessagesByIds(staleIds);
  			}
  		}
-@@ -2915,7 +3041,7 @@ var AIChatAgent = class AIChatAgent extends Agent {
+@@ -2915,7 +3160,7 @@ var AIChatAgent = class AIChatAgent extends Agent {
  		const persisted = this._loadMessagesFromDb();
  		this.messages = autoTransformMessages(persisted);
  		this._broadcastChatMessage({
@@ -262,7 +459,7 @@ index 2aceaf4f6f9364cf972a6cfcb3c3446c35d37f03..0960378bc697beef2623c08d20102bcc
  			type: MessageType.CF_AGENT_CHAT_MESSAGES
  		}, excludeBroadcastIds);
  	}
-@@ -3157,8 +3283,13 @@ var AIChatAgent = class AIChatAgent extends Agent {
+@@ -3157,8 +3402,13 @@ var AIChatAgent = class AIChatAgent extends Agent {
  				});
  				const safe = this._enforceRowSizeLimit(updatedMessage);
  				const json = JSON.stringify(safe);
@@ -278,7 +475,7 @@ index 2aceaf4f6f9364cf972a6cfcb3c3446c35d37f03..0960378bc697beef2623c08d20102bcc
            set message = ${json}
            where id = ${message.id}
          `;
-@@ -3376,11 +3507,7 @@ var AIChatAgent = class AIChatAgent extends Agent {
+@@ -3376,11 +3626,7 @@ var AIChatAgent = class AIChatAgent extends Agent {
  					};
  					const sanitized = this._sanitizeMessageForPersistence(snapshot);
  					const json = JSON.stringify(sanitized);
