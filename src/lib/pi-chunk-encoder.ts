@@ -72,6 +72,19 @@ export interface PiUserStopData {
   text: string;
 }
 
+/**
+ * A system-authored note about the TURN rather than model output (today: the
+ * recovery ladder's salvage note). It rides a data part, not text, for the same
+ * reason `userStop` does — and for one more: when a recovery CONTINUES an
+ * orphan-persisted partial, ai-chat drops the encoder's `text-start` and appends
+ * the following deltas to the partial's still-`streaming` text part, which would
+ * splice the note onto the tail of a half-written sentence. A data part is always
+ * its own part.
+ */
+export interface PiTurnNoticeData {
+  text: string;
+}
+
 export interface PiSteerMarkerData {
   steerMessageId: string;
   acceptedAtMs: number;
@@ -154,6 +167,7 @@ export type PiUiMessageChunk =
   | { type: 'tool-output-available'; toolCallId: string; output: PiToolOutput }
   | { type: 'data-pi-todos'; id: string; data: PiTodosData }
   | { type: 'data-pi-user-stop'; id: string; data: PiUserStopData }
+  | { type: 'data-pi-turn-notice'; id: string; data: PiTurnNoticeData }
   | { type: 'data-pi-steer-marker'; id: string; data: PiSteerMarkerData }
   | { type: 'data-pi-artifacts'; id: string; data: PiArtifactsData }
   | { type: 'data-pi-tool-stream'; transient: true; data: PiToolStreamData }
@@ -168,6 +182,8 @@ export const PI_TODOS_PART_ID = 'turn-plan';
 /** Legacy tool_use id the plan panel adapts back to. */
 export const PI_TODOS_TOOL_USE_ID = 'turn:plan:todo';
 export const PI_USER_STOP_PART_ID = 'user-stop';
+/** Fixed reconciliation id for the single turn-notice part per turn. */
+export const PI_TURN_NOTICE_PART_ID = 'turn-notice';
 export const PI_STEER_MARKER_PART = 'data-pi-steer-marker';
 /** Fixed reconciliation id for the single terminal-error part per turn. */
 export const PI_ERROR_PART_ID = 'pi-error';
@@ -410,6 +426,15 @@ export class PiChunkEncoder {
       chunks.push({
         type: 'data-pi-user-stop',
         id: PI_USER_STOP_PART_ID,
+        data: { text: params.delta },
+      });
+      return chunks;
+    }
+    if (itemKind === 'turnNotice') {
+      const chunks = this.closeOpen();
+      chunks.push({
+        type: 'data-pi-turn-notice',
+        id: PI_TURN_NOTICE_PART_ID,
         data: { text: params.delta },
       });
       return chunks;

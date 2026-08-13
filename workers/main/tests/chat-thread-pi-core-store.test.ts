@@ -127,3 +127,114 @@ describe('PiCoreMessageStore image hydration policy', () => {
     expect(append).toHaveBeenCalledWith([]);
   });
 });
+
+describe('PiCoreMessageStore compaction watermark', () => {
+  /** A store whose pi_core rows and compaction row are both controllable, so the
+   *  `first_kept_index` <-> `idx` contract can be exercised end to end. */
+  function createCompactionHarness(options: {
+    rowCount: number;
+    compaction?: { summary: string; first_kept_index: number; updated_at: number };
+  }) {
+    let compaction = options.compaction ?? null;
+    const writes: Array<{ sql: string; params: unknown[] }> = [];
+    const exec = vi.fn((sql: string, ...params: unknown[]) => {
+      if (
+        sql.trimStart().startsWith('CREATE TABLE') ||
+        sql.includes('INSERT OR IGNORE INTO pi_core_state')
+      ) {
+        return { toArray: () => [] };
+      }
+      if (sql.includes('MAX(idx) + 1')) {
+        return { toArray: () => [{ next_idx: options.rowCount }] };
+      }
+      if (sql.includes('INSERT OR REPLACE INTO pi_core_compaction')) {
+        writes.push({ sql, params });
+        compaction = {
+          summary: String(params[0]),
+          first_kept_index: Number(params[1]),
+          updated_at: Number(params[2]),
+        };
+        return { toArray: () => [] };
+      }
+      if (sql.includes('FROM pi_core_compaction')) {
+        return { toArray: () => (compaction ? [compaction] : []) };
+      }
+      if (sql.includes('FROM pi_core_state')) {
+        return { toArray: () => [{ generation: 1, row_count: options.rowCount }] };
+      }
+      if (sql.startsWith('UPDATE pi_core_state')) return { toArray: () => [] };
+      if (sql.includes('SELECT payload FROM pi_core_messages')) {
+        const from = sql.includes('WHERE idx >= ?') ? Number(params[0]) : 0;
+        const rows = [];
+        for (let idx = from; idx < options.rowCount; idx += 1) {
+          rows.push({
+            payload: JSON.stringify({ role: 'user', content: `row ${idx}`, timestamp: idx }),
+          });
+        }
+        return { toArray: () => rows };
+      }
+      throw new Error(`Unexpected SQL: ${sql}`);
+    });
+    const store = new PiCoreMessageStore({
+      sql: () => ({ exec }) as never,
+      r2: () => ({ get: vi.fn() }) as never,
+      chatContext: () => null,
+    });
+    return { store, writes, get compaction() { return compaction; } };
+  }
+
+  it('refuses a watermark the committed rows cannot satisfy', () => {
+    // A cut computed over a session list that still held the uncommitted journal
+    // tail names rows pi_core does not have. Writing it would make every later
+    // session build load the summary and NOTHING else.
+    const harness = createCompactionHarness({ rowCount: 4 });
+
+    harness.store.persistPiCoreCompaction('summary', 9);
+
+    expect(harness.writes).toHaveLength(0);
+    expect(harness.store.loadPiCoreCompaction()).toBeNull();
+  });
+
+  it('persists a watermark inside the committed rows', () => {
+    const harness = createCompactionHarness({ rowCount: 4 });
+
+    harness.store.persistPiCoreCompaction('summary', 2);
+
+    expect(harness.writes).toHaveLength(1);
+    expect(harness.store.loadPiCoreCompaction()).toMatchObject({
+      summary: 'summary',
+      firstKeptIndex: 2,
+    });
+  });
+
+  it('keeps the whole history when a stored watermark outruns the rows', async () => {
+    // Belt and braces for rows already written by an older build (or rewritten
+    // shorter by a fork): an over-large context is recoverable, a blanked one is not.
+    const harness = createCompactionHarness({
+      rowCount: 3,
+      compaction: { summary: 'stale summary', first_kept_index: 11, updated_at: 5 },
+    });
+
+    expect(harness.store.loadPiCoreCompaction()).toMatchObject({ firstKeptIndex: 0 });
+    const messages = await harness.store.loadPiCoreMessages();
+
+    expect(messages.map((message) => (message as { content: unknown }).content)).toEqual([
+      'row 0',
+      'row 1',
+      'row 2',
+    ]);
+  });
+
+  it('loads the summary plus the kept tail for a valid watermark', async () => {
+    const harness = createCompactionHarness({
+      rowCount: 3,
+      compaction: { summary: 'earlier work', first_kept_index: 2, updated_at: 5 },
+    });
+
+    const messages = await harness.store.loadPiCoreMessages();
+
+    expect(messages).toHaveLength(2);
+    expect((messages[0] as { content: string }).content).toContain('earlier work');
+    expect((messages[1] as { content: string }).content).toBe('row 2');
+  });
+});

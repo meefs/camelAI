@@ -363,6 +363,26 @@ describe('PiChunkEncoder unit families', () => {
     ]);
   });
 
+  it('maps a turnNotice delta to its own part, closing any open text run', () => {
+    // A turn-level note (the recovery ladder's salvage note) must never ride a
+    // text delta: on a recovery CONTINUE, ai-chat drops the encoder's text-start
+    // and appends the delta to the orphan partial's still-streaming text part,
+    // splicing the note onto a half-written sentence.
+    const encoder = new PiChunkEncoder({ messageId: 'm' });
+    encoder.encode({
+      method: 'item/agentMessage/delta',
+      params: { itemId: 'a', delta: 'half a sen' },
+    });
+    const chunks = encoder.encode({
+      method: 'item/agentMessage/delta',
+      params: { itemId: 'n', itemKind: 'turnNotice', delta: 'Ask me to continue' },
+    });
+    expect(chunks).toEqual([
+      { type: 'text-end' },
+      { type: 'data-pi-turn-notice', id: 'turn-notice', data: { text: 'Ask me to continue' } },
+    ]);
+  });
+
   it('closes open content and emits a distinct durable part for each steer', () => {
     const encoder = new PiChunkEncoder({ messageId: 'm' });
     encoder.encode({

@@ -291,6 +291,21 @@ describe('ui-message-adapter round trip (Message → UIMessage → Message)', ()
     expect(semantic(round).blocks).toEqual([{ type: 'text', text: 'Stopped by user', itemKind: 'userStop' }]);
   });
 
+  it('round-trips a turnNotice text block through data-pi-turn-notice', () => {
+    const message = assistant([
+      { type: 'text', text: 'This turn was interrupted', itemKind: 'turnNotice' },
+    ]);
+    const ui = messageToUiMessage(message);
+    expect(ui.parts[0]).toMatchObject({
+      type: 'data-pi-turn-notice',
+      data: { text: 'This turn was interrupted' },
+    });
+    const round = uiMessageToMessage(ui, { threadId: 'thread-1' });
+    expect(semantic(round).blocks).toEqual([
+      { type: 'text', text: 'This turn was interrupted', itemKind: 'turnNotice' },
+    ]);
+  });
+
   it('round-trips a terminal error block through data-pi-error, preserving metadata', () => {
     const message = assistant([
       {

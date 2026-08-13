@@ -8,13 +8,22 @@ import {
 import {
   ChatThreadDO,
   CodeModeToolsBinding,
+  PI_DEGRADED_COMPACTION_FLOOR_FRACTION,
+  PI_TURN_DEGRADED_RESUME_ATTEMPT,
   PI_TURN_ISOLATE_DEATH_DECAY_MS,
   PI_TURN_RESUME_BUDGET,
+  PI_TURN_SALVAGE_RESUME_ATTEMPT,
   PI_TURN_TOTAL_RESUME_BUDGET,
   PI_TURN_VOLUNTARY_RESUME_BUDGET,
+  exceededPiTurnResumeBudget,
+  piTurnResumeRung,
   prepareCodeModeUserCode,
 } from '../src/chat-thread-do';
 import { PiTurnJournal } from '../src/chat-thread/pi-turn-journal';
+import {
+  PI_PROVIDER_IMAGE_HYDRATION_MAX_COUNT,
+  PI_PROVIDER_IMAGE_HYDRATION_MAX_DECLARED_CHARS,
+} from '../src/chat-thread/pi-core-store';
 import { ChannelTools } from '../src/chat-channels';
 import { piCoreMessageToParsedChatMessage, attachPiToolResultToParsedMessages } from '../src/pi-message-export';
 import { PiModelMapping } from '../src/pi-model-resolution';
@@ -29,6 +38,7 @@ import {
   effectivePiContextTokens,
   observedPiContextTokens,
   estimatePiCompactionTokens,
+  findPiCompactionCutIndex,
   isPiLengthStopContextExhaustion,
   isPiContextOverflowMessage,
   shouldCompactPiAfterAssistantUsage,
@@ -3779,6 +3789,206 @@ describe('ChatThreadDO Pi turn handling', () => {
     );
     expect(compacted).toHaveLength(2);
     expect((compacted[0] as { content: string }).content).toContain('[Context Summary]');
+  });
+
+  // --- Forced compaction (recovery ladder rung 3) must not alter thread state ---
+
+  /** A model whose threshold (180k) is far above `keepRecentTokens`, so "the cut
+   *  would fire" and "the threshold would fire" are distinguishable. */
+  const FORCED_COMPACTION_MODEL = { contextWindow: 200_000, maxTokens: 8_000 } as any;
+
+  function forcedCompactionFake() {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.loadPiCoreCompaction = vi.fn(() => null);
+    fake.persistPiCoreCompaction = vi.fn();
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+    fake.piEphemeralCompaction = null;
+    return fake;
+  }
+
+  it('leaves a mid-size thread whole when a degraded resume forces compaction', async () => {
+    // Rung 3 exists for threads too big to rebuild, not for every thread over
+    // `keepRecentTokens`. Without the floor this history — a fraction of the
+    // window — would be summarized away permanently on the third isolate death.
+    const fake = forcedCompactionFake();
+    const messages = [
+      { role: 'user', content: 'old context', timestamp: 1 },
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: `recent context ${syntheticProse(120_000)}` }],
+        timestamp: 2,
+      },
+    ];
+    const completeSimple = vi.fn(async () => ({
+      content: [{ type: 'text', text: 'compact summary' }],
+    }));
+
+    // Big enough that the cut selector alone WOULD cut it...
+    expect(findPiCompactionCutIndex(messages as never, 20_000)).toBeGreaterThan(0);
+    // ...and nowhere near the threshold that decides compaction is warranted.
+    const threshold =
+      piModelContextWindow(FORCED_COMPACTION_MODEL) -
+      piCompactionReserveTokens(FORCED_COMPACTION_MODEL);
+    expect(effectivePiContextTokens(messages as never)).toBeLessThan(
+      threshold * PI_DEGRADED_COMPACTION_FLOOR_FRACTION,
+    );
+
+    const compacted = await ChatThreadDO.prototype['compactPiContext'].call(
+      fake,
+      messages,
+      FORCED_COMPACTION_MODEL,
+      'token',
+      completeSimple,
+      undefined,
+      {
+        force: true,
+        persist: false,
+        forceFloorFraction: PI_DEGRADED_COMPACTION_FLOOR_FRACTION,
+        committedBound: 2,
+      },
+    );
+
+    expect(compacted).toBe(messages);
+    expect(completeSimple).not.toHaveBeenCalled();
+    expect(fake.persistPiCoreCompaction).not.toHaveBeenCalled();
+    expect(fake.piEphemeralCompaction).toBeNull();
+  });
+
+  it('keeps a degraded resume compaction ephemeral and reuses it across requests', async () => {
+    // The rung's whole win is per-request bytes. Persisting the row would truncate
+    // every FUTURE session build too, which nothing ever undoes below the
+    // post-turn compaction's own threshold.
+    const fake = forcedCompactionFake();
+    const messages = [
+      { role: 'user', content: 'old context', timestamp: 1 },
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: `recent context ${syntheticProse(400_000)}` }],
+        timestamp: 2,
+      },
+    ];
+    const completeSimple = vi.fn(async () => ({
+      content: [{ type: 'text', text: 'compact summary' }],
+    }));
+    const options = {
+      force: true,
+      persist: false,
+      forceFloorFraction: PI_DEGRADED_COMPACTION_FLOOR_FRACTION,
+      committedBound: 2,
+    };
+
+    const compacted = await ChatThreadDO.prototype['compactPiContext'].call(
+      fake,
+      messages,
+      FORCED_COMPACTION_MODEL,
+      'token',
+      completeSimple,
+      undefined,
+      options,
+    );
+
+    expect((compacted[0] as { content: string }).content).toContain('compact summary');
+    expect(compacted[1]).toBe(messages[1]);
+    expect(fake.persistPiCoreCompaction).not.toHaveBeenCalled();
+    expect(fake.piEphemeralCompaction).toEqual({
+      summary: 'compact summary',
+      firstKeptIndex: 1,
+    });
+
+    // The other ~25 provider requests of the same attempt reuse the cut instead
+    // of paying for a second summarization.
+    const again = await ChatThreadDO.prototype['compactPiContext'].call(
+      fake,
+      messages,
+      FORCED_COMPACTION_MODEL,
+      'token',
+      completeSimple,
+      undefined,
+      options,
+    );
+
+    expect(completeSimple).toHaveBeenCalledTimes(1);
+    expect(again).toHaveLength(2);
+    expect((again[0] as { content: string }).content).toContain('compact summary');
+    expect(again[1]).toBe(messages[1]);
+    expect(fake.persistPiCoreCompaction).not.toHaveBeenCalled();
+  });
+
+  it('refuses to persist a cut that lands above the committed pi_core rows', async () => {
+    // `first_kept_index` is read back as an `idx >= ?` predicate. Mid-resume the
+    // session holds the folded journal tail, which pi_core has never seen, so a
+    // cut above `piMainBaselineIndex` names rows that do not exist — a watermark
+    // past MAX(idx) makes every later session build load the summary and nothing.
+    const fake = forcedCompactionFake();
+    const messages = [
+      { role: 'user', content: 'oldest context', timestamp: 1 },
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: `bulk ${syntheticProse(700_000)}` }],
+        timestamp: 2,
+      },
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: `recent ${syntheticProse(90_000)}` }],
+        timestamp: 3,
+      },
+    ];
+    const completeSimple = vi.fn(async () => ({
+      content: [{ type: 'text', text: 'compact summary' }],
+    }));
+    // Over the threshold, and the cut lands past the one committed row.
+    expect(findPiCompactionCutIndex(messages as never, 20_000)).toBe(2);
+
+    const compacted = await ChatThreadDO.prototype['compactPiContext'].call(
+      fake,
+      messages,
+      FORCED_COMPACTION_MODEL,
+      'token',
+      completeSimple,
+      undefined,
+      { committedBound: 1 },
+    );
+
+    // The request still gets the smaller context...
+    expect((compacted[0] as { content: string }).content).toContain('compact summary');
+    expect(compacted[1]).toBe(messages[2]);
+    // ...but nothing durable claims those rows were summarized.
+    expect(fake.persistPiCoreCompaction).not.toHaveBeenCalled();
+    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+      'pi_compaction_cut_uncommitted',
+      expect.objectContaining({ status: 'not_persisted' }),
+    );
+    // Still reused in memory, so the turn's other provider requests do not each
+    // pay for their own summarization.
+    expect(fake.piEphemeralCompaction).toEqual({
+      summary: 'compact summary',
+      firstKeptIndex: 2,
+    });
+    const callsAfterFirstCompaction = completeSimple.mock.calls.length;
+    await ChatThreadDO.prototype['compactPiContext'].call(
+      fake,
+      messages,
+      FORCED_COMPACTION_MODEL,
+      'token',
+      completeSimple,
+      undefined,
+      { committedBound: 1 },
+    );
+    expect(completeSimple).toHaveBeenCalledTimes(callsAfterFirstCompaction);
+
+    // Same cut with the rows actually committed: persisted exactly as before.
+    const persisting = forcedCompactionFake();
+    await ChatThreadDO.prototype['compactPiContext'].call(
+      persisting,
+      messages,
+      FORCED_COMPACTION_MODEL,
+      'token',
+      completeSimple,
+      undefined,
+      { committedBound: 3 },
+    );
+    expect(persisting.persistPiCoreCompaction).toHaveBeenCalledWith('compact summary', 2);
+    expect(persisting.piEphemeralCompaction).toBeNull();
   });
 
   it('schedules post-turn Pi compaction from assistant usage like the high-level agent', async () => {
@@ -10577,6 +10787,9 @@ describe('ChatThreadDO Pi turn handling', () => {
     fake.loadPiTurnSteerJournal = vi.fn(async () => []);
     fake.activePiStreamTurnId = null;
     fake.piConfigChangeResumeDepth = 0;
+    // ai-chat's live render list. Empty = the interrupted stream persisted no
+    // partial, i.e. the re-drive is a RETRY (see hasLiveAssistantRowForActiveTurn).
+    fake.messages = [];
     // Every resume counts itself against the marker's progress-independent
     // budgets before any heavy work; the journal-backed fakes below exercise that
     // for real, the rest just need a well-under-budget count.
@@ -10805,7 +11018,9 @@ describe('ChatThreadDO Pi turn handling', () => {
       // The loop this catches: every re-drive checkpoints progress (so chatRecovery's
       // progress-gated budget keeps resetting) and then dies with no in-isolate trace.
       // The marker counter is progress-independent, so the (budget + 1)-th re-drive
-      // gives up instead.
+      // stops resuming. That attempt is the ladder's SALVAGE rung, and this journal
+      // is empty, so it falls straight through to the terminal give-up in the same
+      // wake (see the ladder suite for the rung that has something to salvage).
       const { fake, journal, storage } = createJournalResumeFake(
         {
           turnId: 't1',
@@ -11132,12 +11347,97 @@ describe('ChatThreadDO Pi turn handling', () => {
       expect(slow).toMatchObject({ isolateDeath: 1, total: PI_TURN_RESUME_BUDGET + 1 });
     });
 
+    it('forgives a decayed isolate-death count on voluntary and benign re-drives', () => {
+      // The returned count also picks the LADDER RUNG, so evaluating the decay only
+      // on the recovery branch made an in-process retry (or a deploy-reset wake)
+      // resume degraded off a count the window had already forgiven.
+      const stale = (extra: Record<string, unknown> = {}) => ({
+        turnId: 't1',
+        openedAt: 1,
+        resumeAttempts: PI_TURN_DEGRADED_RESUME_ATTEMPT - 1,
+        isolateDeathResumeAttempts: PI_TURN_DEGRADED_RESUME_ATTEMPT,
+        lastIsolateDeathResumeAt: 1_000,
+        ...extra,
+      });
+      const now = 1_000 + PI_TURN_ISOLATE_DEATH_DECAY_MS;
+      const kv = createSyncKv();
+      const journal = createJournal(kv);
+
+      for (const cause of ['transient_retry', 'config_change'] as const) {
+        kv.put('piActiveTurn', stale());
+        const attempt = journal.recordResumeAttempt(cause, {
+          now,
+          isolateDeathDecayMs: PI_TURN_ISOLATE_DEATH_DECAY_MS,
+        });
+        expect(attempt).toMatchObject({ isolateDeath: 0, charged: 'voluntary' });
+        expect(piTurnResumeRung(attempt!)).toBe('normal');
+        expect(exceededPiTurnResumeBudget(attempt!)).toBeNull();
+        // Persisted, so the next real kill restarts the ladder at 1.
+        expect(kv.store.get('piActiveTurn')).toMatchObject({
+          isolateDeathResumeAttempts: 0,
+        });
+        expect(
+          (kv.store.get('piActiveTurn') as Record<string, unknown>)
+            .lastIsolateDeathResumeAt,
+        ).toBeUndefined();
+      }
+
+      kv.put('piActiveTurn', stale({ benignInterruption: true }));
+      const benign = journal.recordResumeAttempt('recovery', {
+        now,
+        isolateDeathDecayMs: PI_TURN_ISOLATE_DEATH_DECAY_MS,
+      });
+      expect(benign).toMatchObject({ isolateDeath: 0, charged: 'benign_interruption' });
+      expect(piTurnResumeRung(benign!)).toBe('normal');
+    });
+
+    it('resumes a decayed turn normally when this DO re-drives it in-process', async () => {
+      // End to end through the rung selection: a transient-retry re-drive over a
+      // stale marker must not spend the degraded rung's cheaper context.
+      const { fake } = createJournalResumeFake(
+        {
+          turnId: 't1',
+          openedAt: 1,
+          resumeAttempts: PI_TURN_DEGRADED_RESUME_ATTEMPT,
+          isolateDeathResumeAttempts: PI_TURN_DEGRADED_RESUME_ATTEMPT,
+          lastIsolateDeathResumeAt: Date.now() - PI_TURN_ISOLATE_DEATH_DECAY_MS - 1,
+        },
+        {
+          piSession: {
+            state: {
+              isStreaming: false,
+              messages: [
+                { role: 'user', content: 'hi' },
+                { role: 'toolResult', toolCallId: 'c1', toolName: 'read', content: [] },
+              ],
+            },
+            continue: vi.fn(async () => {}),
+          },
+          piMainBaselineIndex: 0,
+        },
+      );
+
+      await ChatThreadDO.prototype['resumeActivePiTurn'].call(fake, {
+        cause: 'transient_retry',
+      });
+
+      expect(fake.piDegradedResumeAttempt).toBe(false);
+      expect(fake.piSession.continue).toHaveBeenCalled();
+      expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+        'pi_turn_recovery_attempt',
+        expect.objectContaining({ status: 'attempting' }),
+      );
+    });
+
     // --- Give-up must not destroy accepted work, and must survive the drain ---
 
     it('commits the journal tail before the abandonment deletes it', async () => {
       // The journal is the only durable copy of a message admitted while the marker
       // was open (onChatMessage drops the in-memory queue on the resume branch).
       // Clearing without committing leaves a user bubble pi_core never saw.
+      // Seeded PAST the ladder's salvage rung on purpose: a journal with real work
+      // one rung earlier is salvaged (turn closed out with a note) instead of
+      // abandoned — this asserts the terminal give-up's own commit.
       const admittedUser = { role: 'user', content: 'still queued' };
       const steered = { role: 'user', content: 'steered too' };
       const failedAssistant = {
@@ -11151,8 +11451,8 @@ describe('ChatThreadDO Pi turn handling', () => {
         {
           turnId: 't1',
           openedAt: 1,
-          resumeAttempts: PI_TURN_RESUME_BUDGET,
-          isolateDeathResumeAttempts: PI_TURN_RESUME_BUDGET,
+          resumeAttempts: PI_TURN_SALVAGE_RESUME_ATTEMPT,
+          isolateDeathResumeAttempts: PI_TURN_SALVAGE_RESUME_ATTEMPT,
         },
         {
           activePiStreamTurnId: 't1',
@@ -11228,6 +11528,622 @@ describe('ChatThreadDO Pi turn handling', () => {
         message: { id: 't1', role: 'assistant', parts: [] },
       } as any);
       expect(await pendingChatTerminal(storage as any)).toBeNull();
+    });
+
+    // --- Recovery ladder: each rung cheaper than the last, keyed on isolate deaths ---
+
+    describe('recovery ladder', () => {
+      /** A session that still owes model output, so a resume CONTINUES it. */
+      function continuableSession() {
+        return {
+          state: {
+            isStreaming: false,
+            messages: [
+              { role: 'user', content: 'hi' },
+              { role: 'toolResult', toolCallId: 'c1', toolName: 'read', content: [] },
+            ],
+          },
+          continue: vi.fn(async () => {}),
+        };
+      }
+
+      /** Journal work worth salvaging: an admitted user message and a settled tool
+       *  result, plus a failed assistant row that must never be committed. */
+      const admittedUser = { role: 'user', content: 'do the thing' };
+      const settledToolResult = {
+        role: 'toolResult',
+        toolCallId: 'c1',
+        toolName: 'read',
+        content: [{ type: 'text', text: 'file contents' }],
+      };
+      const failedAssistant = {
+        role: 'assistant',
+        content: [],
+        stopReason: 'error',
+        errorMessage: 'boom',
+      };
+      /** The interrupted turn's half-written assistant message: real work, and the
+       *  only journal row the render stamp can land on. */
+      const partialAssistant = {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'half a sen' }],
+        responseId: 'resp_partial',
+        stopReason: 'endTurn',
+      };
+
+      function salvageFake(
+        marker: Record<string, unknown>,
+        overrides: Record<string, any> = {},
+      ) {
+        return createJournalResumeFake(marker, {
+          activePiStreamTurnId: 't1',
+          loadPiTurnJournalTail: vi.fn(async () => [
+            admittedUser,
+            settledToolResult,
+            failedAssistant,
+          ]),
+          loadPiTurnSteerJournal: vi.fn(async () => []),
+          appendPiCoreMessagesIfMissing: vi.fn(async () => {}),
+          pushPiRuntimeEvent: vi.fn(),
+          disposePiSession: vi.fn(),
+          piAgentStartedAtMs: 0,
+          piTurnStartedAtMs: 0,
+          ...overrides,
+        });
+      }
+
+      it('resumes normally while the isolate-death count is under the degraded rung', async () => {
+        const { fake } = createJournalResumeFake(
+          {
+            turnId: 't1',
+            openedAt: 1,
+            resumeAttempts: 1,
+            isolateDeathResumeAttempts: 1,
+            lastIsolateDeathResumeAt: Date.now(),
+          },
+          { piSession: continuableSession(), piMainBaselineIndex: 0 },
+        );
+
+        await ChatThreadDO.prototype['resumeActivePiTurn'].call(fake);
+
+        expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+          'pi_turn_recovery_attempt',
+          expect.objectContaining({ status: 'attempting' }),
+        );
+        expect(fake.piDegradedResumeAttempt).toBe(false);
+        expect(fake.piSession.continue).toHaveBeenCalled();
+      });
+
+      it('never degrades a healthy turn re-driven by deploy churn', async () => {
+        // Deploy resets and provider-529 regenerations move the total/voluntary
+        // counters, not the isolate-death one. A thread walked by a rollout must
+        // resume at full fidelity — the rungs exist for memory kills only.
+        const { fake } = createJournalResumeFake(
+          {
+            turnId: 't1',
+            openedAt: 1,
+            resumeAttempts: 12,
+            isolateDeathResumeAttempts: 0,
+            voluntaryResumeAttempts: 6,
+            benignInterruption: true,
+          },
+          { piSession: continuableSession(), piMainBaselineIndex: 0 },
+        );
+
+        await ChatThreadDO.prototype['resumeActivePiTurn'].call(fake);
+
+        expect(fake.piDegradedResumeAttempt).toBe(false);
+        expect(fake.recordChatThreadObservabilityEvent).not.toHaveBeenCalledWith(
+          'pi_turn_recovery_attempt',
+          expect.objectContaining({ status: 'attempting_degraded' }),
+        );
+      });
+
+      it('starts a legacy marker with no counter at rung 1', async () => {
+        const { fake, journal } = createJournalResumeFake(
+          { turnId: 'legacy', openedAt: 7 },
+          { piSession: continuableSession(), piMainBaselineIndex: 0 },
+        );
+
+        await ChatThreadDO.prototype['resumeActivePiTurn'].call(fake);
+
+        expect(fake.piDegradedResumeAttempt).toBe(false);
+        expect(journal.readActiveTurn()).toMatchObject({
+          isolateDeathResumeAttempts: 1,
+        });
+      });
+
+      it('drops back to rung 1 when the isolate-death count decays', async () => {
+        // Kills ten minutes apart are a rollout, not the tight loop — the decay
+        // resets the counter, so the rung resets with it.
+        const { fake, journal } = createJournalResumeFake(
+          {
+            turnId: 't1',
+            openedAt: 1,
+            resumeAttempts: 2,
+            isolateDeathResumeAttempts: 2,
+            lastIsolateDeathResumeAt: Date.now() - PI_TURN_ISOLATE_DEATH_DECAY_MS - 1,
+          },
+          { piSession: continuableSession(), piMainBaselineIndex: 0 },
+        );
+
+        await ChatThreadDO.prototype['resumeActivePiTurn'].call(fake);
+
+        expect(journal.readActiveTurn()).toMatchObject({
+          isolateDeathResumeAttempts: 1,
+        });
+        expect(fake.piDegradedResumeAttempt).toBe(false);
+      });
+
+      it('resumes DEGRADED on the third isolate death', async () => {
+        const { fake } = createJournalResumeFake(
+          {
+            turnId: 't1',
+            openedAt: 1,
+            resumeAttempts: PI_TURN_DEGRADED_RESUME_ATTEMPT - 1,
+            isolateDeathResumeAttempts: PI_TURN_DEGRADED_RESUME_ATTEMPT - 1,
+            lastIsolateDeathResumeAt: Date.now(),
+          },
+          { piSession: continuableSession(), piMainBaselineIndex: 0 },
+        );
+
+        await ChatThreadDO.prototype['resumeActivePiTurn'].call(fake);
+
+        expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+          'pi_turn_recovery_attempt',
+          expect.objectContaining({
+            status: 'attempting_degraded',
+            size: PI_TURN_DEGRADED_RESUME_ATTEMPT,
+          }),
+        );
+        // Still a real resume: the model is called, just with a smaller context.
+        expect(fake.ensurePiSessionReady).toHaveBeenCalled();
+        expect(fake.piSession.continue).toHaveBeenCalled();
+        expect(fake.piDegradedResumeAttempt).toBe(true);
+      });
+
+      it('builds the degraded attempt with forced compaction and a hard image budget', async () => {
+        // The two levers the rung actually pulls, at the one place a provider
+        // request is assembled (transformContext -> transformPiProviderContext).
+        const messages = [{ role: 'user', content: 'hi' }];
+        const fake = createResumeFake({
+          piDegradedResumeAttempt: true,
+          // Mid-resume: only indexes below the baseline are committed pi_core rows.
+          piMainBaselineIndex: 7,
+          compactPiContext: vi.fn(async (input: any) => input),
+          hydratePiStoredImages: vi.fn(async (value: any) => value),
+        });
+
+        await ChatThreadDO.prototype['transformPiProviderContext'].call(
+          fake,
+          messages,
+          { id: 'm', contextWindow: 200_000 },
+          'key',
+          (() => {}) as any,
+          undefined,
+        );
+
+        // Compaction pulled forward from the token threshold — but EPHEMERAL
+        // (persist: false), with a real size floor, and never allowed to persist a
+        // cut computed over the uncommitted journal tail.
+        expect(fake.compactPiContext.mock.calls[0][5]).toMatchObject({
+          force: true,
+          persist: false,
+          forceFloorFraction: PI_DEGRADED_COMPACTION_FLOOR_FRACTION,
+          committedBound: 7,
+        });
+        const budget = fake.hydratePiStoredImages.mock.calls[0][1];
+        expect(budget).toMatchObject({ maxCount: 1 });
+        expect(budget.maxCount).toBeLessThan(PI_PROVIDER_IMAGE_HYDRATION_MAX_COUNT);
+        expect(budget.maxDeclaredChars).toBeLessThan(
+          PI_PROVIDER_IMAGE_HYDRATION_MAX_DECLARED_CHARS,
+        );
+      });
+
+      it('leaves an undegraded attempt on the default compaction/hydration budgets', async () => {
+        const fake = createResumeFake({
+          piDegradedResumeAttempt: false,
+          compactPiContext: vi.fn(async (input: any) => input),
+          hydratePiStoredImages: vi.fn(async (value: any) => value),
+        });
+
+        await ChatThreadDO.prototype['transformPiProviderContext'].call(
+          fake,
+          [{ role: 'user', content: 'hi' }],
+          { id: 'm', contextWindow: 200_000 },
+          'key',
+          (() => {}) as any,
+          undefined,
+        );
+
+        expect(fake.compactPiContext.mock.calls[0][5].force).toBeUndefined();
+        expect(fake.compactPiContext.mock.calls[0][5].persist).toBeUndefined();
+        expect(fake.hydratePiStoredImages.mock.calls[0][1]).toBeUndefined();
+      });
+
+      it('clears everything when a degraded resume completes the turn', async () => {
+        // Rung 3 is a normal completion path: nothing about it may leave residue
+        // for the next turn.
+        const messages = [
+          { role: 'user', content: 'hi' },
+          {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'done' }],
+            stopReason: 'endTurn',
+          },
+        ];
+        const { fake, journal } = createJournalResumeFake(
+          {
+            turnId: 't1',
+            openedAt: 1,
+            resumeAttempts: PI_TURN_DEGRADED_RESUME_ATTEMPT - 1,
+            isolateDeathResumeAttempts: PI_TURN_DEGRADED_RESUME_ATTEMPT - 1,
+            lastIsolateDeathResumeAt: Date.now(),
+          },
+          {
+            piSession: { state: { isStreaming: false, messages } },
+            piMainBaselineIndex: 1,
+          },
+        );
+
+        await ChatThreadDO.prototype['resumeActivePiTurn'].call(fake);
+
+        expect(fake.finishTurn).toHaveBeenCalledWith(
+          expect.objectContaining({ markUnread: true }),
+        );
+        expect(journal.readActiveTurn()).toBeNull();
+        expect(ChatThreadDO.prototype['isThreadStreaming'].call(fake)).toBe(false);
+      });
+
+      it('salvages the journal without the model on the fourth isolate death', async () => {
+        const { fake, journal } = salvageFake({
+          turnId: 't1',
+          openedAt: 1,
+          resumeAttempts: PI_TURN_SALVAGE_RESUME_ATTEMPT - 1,
+          isolateDeathResumeAttempts: PI_TURN_SALVAGE_RESUME_ATTEMPT - 1,
+          lastIsolateDeathResumeAt: Date.now(),
+        });
+
+        await ChatThreadDO.prototype['resumeActivePiTurn'].call(fake);
+
+        // The whole point: no provider call, and no session rebuild to OOM in.
+        expect(fake.ensurePiSessionReady).not.toHaveBeenCalled();
+        expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+          'pi_turn_resume_salvaged',
+          expect.objectContaining({ status: 'salvaged', severity: 'info', count: 2 }),
+        );
+        // Settled work is committed, the failed assistant row is not, and the note
+        // lands last as the turn's final assistant message.
+        const committed = fake.appendPiCoreMessagesIfMissing.mock.calls[0][0];
+        expect(committed).toHaveLength(3);
+        expect(committed[0]).toMatchObject({ content: 'do the thing' });
+        expect(committed[1]).toMatchObject({ toolCallId: 'c1' });
+        expect(committed[2]).toMatchObject({
+          role: 'assistant',
+          content: [{ type: 'text', text: expect.stringContaining('Ask me to continue') }],
+        });
+        expect(committed).not.toContainEqual(
+          expect.objectContaining({ stopReason: 'error' }),
+        );
+        // Finished like any completed turn, not like a failure.
+        expect(fake.recordChatThreadObservabilityEvent).not.toHaveBeenCalledWith(
+          'pi_turn_resume_abandoned',
+          expect.anything(),
+        );
+        expect(fake.pushChatEvent).not.toHaveBeenCalledWith(
+          expect.objectContaining({ type: 'error' }),
+        );
+        expect(fake.pushChatEvent).toHaveBeenCalledWith(
+          expect.objectContaining({ type: 'result' }),
+        );
+        expect(fake.updateActiveAutomationRun).toHaveBeenCalledWith(
+          expect.objectContaining({
+            status: 'error',
+            message: expect.stringContaining('interrupted'),
+            clear: true,
+          }),
+        );
+        expect(fake.finishTurn).toHaveBeenCalledWith(
+          expect.objectContaining({ markUnread: true }),
+        );
+        expect(fake.setActiveTurnUserId).toHaveBeenCalledWith(null);
+        // Marker + journal gone, so the thread takes a new message immediately.
+        expect(journal.readActiveTurn()).toBeNull();
+        expect(ChatThreadDO.prototype['isThreadStreaming'].call(fake)).toBe(false);
+      });
+
+      it('falls through to the terminal give-up when there is nothing to salvage', async () => {
+        const { fake, journal } = salvageFake(
+          {
+            turnId: 't1',
+            openedAt: 1,
+            resumeAttempts: PI_TURN_SALVAGE_RESUME_ATTEMPT - 1,
+            isolateDeathResumeAttempts: PI_TURN_SALVAGE_RESUME_ATTEMPT - 1,
+          },
+          {
+            // Only a failed assistant row: no real work behind it.
+            loadPiTurnJournalTail: vi.fn(async () => [failedAssistant]),
+          },
+        );
+
+        await ChatThreadDO.prototype['resumeActivePiTurn'].call(fake);
+
+        expect(fake.recordChatThreadObservabilityEvent).not.toHaveBeenCalledWith(
+          'pi_turn_resume_salvaged',
+          expect.anything(),
+        );
+        // Same wake, no extra kill spent: straight to the terminal abandonment.
+        expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+          'pi_turn_resume_abandoned',
+          expect.objectContaining({
+            status: 'resume_budget_exhausted',
+            sampleKey: 'isolate_death',
+          }),
+        );
+        expect(fake.appendPiCoreMessagesIfMissing).not.toHaveBeenCalled();
+        expect(journal.readActiveTurn()).toBeNull();
+      });
+
+      it('goes terminal past the salvage rung, without a salvage note', async () => {
+        const { fake, journal } = salvageFake({
+          turnId: 't1',
+          openedAt: 1,
+          resumeAttempts: PI_TURN_SALVAGE_RESUME_ATTEMPT,
+          isolateDeathResumeAttempts: PI_TURN_SALVAGE_RESUME_ATTEMPT,
+          lastIsolateDeathResumeAt: Date.now(),
+        });
+
+        await ChatThreadDO.prototype['resumeActivePiTurn'].call(fake);
+
+        expect(fake.recordChatThreadObservabilityEvent).not.toHaveBeenCalledWith(
+          'pi_turn_resume_salvaged',
+          expect.anything(),
+        );
+        expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+          'pi_turn_resume_abandoned',
+          expect.objectContaining({ status: 'resume_budget_exhausted' }),
+        );
+        // The give-up still commits the journal's accepted work, but the turn is
+        // abandoned rather than closed out — no "ask me to continue" note.
+        const committed = fake.appendPiCoreMessagesIfMissing.mock.calls[0][0];
+        expect(committed).toHaveLength(2);
+        expect(committed).not.toContainEqual(
+          expect.objectContaining({
+            content: [{ type: 'text', text: expect.stringContaining('Ask me to continue') }],
+          }),
+        );
+        expect(fake.pushChatEvent).toHaveBeenCalledWith(
+          expect.objectContaining({ type: 'error' }),
+        );
+        expect(journal.readActiveTurn()).toBeNull();
+      });
+
+      it('advances a rung when the isolate dies inside the degraded attempt', async () => {
+        // The ladder needs no separate state: the durable counter is charged before
+        // any rung work, so a death mid-rung is simply the next rung on the next wake.
+        const oom = new Error('OOM during the degraded rebuild');
+        const { fake, journal } = salvageFake(
+          {
+            turnId: 't1',
+            openedAt: 1,
+            resumeAttempts: PI_TURN_DEGRADED_RESUME_ATTEMPT - 1,
+            isolateDeathResumeAttempts: PI_TURN_DEGRADED_RESUME_ATTEMPT - 1,
+            lastIsolateDeathResumeAt: Date.now(),
+          },
+          {
+            ensurePiSessionReady: vi.fn(async () => {
+              throw oom;
+            }),
+          },
+        );
+
+        await expect(
+          ChatThreadDO.prototype['resumeActivePiTurn'].call(fake),
+        ).rejects.toThrow(oom);
+        expect(fake.piDegradedResumeAttempt).toBe(true);
+        expect(journal.readActiveTurn()).toMatchObject({
+          isolateDeathResumeAttempts: PI_TURN_DEGRADED_RESUME_ATTEMPT,
+        });
+
+        // Next wake: the salvage rung, reached without any extra bookkeeping.
+        await ChatThreadDO.prototype['resumeActivePiTurn'].call(fake);
+
+        expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+          'pi_turn_resume_salvaged',
+          expect.objectContaining({ status: 'salvaged' }),
+        );
+        expect(journal.readActiveTurn()).toBeNull();
+      });
+
+      // --- Salvage must leave the salvaged work VISIBLE, not just committed ---
+
+      /** The stamp the render mirror reads (uiMetadata.renderMessageId). */
+      function renderStampOf(message: any): string | undefined {
+        return message?.uiMetadata?.renderMessageId;
+      }
+
+      it('leaves salvaged work unstamped when the dead stream persisted no partial', async () => {
+        // The re-drive is a RETRY here: the only thing that will ever stream into
+        // the turnId row is the note. Stamping the work with that id would promise
+        // the top-up mirror that a note-only row already displays it, and the
+        // mirror skips stamped rows whose id exists — permanently, because it
+        // advances its high-water mark past them. Only the NOTE may claim that id.
+        const { fake } = salvageFake(
+          {
+            turnId: 't1',
+            openedAt: 1,
+            resumeAttempts: PI_TURN_SALVAGE_RESUME_ATTEMPT - 1,
+            isolateDeathResumeAttempts: PI_TURN_SALVAGE_RESUME_ATTEMPT - 1,
+            lastIsolateDeathResumeAt: Date.now(),
+          },
+          {
+            loadPiTurnJournalTail: vi.fn(async () => [
+              admittedUser,
+              partialAssistant,
+              settledToolResult,
+            ]),
+            // No live render row for the turn (nothing was orphan-persisted).
+            messages: [],
+          },
+        );
+
+        await ChatThreadDO.prototype['resumeActivePiTurn'].call(fake);
+
+        const committed = fake.appendPiCoreMessagesIfMissing.mock.calls[0][0];
+        expect(committed).toHaveLength(4);
+        expect(committed[1]).toMatchObject({ responseId: 'resp_partial' });
+        expect(renderStampOf(committed[1])).toBeUndefined();
+        expect(committed[3]).toMatchObject({
+          role: 'assistant',
+          content: [{ type: 'text', text: expect.stringContaining('Ask me to continue') }],
+        });
+        // Only the note claims the id of the row the note will create.
+        expect(renderStampOf(committed[3])).toBe('t1');
+      });
+
+      it('stamps salvaged work when the dead stream left a partial to continue', async () => {
+        // ai-chat orphan-persisted the partial (it carried settled tool results), so
+        // the turnId row DOES display this work and the re-drive is a CONTINUE that
+        // appends the note to it. Stamping is then the truth, and it stops the
+        // top-up from converting the same content into a duplicate message.
+        const { fake } = salvageFake(
+          {
+            turnId: 't1',
+            openedAt: 1,
+            resumeAttempts: PI_TURN_SALVAGE_RESUME_ATTEMPT - 1,
+            isolateDeathResumeAttempts: PI_TURN_SALVAGE_RESUME_ATTEMPT - 1,
+            lastIsolateDeathResumeAt: Date.now(),
+          },
+          {
+            loadPiTurnJournalTail: vi.fn(async () => [
+              admittedUser,
+              partialAssistant,
+              settledToolResult,
+            ]),
+            messages: [
+              { id: 't1', role: 'assistant', parts: [{ type: 'text', text: 'half a sen' }] },
+            ],
+          },
+        );
+
+        await ChatThreadDO.prototype['resumeActivePiTurn'].call(fake);
+
+        const committed = fake.appendPiCoreMessagesIfMissing.mock.calls[0][0];
+        expect(committed).toHaveLength(4);
+        // Only assistant rows carry the stamp; the admitted user row never does.
+        expect(renderStampOf(committed[1])).toBe('t1');
+        expect(renderStampOf(committed[3])).toBe('t1');
+        expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+          'pi_turn_resume_salvaged',
+          expect.objectContaining({ sampleKey: 'continued_partial' }),
+        );
+      });
+
+      it('emits the salvage note as its own part, never a text delta', async () => {
+        // A text delta is absorbed into a resumed partial's still-`streaming` text
+        // part (ai-chat drops the encoder's text-start on a continuation), which
+        // would splice the note onto the tail of a half-written sentence.
+        const { fake } = salvageFake({
+          turnId: 't1',
+          openedAt: 1,
+          resumeAttempts: PI_TURN_SALVAGE_RESUME_ATTEMPT - 1,
+          isolateDeathResumeAttempts: PI_TURN_SALVAGE_RESUME_ATTEMPT - 1,
+          lastIsolateDeathResumeAt: Date.now(),
+        });
+
+        await ChatThreadDO.prototype['resumeActivePiTurn'].call(fake);
+
+        expect(fake.pushPiRuntimeEvent).toHaveBeenCalledWith(
+          'item/agentMessage/delta',
+          expect.objectContaining({
+            itemKind: 'turnNotice',
+            delta: expect.stringContaining('Ask me to continue'),
+          }),
+        );
+        expect(fake.pushPiRuntimeEvent).not.toHaveBeenCalledWith(
+          'item/agentMessage/delta',
+          expect.objectContaining({ itemKind: 'agentMessage' }),
+        );
+      });
+
+      it('folds Code Mode artifacts onto salvaged tool results before committing', async () => {
+        // js_exec artifacts live in a transient KV bucket keyed by tool-call id.
+        // The salvage clears the journal, so this is the LAST moment anything will
+        // ever look that id up: unfolded, the chart is invisible in the transcript
+        // the note invites the user to continue from, and the KV row leaks.
+        const jsExecResult = {
+          role: 'toolResult',
+          toolCallId: 'call_js',
+          toolName: 'js_exec',
+          content: [{ type: 'text', text: 'ran' }],
+        };
+        const withArtifacts = {
+          ...jsExecResult,
+          uiMetadata: { codeModeArtifacts: [{ id: 'chart-1' }] },
+        };
+        const { fake } = salvageFake(
+          {
+            turnId: 't1',
+            openedAt: 1,
+            resumeAttempts: PI_TURN_SALVAGE_RESUME_ATTEMPT - 1,
+            isolateDeathResumeAttempts: PI_TURN_SALVAGE_RESUME_ATTEMPT - 1,
+            lastIsolateDeathResumeAt: Date.now(),
+          },
+          {
+            loadPiTurnJournalTail: vi.fn(async () => [jsExecResult]),
+            attachCodeModeArtifactsToToolResult: vi.fn(async (message: any) =>
+              message === jsExecResult ? withArtifacts : message,
+            ),
+          },
+        );
+
+        await ChatThreadDO.prototype['resumeActivePiTurn'].call(fake);
+
+        expect(fake.attachCodeModeArtifactsToToolResult).toHaveBeenCalledWith(
+          jsExecResult,
+          { consume: true },
+        );
+        const committed = fake.appendPiCoreMessagesIfMissing.mock.calls[0][0];
+        expect(committed[0]).toMatchObject({
+          uiMetadata: { codeModeArtifacts: [{ id: 'chart-1' }] },
+        });
+      });
+
+      it('folds Code Mode artifacts on the terminal give-up too', async () => {
+        // Same KV bucket, same last chance: abandonment commits the tail as well.
+        const jsExecResult = {
+          role: 'toolResult',
+          toolCallId: 'call_js',
+          toolName: 'js_exec',
+          content: [{ type: 'text', text: 'ran' }],
+        };
+        const withArtifacts = {
+          ...jsExecResult,
+          uiMetadata: { codeModeArtifacts: [{ id: 'chart-1' }] },
+        };
+        const { fake } = createJournalResumeFake(
+          {
+            turnId: 't1',
+            openedAt: 1,
+            resumeAttempts: PI_TURN_SALVAGE_RESUME_ATTEMPT,
+            isolateDeathResumeAttempts: PI_TURN_SALVAGE_RESUME_ATTEMPT,
+          },
+          {
+            activePiStreamTurnId: 't1',
+            loadPiTurnJournalTail: vi.fn(async () => [jsExecResult]),
+            appendPiCoreMessagesIfMissing: vi.fn(async () => {}),
+            attachCodeModeArtifactsToToolResult: vi.fn(async (message: any) =>
+              message === jsExecResult ? withArtifacts : message,
+            ),
+          },
+        );
+
+        await ChatThreadDO.prototype['resumeActivePiTurn'].call(fake);
+
+        expect(fake.appendPiCoreMessagesIfMissing.mock.calls[0][0][0]).toMatchObject({
+          uiMetadata: { codeModeArtifacts: [{ id: 'chart-1' }] },
+        });
+      });
     });
   });
 
@@ -11901,6 +12817,10 @@ describe('ChatThreadDO Pi turn handling', () => {
             },
           ],
         };
+      }
+      // The watermark is validated against the committed row count before use.
+      if (sql.includes('MAX(idx) + 1')) {
+        return { toArray: () => [{ next_idx: 4 }] };
       }
       expect(sql).toContain('WHERE idx >= ?');
       expect(params).toEqual([2]);

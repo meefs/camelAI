@@ -311,7 +311,13 @@ export class PiTurnJournal {
    *
    * `isolateDeathDecayMs` additionally forgives the isolate-death counter when the
    * previous charged attempt is older than the window: kills minutes apart are a
-   * rollout walking the fleet, not the tight kill loop the bound targets.
+   * rollout walking the fleet, not the tight kill loop the bound targets. The decay
+   * is evaluated for EVERY cause, before the charge — the returned count also picks
+   * the recovery-ladder rung, and a voluntary (transient-retry / config-change) or
+   * benign re-drive that read a stale, already-forgiven count would degrade or
+   * salvage a turn the decay window says is healthy. Forgiveness is persisted too,
+   * so a later real isolate death restarts at 1 exactly as it would have if the
+   * re-drive in between had been a recovery.
    *
    * The read-modify-write is the SYNCHRONOUS kv put on purpose, with no await
    * between read and write: the failure being counted is the isolate dying
@@ -334,14 +340,19 @@ export class PiTurnJournal {
     // The flag describes the ONE interruption that preceded this re-drive, so any
     // re-drive consumes it — a stale flag must never forgive a later isolate death.
     delete next.benignInterruption;
+    // Cause-independent: whatever charges below, the count this call REPORTS (and
+    // the ladder rung derived from it) must already reflect the decay window.
+    const lastIsolateDeathAt = readCount(marker.lastIsolateDeathResumeAt);
+    if (decayMs > 0 && lastIsolateDeathAt > 0 && now - lastIsolateDeathAt >= decayMs) {
+      isolateDeath = 0;
+      delete next.lastIsolateDeathResumeAt;
+    }
     if (cause === "recovery") {
       if (marker.benignInterruption) {
         // The previous attempt ended in an interruption this isolate observed and
         // classified as recoverable; it is not evidence of memory pressure.
         charged = "benign_interruption";
       } else {
-        const lastAt = readCount(marker.lastIsolateDeathResumeAt);
-        if (decayMs > 0 && lastAt > 0 && now - lastAt >= decayMs) isolateDeath = 0;
         isolateDeath += 1;
         charged = "isolate_death";
         next.lastIsolateDeathResumeAt = now;

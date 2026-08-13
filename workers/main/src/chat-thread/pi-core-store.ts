@@ -584,6 +584,17 @@ export class PiCoreMessageStore {
     await this.appendPiCoreMessages(missing);
   }
 
+  /** Committed row count — the exclusive upper bound of a valid `first_kept_index`
+   *  (it is read back as an `idx >= ?` predicate over exactly these rows). */
+  private piCoreRowCount(): number {
+    const rows = this.deps.sql()
+      .exec<{ next_idx: number }>(
+        "SELECT COALESCE(MAX(idx) + 1, 0) AS next_idx FROM pi_core_messages",
+      )
+      .toArray();
+    return Math.max(0, Math.floor(Number(rows[0]?.next_idx) || 0));
+  }
+
   loadPiCoreCompaction(): { summary: string; firstKeptIndex: number; updatedAt: number } | null {
     this.ensurePiCoreTables();
     const rows = this.deps.sql()
@@ -593,20 +604,33 @@ export class PiCoreMessageStore {
       .toArray();
     const row = rows[0];
     if (!row || typeof row.summary !== "string") return null;
+    const stored = Math.max(0, Math.floor(Number(row.first_kept_index) || 0));
+    // A watermark past the last committed row would silently return the summary
+    // and NOTHING else, i.e. blank the thread's model context. Rows can be
+    // rewritten shorter (fork, post-turn compaction) and older builds could write
+    // an index computed over uncommitted messages, so treat it as corrupt and keep
+    // every row: an over-large context is recoverable, a lost one is not.
+    const firstKeptIndex = stored > this.piCoreRowCount() ? 0 : stored;
     return {
       summary: row.summary,
-      firstKeptIndex: Math.max(0, Math.floor(Number(row.first_kept_index) || 0)),
+      firstKeptIndex,
       updatedAt: Math.max(0, Math.floor(Number(row.updated_at) || 0)),
     };
   }
 
   persistPiCoreCompaction(summary: string, firstKeptIndex: number): void {
     this.ensurePiCoreTables();
+    const normalized = Math.max(0, Math.floor(firstKeptIndex));
+    // Backstop for the caller's own committed-bound check: a cut that names rows
+    // pi_core does not have cannot be expressed as an `idx >= ?` predicate, and
+    // writing it anyway would truncate the thread to the summary alone. Dropping
+    // the write costs one uncompacted request; writing it costs the history.
+    if (normalized > this.piCoreRowCount()) return;
     this.deps.sql().exec(
       `INSERT OR REPLACE INTO pi_core_compaction (id, summary, first_kept_index, updated_at)
        VALUES (1, ?, ?, ?)`,
       summary,
-      Math.max(0, Math.floor(firstKeptIndex)),
+      normalized,
       Date.now(),
     );
     this.markPiCoreChanged(this.getPiCoreRevision().count);

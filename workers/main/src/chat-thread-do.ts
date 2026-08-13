@@ -559,15 +559,87 @@ export const PI_TURN_VOLUNTARY_RESUME_BUDGET = 8;
 // example the transient-reset branch cites below.
 export const PI_TURN_TOTAL_RESUME_BUDGET = 32;
 
-/** Which (if any) of the marker's resume budgets this re-drive just blew. */
+// --- Recovery ladder (rung = the ISOLATE-DEATH count after the durable increment) ---
+//
+// A turn that keeps dying under memory pressure does not deserve the SAME resume
+// three times over and then nothing: each rung is strictly cheaper in memory than
+// the one before it, so the turn gets a real chance to land before it is dropped.
+// The rung is a pure function of the persisted isolate-death counter — no extra
+// marker field — which also means a death INSIDE a rung advances the ladder on the
+// next wake by construction.
+//
+// It keys off the isolate-death counter and NOT the total/voluntary ones on
+// purpose: those count healthy churn (deploy resets, provider-529 regenerations),
+// and a turn re-driven by a rollout must resume normally, not degraded. The decay
+// window applies here identically — a decayed counter is a rung-1 resume again.
+//
+//   isolate-death 1-2 -> normal resume
+//   isolate-death 3   -> degraded resume (PI_TURN_DEGRADED_RESUME_ATTEMPT)
+//   isolate-death 4   -> salvage without the model (PI_TURN_SALVAGE_RESUME_ATTEMPT)
+//   isolate-death >4  -> terminal abandonment (exceededPiTurnResumeBudget)
+export const PI_TURN_DEGRADED_RESUME_ATTEMPT = PI_TURN_RESUME_BUDGET;
+export const PI_TURN_SALVAGE_RESUME_ATTEMPT = PI_TURN_RESUME_BUDGET + 1;
+
+/** Which rung of the recovery ladder this re-drive lands on. */
+export type PiTurnResumeRung = "normal" | "degraded" | "salvage" | "terminal";
+
+/**
+ * The ladder rung for a counted re-drive. Only the isolate-death counter moves the
+ * rung; the voluntary/total ceilings are flat abandonments handled by
+ * {@link exceededPiTurnResumeBudget} (they bound churn, not memory pressure, so
+ * there is nothing cheaper to try — the rungs exist to survive an OOM).
+ */
+export function piTurnResumeRung(attempt: PiTurnResumeAttempt): PiTurnResumeRung {
+  if (attempt.isolateDeath > PI_TURN_SALVAGE_RESUME_ATTEMPT) return "terminal";
+  if (attempt.isolateDeath === PI_TURN_SALVAGE_RESUME_ATTEMPT) return "salvage";
+  if (attempt.isolateDeath === PI_TURN_DEGRADED_RESUME_ATTEMPT) return "degraded";
+  return "normal";
+}
+
+/**
+ * Which (if any) of the marker's resume budgets this re-drive just blew — i.e.
+ * which one means TERMINAL abandonment with no cheaper rung left to try. The
+ * isolate-death line sits one past {@link PI_TURN_RESUME_BUDGET} because attempt
+ * {@link PI_TURN_SALVAGE_RESUME_ATTEMPT} is spent on the model-free salvage rung
+ * ({@link piTurnResumeRung}); a salvage with nothing to salvage falls through to
+ * this same abandonment inside the same wake.
+ */
 export function exceededPiTurnResumeBudget(
   attempt: PiTurnResumeAttempt,
 ): "isolate_death" | "voluntary" | "total" | null {
-  if (attempt.isolateDeath > PI_TURN_RESUME_BUDGET) return "isolate_death";
+  if (attempt.isolateDeath > PI_TURN_SALVAGE_RESUME_ATTEMPT) return "isolate_death";
   if (attempt.voluntary > PI_TURN_VOLUNTARY_RESUME_BUDGET) return "voluntary";
   if (attempt.total > PI_TURN_TOTAL_RESUME_BUDGET) return "total";
   return null;
 }
+// Image hydration budget for a DEGRADED resume (ladder rung 3). The default
+// (2 images / 6M base64 chars) is a sane provider-context bound but a poor
+// memory bound for a turn that has already been memory-killed three times: the
+// hydrated base64, its R2 body and the request copy all live at once. One small
+// image is enough to keep a screenshot-driven turn coherent; anything larger is
+// replaced with the same "(image omitted…)" text the default budget uses.
+const PI_DEGRADED_RESUME_IMAGE_HYDRATION_BUDGET: PiImageHydrationBudget = {
+  maxCount: 1,
+  maxDeclaredChars: 500_000,
+};
+// How full the context must already be before a DEGRADED resume (ladder rung 3)
+// pulls compaction forward. Compaction's own floor is `keepRecentTokens` (20k), so
+// forcing it unconditionally would summarize any thread over ~20k — roughly an
+// eighth of the real threshold on a 200k-window model — spending a provider call
+// mid-recovery to shed a few thousand tokens from a context that was never the
+// memory problem. Half the threshold keeps the rung aimed at the case it exists
+// for: an OOM loop on a genuinely large thread.
+export const PI_DEGRADED_COMPACTION_FLOOR_FRACTION = 0.5;
+// User-facing copy committed as the final assistant message of a SALVAGED turn
+// (ladder rung 4). Tone matches PI_RESUME_EXHAUSTED_MESSAGE, but it is not an
+// error: real work was kept, and the invitation is to continue rather than to
+// resend.
+const PI_TURN_SALVAGE_NOTE =
+  "This turn was interrupted before it finished, so I've kept the work above. Ask me to continue and I'll pick up from here.";
+// Marks the synthetic assistant row that carries {@link PI_TURN_SALVAGE_NOTE}, the
+// way `user_stop` marks the stop row: it is a system-authored message, not a model
+// answer, and anything reasoning over the transcript should be able to tell.
+const PI_TURN_SALVAGE_METADATA_REASON = "turn_salvaged";
 // User-facing copy for that abandonment. Distinct from
 // {@link PI_RESUME_EXHAUSTED_MESSAGE} only in saying the turn was stopped after
 // repeated failures; both end with the same "send it again" instruction.
@@ -1044,6 +1116,22 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   // resume branch like an eviction recovery, but this DO caused it (a model /
   // BYOK change), so it spends the VOLUNTARY budget, not the isolate-death one.
   private piConfigChangeResumeDepth = 0;
+  // True while the DEGRADED ladder rung ({@link piTurnResumeRung}) owns this
+  // stream invocation: the session's transformContext then forces an eager
+  // compaction and hydrates images under
+  // {@link PI_DEGRADED_RESUME_IMAGE_HYDRATION_BUDGET}. Read at call time rather
+  // than baked into the session, so it applies to a warm session too, and reset at
+  // the top of every onChatMessage execute so it can never leak into a later turn.
+  private piDegradedResumeAttempt = false;
+  // The DEGRADED rung's compaction is EPHEMERAL: it shrinks the bytes of each
+  // provider request without writing the durable `pi_core_compaction` row, so a
+  // recovery can never permanently truncate a thread the token threshold would
+  // not have compacted at all. This memo is what the durable row would have
+  // provided — reuse across the ~25 provider requests of one attempt, so the
+  // summarization provider call happens once. Lives and dies with
+  // {@link piDegradedResumeAttempt}.
+  private piEphemeralCompaction: { summary: string; firstKeptIndex: number } | null =
+    null;
   // A terminal this DO decided by itself ({@link deliverPiTurnTerminal}) that must
   // be re-asserted after ai-chat's turn drain clears CHAT_LAST_TERMINAL_KEY — the
   // abandoned turn's reply stream ends WITHOUT an error, so the framework treats it
@@ -4901,6 +4989,13 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
    *    the re-drives that follow interruptions this isolate caught and classified as
    *    recoverable (code-update resets: survivable 15 times in production).
    * Exceeding any of them abandons the turn ({@link abandonPiTurnOverResumeBudget}).
+   *
+   * Between "resume normally" and "abandon" sits the LADDER ({@link piTurnResumeRung},
+   * keyed on the isolate-death counter only): the third memory kill resumes DEGRADED
+   * (forced compaction + a hard image-hydration budget, {@link piDegradedResumeAttempt}),
+   * and the fourth skips the model entirely and SALVAGES what the journal holds
+   * ({@link salvagePiTurnWithoutModel}). Each rung is cheaper than the last, so a turn
+   * too big to resume can still land its accepted work instead of being dropped.
    */
   private async resumeActivePiTurn(
     options: { cause?: PiTurnResumeCause } = {},
@@ -4918,9 +5013,26 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       await this.abandonPiTurnOverResumeBudget(attempt, exceeded);
       return;
     }
+    // Ladder rung for this re-drive, from the counter that was just persisted.
+    const rung = attempt ? piTurnResumeRung(attempt) : "normal";
+    if (attempt && rung === "salvage") {
+      // Rung 4: do not call the provider at all. If the journal holds nothing
+      // worth committing there is nothing cheaper left to try — go terminal in
+      // this same wake rather than burning another kill on an empty salvage.
+      if (await this.salvagePiTurnWithoutModel(attempt)) return;
+      await this.abandonPiTurnOverResumeBudget(attempt, "isolate_death");
+      return;
+    }
+    // Rung 3: rebuild low-memory. The flag is read by the session's
+    // transformContext (so a warm session degrades too) and reset at the top of
+    // every onChatMessage execute, so it never outlives this attempt. Its
+    // ephemeral-compaction memo is scoped to the same window: a stale cut from an
+    // earlier attempt must never shrink a healthy resume's context.
+    this.piDegradedResumeAttempt = rung === "degraded";
+    this.piEphemeralCompaction = null;
     this.recordChatThreadObservabilityEvent("pi_turn_recovery_attempt", {
       operation: "resume_interrupted_turn",
-      status: "attempting",
+      status: rung === "degraded" ? "attempting_degraded" : "attempting",
       count: attempt?.total ?? 0,
       // Which budget this re-drive spent, and how much of it is gone — the split
       // is the whole point of the bound, so it has to be visible in telemetry.
@@ -5012,6 +5124,22 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     await active.continue();
     // A successful continuation runs the normal lifecycle; `agent_end` clears the
     // marker + journal.
+  }
+
+  /**
+   * Does a render row already exist for the in-flight stream (id = the active
+   * turnId)? True exactly when ai-chat orphan-persisted the interrupted stream's
+   * partial, which is the same condition that makes the re-drive a CONTINUE rather
+   * than a RETRY. Callers use it to decide whether stamping pi_core rows with the
+   * turnId is a true statement about what that row displays — see
+   * {@link releasePiTurnAfterGiveUp}'s `stampWork`.
+   */
+  private hasLiveAssistantRowForActiveTurn(): boolean {
+    const turnId = this.activePiStreamTurnId;
+    if (!turnId) return false;
+    return this.messages.some(
+      (message) => message.id === turnId && message.role === "assistant",
+    );
   }
 
   /**
@@ -7135,18 +7263,13 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       transformContext: (messages, signal) =>
         this.withChatMemoryPhase("provider_request_prepare", async () => {
           const current = await resolveCurrentModel();
-          const compacted = await this.compactPiContext(
+          return this.transformPiProviderContext(
             messages,
             current.model,
             current.apiKey,
             completeSimple,
             signal,
           );
-          const hydrated = await this.hydratePiStoredImages(
-            compacted.map((message) => sanitizePiModelMessage(message)),
-          ) as AgentMessage[];
-          const repaired = repairPiMessageHistoryForReplay(hydrated);
-          return repaired.messages;
         }),
       getApiKey: async () => {
         const current = await resolveCurrentModel();
@@ -7200,14 +7323,119 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     return verifiedWorkState ? `${base}\n\n${verifiedWorkState}` : base;
   }
 
+  /**
+   * The session's `transformContext`: everything between the session's message
+   * list and the bytes a provider request carries — compaction, image hydration,
+   * replay repair. Runs once per provider request (25+ times in a single
+   * agent-loop turn), which makes it both the hottest allocation site in the DO
+   * and the one place a resume can be made cheaper.
+   *
+   * Hence the DEGRADED ladder rung ({@link piDegradedResumeAttempt}): a turn whose
+   * isolate has already been killed three times in this very phase gets the
+   * smallest context that can still answer it — compaction pulled forward from the
+   * token threshold, and image hydration under
+   * {@link PI_DEGRADED_RESUME_IMAGE_HYDRATION_BUDGET} instead of the default. The
+   * flag is read per request rather than captured at session build, so a warm
+   * session degrades too, and it applies to THIS attempt only — which is a real
+   * contract, not a comment: the degraded compaction is EPHEMERAL (`persist:
+   * false`, memoized in {@link piEphemeralCompaction}), so no rung-3 attempt can
+   * leave a thread permanently truncated, and it only fires once the thread is at
+   * least {@link PI_DEGRADED_COMPACTION_FLOOR_FRACTION} of the way to the real
+   * threshold, so a mid-size thread — whose context was never the memory problem —
+   * is left whole instead of being cut to `keepRecentTokens`.
+   *
+   * `committedBound` is `piMainBaselineIndex` on purpose: only session indexes
+   * below it map to committed `pi_core_messages` rows (the folded journal tail and
+   * pending steer messages above it exist nowhere durable yet), and a persisted
+   * `first_kept_index` is read back as a pi_core `idx` predicate.
+   */
+  private async transformPiProviderContext(
+    messages: AgentMessage[],
+    model: Model<any>,
+    apiKey: string,
+    completeSimple: typeof import("@earendil-works/pi-ai/compat").completeSimple,
+    signal?: AbortSignal,
+  ): Promise<AgentMessage[]> {
+    const degraded = this.piDegradedResumeAttempt;
+    const compacted = await this.compactPiContext(
+      messages,
+      model,
+      apiKey,
+      completeSimple,
+      signal,
+      degraded
+        ? {
+            force: true,
+            persist: false,
+            forceFloorFraction: PI_DEGRADED_COMPACTION_FLOOR_FRACTION,
+            committedBound: this.piMainBaselineIndex,
+          }
+        : { committedBound: this.piMainBaselineIndex },
+    );
+    const hydrated = (await this.hydratePiStoredImages(
+      compacted.map((message) => sanitizePiModelMessage(message)),
+      degraded ? PI_DEGRADED_RESUME_IMAGE_HYDRATION_BUDGET : undefined,
+    )) as AgentMessage[];
+    return repairPiMessageHistoryForReplay(hydrated).messages;
+  }
+
+  /**
+   * `force` lowers the token THRESHOLD (to `forceFloorFraction` of it, 0 = none);
+   * everything else — cut selection, summarization — is identical to a
+   * threshold-triggered compaction. Two callers force it: post-turn compaction
+   * (which is itself threshold-gated by `shouldCompactPiAfterAssistantUsage`, so
+   * its floor is 0), and the degraded recovery rung (rung 3), whose invariants
+   * were audited as:
+   *  - Safe to run mid-recovery. It reads only its arguments plus the compaction
+   *    row, and rewrites nothing the resume depends on: called from
+   *    transformContext it returns a per-REQUEST view and never touches
+   *    `session.state.messages` or `piMainBaselineIndex` (only
+   *    compactPiContextAfterTurn does that, from an idle session).
+   *  - Total: a summarization failure falls back to a synthetic summary rather
+   *    than throwing, so it cannot fail an in-flight resume.
+   *  - Idempotent enough to force on EVERY request of a degraded attempt: the
+   *    first call records the cut ({@link piEphemeralCompaction} for a
+   *    non-persisting caller, the `pi_core_compaction` row otherwise) and later
+   *    calls reuse it (no second provider call) unless the context grew past the
+   *    threshold again, which is exactly what an unforced compaction would do.
+   *  - Cut boundaries stay on a user/assistant message and `transformContext`
+   *    re-runs `repairPiMessageHistoryForReplay` afterwards, so a forced cut cannot
+   *    orphan a tool result the resume just synthesized.
+   * DURABILITY, which is the bar the ladder plan sets ("the degraded rung must not
+   * permanently alter thread state"): `persist: false` keeps the forced compaction
+   * per-request. The threshold path's one durable effect — the compaction row,
+   * which truncates what every later session build loads — would otherwise fire ~8x
+   * earlier than the threshold ever does and never be undone, because
+   * `clearPiCoreCompaction` only runs from the (threshold-gated) post-turn
+   * compaction. The render transcript is untouched either way (`pi_core_messages`
+   * rows and the ai-chat render table both stay whole).
+   * INDEX SPACE: `first_kept_index` is read back as a `pi_core_messages.idx`
+   * predicate, but the cut is computed over the SESSION list, and those two spaces
+   * only agree below `committedBound` (`piMainBaselineIndex` mid-turn — the folded
+   * journal tail above it is committed nowhere yet). A cut above the bound is
+   * therefore applied to the returned view but never persisted; persisting it would
+   * write a watermark past MAX(idx) and blank the thread's model context. It lands
+   * in {@link piEphemeralCompaction} instead, so the rest of the invocation still
+   * reuses one summarization.
+   */
   private async compactPiContext(
     messages: AgentMessage[],
     model: Model<any>,
     apiKey: string,
     completeSimple: typeof import("@earendil-works/pi-ai/compat").completeSimple,
     signal?: AbortSignal,
-    force = false,
+    options: {
+      force?: boolean;
+      /** Fraction of the real threshold a FORCED compaction still requires. */
+      forceFloorFraction?: number;
+      /** false => record the cut in memory for this attempt, never durably. */
+      persist?: boolean;
+      /** Session index below which indexes map to committed pi_core rows. */
+      committedBound?: number;
+    } = {},
   ): Promise<AgentMessage[]> {
+    const force = options.force === true;
+    const persist = options.persist !== false;
     const contextWindow = piModelContextWindow(model);
     const reserveTokens = piCompactionReserveTokens(model);
     const keepRecentTokens = 20_000;
@@ -7219,8 +7447,31 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     // that compaction never ran while the thread was already too full to
     // answer. Measured against that same thread this lands within 0.02%.
     const tokens = effectivePiContextTokens(messages);
-    if (!force && tokens < contextWindow - reserveTokens) {
+    const threshold = contextWindow - reserveTokens;
+    const floor = force
+      ? Math.max(0, Math.floor(threshold * (options.forceFloorFraction ?? 0)))
+      : threshold;
+    if (tokens < floor) {
       return messages;
+    }
+
+    {
+      // Reuse this stream invocation's in-memory cut instead of summarizing again
+      // on every one of the ~25 provider requests it makes — the memo is what the
+      // durable row would have been for a cut that must not (degraded rung) or
+      // cannot (uncommitted tail) be persisted. It is dropped and recomputed if
+      // the context outgrew it. Only the per-request caller consults it:
+      // `committedBound` is what identifies transformContext, whose message list
+      // the memo's index was computed over.
+      const memo =
+        options.committedBound === undefined ? null : this.piEphemeralCompaction;
+      if (memo && memo.firstKeptIndex > 0 && memo.firstKeptIndex < messages.length) {
+        const view = [
+          createPiSummaryMessage(memo.summary),
+          ...messages.slice(memo.firstKeptIndex),
+        ];
+        if (effectivePiContextTokens(view) < threshold) return view;
+      }
     }
 
     const existing = this.loadPiCoreCompaction();
@@ -7251,6 +7502,31 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       existing && startsWithExistingSummary
         ? existing.firstKeptIndex + Math.max(0, firstKeptIndex - 1)
         : firstKeptIndex;
+    const recordCut = (summary: string): void => {
+      // A cut inside the uncommitted tail has no pi_core `idx` to name; applying
+      // it to this request is fine, persisting it is not (see the INDEX SPACE note).
+      const cutIsCommitted =
+        options.committedBound === undefined ||
+        firstKeptIndex <= options.committedBound;
+      if (persist && cutIsCommitted) {
+        this.piEphemeralCompaction = null;
+        this.persistPiCoreCompaction(summary, storedFirstKeptIndex);
+        return;
+      }
+      // Not durable — either the caller forbids it (degraded rung) or the cut is
+      // unrepresentable. Keep it in memory so the rest of this stream invocation
+      // reuses it rather than paying for a summarization per provider request.
+      this.piEphemeralCompaction = { summary, firstKeptIndex };
+      if (persist) {
+        this.recordChatThreadObservabilityEvent("pi_compaction_cut_uncommitted", {
+          operation: "compact_context",
+          status: "not_persisted",
+          severity: "warn",
+          count: firstKeptIndex,
+          size: options.committedBound,
+        });
+      }
+    };
     try {
       const summary = await summarizePiMessages(
         messagesToSummarize,
@@ -7260,7 +7536,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         signal,
         previousSummary,
       );
-      this.persistPiCoreCompaction(summary, storedFirstKeptIndex);
+      recordCut(summary);
       return [createPiSummaryMessage(summary), ...messages.slice(firstKeptIndex)];
     } catch (error) {
       console.error("[ChatThreadDO] Pi context compaction failed", error);
@@ -7268,7 +7544,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         messagesToSummarize,
         error,
       );
-      this.persistPiCoreCompaction(fallbackSummary, storedFirstKeptIndex);
+      recordCut(fallbackSummary);
       return [createPiSummaryMessage(fallbackSummary), ...messages.slice(firstKeptIndex)];
     }
   }
@@ -7368,7 +7644,9 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       current.apiKey,
       completeSimple,
       undefined,
-      true,
+      // Already threshold-gated by shouldCompactPiAfterAssistantUsage above, so no
+      // extra floor; the session is idle here, so every index is committed.
+      { force: true },
     );
     if (compacted === before || session.state.isStreaming || session.state.messages !== before) {
       return;
@@ -8898,6 +9176,10 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
           // bounds those separately).
           this.piTurnTransientRetryAttempts = 0;
           this.piPendingTransientTurnRetry = null;
+          // A fresh prompt is never degraded, and neither is the next re-drive
+          // unless its own rung says so: resumeActivePiTurn re-sets this below.
+          this.piDegradedResumeAttempt = false;
+          this.piEphemeralCompaction = null;
           try {
             if (freshPrompts) {
               // No bespoke inactivity race: the ai-chat stall watchdog
@@ -9416,21 +9698,48 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
    * user-stop give-up: keep everything except the failed assistant rows, dedup
    * against committed history (appendPiCoreMessagesIfMissing), then delete.
    *
+   * Code Mode / js_exec artifacts are folded onto their tool results first, exactly
+   * as turn_end and the recovered-tail commit do: the artifacts live in a transient
+   * KV bucket keyed by tool-call id, and this is the LAST moment anything will ever
+   * look at that key — after the clear below, no future turn's journal tail carries
+   * the id, so an unfolded artifact is both invisible in the transcript and a
+   * permanent KV leak. `consume: true` drains the bucket.
+   *
+   * `stampWork` controls the same-content-same-id invariant. Stamping a pi_core row
+   * with the live turnId is a PROMISE that the render row under that id displays
+   * this content (the mirror's top-up skips stamped rows whose id already exists —
+   * ui-mirror.ts, `hasDurableRenderId`). That holds when the interrupted stream
+   * orphan-persisted its partial; it does NOT hold when the give-up is about to
+   * create the turnId row out of `append` alone, which would hide the salvaged work
+   * forever. The caller decides; the default (stamped) preserves the historical
+   * behaviour of the paths that stream nothing of their own.
+   *
    * Best effort: a storage failure here must never throw an abandoned turn back
    * into the resume loop, and the clear still runs.
    */
-  private async releasePiTurnAfterGiveUp(): Promise<void> {
+  private async releasePiTurnAfterGiveUp(
+    options: {
+      work?: AgentMessage[];
+      append?: AgentMessage[];
+      stampWork?: boolean;
+    } = {},
+  ): Promise<void> {
     try {
-      const [journalTail, steerMessages] = await Promise.all([
-        this.loadPiTurnJournalTail(),
-        this.loadPiTurnSteerJournal(),
-      ]);
-      const realWork = [...journalTail, ...steerMessages].filter(
-        (message) => !isFailedPiAssistantMessage(message),
-      );
+      // `work` lets the salvage rung reuse the tail it already read (and already
+      // decided is worth keeping) instead of loading the journals twice.
+      const realWork = options.work ?? (await this.loadPiTurnUncommittedWork());
       if (realWork.length > 0) {
+        const workWithArtifacts = await Promise.all(
+          realWork.map((message) =>
+            this.attachCodeModeArtifactsToToolResult(message, { consume: true }),
+          ),
+        );
+        const append = options.append ?? [];
+        const turnId = this.activePiStreamTurnId;
         await this.appendPiCoreMessagesIfMissing(
-          stampPiRenderMessageId(realWork, this.activePiStreamTurnId),
+          options.stampWork === false
+            ? [...workWithArtifacts, ...stampPiRenderMessageId(append, turnId)]
+            : stampPiRenderMessageId([...workWithArtifacts, ...append], turnId),
         );
         this.recordChatThreadObservabilityEvent("pi_turn_giveup_journal_commit", {
           operation: "resume_interrupted_turn",
@@ -9456,6 +9765,164 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       }
     }
     await this.clearPiActiveTurnAndJournal();
+  }
+
+  /**
+   * The work an interrupted turn already accepted but pi_core has not seen: the
+   * turn journal's staged tail plus steered messages that never drained, minus the
+   * failed assistant rows (a provider error is not work). Shared by every give-up
+   * path and by the salvage rung, which decides on emptiness BEFORE committing.
+   */
+  private async loadPiTurnUncommittedWork(): Promise<AgentMessage[]> {
+    const [journalTail, steerMessages] = await Promise.all([
+      this.loadPiTurnJournalTail(),
+      this.loadPiTurnSteerJournal(),
+    ]);
+    return [...journalTail, ...steerMessages].filter(
+      (message) => !isFailedPiAssistantMessage(message),
+    );
+  }
+
+  /**
+   * Ladder rung 4 ({@link piTurnResumeRung}): finish the turn WITHOUT calling the
+   * provider. Three memory kills and a degraded rebuild have already failed, so the
+   * only thing left that is cheaper is not rebuilding a model context at all: commit
+   * the settled journal work (tool results, partial assistant text, admitted user
+   * messages) plus a short note saying the turn was interrupted and can be
+   * continued, then close the turn exactly like a completed one — marker + journal
+   * cleared, ownership released, todo state completed, automation run closed.
+   *
+   * Returns false when the journal holds no real work: there is nothing to salvage,
+   * so the caller goes terminal in the same wake instead of ending the turn with a
+   * bare note. Also returns false if the journals cannot be read — the terminal path
+   * is the safe fallback, and it re-reads them under its own best-effort commit.
+   *
+   * The commit reuses {@link releasePiTurnAfterGiveUp} (commit-then-clear, dedup via
+   * appendPiCoreMessagesIfMissing) so salvage cannot drift from the other give-ups;
+   * the note rides along as the final assistant message.
+   *
+   * Two details keep the render transcript honest, and both hinge on whether the
+   * dead stream left a durable render row under this turnId (ai-chat orphan-persists
+   * a partial only when it carried settled tool results — see onChatRecovery):
+   *  - WHEN IT DID, that row already shows the salvaged work, so the commit stamps
+   *    the work with the turnId as usual and ai-chat's CONTINUE appends the note to
+   *    that same row.
+   *  - WHEN IT DID NOT, the re-drive is a RETRY and the only thing that will ever
+   *    stream into the turnId row is the note itself. Stamping the work then would
+   *    promise the mirror that a note-only row displays it, and the top-up would
+   *    skip those rows forever — the user would never see the work this rung exists
+   *    to save. So only the NOTE is stamped; the work commits unstamped and the
+   *    top-up converts it normally, ahead of the note by pi_core commit order.
+   * The note is emitted as its own `turnNotice` part rather than a text delta, so a
+   * CONTINUE cannot splice it onto the tail of the partial's half-written sentence
+   * (ai-chat drops the encoder's `text-start` when it resumes a `streaming` text
+   * part). Trimming that partial instead is not an option here: unlike a real
+   * continuation, nothing regenerates it, and its content is exactly what this rung
+   * is preserving.
+   */
+  private async salvagePiTurnWithoutModel(
+    attempt: PiTurnResumeAttempt,
+  ): Promise<boolean> {
+    let work: AgentMessage[];
+    try {
+      work = await this.loadPiTurnUncommittedWork();
+    } catch (error) {
+      console.error(
+        "[ChatThreadDO] failed to read the journal for a turn salvage",
+        error,
+      );
+      return false;
+    }
+    if (work.length === 0) return false;
+
+    const completedAtMs = Date.now();
+    const note = this.createPiTurnSalvageMessage(completedAtMs);
+    // Read BEFORE the note streams (which creates the row when it is absent).
+    const liveTurnRowExists = this.hasLiveAssistantRowForActiveTurn();
+    this.recordChatThreadObservabilityEvent("pi_turn_resume_salvaged", {
+      operation: "resume_interrupted_turn",
+      status: "salvaged",
+      severity: "info",
+      count: work.length,
+      size: attempt.isolateDeath,
+      sampleKey: liveTurnRowExists ? "continued_partial" : "no_partial",
+    });
+    await this.releasePiTurnAfterGiveUp({
+      work,
+      append: [note],
+      stampWork: liveTurnRowExists,
+    });
+
+    // Close the turn out on every channel the normal end-of-turn uses, so the
+    // thread is immediately usable and no client is left spinning.
+    const threadId = this.chatContext?.threadId || "";
+    const turnStartedAtMs =
+      this.piAgentStartedAtMs || this.piTurnStartedAtMs || completedAtMs;
+    this.piAgentStartedAtMs = 0;
+    this.pushPiRuntimeEvent("item/agentMessage/delta", {
+      threadId,
+      itemId: `pi_turn_salvage_${completedAtMs}`,
+      // Its own part (see the class note above): a text delta would be absorbed
+      // into a resumed partial's trailing streaming text run.
+      itemKind: "turnNotice",
+      delta: PI_TURN_SALVAGE_NOTE,
+    });
+    this.pushPiRuntimeEvent("turn/completed", {
+      threadId,
+      completedAtMs,
+      turnDurationMs: Math.max(0, completedAtMs - turnStartedAtMs),
+    });
+    this.pushChatEvent({
+      type: "result",
+      threadId,
+      result: PI_TURN_SALVAGE_NOTE,
+      sessionId: threadId,
+      completedAt: completedAtMs,
+    });
+    // An automation run whose turn never reached the model did not do what it was
+    // asked, so it closes as an error carrying the note — same shape as the
+    // user-stop teardown, and set BEFORE finishTurn so its success branch (which
+    // fires on markUnread) finds no run left to mark.
+    this.updateActiveAutomationRun({
+      status: "error",
+      message: PI_TURN_SALVAGE_NOTE,
+      completedAt: completedAtMs,
+      clear: true,
+    });
+    this.finishTurn({
+      markUnread: true,
+      completedAt: completedAtMs,
+      summarySource: extractThreadCompletionSummarySource(work, PI_TURN_SALVAGE_NOTE),
+    });
+    this.setActiveTurnUserId(null);
+    await this.completeTodoStateForTurnEnd();
+    // The warm session (if any) still holds the interrupted turn's uncommitted
+    // tail, which pi_core has now absorbed — rebuild on the next turn.
+    this.disposePiSession();
+    return true;
+  }
+
+  /**
+   * The salvage note as a pi_core assistant message (rung 4's final message).
+   * Shaped like {@link createPiUserStopMessage}: a synthetic assistant row with an
+   * `aborted` stop reason so nothing downstream reads it as a provider answer.
+   */
+  private createPiTurnSalvageMessage(timestamp: number): AgentMessage {
+    const model = this.piSession?.state.model;
+    return {
+      role: "assistant",
+      content: [{ type: "text", text: PI_TURN_SALVAGE_NOTE }],
+      api: model?.api ?? "unknown",
+      provider: model?.provider ?? "unknown",
+      model: model?.id ?? "unknown",
+      usage: this.emptyPiUsage(),
+      stopReason: "aborted",
+      responseId: `pi_turn_salvage_${timestamp}`,
+      timestamp,
+      metadata: {
+        reason: PI_TURN_SALVAGE_METADATA_REASON,
+      },
+    } as unknown as AgentMessage;
   }
 
   /**

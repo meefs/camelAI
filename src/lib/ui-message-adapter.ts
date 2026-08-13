@@ -12,6 +12,7 @@ import {
   PI_ERROR_PART_ID,
   PI_TODOS_PART_ID,
   PI_TODOS_TOOL_USE_ID,
+  PI_TURN_NOTICE_PART_ID,
   PI_USER_STOP_PART_ID,
   piArtifactsPartId,
 } from './pi-chunk-encoder';
@@ -235,6 +236,17 @@ export function uiMessageToMessage(
         });
         break;
       }
+      case 'data-pi-turn-notice': {
+        // System-authored note about the turn (e.g. the salvage note). Renders as
+        // ordinary text; the itemKind keeps it distinguishable from model output.
+        const data = (part as { data?: { text?: unknown } }).data ?? {};
+        blocks.push({
+          type: 'text',
+          text: typeof data.text === 'string' ? data.text : '',
+          itemKind: 'turnNotice',
+        });
+        break;
+      }
       case 'data-pi-error': {
         const data = (part as { data?: Partial<PiErrorData> }).data ?? {};
         const block: ErrorBlock = {
@@ -410,6 +422,12 @@ export function messageToUiMessage(message: Message): UIMessage {
             parts.push({
               type: 'data-pi-user-stop',
               id: PI_USER_STOP_PART_ID,
+              data: { text: block.text },
+            } as UiPart);
+          } else if (block.itemKind === 'turnNotice') {
+            parts.push({
+              type: 'data-pi-turn-notice',
+              id: PI_TURN_NOTICE_PART_ID,
               data: { text: block.text },
             } as UiPart);
           } else {
