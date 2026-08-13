@@ -120,6 +120,7 @@ import {
   resolveContextUsageForInit,
 } from "./chat-context-usage";
 import {
+  SSE_MAX_QUEUED_BYTES,
   SseConnection,
   type SseQueueBudget,
   createSseCaptureConnection,
@@ -659,22 +660,87 @@ const PI_STREAM_PRE_ATTACH_CHUNK_CAP = 5000;
 // ---------------------------------------------------------------------------
 // Ceiling on stored replay bytes for one stream. Enforced in the patched
 // `_storeStreamChunk` funnel; past it the stream is degraded (resumes attach to
-// live instead of replaying). Well above any real turn's persisted content and
-// well below what a wake read can survive.
-const CHAT_STREAM_REPLAY_MAX_STORED_BYTES = 16 * 1024 * 1024;
+// live instead of replaying).
+//
+// This number is a property of the TRANSPORT, not of storage. A replay is pushed
+// into ONE SSE sink synchronously — `replayStreamChunksBounded` never awaits
+// between sends, and a sink write only un-queues itself in a `.then` microtask,
+// which cannot run inside synchronous JS — so the sink's queue grows
+// monotonically for the whole replay. Past SSE_MAX_QUEUED_BYTES the sink kills
+// itself, `sendIfOpen` reports a dead peer, the replay bails with the stream
+// still active, and the client answers by reconnecting and asking for the exact
+// same replay: an un-resumable turn plus a reconnect loop. So the ceiling that
+// decides "replay or attach to live" has to sit far enough below the queue cap
+// that a capped buffer's FRAMES still fit, and frames are strictly larger than
+// the bodies they carry (each body is JSON-escaped again inside a ~90 byte
+// envelope, plus `data: …\n\n`). Three eighths of the queue cap leaves room for
+// worst-case escaping and for the render-window snapshot the same sink is
+// already carrying. KEEP THESE COUPLED: raising the stored ceiling without
+// raising SSE_MAX_QUEUED_BYTES (./chat-thread/sse-connection) re-creates the
+// un-replayable band.
+const CHAT_STREAM_REPLAY_MAX_STORED_BYTES = Math.floor(
+  (SSE_MAX_QUEUED_BYTES * 3) / 8,
+);
+// Frame characters one replay may enqueue before it stops replaying, marks the
+// stream degraded and attaches the client to live instead. The stored ceiling
+// above already keeps a capped buffer's frames well under this, so it only fires
+// on pathological escaping — but it must fire BEFORE the sink's own cap, because
+// the sink's answer is to kill the connection. Characters, not bytes: counting
+// UTF-8 bytes means a second pass over every frame, and the gap between this and
+// SSE_MAX_QUEUED_BYTES plus {@link CHAT_REPLAY_MAX_ABORTED_ATTEMPTS} covers the
+// multi-byte case.
+const CHAT_REPLAY_MAX_SENT_CHARS = Math.floor((SSE_MAX_QUEUED_BYTES * 3) / 4);
+// Replays of one stream that may die mid-way before the buffer is declared
+// un-replayable over this transport. A client that really did go away costs a
+// replay; a buffer that cannot fit the wire costs the same replay on every
+// reconnect forever, so the Nth abort forces the degraded (attach-to-live) path
+// no matter what the byte arithmetic said.
+const CHAT_REPLAY_MAX_ABORTED_ATTEMPTS = 3;
 // Segment rows per page of a replay read. Small enough that a capped buffer's
 // worst case is resident one page at a time, large enough that a normal turn's
 // replay is a couple of queries.
 const CHAT_REPLAY_BATCH_SEGMENTS = 40;
-// Wake circuit breaker: `{count, at}` incremented (and durably written) at the
-// very top of onStart and reset once a wake completes, so it only ever counts
-// wakes that DIED before finishing startup. At the threshold the stream buffers
-// are quarantined, which is the only way out of a wake that OOMs while reading
-// them. Counts inside a rolling window so unrelated failures months apart never
-// add up to a quarantine.
+// Body bytes one page of a replay read may materialize. Rows alone are not a
+// bound: the SDK sizes a segment row in BYTES (up to ~512KB packed, up to ~1.8MB
+// for a single oversized chunk stored unwrapped), so `limit 40` lets a buffer
+// made of large rows come back whole — exactly the materialization paging exists
+// to prevent. Each page therefore reads row LENGTHS first (no bodies) and only
+// fetches the prefix that fits here; a single row that exceeds it is still
+// fetched alone, since one row is already bounded by the SDK's chunk ceiling.
+const CHAT_REPLAY_PAGE_MAX_BYTES = 1024 * 1024;
+// Stored bytes past which the recovery-classification read is skipped instead of
+// reconstructing the partial. That read (`_getPartialStreamText` → the SDK's
+// unpaged `getStreamChunks`) runs on WAKE with no client and no transport, so
+// only the isolate's memory bounds it — and it runs inside the framework's own
+// startup wrapper, before any app code, which is what made pre-existing whale
+// buffers unkillable. Streams written under the ceiling above never come close,
+// so the recovery partial keeps its full-prefix semantics (OOM-FIX.md fix 3) for
+// every stream this deploy governs; this only sheds buffers that predate the cap.
+const CHAT_RECOVERY_PARTIAL_MAX_STORED_BYTES = 8 * 1024 * 1024;
+// Wake circuit breaker: `{count, at}` incremented (and durably written) before
+// any of the framework's startup work and reset once a wake completes OR fails
+// with a catchable error, so it only ever counts wakes that left no epilogue at
+// all — the signature of an isolate that was killed. At the threshold the stream
+// buffers are quarantined, which is the only way out of a wake that OOMs while
+// reading them. Counts inside a rolling window from the FIRST such wake so
+// unrelated failures months apart never add up to a quarantine.
 const CHAT_WAKE_OOM_GUARD_KEY = "wakeOomGuard";
 const CHAT_WAKE_OOM_GUARD_WINDOW_MS = 60 * 60 * 1000;
 const CHAT_WAKE_OOM_QUARANTINE_AFTER = 3;
+// Total stored chunk bytes below which quarantine is refused. The remedy is
+// destructive (both stream tables dropped, so an in-flight turn loses its
+// resumability and its settled-partial persist), and a buffer this small cannot
+// be what killed a 128MB isolate — so a wake failing for any other reason must
+// not be allowed to cash in three attempts against an actively recoverable turn.
+const CHAT_WAKE_QUARANTINE_MIN_STORED_BYTES = 8 * 1024 * 1024;
+// Durable ids of streams whose replay buffer is known-incomplete. The SDK's own
+// verdict is in-memory, and its post-eviction recompute re-derives it from a SQL
+// byte sum over PACKED rows — a different currency than the store-time tally —
+// so it cannot reproduce a live verdict. Remembering the ids is what makes
+// "this buffer is truncated" survive hibernation. Bounded FIFO: a thread only
+// ever has a handful of streams in flight, and the ids are cheap.
+const CHAT_REPLAY_DEGRADED_STREAMS_KEY = "chatReplayDegradedStreams";
+const CHAT_REPLAY_DEGRADED_STREAMS_MAX = 16;
 
 /**
  * The `ResumableStream` state the bounded replay needs. Everything here is
@@ -683,12 +749,49 @@ const CHAT_WAKE_OOM_QUARANTINE_AFTER = 3;
  */
 type ResumableStreamReplayInternals = {
   replayChunks(connection: Connection, requestId: string): string | null;
+  replayCompletedChunksByRequestId(
+    connection: Connection,
+    requestId: string,
+  ): boolean;
+  replayErroredChunksByRequestId(
+    connection: Connection,
+    requestId: string,
+  ): boolean;
   readonly activeStreamId: string | null;
   readonly isLive: boolean;
   _activeIsContinuation?: boolean;
   flushBuffer(): void;
   complete(streamId: string): void;
 };
+
+/** The recovery partial `_getPartialStreamText` reconstructs from stored chunks. */
+type ChatRecoveryPartial = {
+  text: string;
+  parts: UIMessage["parts"];
+  hasSettledToolResults: boolean;
+};
+
+/** Why a stream's replay buffer was declared unusable. */
+type ChatReplayDegradeReason =
+  /** The patched store-side funnel hit its byte ceiling and stopped storing. */
+  | "capped"
+  /** A replay's frames would not fit the SSE sink that has to carry them. */
+  | "transport_budget"
+  /** Repeated replays of this buffer died mid-way; stop re-reading it. */
+  | "replay_aborted"
+  /** The wake-time recovery read would have materialized too much to survive. */
+  | "recovery_read_skipped";
+
+/** How a chunk replay ended. Only `aborted` means the client did not get it. */
+type ChatReplayOutcome =
+  /** Every stored frame was sent. */
+  | "complete"
+  /** Buffer is known-truncated; no content frames were sent by design. */
+  | "skipped"
+  /** A send failed mid-replay: the peer is gone and nothing may be finalized. */
+  | "aborted"
+  /** The replay would not fit the transport; the rest is deliberately dropped. */
+  | "budget_exhausted";
 
 interface WakeOomGuardRecord {
   count: number;
@@ -1117,6 +1220,36 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       return frameworkOnMessage(connection, message);
     };
 
+    // The Agent constructor also replaced this.onStart with ITS OWN wrapper, and
+    // that wrapper does the heavy wake work — state restore, MCP restore, and
+    // `_checkRunFibers` → chat fiber recovery, whose classification read
+    // materializes the whole replay buffer with no client involved — BEFORE it
+    // calls this class's onStart. Arming the breaker or installing the bounded
+    // readers from ChatThreadDO.onStart is therefore strictly too late: the read
+    // that kills the isolate has already happened, nothing was ever counted, and
+    // the kill re-drives the identical wake forever. Wrapping the wrapper here is
+    // the only app-controlled point that precedes it (partyserver calls onStart
+    // from #ensureInitialized, which cannot run before the constructor returns).
+    const frameworkOnStart = this.onStart.bind(this);
+    this.onStart = async (props?: unknown): Promise<void> => {
+      this.armWakeOomGuard();
+      this.installBoundedStreamReplay();
+      try {
+        await frameworkOnStart(props as never);
+      } catch (error) {
+        // Reaching a catch PROVES the isolate survived this wake, so it is not
+        // the OOM the breaker counts — and partyserver re-runs onStart on the
+        // next entry point in this same live isolate, so leaving the increment
+        // would let three client frames quarantine a healthy thread in seconds.
+        this.resetWakeOomGuard();
+        throw error;
+      }
+    };
+    // Also install before the first wake even reaches onStart: the wrapper above
+    // covers every partyserver entry point, but the reads are cheap to bound
+    // twice and expensive to bound once too late.
+    this.installBoundedStreamReplay();
+
     // SQLite-backed storage operations below are synchronous. Keep constructor
     // hydration out of blockConcurrencyWhile: if an active turn is being
     // recovered while route loaders reconnect, a blocked constructor can reset
@@ -1402,12 +1535,14 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   }
 
   override async onStart(props?: unknown): Promise<void> {
-    // Both of these must land BEFORE super.onStart: it is where the wake reads
-    // that can OOM the isolate happen (recovery classification materializes the
-    // replay buffer), so the guard write has to already be durable and the
-    // bounded replay already installed by the time it runs.
-    this.armWakeOomGuard();
-    this.installBoundedStreamReplay();
+    // The breaker is armed and the bounded readers installed by the constructor's
+    // onStart wrapper, NOT here. This method is the LAST step of startup — the
+    // framework's wrapper runs state restore, MCP restore and `_checkRunFibers`
+    // (chat fiber recovery, which reconstructs the recovery partial from the
+    // replay buffer) before calling it — so anything guarding those reads has to
+    // be installed upstream of it. `super.onStart` below resolves to
+    // partyserver's empty hook; the reads it used to be credited with are the
+    // framework wrapper's, already done by the time we get here.
     const phase = this.startChatMemoryPhase("on_start");
     try {
       await this.withChatMemoryPhase("stream_reconstruct", async () => {
@@ -1443,14 +1578,63 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     this.resetWakeOomGuard();
   }
 
+  /** Set once this isolate has counted its wake against the breaker. */
+  private wakeGuardArmed: boolean = false;
+  /**
+   * Test seams for the wake/replay bounds. Production uses the constants at the
+   * top of this file; tests scale them down so a fixture does not have to be
+   * megabytes of chunk rows to reach a threshold.
+   */
+  private replayBoundOverrides: {
+    maxSentChars?: number;
+    pageMaxBytes?: number;
+    recoveryPartialMaxStoredBytes?: number;
+    wakeQuarantineMinStoredBytes?: number;
+  } = {};
+
+  private replayMaxSentChars(): number {
+    return this.replayBoundOverrides.maxSentChars ?? CHAT_REPLAY_MAX_SENT_CHARS;
+  }
+
+  private replayPageMaxBytes(): number {
+    return this.replayBoundOverrides.pageMaxBytes ?? CHAT_REPLAY_PAGE_MAX_BYTES;
+  }
+
+  private recoveryPartialMaxStoredBytes(): number {
+    return (
+      this.replayBoundOverrides.recoveryPartialMaxStoredBytes ??
+      CHAT_RECOVERY_PARTIAL_MAX_STORED_BYTES
+    );
+  }
+
+  private wakeQuarantineMinStoredBytes(): number {
+    return (
+      this.replayBoundOverrides.wakeQuarantineMinStoredBytes ??
+      CHAT_WAKE_QUARANTINE_MIN_STORED_BYTES
+    );
+  }
+
   /**
    * Count this wake against the breaker and quarantine at the threshold. The
    * write is the SYNCHRONOUS kv put on purpose: the failure this counts is the
    * isolate being killed later in the same wake, which loses anything still
    * queued behind an await.
+   *
+   * Counted ONCE PER ISOLATE. partyserver puts `#status` back to "zero" when
+   * onStart throws and re-runs it on the next entry point in the same live
+   * isolate — `webSocketMessage` even swallows the error — so a deterministic
+   * non-memory failure would otherwise reach the threshold within seconds of a
+   * reconnecting tab's frames. An isolate that is genuinely OOM-killed never
+   * comes back, so per-isolate dedupe costs the real detector nothing.
    */
   private armWakeOomGuard(): void {
+    if (this.wakeGuardArmed) return;
+    this.wakeGuardArmed = true;
     let count = 1;
+    // The window runs from the FIRST unfinished wake, not from the last one:
+    // refreshing `at` on every increment turns a 1h ceiling into an unbounded
+    // sliding gap between retries.
+    let windowStartedAt = Date.now();
     try {
       const previous = this.ctx.storage.kv.get<Partial<WakeOomGuardRecord>>(
         CHAT_WAKE_OOM_GUARD_KEY,
@@ -1463,10 +1647,11 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         Date.now() - previous.at < CHAT_WAKE_OOM_GUARD_WINDOW_MS
       ) {
         count = Math.max(0, Math.floor(previous.count)) + 1;
+        if (count > 1) windowStartedAt = previous.at;
       }
       this.ctx.storage.kv.put<WakeOomGuardRecord>(CHAT_WAKE_OOM_GUARD_KEY, {
         count,
-        at: Date.now(),
+        at: windowStartedAt,
       });
     } catch (error) {
       // The breaker is a safety net; never let its bookkeeping fail a wake.
@@ -1496,9 +1681,27 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
    * path this wake never reaches. The turn's content is not lost — pi_core_messages
    * is canonical and the render history is already persisted; what is lost is the
    * ability to resume that turn's stream, which is the price of a bootable DO.
+   *
+   * Refused unless the buffers are big enough to plausibly BE the problem. The
+   * breaker cannot observe an OOM directly, so without this gate any repeated
+   * wake failure — a storage hiccup in the orphan-marker sweep, a `setState` on a
+   * nameless alarm wake, a bad deploy of onStart — would cash in three attempts
+   * against an actively recoverable turn and delete the settled partial the
+   * recovery path was about to persist.
    */
   private quarantineStreamBuffers(count: number): void {
     try {
+      const storedBytes = this.storedStreamChunkBytes();
+      if (storedBytes < this.wakeQuarantineMinStoredBytes()) {
+        this.recordChatThreadObservabilityEvent("chat_do_wake_quarantine", {
+          operation: "wake_oom_guard",
+          status: "skipped_small_buffer",
+          severity: "warn",
+          count,
+          size: storedBytes,
+        });
+        return;
+      }
       const stream = this._resumableStream as unknown as
         | { clearAll?: () => void }
         | undefined;
@@ -1509,11 +1712,15 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         this.ctx.storage.sql.exec("delete from cf_ai_chat_stream_metadata");
       }
       this.ctx.storage.kv.delete(CHAT_RECOVERING_KEY);
+      // The rows those ids described are gone, so the durable degraded set has
+      // nothing left to remember.
+      this.clearDegradedStreamIds();
       this.recordChatThreadObservabilityEvent("chat_do_wake_quarantine", {
         operation: "wake_oom_guard",
         status: "stream_buffers_cleared",
         severity: "error",
         count,
+        size: storedBytes,
       });
     } catch (error) {
       this.recordChatThreadObservabilityEvent("chat_do_wake_quarantine", {
@@ -1526,16 +1733,25 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     }
   }
 
-  /** Set once the SDK's replay entry point has been replaced on this instance. */
+  /** Set once the SDK's replay entry points have been replaced on this instance. */
   private boundedReplayStream?: ResumableStreamReplayInternals;
+  /** Set once the recovery-partial read has been bounded on this instance. */
+  private boundedRecoveryPartialRead: boolean = false;
 
   /**
-   * Replace `ResumableStream.replayChunks` with the paged/degraded-aware version
-   * below. Installed on the instance rather than the prototype so nothing leaks
-   * across DO classes in the isolate, and idempotent because onStart runs again
-   * on every cold wake.
+   * Replace every whole-buffer read of the replay tables with the paged,
+   * degraded-aware versions below. Installed on the instance rather than the
+   * prototype so nothing leaks across DO classes in the isolate, and idempotent
+   * because the constructor's onStart wrapper runs on every cold wake.
+   *
+   * All FOUR readers, not just `replayChunks`: the two terminal readers are
+   * reachable from any client's resume ACK after the turn ended (a completion
+   * race, or an errored turn's `_replayTerminalOnAck`) and the recovery-partial
+   * read is reachable with no client at all, on the wake path, before app code
+   * gets to run.
    */
   private installBoundedStreamReplay(): void {
+    this.installBoundedRecoveryPartialRead();
     const stream = this._resumableStream as unknown as
       | ResumableStreamReplayInternals
       | undefined;
@@ -1543,15 +1759,69 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     this.boundedReplayStream = stream;
     stream.replayChunks = (connection: Connection, requestId: string) =>
       this.replayStreamChunksBounded(stream, connection, requestId);
+    stream.replayCompletedChunksByRequestId = (
+      connection: Connection,
+      requestId: string,
+    ) => this.replayTerminalChunksBounded(stream, connection, requestId, "completed");
+    stream.replayErroredChunksByRequestId = (
+      connection: Connection,
+      requestId: string,
+    ) => this.replayTerminalChunksBounded(stream, connection, requestId, "error");
   }
 
   /**
-   * `ResumableStream.replayChunks` with the whole-buffer materialization removed.
-   * Two changes, and NOTHING else: the chunk read is paged instead of one
-   * `select *`, and a degraded stream (its buffer capped, so a replay would show
-   * a truncated turn anyway) skips chunk replay entirely and just attaches the
-   * client to live — the CHAT_MESSAGES snapshot the connect chain sends and the
-   * turn-end persist are what close that gap.
+   * Bound `AIChatAgent._getPartialStreamText`, the recovery-classification read.
+   * It is `private` in the SDK's declarations, so it is wrapped on the instance
+   * the same way this class already wraps other ai-chat privates.
+   *
+   * This is the read that OOM-killed whale threads: `_checkRunFibers` →
+   * `handleChatFiberRecovery` → `getPartialStreamText` runs inside the framework's
+   * startup wrapper, with no client and no transport, and the SDK's
+   * `getStreamChunks` selects every body for the stream and expands each packed
+   * row into one object per chunk. The store-side ceiling bounds streams written
+   * from now on, but a buffer that predates it is still read whole — and because
+   * the fiber row is only deleted AFTER the hook returns, every wake redoes the
+   * identical read.
+   */
+  private installBoundedRecoveryPartialRead(): void {
+    if (this.boundedRecoveryPartialRead) return;
+    const agent = this as unknown as {
+      _getPartialStreamText?: (streamId: string) => ChatRecoveryPartial;
+    };
+    const sdkGetPartialStreamText = agent._getPartialStreamText;
+    if (typeof sdkGetPartialStreamText !== "function") return;
+    this.boundedRecoveryPartialRead = true;
+    agent._getPartialStreamText = (streamId: string): ChatRecoveryPartial => {
+      // `_streamStoredBytesFor` answers from the live tally or ONE sum query over
+      // row lengths — it never touches a body, so the pre-check itself is safe on
+      // a buffer that cannot be read.
+      const storedBytes = this._streamStoredBytesFor(streamId);
+      if (storedBytes <= this.recoveryPartialMaxStoredBytes()) {
+        return sdkGetPartialStreamText.call(this, streamId);
+      }
+      this.markStreamReplayDegradedFor(
+        streamId,
+        storedBytes,
+        "recovery_read_skipped",
+      );
+      // An empty partial means recovery treats the turn as having produced
+      // nothing resumable: it re-drives from pi_core_messages (canonical) rather
+      // than from a prefix it cannot load. Losing the prefix is strictly better
+      // than never booting.
+      return { text: "", parts: [], hasSettledToolResults: false };
+    };
+  }
+
+  /**
+   * `ResumableStream.replayChunks` with the whole-buffer materialization removed
+   * and the transport it has to fit taken into account. The chunk read is paged by
+   * rows AND bytes instead of one `select *`; a degraded stream (buffer capped or
+   * known-truncated, so a replay would show a truncated turn anyway) skips chunk
+   * replay entirely and just attaches the client to live; and a replay whose
+   * frames would not fit one SSE sink stops early and does the same, because the
+   * alternative is the sink killing the connection and the client asking for the
+   * identical replay on every reconnect. The CHAT_MESSAGES snapshot the connect
+   * chain sends and the turn-end persist are what close those gaps.
    *
    * Everything else is the SDK's contract, frame for frame: a failed send returns
    * null with the stream LEFT ACTIVE (so the next reattach retries the whole
@@ -1568,98 +1838,365 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     if (!streamId) return null;
     stream.flushBuffer();
     const continuation = stream._activeIsContinuation === true;
-    const contentFrame = (body: string): string =>
-      JSON.stringify({
-        body,
-        done: false,
-        id: requestId,
-        type: CHAT_MESSAGE_TYPES.USE_CHAT_RESPONSE,
-        replay: true,
-        ...(continuation && { continuation: true }),
-      });
-    const doneFrame = (): string =>
-      JSON.stringify({
-        body: "",
-        done: true,
-        id: requestId,
-        type: CHAT_MESSAGE_TYPES.USE_CHAT_RESPONSE,
-        replay: true,
-        ...(continuation && { continuation: true }),
-      });
-    const replayCompleteFrame = (): string =>
-      JSON.stringify({
-        body: "",
-        done: false,
-        id: requestId,
-        type: CHAT_MESSAGE_TYPES.USE_CHAT_RESPONSE,
-        replay: true,
-        replayComplete: true,
-        ...(continuation && { continuation: true }),
-      });
-
-    if (!this._isStreamReplayDegraded(streamId)) {
-      // The SDK read every row in ONE query, so a segment flushed by the still
-      // live LLM reader during the replay was never replayed — it reaches this
-      // client as a live broadcast instead (the ack already un-suppressed it).
-      // Paging must respect the same boundary or those chunks arrive twice.
-      const [{ max_index: lastChunkIndex } = { max_index: null }] = this.ctx.storage.sql
-        .exec<{ max_index: number | null }>(
-          "select max(chunk_index) as max_index from cf_ai_chat_stream_chunks where stream_id = ?",
-          streamId,
-        )
-        .toArray();
-      let afterChunkIndex = -1;
-      while (lastChunkIndex !== null) {
-        const page = this.ctx.storage.sql
-          .exec<{ chunk_index: number; body: string }>(
-            "select chunk_index, body from cf_ai_chat_stream_chunks" +
-              " where stream_id = ? and chunk_index > ? and chunk_index <= ?" +
-              " order by chunk_index asc limit ?",
-            streamId,
-            afterChunkIndex,
-            lastChunkIndex,
-            CHAT_REPLAY_BATCH_SEGMENTS,
-          )
-          .toArray();
-        if (page.length === 0) break;
-        for (const row of page) {
-          for (const body of unpackReplaySegmentBody(row.body)) {
-            if (!sendIfOpen(connection, contentFrame(body))) return null;
-          }
-          afterChunkIndex = row.chunk_index;
-        }
-        if (page.length < CHAT_REPLAY_BATCH_SEGMENTS) break;
-      }
+    const outcome = this.replayStoredChunkFrames(
+      connection,
+      streamId,
+      requestId,
+      continuation,
+    );
+    if (outcome === "aborted") {
+      // The peer is gone; the SDK leaves the stream active so the next reattach
+      // retries. Count it — a buffer that cannot fit the wire dies here on EVERY
+      // reconnect, and the Nth abort is what converts that loop into attach-to-live.
+      this.noteStreamReplayAborted(streamId);
+      return null;
     }
+    if (outcome === "complete") this.noteStreamReplayCompleted(streamId);
 
     if (stream.activeStreamId !== streamId) {
-      sendIfOpen(connection, doneFrame());
+      sendIfOpen(connection, this.replayDoneFrame(requestId, continuation));
       return null;
     }
     if (!stream.isLive) {
-      sendIfOpen(connection, doneFrame());
+      sendIfOpen(connection, this.replayDoneFrame(requestId, continuation));
       stream.complete(streamId);
       return streamId;
     }
-    sendIfOpen(connection, replayCompleteFrame());
+    sendIfOpen(connection, this.replayCompleteFrame(requestId, continuation));
     return null;
   }
 
-  /** One event per stream that hits the patched funnel's stored-byte ceiling.
+  /**
+   * `replayCompletedChunksByRequestId` / `replayErroredChunksByRequestId`, paged.
+   * Both are reachable from an ordinary client resume ACK once a turn has ended
+   * and, unpatched, both read the stream's whole buffer in one `select *` with no
+   * degraded check — the same materialization as `replayChunks`, on a path a page
+   * load can drive once per tab.
+   *
+   * Return contracts are the SDK's, and they differ between the two: `completed`
+   * returns false when no completed stream exists and otherwise the terminal
+   * `done` frame's send result; `error` returns TRUE when no errored stream exists
+   * (nothing to replay, caller proceeds to its own terminal frame) and sends no
+   * terminal frame itself.
+   */
+  private replayTerminalChunksBounded(
+    stream: ResumableStreamReplayInternals,
+    connection: Connection,
+    requestId: string,
+    status: "completed" | "error",
+  ): boolean {
+    stream.flushBuffer();
+    const [row] = this.ctx.storage.sql
+      .exec<{ id: string; is_continuation: number | null }>(
+        "select id, is_continuation from cf_ai_chat_stream_metadata" +
+          " where request_id = ? and status = ? order by created_at desc limit 1",
+        requestId,
+        status,
+      )
+      .toArray();
+    if (!row) return status === "error";
+    const continuation = row.is_continuation === 1;
+    const outcome = this.replayStoredChunkFrames(
+      connection,
+      row.id,
+      requestId,
+      continuation,
+    );
+    if (outcome === "aborted") {
+      this.noteStreamReplayAborted(row.id);
+      return false;
+    }
+    if (outcome === "complete") this.noteStreamReplayCompleted(row.id);
+    if (status === "error") return true;
+    return sendIfOpen(connection, this.replayDoneFrame(requestId, continuation));
+  }
+
+  private replayContentFrame(
+    body: string,
+    requestId: string,
+    continuation: boolean,
+  ): string {
+    return JSON.stringify({
+      body,
+      done: false,
+      id: requestId,
+      type: CHAT_MESSAGE_TYPES.USE_CHAT_RESPONSE,
+      replay: true,
+      ...(continuation && { continuation: true }),
+    });
+  }
+
+  private replayDoneFrame(requestId: string, continuation: boolean): string {
+    return JSON.stringify({
+      body: "",
+      done: true,
+      id: requestId,
+      type: CHAT_MESSAGE_TYPES.USE_CHAT_RESPONSE,
+      replay: true,
+      ...(continuation && { continuation: true }),
+    });
+  }
+
+  private replayCompleteFrame(requestId: string, continuation: boolean): string {
+    return JSON.stringify({
+      body: "",
+      done: false,
+      id: requestId,
+      type: CHAT_MESSAGE_TYPES.USE_CHAT_RESPONSE,
+      replay: true,
+      replayComplete: true,
+      ...(continuation && { continuation: true }),
+    });
+  }
+
+  /**
+   * Test seam: one call per page of a replay read, with the body bytes that page
+   * materialized and the rows it covered. The whole point of paging is that this
+   * stays bounded, and nothing else about the read is observable from outside.
+   */
+  protected onReplayPageRead?: (pageBytes: number, rows: number) => void;
+
+  /**
+   * Send one stream's stored chunks as replay content frames, paged by rows AND
+   * bytes, bailing before the transport's queue cap. Sends no terminal frame of
+   * any kind — the callers own those, because their contracts differ.
+   */
+  private replayStoredChunkFrames(
+    connection: Connection,
+    streamId: string,
+    requestId: string,
+    continuation: boolean,
+  ): ChatReplayOutcome {
+    if (this._isStreamReplayDegraded(streamId)) return "skipped";
+    // The SDK read every row in ONE query, so a segment flushed by the still
+    // live LLM reader during the replay was never replayed — it reaches this
+    // client as a live broadcast instead (the ack already un-suppressed it).
+    // Paging must respect the same boundary or those chunks arrive twice.
+    const [{ max_index: lastChunkIndex } = { max_index: null }] = this.ctx.storage.sql
+      .exec<{ max_index: number | null }>(
+        "select max(chunk_index) as max_index from cf_ai_chat_stream_chunks where stream_id = ?",
+        streamId,
+      )
+      .toArray();
+    if (lastChunkIndex === null) return "complete";
+    let afterChunkIndex = -1;
+    let sentChars = 0;
+    for (;;) {
+      // Row LENGTHS first: bodies are what must not pile up, and a segment row is
+      // sized in bytes by the SDK, so a row limit alone is not a byte bound.
+      const lengths = this.ctx.storage.sql
+        .exec<{ chunk_index: number; bytes: number | null }>(
+          "select chunk_index, length(cast(body as blob)) as bytes" +
+            " from cf_ai_chat_stream_chunks" +
+            " where stream_id = ? and chunk_index > ? and chunk_index <= ?" +
+            " order by chunk_index asc limit ?",
+          streamId,
+          afterChunkIndex,
+          lastChunkIndex,
+          CHAT_REPLAY_BATCH_SEGMENTS,
+        )
+        .toArray();
+      if (lengths.length === 0) return "complete";
+      // Always take at least one row (a single row is already bounded by the
+      // SDK's per-chunk ceiling), then as many more as the byte budget allows.
+      let pageEndIndex = lengths[0]!.chunk_index;
+      let pageBytes = lengths[0]!.bytes ?? 0;
+      for (let index = 1; index < lengths.length; index++) {
+        const rowBytes = lengths[index]!.bytes ?? 0;
+        if (pageBytes + rowBytes > this.replayPageMaxBytes()) break;
+        pageBytes += rowBytes;
+        pageEndIndex = lengths[index]!.chunk_index;
+      }
+      const page = this.ctx.storage.sql
+        .exec<{ chunk_index: number; body: string }>(
+          "select chunk_index, body from cf_ai_chat_stream_chunks" +
+            " where stream_id = ? and chunk_index > ? and chunk_index <= ?" +
+            " order by chunk_index asc",
+          streamId,
+          afterChunkIndex,
+          pageEndIndex,
+        )
+        .toArray();
+      this.onReplayPageRead?.(pageBytes, page.length);
+      if (page.length === 0) return "complete";
+      for (const row of page) {
+        for (const body of unpackReplaySegmentBody(row.body)) {
+          const frame = this.replayContentFrame(body, requestId, continuation);
+          if (sentChars + frame.length > this.replayMaxSentChars()) {
+            this.markStreamReplayTransportExhausted(streamId, sentChars);
+            return "budget_exhausted";
+          }
+          if (!sendIfOpen(connection, frame)) return "aborted";
+          sentChars += frame.length;
+        }
+        afterChunkIndex = row.chunk_index;
+      }
+    }
+  }
+
+  /**
+   * This buffer cannot be replayed over one SSE connection. Remember it durably so
+   * reconnects stop re-reading and re-encoding it, and record the band: the
+   * store-side ceiling is supposed to make this unreachable, so an event here means
+   * the two caps have drifted apart.
+   */
+  private markStreamReplayTransportExhausted(
+    streamId: string,
+    sentChars: number,
+  ): void {
+    console.warn("[ChatThreadDO] stream replay exceeded the transport budget", {
+      streamId,
+      sentChars,
+      budgetChars: this.replayMaxSentChars(),
+    });
+    this.markStreamReplayDegradedFor(streamId, sentChars, "transport_budget");
+  }
+
+  /** Replays of one stream that died mid-way, per isolate. */
+  private streamReplayAbortCounts?: Map<string, number>;
+
+  private noteStreamReplayAborted(streamId: string): void {
+    const counts = (this.streamReplayAbortCounts ??= new Map<string, number>());
+    const attempts = (counts.get(streamId) ?? 0) + 1;
+    counts.set(streamId, attempts);
+    if (attempts < CHAT_REPLAY_MAX_ABORTED_ATTEMPTS) return;
+    counts.delete(streamId);
+    // A client that really went away costs one replay. A buffer that does not fit
+    // the wire costs the same read-and-encode on every reconnect, forever, and the
+    // byte arithmetic that is supposed to prevent that is an estimate. Stop.
+    this.markStreamReplayDegradedFor(
+      streamId,
+      this.storedStreamChunkBytes(streamId),
+      "replay_aborted",
+    );
+  }
+
+  private noteStreamReplayCompleted(streamId: string): void {
+    this.streamReplayAbortCounts?.delete(streamId);
+  }
+
+  /** Stored chunk bytes, for one stream or for the whole thread. Row lengths
+   *  only — never a body, so it is safe on a buffer that cannot be read. */
+  private storedStreamChunkBytes(streamId?: string): number {
+    try {
+      const [row] = (
+        streamId === undefined
+          ? this.ctx.storage.sql.exec<{ bytes: number | null }>(
+              "select sum(length(cast(body as blob))) as bytes from cf_ai_chat_stream_chunks",
+            )
+          : this.ctx.storage.sql.exec<{ bytes: number | null }>(
+              "select sum(length(cast(body as blob))) as bytes from cf_ai_chat_stream_chunks where stream_id = ?",
+              streamId,
+            )
+      ).toArray();
+      const bytes = row?.bytes;
+      return typeof bytes === "number" && Number.isFinite(bytes) ? bytes : 0;
+    } catch (error) {
+      console.error("[ChatThreadDO] stored stream chunk byte read failed", error);
+      return 0;
+    }
+  }
+
+  /** Why the `_onStreamReplayDegraded` currently in flight fired. Only ever set
+   *  around a single {@link markStreamReplayDegradedFor} call; the patched
+   *  funnel's own byte ceiling is the default, "capped". */
+  private streamReplayDegradeReason: ChatReplayDegradeReason = "capped";
+
+  /**
+   * Mark a stream's replay buffer unusable for a host-side reason. Always restores
+   * the default reason, because `_markStreamReplayDegraded` is a no-op for a stream
+   * the SDK already marked — leaving the reason set would mislabel the NEXT
+   * stream's event.
+   */
+  private markStreamReplayDegradedFor(
+    streamId: string,
+    storedBytes: number,
+    reason: ChatReplayDegradeReason,
+  ): void {
+    this.streamReplayDegradeReason = reason;
+    try {
+      this._markStreamReplayDegraded(streamId, storedBytes);
+    } finally {
+      this.streamReplayDegradeReason = "capped";
+    }
+  }
+  /** In-memory mirror of {@link CHAT_REPLAY_DEGRADED_STREAMS_KEY}. */
+  private degradedStreamIdCache?: Set<string>;
+
+  private durableDegradedStreamIds(): Set<string> {
+    if (this.degradedStreamIdCache) return this.degradedStreamIdCache;
+    let ids: string[] = [];
+    try {
+      const stored = this.ctx.storage.kv.get<unknown>(
+        CHAT_REPLAY_DEGRADED_STREAMS_KEY,
+      );
+      if (Array.isArray(stored)) {
+        ids = stored.filter((id): id is string => typeof id === "string");
+      }
+    } catch (error) {
+      console.error("[ChatThreadDO] degraded stream id read failed", error);
+    }
+    this.degradedStreamIdCache = new Set(ids);
+    return this.degradedStreamIdCache;
+  }
+
+  private persistDegradedStreamId(streamId: string): void {
+    const ids = this.durableDegradedStreamIds();
+    if (ids.has(streamId)) return;
+    const next = [...ids, streamId].slice(-CHAT_REPLAY_DEGRADED_STREAMS_MAX);
+    this.degradedStreamIdCache = new Set(next);
+    try {
+      this.ctx.storage.kv.put(CHAT_REPLAY_DEGRADED_STREAMS_KEY, next);
+    } catch (error) {
+      console.error("[ChatThreadDO] degraded stream id write failed", error);
+    }
+  }
+
+  private clearDegradedStreamIds(): void {
+    this.degradedStreamIdCache = new Set();
+    try {
+      this.ctx.storage.kv.delete(CHAT_REPLAY_DEGRADED_STREAMS_KEY);
+    } catch (error) {
+      console.error("[ChatThreadDO] degraded stream id clear failed", error);
+    }
+  }
+
+  /**
+   * The SDK settles an unknown stream's verdict from a `sum(length(body))` over
+   * PACKED rows, which is a different currency than the store-time tally that
+   * produced the live verdict (a packed row re-escapes every body it holds), and
+   * the host's own bail-outs (transport budget, repeated aborted replays, skipped
+   * recovery read) are not byte-derived at all. So the ids are remembered durably:
+   * a buffer that was truncated stays truncated across hibernation, and — since
+   * the tally is a deliberate OVER-estimate of on-disk bytes — a recompute can
+   * never contradict a live verdict by declaring a truncated buffer healthy and
+   * replaying it as if complete.
+   */
+  protected override _isStreamReplayDegraded(streamId: string | null): boolean {
+    if (!streamId) return false;
+    if (this.durableDegradedStreamIds().has(streamId)) return true;
+    return super._isStreamReplayDegraded(streamId);
+  }
+
+  /** One event per stream whose replay buffer becomes unusable, for any reason.
    *  Replaces the SDK's log-only default, so it keeps the log line too. */
   protected override _onStreamReplayDegraded(info: {
     streamId: string;
     storedBytes: number;
     limitBytes: number;
   }): void {
-    console.warn("[ChatThreadDO] stream replay buffer capped", {
+    const reason = this.streamReplayDegradeReason;
+    this.streamReplayDegradeReason = "capped";
+    this.persistDegradedStreamId(info.streamId);
+    console.warn("[ChatThreadDO] stream replay buffer degraded", {
       streamId: info.streamId,
       storedBytes: info.storedBytes,
       limitBytes: info.limitBytes,
+      reason,
     });
     this.recordChatThreadObservabilityEvent("chat_stream_replay_degraded", {
       operation: "stream_replay_buffer",
-      status: "capped",
+      status: reason,
       severity: "warn",
       size: info.storedBytes,
     });

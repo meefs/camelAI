@@ -1,5 +1,5 @@
 diff --git a/dist/index.d.ts b/dist/index.d.ts
-index 4c78cfd00e1b7ac8df16f5b4b405e297d8aea9cc..88b20f9a19e1c71cb9235964467c325b6549e35a 100644
+index 4c78cfd00e1b7ac8df16f5b4b405e297d8aea9cc..5736c01c330138b0c59e7a32492bdf02ee35835e 100644
 --- a/dist/index.d.ts
 +++ b/dist/index.d.ts
 @@ -51,6 +51,19 @@ type ChatRecoveryContinueData = {
@@ -49,7 +49,7 @@ index 4c78cfd00e1b7ac8df16f5b4b405e297d8aea9cc..88b20f9a19e1c71cb9235964467c325b
    /**
     * Shared auto-continuation barrier (#1649 / #1650): owns the coalesce timer
     * and the double-fire guard. Parameterized by this agent's stream-active
-@@ -458,6 +491,48 @@ declare class AIChatAgent<
+@@ -458,6 +491,56 @@ declare class AIChatAgent<
    /** @internal Delegate to _resumableStream. Also advances the recovery
     *  progress counter at production time (see `_maybeBumpRecoveryProgress`). */
    protected _storeStreamChunk(streamId: string, body: string): Promise<void>;
@@ -59,6 +59,14 @@ index 4c78cfd00e1b7ac8df16f5b4b405e297d8aea9cc..88b20f9a19e1c71cb9235964467c325b
 +   * Live delivery is unaffected — callers broadcast separately from storing.
 +   */
 +  protected _shouldSkipStreamChunkStorage(streamId: string, body: string): boolean;
++  /**
++   * Bytes one chunk costs ON DISK once `flushBuffer` packs it — the escaped form
++   * plus array punctuation, i.e. an upper bound on the packed row bytes for every
++   * segment shape. Keeps the live tally and the restore-time
++   * `sum(length(cast(body as blob)))` recompute in the same currency, so the two
++   * can never disagree about whether a stream's replay buffer was capped.
++   */
++  protected _streamChunkStoredCost(body: string): number;
 +  /** Top-level `{"transient":true}` on a `data-*` chunk: applied live, never
 +   *  worth replaying. Fails open on anything unparseable. */
 +  protected _isTransientStreamChunk(body: string): boolean;
@@ -98,7 +106,7 @@ index 4c78cfd00e1b7ac8df16f5b4b405e297d8aea9cc..88b20f9a19e1c71cb9235964467c325b
    /** Per-isolate throttle for crediting recovery progress from mid-segment
     *  streaming-content deltas (the shared `agents/chat` rule); reset per isolate
     *  so the first delta after a restart always credits. */
-@@ -1600,6 +1675,8 @@ declare class AIChatAgent<
+@@ -1600,6 +1683,8 @@ declare class AIChatAgent<
  export {
    AIChatAgent,
    ChatMessage,
@@ -108,7 +116,7 @@ index 4c78cfd00e1b7ac8df16f5b4b405e297d8aea9cc..88b20f9a19e1c71cb9235964467c325b
    type ChatRecoveryContext,
    type ChatRecoveryExhaustedContext,
 diff --git a/dist/index.js b/dist/index.js
-index 2aceaf4f6f9364cf972a6cfcb3c3446c35d37f03..c45341fdb271adca0d8f3c35efd6a7d473ac5a7b 100644
+index 2aceaf4f6f9364cf972a6cfcb3c3446c35d37f03..9a716890d1371151f20267d43969642c700c3311 100644
 --- a/dist/index.js
 +++ b/dist/index.js
 @@ -40,6 +40,17 @@ function isValidMessageStructure(msg) {
@@ -152,7 +160,7 @@ index 2aceaf4f6f9364cf972a6cfcb3c3446c35d37f03..c45341fdb271adca0d8f3c35efd6a7d4
  		const streamId = this._resumableStream.start(requestId, options);
  		this._preStream.flushOnStreamStart((c) => this._notifyStreamResuming(c));
  		if (this._continuation.pending?.requestId === requestId) {
-@@ -631,13 +648,119 @@ var AIChatAgent = class AIChatAgent extends Agent {
+@@ -631,13 +648,149 @@ var AIChatAgent = class AIChatAgent extends Agent {
  	/** @internal Delegate to _resumableStream. Also advances the recovery
  	*  progress counter at production time (see `_maybeBumpRecoveryProgress`). */
  	async _storeStreamChunk(streamId, body) {
@@ -173,6 +181,11 @@ index 2aceaf4f6f9364cf972a6cfcb3c3446c35d37f03..c45341fdb271adca0d8f3c35efd6a7d4
 +	*   - past the byte ceiling the stream is marked degraded and stops storing,
 +	*     so a resume attaches to live instead of replaying (the host repairs the
 +	*     gap from persisted history).
++	* The ceiling is re-tested AFTER the tally is advanced, not only before the
++	* next store: a turn that ends on the chunk that fills the buffer would
++	* otherwise be reported healthy by this isolate and degraded by the
++	* post-eviction recompute, so a resume would replay a buffer at capacity as if
++	* it were guaranteed complete.
 +	* Fails OPEN: anything unrecognized or unreadable is stored as before.
 +	* @internal
 +	*/
@@ -184,8 +197,33 @@ index 2aceaf4f6f9364cf972a6cfcb3c3446c35d37f03..c45341fdb271adca0d8f3c35efd6a7d4
 +			this._markStreamReplayDegraded(streamId, stored);
 +			return true;
 +		}
-+		this._streamStoredBytesMap().set(streamId, stored + streamChunkEncoder.encode(body).byteLength);
++		const next = stored + this._streamChunkStoredCost(body);
++		this._streamStoredBytesMap().set(streamId, next);
++		if (next >= limit) this._markStreamReplayDegraded(streamId, next);
 +		return false;
++	}
++	/**
++	* What one chunk costs in the currency the RESTORE-time recompute uses: bytes
++	* on disk. `flushBuffer` packs 2-10 bodies into `JSON.stringify(bodies)`, which
++	* re-escapes every quote and backslash inside each body, so the raw body length
++	* is 20-30% short of what actually lands in SQLite — and the same stream would
++	* then get one verdict from the live tally and a different one from the
++	* `sum(length(cast(body as blob)))` recompute after an eviction, flipping a
++	* never-capped buffer to degraded (or, in the other direction, replaying a
++	* truncated buffer as if complete).
++	*
++	* Counting the ESCAPED form plus 2 bytes of array punctuation is an upper bound
++	* on the packed row bytes for every segment shape: a packed segment of N bodies
++	* costs sum(escaped) + N + 1 on disk against sum(escaped) + 2N here, and a lone
++	* chunk is stored RAW, which is smaller still. So the ceiling can never be
++	* overshot on disk, and a recompute can only ever agree or under-count — never
++	* declare a capped buffer healthy. (It also absorbs the opposite skew from
++	* `storeChunk` silently dropping a chunk over its own per-chunk ceiling after
++	* this tally already counted it.)
++	* @internal
++	*/
++	_streamChunkStoredCost(body) {
++		return streamChunkEncoder.encode(JSON.stringify(body)).byteLength + 2;
 +	}
 +	/**
 +	* A chunk the client applies live and then forgets: top-level
@@ -273,7 +311,7 @@ index 2aceaf4f6f9364cf972a6cfcb3c3446c35d37f03..c45341fdb271adca0d8f3c35efd6a7d4
  	/** Advance the recovery-progress counter when a chunk represents genuinely
  	*  new produced content. Uses the shared host-agnostic rule
  	*  ({@link shouldCreditStreamProgress}): a milestone (started segment / settled
-@@ -881,8 +1004,80 @@ var AIChatAgent = class AIChatAgent extends Agent {
+@@ -881,8 +1034,80 @@ var AIChatAgent = class AIChatAgent extends Agent {
  		});
  	}
  	_loadMessagesFromDb() {
@@ -356,7 +394,7 @@ index 2aceaf4f6f9364cf972a6cfcb3c3446c35d37f03..c45341fdb271adca0d8f3c35efd6a7d4
  		return rows.map((row) => {
  			try {
  				const messageStr = row.message;
-@@ -891,7 +1086,7 @@ var AIChatAgent = class AIChatAgent extends Agent {
+@@ -891,7 +1116,7 @@ var AIChatAgent = class AIChatAgent extends Agent {
  					console.warn(`[AIChatAgent] Skipping invalid message ${row.id}: missing or malformed id, role, or parts`);
  					return null;
  				}
@@ -365,7 +403,7 @@ index 2aceaf4f6f9364cf972a6cfcb3c3446c35d37f03..c45341fdb271adca0d8f3c35efd6a7d4
  				return parsed;
  			} catch (error) {
  				console.error(`Failed to parse message ${row.id}:`, error);
-@@ -899,6 +1094,59 @@ var AIChatAgent = class AIChatAgent extends Agent {
+@@ -899,6 +1124,59 @@ var AIChatAgent = class AIChatAgent extends Agent {
  			}
  		}).filter((msg) => msg !== null);
  	}
@@ -425,7 +463,7 @@ index 2aceaf4f6f9364cf972a6cfcb3c3446c35d37f03..c45341fdb271adca0d8f3c35efd6a7d4
  	async _tryCatchChat(fn) {
  		try {
  			return await fn();
-@@ -2894,20 +3142,17 @@ var AIChatAgent = class AIChatAgent extends Agent {
+@@ -2894,20 +3172,17 @@ var AIChatAgent = class AIChatAgent extends Agent {
  			const safe = this._enforceRowSizeLimit(resolved);
  			const json = JSON.stringify(safe);
  			if (this._persistedMessageCache.get(safe.id) === json) continue;
@@ -450,7 +488,7 @@ index 2aceaf4f6f9364cf972a6cfcb3c3446c35d37f03..c45341fdb271adca0d8f3c35efd6a7d4
  				this._deleteMessagesByIds(staleIds);
  			}
  		}
-@@ -2915,7 +3160,7 @@ var AIChatAgent = class AIChatAgent extends Agent {
+@@ -2915,7 +3190,7 @@ var AIChatAgent = class AIChatAgent extends Agent {
  		const persisted = this._loadMessagesFromDb();
  		this.messages = autoTransformMessages(persisted);
  		this._broadcastChatMessage({
@@ -459,7 +497,7 @@ index 2aceaf4f6f9364cf972a6cfcb3c3446c35d37f03..c45341fdb271adca0d8f3c35efd6a7d4
  			type: MessageType.CF_AGENT_CHAT_MESSAGES
  		}, excludeBroadcastIds);
  	}
-@@ -3157,8 +3402,13 @@ var AIChatAgent = class AIChatAgent extends Agent {
+@@ -3157,8 +3432,13 @@ var AIChatAgent = class AIChatAgent extends Agent {
  				});
  				const safe = this._enforceRowSizeLimit(updatedMessage);
  				const json = JSON.stringify(safe);
@@ -475,7 +513,7 @@ index 2aceaf4f6f9364cf972a6cfcb3c3446c35d37f03..c45341fdb271adca0d8f3c35efd6a7d4
            set message = ${json}
            where id = ${message.id}
          `;
-@@ -3376,11 +3626,7 @@ var AIChatAgent = class AIChatAgent extends Agent {
+@@ -3376,11 +3656,7 @@ var AIChatAgent = class AIChatAgent extends Agent {
  					};
  					const sanitized = this._sanitizeMessageForPersistence(snapshot);
  					const json = JSON.stringify(sanitized);
