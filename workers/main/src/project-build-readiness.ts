@@ -17,6 +17,11 @@
 // (isProjectBuildStorageMountError) and a permanent container-startup failure
 // (isProjectBuildPermanentStartupError) — retrying either cannot help, so they
 // fail fast with their own terminal message instead of burning the budget.
+import {
+  createSandboxDeadlineTimer,
+  isSandboxDeadlineExceededError,
+  type SandboxDeadlineTimer,
+} from "./sandbox-exec-deadline.js";
 import type { ProjectBuildSandboxLike } from "./project-worker-bundle.js";
 
 /**
@@ -147,6 +152,17 @@ export function isProjectBuildServiceUnavailableError(error: unknown): boolean {
  */
 export function projectBuildTransientCause(error: unknown): string | null {
   if (error instanceof ProjectBuildProbeTimeoutError) return "probe_timeout";
+  // A build we abandoned on its client-side deadline: the container is wedged
+  // (its own timeout should have fired and did not). Named here so retry logs
+  // and telemetry carry the real cause instead of a raw message.
+  //
+  // It is transient in CLASSIFICATION only. The ladder in code-mode-tools stops
+  // on it as soon as the shared exec budget is spent — which a deadline
+  // exceedance means by definition — because an abandoned build cannot be
+  // cancelled and a further attempt would run concurrently with it in the same
+  // per-project workdir. The terminal path surfaces the deadline's own message
+  // rather than the generic "temporarily unavailable" one.
+  if (isSandboxDeadlineExceededError(error)) return "exec_deadline_exceeded";
   if (isProjectBuildPermanentStartupError(error)) return null;
   const message = errorText(error);
   const upgradeStatus = message.match(/WebSocket upgrade failed:\s*(\d{3})/i)?.[1];
@@ -251,11 +267,12 @@ export interface ProjectBuildReadinessResult {
   coldStart: boolean;
 }
 
-/** Cancellable deadline for a single probe; the test seam for probe timeouts. */
-export interface ProjectBuildProbeDeadline {
-  promise: Promise<void>;
-  cancel: () => void;
-}
+/**
+ * Cancellable deadline for a single probe; the test seam for probe timeouts.
+ * Same shape (and default implementation) as the exec-class deadline in
+ * sandbox-exec-deadline.ts — one primitive, two callers.
+ */
+export type ProjectBuildProbeDeadline = SandboxDeadlineTimer;
 
 export interface EnsureBuildSandboxReadyOptions {
   budgetMs?: number;
@@ -291,7 +308,7 @@ export async function ensureBuildSandboxReady(
   const probeTimeoutMs = options.probeTimeoutMs ?? PROJECT_BUILD_PROBE_TIMEOUT_MS;
   const now = options.now ?? (() => Date.now());
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
-  const timer = options.timer ?? defaultProbeDeadline;
+  const timer = options.timer ?? createSandboxDeadlineTimer;
   const probe = options.probe ?? probeBuildSandbox;
 
   const startedAtMs = now();
@@ -430,19 +447,6 @@ async function runProbeWithDeadline(
   } finally {
     deadline.cancel();
   }
-}
-
-function defaultProbeDeadline(ms: number): ProjectBuildProbeDeadline {
-  let handle: ReturnType<typeof setTimeout> | undefined;
-  const promise = new Promise<void>((resolve) => {
-    handle = setTimeout(resolve, ms);
-  });
-  return {
-    promise,
-    cancel: () => {
-      if (handle !== undefined) clearTimeout(handle);
-    },
-  };
 }
 
 /**

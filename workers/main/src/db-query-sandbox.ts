@@ -60,8 +60,21 @@ export class DbQuerySandbox extends Sandbox<Env> {
   // Mount paths already established in this container + a per-path single-flight
   // gate (same pattern as AnalysisSandbox.ensureMounted). Instance state on a
   // DO — not a module-level cache — so nothing leaks across containers.
-  private readonly mountedPaths = new Set<string>();
-  private readonly mountGates = new Map<string, (run: () => Promise<void>) => Promise<void>>();
+  private mountedPaths = new Set<string>();
+  private mountGates = new Map<string, (run: () => Promise<void>) => Promise<void>>();
+
+  /**
+   * Container went away: everything mounted into it went with it, and the DO
+   * instance carrying this bookkeeping survives (that is what `onStop` is for),
+   * so the set must be cleared alongside the SDK's own `activeMounts` — else
+   * `ensureWarehouseExportMount` no-ops against a fresh container and an export
+   * "succeeds" into a plain directory.
+   */
+  override async onStop(): Promise<void> {
+    this.mountedPaths = new Set<string>();
+    this.mountGates = new Map<string, (run: () => Promise<void>) => Promise<void>>();
+    await super.onStop();
+  }
 
   /**
    * Ensure the relay host is reachable through HTTPS interception for the

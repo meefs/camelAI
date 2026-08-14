@@ -2182,6 +2182,62 @@ describe('ChatThreadDO stall-watchdog heartbeat', () => {
       vi.useRealTimers();
     }
   });
+
+  it('releases the keep-alive the moment a stop aborts the running tool', async () => {
+    const { fake, writes } = createHeartbeatFake();
+    fake.piToolKeepAliveInterval = null;
+    fake.piAgentStartedAtMs = Date.now();
+    fake.piTurnStartedAtMs = Date.now();
+    const controller = new AbortController();
+
+    let rejectTool!: (error: Error) => void;
+    // The tool RPC has no cancellation of its own (the sandbox SDK cannot kill
+    // an in-flight exec), so it keeps running after the stop.
+    const running = ChatThreadDO.prototype[
+      'keepPiTurnToolProgressAliveWhile'
+    ].call(
+      fake,
+      () => new Promise<string>((_, reject) => (rejectTool = reject)),
+      controller.signal,
+    ) as Promise<string>;
+    const settled = expect(running).rejects.toThrow('Operation aborted');
+
+    controller.abort();
+    await settled;
+
+    // Released immediately: no interval, no further heartbeats from this tool.
+    expect(fake.piToolKeepAliveInterval).toBeNull();
+    const after = writes.length;
+
+    // The orphaned tool failing later must not surface as an unhandled
+    // rejection (vitest strict) and must not resurrect the keep-alive.
+    rejectTool(new Error('container answered after the stop'));
+    await Promise.resolve();
+    expect(writes).toHaveLength(after);
+  });
+
+  it('rejects immediately when the tool signal is already aborted', async () => {
+    const { fake } = createHeartbeatFake();
+    fake.piToolKeepAliveInterval = null;
+    const controller = new AbortController();
+    controller.abort();
+
+    const running = ChatThreadDO.prototype[
+      'keepPiTurnToolProgressAliveWhile'
+    ].call(fake, () => new Promise<string>(() => {}), controller.signal) as Promise<string>;
+
+    await expect(running).rejects.toThrow('Operation aborted');
+    expect(fake.piToolKeepAliveInterval).toBeNull();
+  });
+
+  it('still resolves normally when no signal is supplied', async () => {
+    const { fake } = createHeartbeatFake();
+    fake.piToolKeepAliveInterval = null;
+    const running = ChatThreadDO.prototype[
+      'keepPiTurnToolProgressAliveWhile'
+    ].call(fake, async () => 'done') as Promise<string>;
+    await expect(running).resolves.toBe('done');
+  });
 });
 
 

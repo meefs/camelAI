@@ -58,7 +58,7 @@ import {
 } from "./chat-thread/verified-work-state";
 import { PROJECT_BUILD_ACTIVE_SESSION_WINDOW_MS } from "./container-sizing";
 import { recordErrorEvent, recordObservabilityEvent } from "./observability";
-import { buildLogTail, cleanBuildLog, projectBuildSandboxKey, runProjectAddDependency, runProjectBuild, type ProjectBuildResult } from "./project-build-service";
+import { buildLogTail, cleanBuildLog, DEFAULT_BUILD_TIMEOUT_MS, projectBuildSandboxKey, runProjectAddDependency, runProjectBuild, type ProjectBuildResult } from "./project-build-service";
 import {
   ensureBuildSandboxReady,
   isProjectBuildServiceUnavailableError,
@@ -72,7 +72,25 @@ import {
 } from "./project-build-readiness";
 import { collectWorkerBundleFromSandbox, findUnexportedDurableObjectClasses, type ProjectBuildSandboxLike } from "./project-worker-bundle";
 import { buildNotebookWorkerBundle, resolveNotebookDeployPath } from "./notebook-worker-bundle";
-import { ANALYSIS_NOTEBOOK_STDERR_MAX_CHARS, ANALYSIS_NOTEBOOK_STDOUT_MAX_CHARS, clampOutputTail } from "./analysis-service";
+import {
+  ANALYSIS_DEFAULT_DEP_TIMEOUT_MS,
+  ANALYSIS_DEFAULT_EXEC_TIMEOUT_MS,
+  ANALYSIS_DEFAULT_NOTEBOOK_TIMEOUT_MS,
+  ANALYSIS_MAX_NOTEBOOK_TIMEOUT_MS,
+  ANALYSIS_NOTEBOOK_STDERR_MAX_CHARS,
+  ANALYSIS_NOTEBOOK_STDOUT_MAX_CHARS,
+  ANALYSIS_NOTEBOOK_VALIDATE_TIMEOUT_MS,
+  ANALYSIS_SESSION_RESTARTED_MESSAGE,
+  clampOutputTail,
+  isSandboxSessionDeathError,
+} from "./analysis-service";
+import {
+  createSandboxExecDeadline,
+  isSandboxDeadlineExceededError,
+  SANDBOX_EXEC_DEADLINE_GRACE_MS,
+  type SandboxDeadlineExceededEvent,
+  type SandboxExecDeadline,
+} from "./sandbox-exec-deadline";
 import { defaultProjectScaffoldFiles, normalizeProjectScaffoldTemplate, type ProjectScaffoldResult } from "./project-scaffold";
 import { addShadcnComponentsToProject, normalizeShadcnComponentList, SUPPORTED_SHADCN_BLOCKS, SUPPORTED_SHADCN_COMPONENTS } from "./shadcn-components";
 import { connectAppBrowserSession, launchAppBrowserSession } from "./app-browser-binding";
@@ -1508,7 +1526,108 @@ function clampProjectBuildTimeoutMs(value: unknown): number | undefined {
   return Math.min(Math.max(1, Math.floor(value)), PROJECT_BUILD_MAX_TIMEOUT_MS);
 }
 
-async function withProjectBuildServiceErrorMapping<T>(
+// ---------------------------------------------------------------------------
+// Client-side deadlines for sandbox exec-class tools
+// ---------------------------------------------------------------------------
+//
+// Container-side `timeout` stays the primary enforcement (better error, knows
+// the exit code); these bound OUR await so a container that never answers can
+// no longer occupy the turn until the 20-minute tool backstop. Defaults and
+// maxes are the SAME constants the services forward container-side — a second
+// set of numbers here would either strangle legitimate work or fail to bound
+// the run it is supposed to bound.
+//
+// `overheadMs` is the wall-clock an operation legitimately spends OUTSIDE the
+// timed command: materializing the project tree into the container, hashing and
+// persisting the changed set back out, and (for notebooks) the fixed validator
+// leg. Same idea as db-query-service's EXEC_OVERHEAD_MS. Without it a
+// declared-timeout-plus-grace deadline would fire during file transfer on a
+// large project — a regression the deadline exists to avoid causing.
+
+/**
+ * BASE materialize-in + persist-out allowance for the project-tree analysis legs.
+ *
+ * It is a floor, not the whole story: unlike the build path (which reads with
+ * SOURCE_READ_CONCURRENCY 16, skips unchanged files via a manifest and ships a
+ * lane-parallel archive), the analysis legs wipe and rewrite the whole tree
+ * every run with one sequential mkdir + readFileStream + writeFile round trip
+ * PER FILE, then hash and persist the changed set back. That is proportional to
+ * the project, not to the declared command timeout — so a fixed 120s let the
+ * deadline fire AFTER a successful command on a big tree and invite the agent
+ * to re-run a non-idempotent one. `analysisProjectIoOverheadMs` scales it.
+ */
+export const ANALYSIS_PROJECT_IO_OVERHEAD_MS = 120_000;
+/** Per-file allowance: one mkdir + readFileStream + writeFile, two DO hops each. */
+export const ANALYSIS_PROJECT_IO_PER_FILE_MS = 120;
+/** Per-MiB allowance: R2 → WorkspaceFilesystemDO → AnalysisService → container. */
+export const ANALYSIS_PROJECT_IO_PER_MIB_MS = 400;
+/**
+ * Ceiling on the scaled allowance. Without it a pathological tree would push
+ * the exec budget toward (and past) the 20-minute tool backstop, which must
+ * stay the outermost bound.
+ */
+export const ANALYSIS_PROJECT_IO_MAX_OVERHEAD_MS = 600_000;
+/** Files listed when sizing the overhead; matches collectProjectSourceFiles. */
+const ANALYSIS_PROJECT_IO_LISTING_LIMIT = 50_000;
+
+/** Size the materialize/persist allowance to the tree that will actually move. */
+export function analysisProjectIoOverheadMs(
+  listing: { fileCount: number; totalBytes: number },
+): number {
+  const scaled =
+    ANALYSIS_PROJECT_IO_OVERHEAD_MS +
+    Math.max(0, listing.fileCount) * ANALYSIS_PROJECT_IO_PER_FILE_MS +
+    (Math.max(0, listing.totalBytes) / (1024 * 1024)) * ANALYSIS_PROJECT_IO_PER_MIB_MS;
+  return Math.min(ANALYSIS_PROJECT_IO_MAX_OVERHEAD_MS, Math.round(scaled));
+}
+/** Source collect + materialize + lockfile/bundle persist around a build. */
+export const PROJECT_BUILD_IO_OVERHEAD_MS = 120_000;
+
+interface SandboxExecLimits {
+  defaultTimeoutMs: number;
+  maxTimeoutMs: number;
+  overheadMs: number;
+}
+
+/** The AnalysisService surface this binding drives (and wraps with deadlines). */
+interface AnalysisServiceLike {
+  runCode(request: { code: string; params?: Record<string, unknown> }): Promise<{ ok: boolean; stdout?: string; stderr?: string; error?: string }>;
+  runNotebook(request: { projectId: string; path: string; timeoutMs?: number }): Promise<unknown>;
+  exec(request: { projectId?: string; command: string; cwd?: string; env?: Record<string, string>; timeoutMs?: number }): Promise<unknown>;
+  addDependency(request: { projectId: string; packages: string[]; dev?: boolean }): Promise<unknown>;
+  listConnections(): Promise<Array<{ id: string; name: string; type: string; displayName: string; exportable: boolean; exportFormat: 'parquet' | 'ndjson' | null }>>;
+}
+
+const ANALYSIS_EXEC_LIMITS: SandboxExecLimits = {
+  defaultTimeoutMs: ANALYSIS_DEFAULT_EXEC_TIMEOUT_MS,
+  maxTimeoutMs: ANALYSIS_MAX_NOTEBOOK_TIMEOUT_MS,
+  overheadMs: ANALYSIS_PROJECT_IO_OVERHEAD_MS,
+};
+
+const ANALYSIS_NOTEBOOK_LIMITS: SandboxExecLimits = {
+  defaultTimeoutMs: ANALYSIS_DEFAULT_NOTEBOOK_TIMEOUT_MS,
+  maxTimeoutMs: ANALYSIS_MAX_NOTEBOOK_TIMEOUT_MS,
+  // The notebook run is followed by a fixed-budget validator command.
+  overheadMs: ANALYSIS_PROJECT_IO_OVERHEAD_MS + ANALYSIS_NOTEBOOK_VALIDATE_TIMEOUT_MS,
+};
+
+const ANALYSIS_DEPENDENCY_LIMITS: SandboxExecLimits = {
+  defaultTimeoutMs: ANALYSIS_DEFAULT_DEP_TIMEOUT_MS,
+  maxTimeoutMs: ANALYSIS_DEFAULT_DEP_TIMEOUT_MS,
+  overheadMs: ANALYSIS_PROJECT_IO_OVERHEAD_MS,
+};
+
+/**
+ * Builds legitimately run minutes, so the ceiling here is the build op-class
+ * max (the warm session window), NOT any smaller analysis default.
+ */
+const PROJECT_BUILD_EXEC_LIMITS: SandboxExecLimits = {
+  defaultTimeoutMs: DEFAULT_BUILD_TIMEOUT_MS,
+  maxTimeoutMs: PROJECT_BUILD_MAX_TIMEOUT_MS,
+  overheadMs: PROJECT_BUILD_IO_OVERHEAD_MS,
+};
+
+export async function withProjectBuildServiceErrorMapping<T>(
   operationName: "add_dependency" | "deploy_project",
   operation: () => Promise<T>,
   hooks: {
@@ -1520,6 +1639,13 @@ async function withProjectBuildServiceErrorMapping<T>(
     onTransient?: (error: unknown) => void;
     /** Final user-facing message; carries cold-start context when we have it. */
     unavailableMessage?: () => string;
+    /**
+     * The tool call's shared exec budget. Two jobs here: the backoff sleep is
+     * charged OUTSIDE it (waiting is not building), and an exhausted budget
+     * ends the ladder — retrying into a spent budget could only start builds we
+     * would abandon immediately, and the SDK gives us no way to cancel them.
+     */
+    deadline?: SandboxExecDeadline;
   } = {},
 ): Promise<T> {
   const unavailableMessage = () =>
@@ -1532,8 +1658,17 @@ async function withProjectBuildServiceErrorMapping<T>(
         throw new Error(PROJECT_BUILD_STORAGE_MOUNT_MESSAGE, { cause: error });
       }
       if (!isProjectBuildServiceUnavailableError(error)) throw error;
+      // A spent budget is terminal, whatever rung we are on: another attempt
+      // could only be dispatched into a sub-slice (or refused outright), and an
+      // abandoned build cannot be cancelled — it would overlap the previous one
+      // in the SAME per-project workdir. Keep the deadline's own message so the
+      // agent shrinks the build instead of being told to try again in a moment.
+      if (isSandboxDeadlineExceededError(error) && hooks.deadline?.exhausted !== false) {
+        throw error;
+      }
       const retryDelayMs = PROJECT_BUILD_SERVICE_RETRY_DELAYS_MS[attempt];
       if (retryDelayMs == null) {
+        if (isSandboxDeadlineExceededError(error)) throw error;
         throw new Error(unavailableMessage(), { cause: error });
       }
       hooks.onTransient?.(error);
@@ -1545,7 +1680,10 @@ async function withProjectBuildServiceErrorMapping<T>(
         cause: projectBuildTransientCause(error),
         error: error instanceof Error ? error.message : String(error),
       });
-      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+      const sleep = () => new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+      // Backoff is not build time: charging it to the exec budget would leave
+      // the next attempt a slice too small to build in.
+      await (hooks.deadline ? hooks.deadline.excluding(sleep) : sleep());
     }
   }
 }
@@ -1930,8 +2068,12 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
    * full cold-boot budget per attempt. `invalidate` re-arms it after a
    * transient failure, so an attempt that runs against a container which died
    * mid-build waits for the reboot instead of running blind — the cumulative
-   * readiness wait across all attempts stays bounded by ONE cold-boot budget
-   * via the deadline established on the first call.
+   * readiness wait across all attempts stays bounded by ONE cold-boot budget.
+   *
+   * That bound counts WAITING only, not the build in between: an absolute
+   * deadline latched on the first call meant a 200s build left attempt 2 a
+   * 1ms probe window, which failed instantly as "temporarily unavailable"
+   * instead of waiting out the reboot the invalidate was asking for.
    *
    * `annotate` stamps a cold wake onto the tool result so the agent — and
    * through it the user — reads the extra minute as "the environment was
@@ -1950,14 +2092,18 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     // Sticky across re-arms: a later warm probe must not erase the fact that
     // this tool call already paid for a wake.
     let coldStart: ProjectBuildReadinessResult | null = null;
-    let deadlineAtMs: number | null = null;
+    // Readiness wall-clock already spent by earlier attempts of THIS tool call.
+    let waitedMs = 0;
     return {
       ensureReady: (sandbox) => (pending ??= (() => {
-        deadlineAtMs ??= Date.now() + PROJECT_BUILD_COLD_START_BUDGET_MS;
-        const budgetMs = Math.max(0, deadlineAtMs - Date.now());
+        const startedAtMs = Date.now();
+        const budgetMs = Math.max(0, PROJECT_BUILD_COLD_START_BUDGET_MS - waitedMs);
         return this.awaitProjectBuildSandboxReady(sandbox, operation, budgetMs)
           .then((result) => {
             if (result.coldStart) coldStart ??= result;
+          })
+          .finally(() => {
+            waitedMs += Math.max(0, Date.now() - startedAtMs);
           });
       })()),
       invalidate: () => {
@@ -3874,20 +4020,159 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     };
   }
 
-  private analysisService() {
+  /**
+   * Raw AnalysisService binding. Test seam: fakes replace THIS, so every test
+   * still exercises the deadline + error mapping that `analysisService()` adds.
+   */
+  private analysisServiceBinding(): AnalysisServiceLike {
     return (this.ctx.exports as unknown as {
-      AnalysisService: (options: { props: Pick<CodeModeToolsProps, "orgId" | "workspaceId"> }) => {
-        runCode(request: { code: string; params?: Record<string, unknown> }): Promise<{ ok: boolean; stdout?: string; stderr?: string; error?: string }>;
-        runNotebook(request: { projectId: string; path: string; timeoutMs?: number }): Promise<unknown>;
-        exec(request: { projectId?: string; command: string; cwd?: string; env?: Record<string, string>; timeoutMs?: number }): Promise<unknown>;
-        addDependency(request: { projectId: string; packages: string[]; dev?: boolean }): Promise<unknown>;
-        listConnections(): Promise<Array<{ id: string; name: string; type: string; displayName: string; exportable: boolean; exportFormat: 'parquet' | 'ndjson' | null }>>;
-      };
+      AnalysisService: (options: { props: Pick<CodeModeToolsProps, "orgId" | "workspaceId"> }) => AnalysisServiceLike;
     }).AnalysisService({
       props: {
         orgId: this.ctx.props.orgId,
         workspaceId: this.ctx.props.workspaceId,
       },
+    });
+  }
+
+  /**
+   * AnalysisService with the tool-boundary guarantees attached to every
+   * exec-class call:
+   *   - a client-side deadline derived from the declared timeout (Fix A), so a
+   *     wedged container cannot hold the turn to the 20-minute backstop;
+   *   - session-death translation, so an SDK error name never reaches a user
+   *     even on a path AnalysisService's own recovery did not throw from.
+   * Wrapping here rather than at each call site means a new analysis tool is
+   * bounded by construction.
+   */
+  private analysisService(projectIoOverheadMs?: number): AnalysisServiceLike {
+    const service = this.analysisServiceBinding();
+    // Project legs move the whole tree in and out around the command; the
+    // caller sizes that allowance to the tree when it knows which project.
+    const ioMs = projectIoOverheadMs ?? ANALYSIS_PROJECT_IO_OVERHEAD_MS;
+    const execLimits: SandboxExecLimits = { ...ANALYSIS_EXEC_LIMITS, overheadMs: ioMs };
+    const notebookLimits: SandboxExecLimits = {
+      ...ANALYSIS_NOTEBOOK_LIMITS,
+      overheadMs: ioMs + ANALYSIS_NOTEBOOK_VALIDATE_TIMEOUT_MS,
+    };
+    const dependencyLimits: SandboxExecLimits = { ...ANALYSIS_DEPENDENCY_LIMITS, overheadMs: ioMs };
+    return {
+      runCode: (request) => this.runSandboxExecOperation(
+        "run_code",
+        undefined,
+        execLimits,
+        () => service.runCode(request),
+      ),
+      runNotebook: (request) => this.runSandboxExecOperation(
+        "run_notebook",
+        request.timeoutMs,
+        notebookLimits,
+        () => service.runNotebook(request),
+      ),
+      exec: (request) => this.runSandboxExecOperation(
+        "analysis_exec",
+        request.timeoutMs,
+        execLimits,
+        () => service.exec(request),
+      ),
+      addDependency: (request) => this.runSandboxExecOperation(
+        "add_python_dependency",
+        undefined,
+        dependencyLimits,
+        () => service.addDependency(request),
+      ),
+      // Catalog read, not an exec: no container command, no deadline.
+      listConnections: () => service.listConnections(),
+    };
+  }
+
+  /**
+   * Measure the project tree so the exec deadline covers the IO it will really
+   * do. One extra listing RPC against a path that is about to make one per
+   * FILE; a failure here degrades to the base allowance rather than failing the
+   * tool.
+   */
+  private async projectIoOverheadMs(projectId: string | undefined): Promise<number> {
+    if (!projectId) return ANALYSIS_PROJECT_IO_OVERHEAD_MS;
+    try {
+      const listing = await new ProjectFilesystemClient(this.env, projectId).listFiles("/", {
+        recursive: true,
+        includeHidden: true,
+        limit: ANALYSIS_PROJECT_IO_LISTING_LIMIT,
+      });
+      let fileCount = 0;
+      let totalBytes = 0;
+      for (const entry of listing.files ?? []) {
+        if (entry.type !== "file") continue;
+        fileCount += 1;
+        if (Number.isFinite(entry.size)) totalBytes += entry.size;
+      }
+      return analysisProjectIoOverheadMs({ fileCount, totalBytes });
+    } catch (error) {
+      console.warn("[code-mode] could not size the project IO allowance; using the base value", error);
+      return ANALYSIS_PROJECT_IO_OVERHEAD_MS;
+    }
+  }
+
+  /** One deadline-bounded sandbox call, with the tool-boundary error mapping. */
+  private async runSandboxExecOperation<T>(
+    operation: string,
+    declaredTimeoutMs: number | undefined,
+    limits: SandboxExecLimits,
+    run: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await this.sandboxExecDeadline(operation, declaredTimeoutMs, limits).run(run);
+    } catch (error) {
+      // The environment died under the command and even AnalysisService's
+      // one-shot recovery could not get it back: the user gets the plain-English
+      // message, never `SessionTerminatedError: ...`.
+      if (isSandboxSessionDeathError(error)) {
+        throw new Error(ANALYSIS_SESSION_RESTARTED_MESSAGE, { cause: error });
+      }
+      throw error;
+    }
+  }
+
+  private sandboxExecDeadline(
+    operation: string,
+    declaredTimeoutMs: number | undefined,
+    limits: SandboxExecLimits,
+  ): SandboxExecDeadline {
+    return createSandboxExecDeadline({
+      operation,
+      declaredTimeoutMs,
+      defaultTimeoutMs: limits.defaultTimeoutMs,
+      maxTimeoutMs: limits.maxTimeoutMs,
+      overheadMs: limits.overheadMs,
+      graceMs: SANDBOX_EXEC_DEADLINE_GRACE_MS,
+      onExceeded: (event) => this.recordSandboxExecDeadlineEvent(event),
+    });
+  }
+
+  private recordSandboxExecDeadlineEvent(event: SandboxDeadlineExceededEvent): void {
+    const props = this.ctx?.props;
+    console.error("[code-mode] sandbox operation exceeded its client deadline", {
+      operation: event.operation,
+      declaredTimeoutMs: event.declaredTimeoutMs,
+      budgetMs: event.budgetMs,
+      waitedMs: event.waitedMs,
+      workspaceId: props?.workspaceId,
+    });
+    recordObservabilityEvent(this.env, {
+      event: "sandbox_exec_deadline_exceeded",
+      severity: "error",
+      component: "CodeModeToolsBinding",
+      operation: event.operation,
+      status: "deadline_exceeded",
+      durationMs: event.waitedMs,
+      count: event.declaredTimeoutMs ?? null,
+      size: event.budgetMs,
+      errorName: "SandboxDeadlineExceededError",
+      workspaceId: props?.workspaceId,
+      threadId: props?.threadId,
+      orgId: props?.orgId,
+      userId: props?.userId,
     });
   }
 
@@ -3908,7 +4193,8 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     const path = typeof args.path === "string" ? args.path.trim() : "";
     if (!path) throw new Error("path is required (the .ipynb to execute)");
     const timeoutMs = typeof args.timeoutMs === "number" ? args.timeoutMs : undefined;
-    const raw = await this.analysisService().runNotebook({ projectId: project.id, path, timeoutMs });
+    const raw = await this.analysisService(await this.projectIoOverheadMs(project.id))
+      .runNotebook({ projectId: project.id, path, timeoutMs });
     const { result, fullLog } = clampAnalysisRunOutputs(raw as Record<string, unknown>);
     const fullOutput = fullLog ? await this.storeAnalysisRunLog("run-notebook", fullLog) : undefined;
     if (result.ok !== true) {
@@ -3975,7 +4261,8 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     const cwd = typeof args.cwd === "string" ? args.cwd : undefined;
     const env = args.env && typeof args.env === "object" && !Array.isArray(args.env) ? (args.env as Record<string, string>) : undefined;
     const timeoutMs = typeof args.timeoutMs === "number" ? args.timeoutMs : undefined;
-    const result = await this.analysisService().exec({ projectId, command, cwd, env, timeoutMs });
+    const result = await this.analysisService(await this.projectIoOverheadMs(projectId))
+      .exec({ projectId, command, cwd, env, timeoutMs });
     return { ...(result as Record<string, unknown>), ...(projectName ? { project: projectName } : {}) };
   }
 
@@ -4062,7 +4349,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     const target = this.archiveUploadTarget(args);
     const project = await this.resolveDoBackedProjectForAction(args, "extract_archive");
     const destination = this.normalizeArchiveDestination(args.destination);
-    const result = await this.analysisService().exec({
+    const result = await this.analysisService(await this.projectIoOverheadMs(project.id)).exec({
       projectId: project.id,
       command: ARCHIVE_TOOL_COMMAND,
       env: {
@@ -4082,7 +4369,8 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         ? [args.package]
         : [];
     if (!packages.length) throw new Error("packages is required (one or more PyPI specs)");
-    const result = await this.analysisService().addDependency({ projectId: project.id, packages, dev: args.dev === true });
+    const result = await this.analysisService(await this.projectIoOverheadMs(project.id))
+      .addDependency({ projectId: project.id, packages, dev: args.dev === true });
     return { ...(result as Record<string, unknown>), project: project.name };
   }
 
@@ -4240,19 +4528,23 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
 
   private async addDependency(args: Record<string, unknown>): Promise<unknown> {
     const gate = this.projectBuildReadinessGate("add_dependency");
+    const deadline = this.sandboxExecDeadline("add_dependency", undefined, PROJECT_BUILD_EXEC_LIMITS);
     return gate.annotate(await withProjectBuildServiceErrorMapping("add_dependency", async () => {
       const project = await this.resolveDoBackedProjectForAction(args, "add_dependency");
       const dependency = typeof args.dependency === "string" ? args.dependency : "";
       const sandbox = this.projectBuildSandbox();
-      await gate.ensureReady(sandbox);
+      // Cold-boot waiting is charged to the GATE's own 240s budget, not to the
+      // install's: a container that has to wake first must not hand the install
+      // a truncated (or empty) slice of the exec budget.
+      await deadline.excluding(() => gate.ensureReady(sandbox));
       try {
-        const result = await runProjectAddDependency({
+        const result = await deadline.run(() => runProjectAddDependency({
           projectId: project.id,
           dependency,
           dev: args.dev === true,
           files: new ProjectFilesystemClient(this.env, project.id),
           sandbox,
-        });
+        }));
         return {
           ...result,
           project: project.name,
@@ -4265,6 +4557,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     }, {
       onTransient: () => gate.invalidate(),
       unavailableMessage: () => gate.unavailableMessage(),
+      deadline,
     }));
   }
 
@@ -4429,6 +4722,13 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
 
   private async deployProject(args: Record<string, unknown>): Promise<unknown> {
     const gate = this.projectBuildReadinessGate("deploy_project");
+    // ONE budget for the whole tool call, shared by every ladder attempt: a
+    // wedged container must not multiply the wait by the attempt count.
+    const deadline = this.sandboxExecDeadline(
+      "deploy_project",
+      clampProjectBuildTimeoutMs(args.timeoutMs),
+      PROJECT_BUILD_EXEC_LIMITS,
+    );
     return gate.annotate(await withProjectBuildServiceErrorMapping("deploy_project", async () => {
       const project = await this.resolveDoBackedProjectForAction(args, "deploy_project");
       const notebookProjectFiles = new ProjectFilesystemClient(this.env, project.id);
@@ -4446,16 +4746,19 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         return await this.deployNotebookProject(project, notebookProjectFiles, notebookPath, args);
       }
       const sandbox = this.projectBuildSandbox();
-      await gate.ensureReady(sandbox);
+      // Cold-boot waiting is charged to the GATE's own 240s budget, not to the
+      // build's: a container that has to wake first (or reboot between ladder
+      // attempts) must not hand the build a truncated slice of the exec budget.
+      await deadline.excluding(() => gate.ensureReady(sandbox));
       const timeoutMs = clampProjectBuildTimeoutMs(args.timeoutMs);
       let build: ProjectBuildResult;
       try {
-        build = await runProjectBuild({
+        build = await deadline.run(() => runProjectBuild({
           projectId: project.id,
           files: new ProjectFilesystemClient(this.env, project.id),
           sandbox,
           timeoutMs,
-        });
+        }));
       } finally {
         // Warm window is anchored to the END of the build, not its start, so a
         // long build still leaves a full window for the next deploy.
@@ -4590,6 +4893,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     }, {
       onTransient: () => gate.invalidate(),
       unavailableMessage: () => gate.unavailableMessage(),
+      deadline,
     }));
   }
 

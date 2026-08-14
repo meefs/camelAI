@@ -23,7 +23,13 @@ import {
 import type { ProjectBuildSandboxLike } from "./project-worker-bundle.js";
 import type { WorkspaceFileStoreLike } from "./workspace-filesystem-do.js";
 
-const DEFAULT_BUILD_TIMEOUT_MS = 120_000;
+/**
+ * Container-side budget for `bun install && bun run build` (and for the
+ * dependency install). Exported because the tool boundary derives its
+ * client-side deadline from the same number — see
+ * code-mode-tools.ts PROJECT_BUILD_EXEC_LIMITS.
+ */
+export const DEFAULT_BUILD_TIMEOUT_MS = 120_000;
 
 export async function runProjectBuild(input: {
   projectId: string;

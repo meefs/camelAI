@@ -34,11 +34,12 @@ import {
   postgresRequestToDbQuery,
   type LegacyEngine,
 } from './db-query-compat.js';
+import { recordObservabilityEvent, type ObservabilityEnv } from './observability.js';
 import { warehouseWorkspacePrefix } from './warehouse-export.js';
 
 const DEFAULT_DATA_PROXY_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 
-export interface DataProxyEnv extends DbEgressRelayEnv {
+export interface DataProxyEnv extends DbEgressRelayEnv, ObservabilityEnv {
   DB_QUERY_SANDBOX?: DurableObjectNamespace<import('./db-query-sandbox.js').DbQuerySandbox>;
   DATA_PROXY_MAX_RESPONSE_BYTES?: string;
 }
@@ -85,7 +86,33 @@ function resolveDbQueryDeps(env: DataProxyEnv, context: DataProxyContext): DbQue
   const sandbox = getSandbox(env.DB_QUERY_SANDBOX, `ws-${context.workspaceId}`, {
     normalizeId: true,
   }) as unknown as DbQuerySandboxStub;
-  return { sandbox, relay: relayConfigFromEnv(env) };
+  return {
+    sandbox,
+    relay: relayConfigFromEnv(env),
+    // A query we stopped waiting for is a container problem, not a SQL one:
+    // give it its own event so it is visible next to the other sandbox
+    // deadline exceedances rather than hiding inside the generic query errors.
+    onDeadlineExceeded: (event) => {
+      console.error('[data-proxy] db query exceeded its client deadline', {
+        operation: event.operation,
+        budgetMs: event.budgetMs,
+        waitedMs: event.waitedMs,
+        workspaceId: context.workspaceId,
+      });
+      recordObservabilityEvent(env, {
+        event: 'sandbox_exec_deadline_exceeded',
+        severity: 'error',
+        component: 'DataProxy',
+        operation: event.operation,
+        status: 'deadline_exceeded',
+        durationMs: event.waitedMs,
+        size: event.budgetMs,
+        errorName: 'SandboxDeadlineExceededError',
+        workspaceId: context.workspaceId,
+        orgId: context.orgId,
+      });
+    },
+  };
 }
 
 async function executeLegacyQuery(

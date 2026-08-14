@@ -15,7 +15,7 @@ import { projectBuildSandboxKey } from "./project-build-sandbox-lifecycle.js";
 import type { ProjectBuildSandboxLike } from "./project-worker-bundle.js";
 import { ProjectFilesystemClient } from "./workspace-filesystem-do.js";
 
-export { __testing, runProjectAddDependency, runProjectBuild } from "./project-build-commands.js";
+export { __testing, DEFAULT_BUILD_TIMEOUT_MS, runProjectAddDependency, runProjectBuild } from "./project-build-commands.js";
 export type {
   ProjectBuildEnv,
   ProjectBuildProps,

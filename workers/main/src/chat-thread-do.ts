@@ -5265,7 +5265,33 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     this.piTurnLastProgressAtMs = Date.now();
   }
 
-  private async keepPiTurnToolProgressAliveWhile<T>(fn: () => Promise<T>): Promise<T> {
+  /**
+   * Run one harness tool with the turn's progress heartbeat pinned to it.
+   *
+   * The optional `signal` is the ACTIVE TOOL's abort signal (pi-agent-core hands
+   * it to `execute`, and `Agent.abort()` — driven by requestStop →
+   * sendRunnerCommand("stop") → piSession.abort() — fires it). It is observed
+   * HERE rather than raced by the caller so that a stop releases the keepalive
+   * immediately: racing outside this wrapper would leave the heartbeat interval
+   * (and the turn's "a tool is running" state) pinned by the orphaned promise
+   * until the abandoned tool finally settled — up to the 20-minute tool ceiling.
+   *
+   * The underlying work is never dropped unobserved: `work.catch` is attached up
+   * front so a late rejection cannot surface as an unhandled rejection.
+   *
+   * `abortGraceMs` is for the tools that CAN cancel. A sandbox exec cannot, so
+   * rejecting the instant the signal fires costs nothing there. A subagent is
+   * the opposite: `child.abort()` unwinds in milliseconds and `child.prompt()`
+   * then RETURNS the answer it accumulated. Rejecting first threw that away and
+   * persisted a tool result reading "Operation aborted" with empty details, for
+   * work the user was already billed for. With a grace window we let the child's
+   * own graceful abort win if it lands inside it, and only reject if it does not.
+   */
+  private async keepPiTurnToolProgressAliveWhile<T>(
+    fn: () => Promise<T>,
+    signal?: AbortSignal,
+    options: { abortGraceMs?: number } = {},
+  ): Promise<T> {
     this.touchPiTurnProgress();
     // Only one harness tool runs at a time; drop any prior interval (defensive).
     this.clearPiToolKeepAliveInterval();
@@ -5277,6 +5303,29 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     // Track the underlying work so a timed-out race does not leave an unhandled
     // rejection when the real tool later settles (or fails).
     const work = Promise.resolve().then(() => fn());
+    work.catch(() => {});
+    // Same error shape pi-agent-core produces for an aborted tool call, so a
+    // stop reads identically whether it lands before, during, or after execute.
+    let onAbort: (() => void) | null = null;
+    const abortGraceMs = Math.max(0, options.abortGraceMs ?? 0);
+    let abortGraceTimer: ReturnType<typeof setTimeout> | null = null;
+    const abortPromise = signal
+      ? new Promise<never>((_, reject) => {
+        const rejectAborted = () => reject(new Error("Operation aborted"));
+        onAbort = () => {
+          if (abortGraceMs === 0) {
+            rejectAborted();
+            return;
+          }
+          // Let `work` win the race if the tool's own cancellation lands first;
+          // this promise stays pending until the window closes.
+          abortGraceTimer = setTimeout(rejectAborted, abortGraceMs);
+        };
+        if (signal.aborted) onAbort();
+        else signal.addEventListener("abort", onAbort, { once: true });
+      })
+      : null;
+    if (abortPromise) abortPromise.catch(() => {});
     this.piToolKeepAliveInterval = setInterval(() => {
       const now = Date.now();
       const toolElapsedMs = now - toolStartedAtMs;
@@ -5311,10 +5360,14 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       this.writePiStreamHeartbeat();
     }, PI_TURN_PROGRESS_INTERVAL_MS);
     try {
-      return await Promise.race([work, hardTimeoutPromise]);
+      return await Promise.race(
+        abortPromise ? [work, hardTimeoutPromise, abortPromise] : [work, hardTimeoutPromise],
+      );
     } finally {
       this.clearPiToolKeepAliveInterval();
       this.touchPiTurnProgress();
+      if (abortGraceTimer !== null) clearTimeout(abortGraceTimer);
+      if (signal && onAbort) signal.removeEventListener("abort", onAbort);
       void work.catch(() => {});
     }
   }

@@ -338,12 +338,28 @@ export class AnalysisSandbox extends Sandbox<Env> {
   sleepAfter = ANALYSIS_SLEEP_AFTER;
 
   // Mount paths already established in this container, and a per-path single-flight
-  // gate coalescing concurrent mount attempts of the SAME path. Both are tied to
-  // the container lifecycle (they reset when the DO instance is recreated), so they
-  // track the actual mounts, not DO storage. Instance state on a DO — not a
+  // gate coalescing concurrent mount attempts of the SAME path. Both track the
+  // actual container mounts, not DO storage. Instance state on a DO — not a
   // module-level cache — so nothing leaks across containers.
-  private readonly mountedPaths = new Set<string>();
-  private readonly mountGates = new Map<string, (run: () => Promise<void>) => Promise<void>>();
+  //
+  // They are cleared in `onStop`, NOT by DO recreation: a container stop fires
+  // `onStop` on the SURVIVING DO instance (that is what the hook is for) and the
+  // SDK clears its own `activeMounts` there. Without the override below, a
+  // restarted container came back with empty mount points while this set still
+  // claimed them, so `ensureMounted` short-circuited and a run read an empty
+  // `/exports` with exit 0 — a silent wrong answer.
+  private mountedPaths = new Set<string>();
+  private mountGates = new Map<string, (run: () => Promise<void>) => Promise<void>>();
+
+  /**
+   * Container went away: everything mounted into it went with it. Clear the
+   * bookkeeping so the next `ensureMounted` really re-mounts.
+   */
+  override async onStop(): Promise<void> {
+    this.mountedPaths = new Set<string>();
+    this.mountGates = new Map<string, (run: () => Promise<void>) => Promise<void>>();
+    await super.onStop();
+  }
 
   /**
    * Mount an R2 prefix so container code can read the staged objects. Mounts are
@@ -429,6 +445,43 @@ export class AnalysisSandbox extends Sandbox<Env> {
     // [] is a non-nullish override that matches no host — the SDK's proxy then
     // rejects every origin before any pass-through or handler dispatch.
     await this.setAllowedHosts([]);
+  }
+
+  /**
+   * Forget the container session so the next command re-runs the create-session
+   * handshake.
+   *
+   * A container OOM/restart kills the persistent shell; the container reaps the
+   * session and answers `SessionTerminatedError`, but the SDK caches the default
+   * session id in DO memory AND in DO storage and only clears it from `onStop`
+   * (`node_modules/@cloudflare/sandbox/dist/sandbox-*.js`: `defaultSession`,
+   * `ensureDefaultSession`, `onStop`) — so a shell that dies while the container
+   * stays up leaves the cached id pointing at a session that no longer exists.
+   * Clearing it here is the SDK's own documented remedy ("call createSession()
+   * with the same id to recreate it explicitly"), just driven from inside the DO
+   * where `ensureDefaultSession` will do it on the next call.
+   *
+   * Mount bookkeeping is deliberately left alone: mounts are container-level,
+   * not session-level, so a dead shell does not invalidate them. A real
+   * container stop is the case that DOES invalidate them, and `onStop` clears
+   * them there (the DO instance itself survives a container stop).
+   *
+   * Called only by AnalysisService's one-shot session recovery, and always
+   * best-effort: the SDK recreates a terminated session on the next call anyway,
+   * so a failure here must not fail the run.
+   */
+  async resetSession(): Promise<void> {
+    const sdkState = this as unknown as {
+      defaultSession: string | null;
+      defaultSessionInit: unknown;
+    };
+    sdkState.defaultSession = null;
+    sdkState.defaultSessionInit = null;
+    try {
+      await this.ctx.storage.delete("defaultSession");
+    } catch (error) {
+      console.warn("[AnalysisSandbox] failed to clear the stored default session", error);
+    }
   }
 }
 

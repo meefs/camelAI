@@ -11,6 +11,7 @@ import {
   waitForWritableLocalMount,
   type MountRecoverTarget,
 } from '../src/analysis-sandbox.js';
+import { DbQuerySandbox } from '../src/db-query-sandbox.js';
 
 describe('sandboxR2MountOptions', () => {
   const options = {
@@ -53,6 +54,95 @@ describe('sandboxR2MountOptions', () => {
       prefix: '/org1/workspace1/uploads',
       readOnly: true,
     });
+  });
+});
+
+describe('AnalysisSandbox.resetSession', () => {
+  it('clears the SDK session cache (memory + storage) so the next call re-handshakes', async () => {
+    // The SDK only clears `defaultSession` on a container STOP, so a shell that
+    // dies while the container lives leaves the cached id pointing at a session
+    // the container already reaped. This is the coupling point to re-check when
+    // @cloudflare/sandbox is upgraded.
+    const sandbox = Object.create(AnalysisSandbox.prototype) as any;
+    sandbox.defaultSession = 'sandbox-ws-1';
+    sandbox.defaultSessionInit = { sessionId: 'sandbox-ws-1' };
+    const deleted: string[] = [];
+    sandbox.ctx = { storage: { delete: async (key: string) => { deleted.push(key); } } };
+
+    await AnalysisSandbox.prototype.resetSession.call(sandbox);
+
+    expect(sandbox.defaultSession).toBeNull();
+    expect(sandbox.defaultSessionInit).toBeNull();
+    expect(deleted).toEqual(['defaultSession']);
+  });
+
+  it('never throws when storage refuses — the retry works without it', async () => {
+    const sandbox = Object.create(AnalysisSandbox.prototype) as any;
+    sandbox.defaultSession = 'sandbox-ws-1';
+    sandbox.defaultSessionInit = null;
+    sandbox.ctx = {
+      storage: { delete: async () => { throw new Error('storage unavailable'); } },
+    };
+
+    await expect(AnalysisSandbox.prototype.resetSession.call(sandbox)).resolves.toBeUndefined();
+    expect(sandbox.defaultSession).toBeNull();
+  });
+});
+
+/**
+ * Swap the SDK base-class `onStop` for a spy while `run` executes. `super.onStop`
+ * resolves through the subclass prototype's own prototype, so that is what gets
+ * stubbed — and restored, since it is shared module state.
+ */
+async function withStubbedSuperOnStop(
+  cls: { prototype: object },
+  stub: () => Promise<void>,
+  run: () => Promise<void>,
+): Promise<void> {
+  const base = Object.getPrototypeOf(cls.prototype) as Record<string, unknown>;
+  const original = Object.getOwnPropertyDescriptor(base, 'onStop');
+  Object.defineProperty(base, 'onStop', { value: stub, configurable: true, writable: true });
+  try {
+    await run();
+  } finally {
+    if (original) Object.defineProperty(base, 'onStop', original);
+    else delete base.onStop;
+  }
+}
+
+describe('mount bookkeeping across a container stop', () => {
+  /**
+   * `onStop` fires on the SURVIVING DO instance (that is what the hook is for),
+   * and the SDK clears its own `activeMounts` there. The subclass Set tracked
+   * the same container-level state but was never cleared, so after a container
+   * restart `ensureMounted`/`ensureWarehouseExportMount` short-circuited against
+   * empty mount points — a run then read an empty `/exports` and returned exit 0.
+   */
+  it('AnalysisSandbox forgets its mounts so the next ensureMounted re-mounts', async () => {
+    const sandbox = Object.create(AnalysisSandbox.prototype) as any;
+    sandbox.mountedPaths = new Set(['/exports', '/uploads']);
+    sandbox.mountGates = new Map([['/exports', createSingleFlight()]]);
+    const superOnStop = vi.fn(async () => {});
+    await withStubbedSuperOnStop(AnalysisSandbox, superOnStop, () =>
+      AnalysisSandbox.prototype.onStop.call(sandbox));
+
+    expect(sandbox.mountedPaths.size).toBe(0);
+    expect(sandbox.mountGates.size).toBe(0);
+    // The SDK's own teardown still runs.
+    expect(superOnStop).toHaveBeenCalledTimes(1);
+  });
+
+  it('DbQuerySandbox has the identical reset (same pattern, same hazard)', async () => {
+    const sandbox = Object.create(DbQuerySandbox.prototype) as any;
+    sandbox.mountedPaths = new Set(['/warehouse/ws-1']);
+    sandbox.mountGates = new Map([['/warehouse/ws-1', createSingleFlight()]]);
+    const superOnStop = vi.fn(async () => {});
+    await withStubbedSuperOnStop(DbQuerySandbox, superOnStop, () =>
+      DbQuerySandbox.prototype.onStop.call(sandbox));
+
+    expect(sandbox.mountedPaths.size).toBe(0);
+    expect(sandbox.mountGates.size).toBe(0);
+    expect(superOnStop).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -63,6 +63,20 @@ export interface PiToolDefinitionOptions {
   appVisibilityConfigurable?: boolean;
 }
 
+/**
+ * Grace a subagent gets to hand back what it already produced after a stop.
+ *
+ * Subagents are the one tool class with REAL cancellation: the tool's abort
+ * listener calls `child.abort()`, pi-agent-core unwinds the stream in
+ * milliseconds and `child.prompt()` RETURNS the accumulated answer rather than
+ * throwing. Rejecting the instant the signal fires discarded that answer and
+ * persisted a tool result reading "Operation aborted" with empty details — for
+ * work already billed through `recordPiAssistantUsage`. Sandbox-backed tools
+ * (`call`, `js_exec`) get no grace: they cannot be cancelled, so waiting for
+ * them would only pin the heartbeat.
+ */
+export const PI_SUBAGENT_ABORT_GRACE_MS = 2_000;
+
 const RESEARCH_CAPABILITY_MODEL = "gpt-5.6-luna";
 const ORACLE_CAPABILITY_MODEL = "gpt-5.6-luna";
 
@@ -284,7 +298,18 @@ export interface PiToolSurfaceDeps {
     context: ChatContextState,
     options?: { allowWebTools?: boolean },
   ): CodeModeToolsBinding;
-  keepPiTurnToolProgressAliveWhile<T>(fn: () => Promise<T>): Promise<T>;
+  /**
+   * Pins the turn's progress heartbeat to one tool call. `signal` is the tool's
+   * own abort signal: the wrapper observes it so a user stop releases the
+   * keepalive immediately instead of waiting out the abandoned tool.
+   * `abortGraceMs` gives a tool that CAN cancel a moment to return the partial
+   * work it already has (see PI_SUBAGENT_ABORT_GRACE_MS).
+   */
+  keepPiTurnToolProgressAliveWhile<T>(
+    fn: () => Promise<T>,
+    signal?: AbortSignal,
+    options?: { abortGraceMs?: number },
+  ): Promise<T>;
   runCodeModeJavascript(
     request: CodeModeJavascriptRequest,
   ): Promise<CodeModeJavascriptResult>;
@@ -368,7 +393,15 @@ export function createPiToolDefinitions(
     // rejection as unhandled for one microtask.
     await Promise.resolve();
     if (signal?.aborted) throw new Error("Operation aborted");
-    const result = await deps.keepPiTurnToolProgressAliveWhile(() => tools.callTool(name, args));
+    // The signal goes INTO the keepalive wrapper rather than racing outside it:
+    // a stop must resolve this call — and release the heartbeat — without
+    // waiting for the tool RPC, which has no cancellation of its own (the
+    // sandbox SDK cannot cancel an in-flight exec; see sandbox-exec-deadline.ts)
+    // and is otherwise bounded only by its own deadline.
+    const result = await deps.keepPiTurnToolProgressAliveWhile(
+      () => tools.callTool(name, args),
+      signal,
+    );
     if (signal?.aborted) throw new Error("Operation aborted");
     return {
       content: extractToolContent(result),
@@ -431,13 +464,17 @@ export function createPiToolDefinitions(
         })),
         maxOutputCharacters: Type.Optional(Type.Number()),
       }),
-      execute: async (toolUseId, params) => {
+      execute: async (toolUseId, params, signal) => {
         const raw = params as {
           code?: unknown;
           description?: unknown;
           timeoutMs?: unknown;
           maxOutputCharacters?: unknown;
         };
+        // Same one-microtask yield as `call` above, so an already-aborted signal
+        // rejects after the caller attached its handler.
+        await Promise.resolve();
+        if (signal?.aborted) throw new Error("Operation aborted");
         const result = await deps.keepPiTurnToolProgressAliveWhile(() => deps.runCodeModeJavascript({
           code: typeof raw.code === "string" ? raw.code : "",
           orgId: context.orgId,
@@ -450,7 +487,7 @@ export function createPiToolDefinitions(
             typeof raw.maxOutputCharacters === "number"
               ? raw.maxOutputCharacters
               : null,
-        }));
+        }), signal);
         return {
           content: [{ type: "text" as const, text: result.text }],
           details: projectPiToolResultDetails(result),
@@ -480,14 +517,14 @@ export function createPiToolDefinitions(
       label: name,
       description: definition.description,
       parameters: definition.parameters,
-      execute: async (toolUseId, params) => {
+      execute: async (toolUseId, params, signal) => {
         const raw = params && typeof params === "object"
           ? params as Record<string, unknown>
           : {};
         return call(name, {
           ...raw,
           toolUseId,
-        });
+        }, signal);
       },
       executionMode: "sequential",
     });
@@ -499,8 +536,10 @@ export function createPiToolDefinitions(
       params: unknown,
       signal?: AbortSignal,
       onUpdate?: (partialResult: AgentToolResult<unknown>) => void,
-    ) => deps.keepPiTurnToolProgressAliveWhile(() =>
-      deps.runPiSubagentTool(context, toolName, params, signal, onUpdate)
+    ) => deps.keepPiTurnToolProgressAliveWhile(
+      () => deps.runPiSubagentTool(context, toolName, params, signal, onUpdate),
+      signal,
+      { abortGraceMs: PI_SUBAGENT_ABORT_GRACE_MS },
     );
 
     definitions.push(
@@ -544,8 +583,8 @@ export function createPiToolDefinitions(
     params: unknown,
     signal?: AbortSignal,
     onUpdate?: (partialResult: AgentToolResult<unknown>) => void,
-  ) => deps.keepPiTurnToolProgressAliveWhile(() =>
-    runPiCapabilityAgentTool(
+  ) => deps.keepPiTurnToolProgressAliveWhile(
+    () => runPiCapabilityAgentTool(
       deps,
       context,
       capability,
@@ -553,7 +592,9 @@ export function createPiToolDefinitions(
       params,
       signal,
       onUpdate,
-    )
+    ),
+    signal,
+    { abortGraceMs: PI_SUBAGENT_ABORT_GRACE_MS },
   );
 
   if (options.includeResearch !== false) {

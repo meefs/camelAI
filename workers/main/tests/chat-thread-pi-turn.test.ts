@@ -7827,6 +7827,60 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(sandbox.mkdir).toHaveBeenCalledTimes(5);
   });
 
+  it('lets a legitimately long build run to completion under its own op-class budget', async () => {
+    vi.useFakeTimers();
+    const { fake, sandbox } = createProjectToolFake({ deploy: true });
+    const build = sandbox.exec.getMockImplementation()!;
+    // An 8-minute build: far past any analysis-tool default, well inside the
+    // build op class the agent asked for.
+    sandbox.exec.mockImplementation(async (command: string, options?: { cwd?: string }) => {
+      if (command !== 'bun install && bun run build') return build(command, options);
+      await new Promise((resolve) => setTimeout(resolve, 8 * 60_000));
+      return build(command, options);
+    });
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      Response.json({ success: true, result: { id: 'version-1' } }, { status: 200 })));
+
+    const resultPromise = CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
+      project: 'Demo App',
+      timeoutMs: 9 * 60_000,
+    });
+    await vi.advanceTimersByTimeAsync(9 * 60_000);
+
+    expect(await resultPromise).toMatchObject({ success: true });
+  });
+
+  it('abandons a wedged build at its shared budget instead of holding the turn', async () => {
+    vi.useFakeTimers();
+    const { fake, sandbox } = createProjectToolFake({ deploy: true });
+    const build = sandbox.exec.getMockImplementation()!;
+    let buildAttempts = 0;
+    // The container took the build command and never answered — its own
+    // timeout did not fire either.
+    sandbox.exec.mockImplementation(async (command: string, options?: { cwd?: string }) => {
+      if (command !== 'bun install && bun run build') return build(command, options);
+      buildAttempts += 1;
+      return new Promise(() => {});
+    });
+
+    const resultPromise = CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
+      project: 'Demo App',
+      timeoutMs: 60_000,
+    });
+    const rejection = expect(resultPromise).rejects.toThrow(
+      /deploy_project did not return within/,
+    );
+    // One budget (60s + IO overhead + grace), then the ladder's own delays.
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    await rejection;
+
+    // The ladder does NOT re-enter the build on a spent budget. There is no
+    // per-exec cancellation, so a retry would only launch a second
+    // materialize + `bun install && bun run build` into the SAME per-project
+    // workdir while the abandoned one is still writing there.
+    expect(buildAttempts).toBe(1);
+  });
+
   it('probes the build container once on the warm path, before the first source read', async () => {
     const { fake, sandbox } = createProjectToolFake({ deploy: true });
     vi.stubGlobal('fetch', vi.fn(async () =>

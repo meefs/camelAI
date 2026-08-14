@@ -20,6 +20,13 @@
 // Embedded at build time; the Vite and Wrangler builds alias this virtual
 // module to the runner source using their respective raw-text mechanisms.
 import RUNNER_SOURCE from "virtual:db-query-runner-source";
+import {
+  createSandboxExecDeadline,
+  isSandboxDeadlineExceededError,
+  SANDBOX_EXEC_DEADLINE_GRACE_MS,
+  type SandboxDeadlineExceededEvent,
+  type SandboxExecDeadline,
+} from "./sandbox-exec-deadline.js";
 
 /**
  * Directory holding the baked drivers. `node` runs with this as its cwd so the
@@ -173,6 +180,11 @@ export interface DbQuerySandboxStub {
 export interface DbQueryDeps {
   sandbox: DbQuerySandboxStub;
   /**
+   * Telemetry sink for a query we abandoned on its client-side deadline. The
+   * caller owns the observability env, so it supplies the recorder.
+   */
+  onDeadlineExceeded?: (event: SandboxDeadlineExceededEvent) => void;
+  /**
    * Static-IP egress relay, or null to dial the database DIRECTLY from the
    * container's own Cloudflare IP (the opt-out when no relay is configured).
    */
@@ -185,13 +197,66 @@ const DEFAULT_READINESS_TIMEOUT_MS = 30_000;
 const READINESS_POLL_INTERVAL_MS = 500;
 /** Extra wall-clock beyond the query timeout for node start + driver import + connect. */
 const EXEC_OVERHEAD_MS = 15_000;
+/** Runner-side default when the caller declares no timeout. */
+const DEFAULT_QUERY_TIMEOUT_MS = 30_000;
+const DEFAULT_EXPORT_TIMEOUT_MS = 120_000;
+
+/**
+ * Client-side deadline for one runner exec.
+ *
+ * The container already enforces `timeout` on the command, and that stays the
+ * primary bound (it produces the runner's own error). This only stops the AWAIT
+ * from outliving it: a container that never answers used to hold the caller —
+ * an agent turn, an admin request, a scheduled export — indefinitely. The
+ * budget is the container timeout (which already carries this op's overhead)
+ * plus the marshalling grace.
+ */
+function dbQueryDeadline(
+  deps: DbQueryDeps,
+  operation: "db_query" | "db_export",
+  containerTimeoutMs: number,
+): SandboxExecDeadline {
+  return createSandboxExecDeadline({
+    operation,
+    declaredTimeoutMs: containerTimeoutMs,
+    defaultTimeoutMs: containerTimeoutMs,
+    maxTimeoutMs: containerTimeoutMs,
+    graceMs: SANDBOX_EXEC_DEADLINE_GRACE_MS,
+    onExceeded: (event) => deps.onDeadlineExceeded?.(event),
+  });
+}
+
+/**
+ * Client-side deadline for the whole relay/mount PRELUDE of one call.
+ *
+ * The prelude's own awaits used to be unbounded: `forwarderReady`'s 5s
+ * `timeout` is enforced CONTAINER-side only (the SDK's http transport issues
+ * `containerFetch` with no AbortSignal), and the poll loop's
+ * `Date.now() >= deadline` check only runs AFTER a probe settles — so a wedged
+ * container that never answers meant the check was never reached and
+ * `runDbQuery` hung until the caller's own ceiling (a 20-minute agent turn).
+ *
+ * One deadline covers every prelude await, and `SandboxExecDeadline` shares its
+ * budget across `run` calls, so the poll loop cannot multiply the wait.
+ */
+function dbQuerySetupDeadline(deps: DbQueryDeps, operation: string): SandboxExecDeadline {
+  const readinessMs = deps.readinessTimeoutMs ?? DEFAULT_READINESS_TIMEOUT_MS;
+  return createSandboxExecDeadline({
+    operation,
+    declaredTimeoutMs: readinessMs,
+    defaultTimeoutMs: readinessMs,
+    maxTimeoutMs: readinessMs,
+    graceMs: SANDBOX_EXEC_DEADLINE_GRACE_MS,
+    onExceeded: (event) => deps.onDeadlineExceeded?.(event),
+  });
+}
 
 /** Probe whether the cloudflared forwarder's local port is accepting yet. */
-async function forwarderReady(deps: DbQueryDeps): Promise<boolean> {
-  const probe = await deps.sandbox.exec(
+async function forwarderReady(deps: DbQueryDeps, setup: SandboxExecDeadline): Promise<boolean> {
+  const probe = await setup.run(() => deps.sandbox.exec(
     `bash -c 'exec 3<>/dev/tcp/127.0.0.1/${DB_RELAY_LOCAL_PORT}' 2>/dev/null && echo up || echo down`,
     { timeout: 5_000 },
-  );
+  ));
   return probe.stdout.trim() === "up";
 }
 
@@ -200,26 +265,35 @@ async function forwarderReady(deps: DbQueryDeps): Promise<boolean> {
  * its local port is accepting. Idempotent: startProcess uses a stable id, so a
  * second attempt on a warm container is a no-op collision we swallow. Relay
  * credentials travel via process env — never image contents.
+ *
+ * Two bounds, deliberately both: `setup` stops probes that never ANSWER, and
+ * the wall-clock check below stops probes that answer but keep saying "down"
+ * (the more useful diagnostic, so it keeps its message).
  */
-async function ensureRelayForwarder(deps: DbQueryDeps, relay: DbEgressRelayConfig): Promise<void> {
+async function ensureRelayForwarder(
+  deps: DbQueryDeps,
+  relay: DbEgressRelayConfig,
+  setup: SandboxExecDeadline,
+): Promise<void> {
   const deadline = Date.now() + (deps.readinessTimeoutMs ?? DEFAULT_READINESS_TIMEOUT_MS);
-  if (await forwarderReady(deps)) return;
+  if (await forwarderReady(deps, setup)) return;
 
   try {
-    await deps.sandbox.startProcess(
+    await setup.run(() => deps.sandbox.startProcess(
       `cloudflared access tcp --hostname ${relay.hostname} --url 127.0.0.1:${DB_RELAY_LOCAL_PORT}` +
         (relay.accessClientId && relay.accessClientSecret
           ? ` --service-token-id ${relay.accessClientId} --service-token-secret ${relay.accessClientSecret}`
           : ""),
       { processId: DB_RELAY_FORWARDER_PROCESS_ID },
-    );
-  } catch {
+    ));
+  } catch (error) {
     // A concurrent caller likely started it first (stable processId → name
     // collision, not a second forwarder). Readiness polling below is the real
-    // gate.
+    // gate — but a spent setup budget is terminal, not a collision.
+    if (isSandboxDeadlineExceededError(error)) throw error;
   }
 
-  while (!(await forwarderReady(deps))) {
+  while (!(await forwarderReady(deps, setup))) {
     if (Date.now() >= deadline) {
       throw new Error(
         "db-query relay forwarder never became ready (check the relay hostname, Access service token, and that the egress allowlist admits the relay host)",
@@ -227,6 +301,14 @@ async function ensureRelayForwarder(deps: DbQueryDeps, relay: DbEgressRelayConfi
     }
     await new Promise((resolve) => setTimeout(resolve, READINESS_POLL_INTERVAL_MS));
   }
+}
+
+/** Relay egress + forwarder readiness, all of it deadline-bounded. */
+async function ensureRelayPrelude(deps: DbQueryDeps, setup: SandboxExecDeadline): Promise<void> {
+  const relay = deps.relay;
+  if (!relay) return;
+  await setup.run(() => deps.sandbox.ensureRelayEgress(relay.hostname));
+  await ensureRelayForwarder(deps, relay, setup);
 }
 
 function parseRunnerOutput(exec: SandboxExecResult): DbQueryResult {
@@ -270,19 +352,18 @@ function parseRunnerOutput(exec: SandboxExecResult): DbQueryResult {
  * bare `import "pg"` resolves against the baked node_modules.
  */
 export async function runDbQuery(deps: DbQueryDeps, request: DbQueryRequest): Promise<DbQueryResult> {
-  if (deps.relay) {
-    await deps.sandbox.ensureRelayEgress(deps.relay.hostname);
-    await ensureRelayForwarder(deps, deps.relay);
-  }
+  await ensureRelayPrelude(deps, dbQuerySetupDeadline(deps, "db_query_setup"));
 
-  const exec = await deps.sandbox.exec(
-    `bash -c 'printf %s "$DB_RUNNER_SRC" | node --input-type=module'`,
-    {
-      cwd: DB_QUERY_RUNNER_DIR,
-      timeout: (request.timeoutMs ?? 30_000) + EXEC_OVERHEAD_MS,
-      env: runnerEnv(deps, request),
-    },
-  );
+  const containerTimeoutMs = (request.timeoutMs ?? DEFAULT_QUERY_TIMEOUT_MS) + EXEC_OVERHEAD_MS;
+  const exec = await dbQueryDeadline(deps, "db_query", containerTimeoutMs).run(() =>
+    deps.sandbox.exec(
+      `bash -c 'printf %s "$DB_RUNNER_SRC" | node --input-type=module'`,
+      {
+        cwd: DB_QUERY_RUNNER_DIR,
+        timeout: containerTimeoutMs,
+        env: runnerEnv(deps, request),
+      },
+    ));
   return parseRunnerOutput(exec);
 }
 
@@ -329,24 +410,29 @@ export async function runDbExport(
   mountPrefix: string,
   exportPath: string,
 ): Promise<DbExportResult> {
-  if (deps.relay) {
-    await deps.sandbox.ensureRelayEgress(deps.relay.hostname);
-    await ensureRelayForwarder(deps, deps.relay);
-  }
-  await deps.sandbox.ensureWarehouseExportMount(mountPrefix);
+  await ensureRelayPrelude(deps, dbQuerySetupDeadline(deps, "db_export_setup"));
+  // The mount is an exec-class container call too: unbounded, it hung exports
+  // exactly like the readiness probes did. Its OWN budget, not a share of the
+  // forwarder's — a slow-but-healthy mount must not be cut short by however
+  // long the relay took to come up.
+  await dbQuerySetupDeadline(deps, "db_export_mount")
+    .run(() => deps.sandbox.ensureWarehouseExportMount(mountPrefix));
 
   const exportRequest: DbQueryRequest = { ...request, op: "export" };
-  const exec = await deps.sandbox.exec(
-    `bash -c 'printf %s "$DB_RUNNER_SRC" | node --input-type=module'`,
-    {
-      cwd: DB_QUERY_RUNNER_DIR,
-      timeout: (request.timeoutMs ?? 120_000) + EXPORT_EXEC_OVERHEAD_MS,
-      env: {
-        ...runnerEnv(deps, exportRequest),
-        DB_EXPORT_PATH: exportPath,
+  const containerTimeoutMs =
+    (request.timeoutMs ?? DEFAULT_EXPORT_TIMEOUT_MS) + EXPORT_EXEC_OVERHEAD_MS;
+  const exec = await dbQueryDeadline(deps, "db_export", containerTimeoutMs).run(() =>
+    deps.sandbox.exec(
+      `bash -c 'printf %s "$DB_RUNNER_SRC" | node --input-type=module'`,
+      {
+        cwd: DB_QUERY_RUNNER_DIR,
+        timeout: containerTimeoutMs,
+        env: {
+          ...runnerEnv(deps, exportRequest),
+          DB_EXPORT_PATH: exportPath,
+        },
       },
-    },
-  );
+    ));
   const parsed = parseRunnerOutput(exec) as unknown as DbExportResult;
   if (parsed.ok && (typeof parsed.rowCount !== "number" || typeof parsed.bytes !== "number")) {
     return { ok: false, error: { message: "export runner returned a malformed result", status: 502 } };
