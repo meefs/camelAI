@@ -8,6 +8,8 @@ import {
   DB_QUERY_INSTANCE_TYPE,
   DB_QUERY_SLEEP_AFTER,
   EVAL_INSTANCE_TYPE,
+  PROJECT_BUILD_ACTIVE_SESSION_MAX_WINDOW_MS,
+  PROJECT_BUILD_ACTIVE_SESSION_WINDOW_MS,
   PROJECT_BUILD_INSTANCE_TYPE,
   PROJECT_BUILD_SLEEP_AFTER,
 } from "../workers/main/src/container-sizing";
@@ -46,6 +48,15 @@ describe("container right-sizing", () => {
     expect(PROJECT_BUILD_SLEEP_AFTER).toBe("2m");
     expect(ANALYSIS_SLEEP_AFTER).toBe("5m");
     expect(DB_QUERY_SLEEP_AFTER).toBe("2m");
+  });
+
+  it("bounds the active build-session warm window", () => {
+    // Longer than the 2m idle sleep (that is the point), but capped well short
+    // of a workday so a quiet workspace stops billing provisioned memory.
+    expect(PROJECT_BUILD_ACTIVE_SESSION_WINDOW_MS).toBeGreaterThan(2 * 60_000);
+    expect(PROJECT_BUILD_ACTIVE_SESSION_WINDOW_MS)
+      .toBeLessThanOrEqual(PROJECT_BUILD_ACTIVE_SESSION_MAX_WINDOW_MS);
+    expect(PROJECT_BUILD_ACTIVE_SESSION_MAX_WINDOW_MS).toBeLessThanOrEqual(30 * 60_000);
   });
 
   it.each([

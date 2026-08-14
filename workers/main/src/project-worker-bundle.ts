@@ -21,6 +21,12 @@ export interface ProjectBuildSandboxLike {
     options?: { encoding?: "base64" | "utf8" },
   ): Promise<unknown>;
   exists?(path: string): Promise<{ exists: boolean }>;
+  /**
+   * ProjectBuildSandbox-only: defer the idle reaper while the org's build
+   * session is active. Optional so plain Sandbox stubs and test fakes still
+   * satisfy this interface.
+   */
+  noteBuildSessionActivity?(windowMs?: number): Promise<void>;
   readFile?(path: string, options?: { encoding?: "base64" | "utf8" }): Promise<{ content: string }>;
   readFileStream?(path: string): Promise<ReadableStream<Uint8Array>>;
   listFiles?(path: string, options?: { recursive?: boolean; includeHidden?: boolean }): Promise<{ files: Array<{

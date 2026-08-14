@@ -1646,6 +1646,27 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     return this.codeModeArtifacts.recordCodeModeArtifact(parentToolUseId, artifact);
   }
 
+  /**
+   * Live progress text for a tool running inside code mode.
+   *
+   * Code-mode tools execute in the CodeModeToolsBinding isolate, so they cannot
+   * reach the agent loop's `onUpdate` callback; this is the same seam
+   * recordCodeModeArtifact uses. It emits exactly the runtime event the agent
+   * loop's own tool_execution_update handler emits, so the client renders it as
+   * streamed output of the parent js_exec tool call — which is what keeps a
+   * long build-container wake from looking like a hang.
+   */
+  async streamToolProgress(parentToolUseId: string, delta: string): Promise<void> {
+    const itemId = parentToolUseId.trim();
+    const text = typeof delta === "string" ? delta.trim() : "";
+    if (!itemId || !text) return;
+    this.pushPiRuntimeEvent("item/commandExecution/outputDelta", {
+      threadId: this.piRuntimeThreadId(),
+      itemId,
+      delta: `${text}\n`,
+    });
+  }
+
   private deliverCodeModeArtifacts(
     parentToolUseId: string,
     artifacts: RuntimeCallArtifact[],

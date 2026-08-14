@@ -56,8 +56,20 @@ import {
   deriveVerifiedWorkEvidence,
   type VerifiedWorkEvidence,
 } from "./chat-thread/verified-work-state";
-import { recordErrorEvent } from "./observability";
+import { PROJECT_BUILD_ACTIVE_SESSION_WINDOW_MS } from "./container-sizing";
+import { recordErrorEvent, recordObservabilityEvent } from "./observability";
 import { buildLogTail, cleanBuildLog, projectBuildSandboxKey, runProjectAddDependency, runProjectBuild, type ProjectBuildResult } from "./project-build-service";
+import {
+  ensureBuildSandboxReady,
+  isProjectBuildServiceUnavailableError,
+  isProjectBuildStorageMountError,
+  projectBuildTransientCause,
+  PROJECT_BUILD_COLD_START_BUDGET_MS,
+  PROJECT_BUILD_SERVICE_UNAVAILABLE_MESSAGE,
+  PROJECT_BUILD_STORAGE_MOUNT_MESSAGE,
+  type ProjectBuildReadinessEvent,
+  type ProjectBuildReadinessResult,
+} from "./project-build-readiness";
 import { collectWorkerBundleFromSandbox, findUnexportedDurableObjectClasses, type ProjectBuildSandboxLike } from "./project-worker-bundle";
 import { buildNotebookWorkerBundle, resolveNotebookDeployPath } from "./notebook-worker-bundle";
 import { ANALYSIS_NOTEBOOK_STDERR_MAX_CHARS, ANALYSIS_NOTEBOOK_STDOUT_MAX_CHARS, clampOutputTail } from "./analysis-service";
@@ -1481,42 +1493,37 @@ function normalizeDeployScriptName(value: unknown): string {
   return normalized;
 }
 
-const PROJECT_BUILD_SERVICE_UNAVAILABLE_MESSAGE =
-  "Build service temporarily unavailable. Please try again in a moment.";
-const PROJECT_BUILD_STORAGE_MOUNT_MESSAGE =
-  "Build sandbox storage is not available in this installation. Retrying will not help. " +
-  "Self-hosted installations should upgrade to a release that uses FUSE-free local R2 synchronization, " +
-  "then run the self-host container smoke checks.";
 const PROJECT_BUILD_SERVICE_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000] as const;
 
-function isProjectBuildStorageMountError(error: unknown): boolean {
-  const message = String(
-    error instanceof Error
-      ? `${error.name}: ${error.message}`
-      : error,
-  );
-  return /S3FS mount failed/i.test(message) ||
-    /fuse:\s*device not found/i.test(message) ||
-    /try ['"]?modprobe fuse/i.test(message);
-}
+/**
+ * Upper bound on an agent-supplied build timeout. `timeoutMs` reaches us from
+ * model-written js_exec code with no clamp of its own; capping it at the warm
+ * session window keeps a single build from outliving the window that is meant
+ * to cover the gap BETWEEN builds (and from pinning a standard-3 indefinitely).
+ */
+export const PROJECT_BUILD_MAX_TIMEOUT_MS = PROJECT_BUILD_ACTIVE_SESSION_WINDOW_MS;
 
-function isProjectBuildServiceUnavailableError(error: unknown): boolean {
-  const message = String(
-    error instanceof Error
-      ? `${error.name}: ${error.message}`
-      : error,
-  );
-  return /RPCTransportError/i.test(message) ||
-    /Network connection lost/i.test(message) ||
-    /WebSocket upgrade failed/i.test(message) ||
-    /503\s+Service\s+Unavailable/i.test(message) ||
-    /Container failed to start/i.test(message);
+function clampProjectBuildTimeoutMs(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  return Math.min(Math.max(1, Math.floor(value)), PROJECT_BUILD_MAX_TIMEOUT_MS);
 }
 
 async function withProjectBuildServiceErrorMapping<T>(
   operationName: "add_dependency" | "deploy_project",
   operation: () => Promise<T>,
+  hooks: {
+    /**
+     * Invoked before each retry sleep. The readiness gate re-arms here so
+     * attempt 2+ waits for a container that died mid-build instead of running
+     * blind against it (the wait stays bounded by one shared cold-boot budget).
+     */
+    onTransient?: (error: unknown) => void;
+    /** Final user-facing message; carries cold-start context when we have it. */
+    unavailableMessage?: () => string;
+  } = {},
 ): Promise<T> {
+  const unavailableMessage = () =>
+    hooks.unavailableMessage?.() ?? PROJECT_BUILD_SERVICE_UNAVAILABLE_MESSAGE;
   for (let attempt = 0; ; attempt += 1) {
     try {
       return await operation();
@@ -1527,13 +1534,15 @@ async function withProjectBuildServiceErrorMapping<T>(
       if (!isProjectBuildServiceUnavailableError(error)) throw error;
       const retryDelayMs = PROJECT_BUILD_SERVICE_RETRY_DELAYS_MS[attempt];
       if (retryDelayMs == null) {
-        throw new Error(PROJECT_BUILD_SERVICE_UNAVAILABLE_MESSAGE, { cause: error });
+        throw new Error(unavailableMessage(), { cause: error });
       }
+      hooks.onTransient?.(error);
       console.warn("[project-build] transient service failure; retrying", {
         operation: operationName,
         attempt: attempt + 1,
         maxAttempts: PROJECT_BUILD_SERVICE_RETRY_DELAYS_MS.length + 1,
         retryDelayMs,
+        cause: projectBuildTransientCause(error),
         error: error instanceof Error ? error.message : String(error),
       });
       await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
@@ -1910,6 +1919,184 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       normalizeId: true,
       transport: "rpc",
     }) as unknown as ProjectBuildSandboxLike;
+  }
+
+  /**
+   * Readiness gate for a single build-tool call.
+   *
+   * `ensureReady` is invoked immediately before the first sandbox operation
+   * (never on paths that don't touch the build container, e.g. notebook
+   * deploys) and is memoized so the surrounding retry ladder does not re-wait a
+   * full cold-boot budget per attempt. `invalidate` re-arms it after a
+   * transient failure, so an attempt that runs against a container which died
+   * mid-build waits for the reboot instead of running blind — the cumulative
+   * readiness wait across all attempts stays bounded by ONE cold-boot budget
+   * via the deadline established on the first call.
+   *
+   * `annotate` stamps a cold wake onto the tool result so the agent — and
+   * through it the user — reads the extra minute as "the environment was
+   * starting" instead of retrying into the same boot window;
+   * `unavailableMessage` carries the same context onto the failure path.
+   */
+  private projectBuildReadinessGate(
+    operation: "add_dependency" | "deploy_project",
+  ): {
+    ensureReady: (sandbox: ProjectBuildSandboxLike) => Promise<void>;
+    invalidate: () => void;
+    annotate: <T>(result: T) => T;
+    unavailableMessage: () => string;
+  } {
+    let pending: Promise<void> | null = null;
+    // Sticky across re-arms: a later warm probe must not erase the fact that
+    // this tool call already paid for a wake.
+    let coldStart: ProjectBuildReadinessResult | null = null;
+    let deadlineAtMs: number | null = null;
+    return {
+      ensureReady: (sandbox) => (pending ??= (() => {
+        deadlineAtMs ??= Date.now() + PROJECT_BUILD_COLD_START_BUDGET_MS;
+        const budgetMs = Math.max(0, deadlineAtMs - Date.now());
+        return this.awaitProjectBuildSandboxReady(sandbox, operation, budgetMs)
+          .then((result) => {
+            if (result.coldStart) coldStart ??= result;
+          });
+      })()),
+      invalidate: () => {
+        pending = null;
+      },
+      unavailableMessage: () => {
+        if (!coldStart) return PROJECT_BUILD_SERVICE_UNAVAILABLE_MESSAGE;
+        return `${PROJECT_BUILD_SERVICE_UNAVAILABLE_MESSAGE} ` +
+          `The build environment was still starting (waited ${coldStart.waitedMs}ms for it to wake).`;
+      },
+      annotate: <T,>(result: T): T => {
+        if (!coldStart) return result;
+        if (!result || typeof result !== "object" || Array.isArray(result)) return result;
+        return {
+          ...result,
+          buildEnvironment: {
+            coldStart: true,
+            startupMs: coldStart.waitedMs,
+            probes: coldStart.attempts,
+            message:
+              "The build container was asleep and had to start; the extra wait was startup, not the build.",
+          },
+        };
+      },
+    };
+  }
+
+  private async awaitProjectBuildSandboxReady(
+    sandbox: ProjectBuildSandboxLike,
+    operation: "add_dependency" | "deploy_project",
+    budgetMs?: number,
+  ): Promise<ProjectBuildReadinessResult> {
+    const readiness = await ensureBuildSandboxReady(sandbox, {
+      ...(budgetMs === undefined ? {} : { budgetMs }),
+      onProgress: (message) => {
+        // Operator-facing: tells a log reader the wait is a container boot, not
+        // a hang.
+        console.warn("[project-build] waiting for build container", {
+          operation,
+          message,
+          orgId: this.ctx?.props?.orgId,
+        });
+        // User-facing: stream the same text as tool output so the person
+        // watching the turn sees "starting", not silence, for the whole boot.
+        void this.streamProjectBuildProgress(message);
+      },
+      onEvent: (event) => this.recordProjectBuildReadinessEvent(operation, event),
+    });
+    if (readiness.coldStart) {
+      console.warn("[project-build] build container cold start", {
+        operation,
+        waitedMs: readiness.waitedMs,
+        attempts: readiness.attempts,
+        orgId: this.ctx?.props?.orgId,
+      });
+      void this.streamProjectBuildProgress(
+        `Build environment ready after ${Math.round(readiness.waitedMs / 1000)}s; building…`,
+      );
+    }
+    return readiness;
+  }
+
+  /**
+   * Best-effort live progress for the human watching the turn.
+   *
+   * deploy_project/add_dependency are code-mode tools (piPassthrough: false):
+   * they only run inside js_exec, in the CodeModeToolsBinding isolate, so the
+   * agent-loop `onUpdate` callback is not reachable from here. The ChatThreadDO
+   * stub is — the same seam recordCodeModeArtifact uses — and it can push the
+   * `item/commandExecution/outputDelta` runtime event the client already
+   * renders as streamed tool output, keyed by the parent js_exec tool call.
+   */
+  private async streamProjectBuildProgress(message: string): Promise<void> {
+    const parentToolUseId = this.ctx?.props?.parentToolUseId?.trim();
+    if (!parentToolUseId) return;
+    try {
+      await (this.chatThreadStub as unknown as {
+        streamToolProgress(parentToolUseId: string, delta: string): Promise<void>;
+      }).streamToolProgress(parentToolUseId, message);
+    } catch (error) {
+      console.warn("[project-build] failed to stream readiness progress", {
+        parentToolUseId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
+   * Keep the container warm for the rest of this build session so the next
+   * deploy in the same chat does not pay another cold boot. Called AFTER the
+   * build finishes (success or failure), never from the readiness path: the
+   * window is a post-build tail, so a long build gets its full window and a
+   * build that never ran never extends one.
+   */
+  private async noteProjectBuildSessionActivity(
+    sandbox: ProjectBuildSandboxLike,
+    operation: "add_dependency" | "deploy_project",
+  ): Promise<void> {
+    try {
+      await sandbox.noteBuildSessionActivity?.();
+    } catch (error) {
+      console.warn("[project-build] failed to extend build session window", {
+        operation,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private recordProjectBuildReadinessEvent(
+    operation: "add_dependency" | "deploy_project",
+    event: ProjectBuildReadinessEvent,
+  ): void {
+    const props = this.ctx?.props;
+    // A permanently broken container is a configuration problem, not a slow
+    // boot — it gets its own event so cold-start dashboards stay boot-shaped.
+    const eventName = event.type === "cold_start"
+      ? "build_sandbox_cold_start"
+      : event.type === "startup_failed"
+        ? "build_sandbox_startup_failed"
+        : "build_sandbox_ready_timeout";
+    const status = event.type === "cold_start"
+      ? "ready"
+      : event.type === "startup_failed"
+        ? "startup_failed"
+        : "timeout";
+    recordObservabilityEvent(this.env, {
+      event: eventName,
+      severity: event.type === "cold_start" ? "info" : "error",
+      component: "CodeModeToolsBinding",
+      operation,
+      status,
+      durationMs: event.waitedMs,
+      count: event.attempts,
+      errorName: event.cause,
+      workspaceId: props?.workspaceId,
+      threadId: props?.threadId,
+      orgId: props?.orgId,
+      userId: props?.userId,
+    });
   }
 
   private async resolveProjectForAction(args: Record<string, unknown>): Promise<WorkspaceProject> {
@@ -4052,22 +4239,33 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   }
 
   private async addDependency(args: Record<string, unknown>): Promise<unknown> {
-    return withProjectBuildServiceErrorMapping("add_dependency", async () => {
+    const gate = this.projectBuildReadinessGate("add_dependency");
+    return gate.annotate(await withProjectBuildServiceErrorMapping("add_dependency", async () => {
       const project = await this.resolveDoBackedProjectForAction(args, "add_dependency");
       const dependency = typeof args.dependency === "string" ? args.dependency : "";
-      const result = await runProjectAddDependency({
-        projectId: project.id,
-        dependency,
-        dev: args.dev === true,
-        files: new ProjectFilesystemClient(this.env, project.id),
-        sandbox: this.projectBuildSandbox(),
-      });
-      return {
-        ...result,
-        project: project.name,
-        backend: "do-r2",
-      };
-    });
+      const sandbox = this.projectBuildSandbox();
+      await gate.ensureReady(sandbox);
+      try {
+        const result = await runProjectAddDependency({
+          projectId: project.id,
+          dependency,
+          dev: args.dev === true,
+          files: new ProjectFilesystemClient(this.env, project.id),
+          sandbox,
+        });
+        return {
+          ...result,
+          project: project.name,
+          backend: "do-r2",
+        };
+      } finally {
+        // Warm window is anchored to the END of the install, not its start.
+        await this.noteProjectBuildSessionActivity(sandbox, "add_dependency");
+      }
+    }, {
+      onTransient: () => gate.invalidate(),
+      unavailableMessage: () => gate.unavailableMessage(),
+    }));
   }
 
   private async addShadcnComponent(args: Record<string, unknown>): Promise<unknown> {
@@ -4230,7 +4428,8 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   }
 
   private async deployProject(args: Record<string, unknown>): Promise<unknown> {
-    return withProjectBuildServiceErrorMapping("deploy_project", async () => {
+    const gate = this.projectBuildReadinessGate("deploy_project");
+    return gate.annotate(await withProjectBuildServiceErrorMapping("deploy_project", async () => {
       const project = await this.resolveDoBackedProjectForAction(args, "deploy_project");
       const notebookProjectFiles = new ProjectFilesystemClient(this.env, project.id);
       const notebookPath = await resolveNotebookDeployPath(
@@ -4247,13 +4446,21 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         return await this.deployNotebookProject(project, notebookProjectFiles, notebookPath, args);
       }
       const sandbox = this.projectBuildSandbox();
-      const timeoutMs = typeof args.timeoutMs === "number" ? args.timeoutMs : undefined;
-      const build = await runProjectBuild({
-        projectId: project.id,
-        files: new ProjectFilesystemClient(this.env, project.id),
-        sandbox,
-        timeoutMs,
-      });
+      await gate.ensureReady(sandbox);
+      const timeoutMs = clampProjectBuildTimeoutMs(args.timeoutMs);
+      let build: ProjectBuildResult;
+      try {
+        build = await runProjectBuild({
+          projectId: project.id,
+          files: new ProjectFilesystemClient(this.env, project.id),
+          sandbox,
+          timeoutMs,
+        });
+      } finally {
+        // Warm window is anchored to the END of the build, not its start, so a
+        // long build still leaves a full window for the next deploy.
+        await this.noteProjectBuildSessionActivity(sandbox, "deploy_project");
+      }
       if (!build.success) {
         const summarizedBuild = summarizeProjectBuildResult(build);
         return {
@@ -4380,7 +4587,10 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
         },
         ...(warnings.length > 0 ? { warnings } : {}),
       };
-    });
+    }, {
+      onTransient: () => gate.invalidate(),
+      unavailableMessage: () => gate.unavailableMessage(),
+    }));
   }
 
   // Publish an executed notebook as a static app: the pre-built renderer SPA

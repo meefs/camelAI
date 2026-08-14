@@ -38,6 +38,28 @@ export const EVAL_INSTANCE_TYPE = "lite";
 /** Builds finish in seconds; no reason to bill 10m of idle memory/disk. */
 export const PROJECT_BUILD_SLEEP_AFTER = "2m";
 
+/**
+ * How long a FINISHED build keeps the container warm for the session that made
+ * it.
+ *
+ * The 2m idle window is right for a workspace that built once and left, but it
+ * reaped the container mid-session between two deploys, and the next deploy then
+ * paid a 30-120s cold boot (see project-build-readiness.ts). The touch happens
+ * when a build completes, so the window is a post-build tail; each new build
+ * extends it, and once it lapses the normal 2m sleep applies again.
+ *
+ * Sized against the observed mid-session gap that caused the incident (~6 min
+ * between two deploys), not against a workday: the container is a standard-3
+ * billing provisioned memory/disk for every awake second, and each warm
+ * instance also holds one of the `max_instances` slots in wrangler.prod.jsonc.
+ * Raising this multiplies concurrent live instances — check
+ * `build_sandbox_stop_deferred` telemetry against that cap first.
+ */
+export const PROJECT_BUILD_ACTIVE_SESSION_WINDOW_MS = 10 * 60_000;
+
+/** Upper bound on a requested warm window, so a bad caller can't pin a container. */
+export const PROJECT_BUILD_ACTIVE_SESSION_MAX_WINDOW_MS = 30 * 60_000;
+
 /** Interactive notebooks; shorter than the SDK 10m default, still warm enough. */
 export const ANALYSIS_SLEEP_AFTER = "5m";
 

@@ -59,6 +59,7 @@ import { encryptCredentials } from '../../../src/lib/integration-crypto';
 import { stripPiUiMetadata } from '../../../src/lib/runtime-artifacts';
 import { PiChunkEncoder } from '../../../src/lib/pi-chunk-encoder';
 import { CodeModeWebSearch } from '../src/code-mode-web-search';
+import { PROJECT_BUILD_ACTIVE_SESSION_WINDOW_MS } from '../src/container-sizing';
 import {
   capabilityAgentSystemPrompt,
   capabilityAgentToolOptions,
@@ -382,6 +383,7 @@ function createProjectToolFake({
       sandboxWrites.set(path, writes);
     }),
     exists: vi.fn(async (path: string) => ({ exists: sandboxFiles.has(path) })),
+    noteBuildSessionActivity: vi.fn(async () => undefined),
     exec: vi.fn(async (command: string, options?: { cwd?: string }) => {
       if (command === 'bun install && bun run build' && options?.cwd) {
         sandboxFiles.set(`${options.cwd}/bun.lock`, base64('# lockfile\n'));
@@ -461,6 +463,7 @@ function createProjectToolFake({
     recordProjectActivity: vi.fn(async () => undefined),
     recordVerifiedWorkEvidence: vi.fn(async () => undefined),
     setPreviewTarget: vi.fn(async () => undefined),
+    streamToolProgress: vi.fn(async () => undefined),
   };
   const env = {
     WORKER_BASE_URL: 'https://staging.camelai.dev',
@@ -7753,6 +7756,60 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(sandbox.mkdir).toHaveBeenCalledTimes(2);
   });
 
+  it('re-probes readiness when the container dies mid-build instead of retrying blind', async () => {
+    vi.useFakeTimers();
+    const { fake, sandbox } = createProjectToolFake({ deploy: true });
+    const files = sandbox.exists.getMockImplementation()!;
+    let rebootProbes = 0;
+    sandbox.mkdir.mockRejectedValueOnce(new Error('RPCTransportError: Network connection lost'));
+    sandbox.exists.mockImplementation(async (path: string) => {
+      // The container is rebooting when the ladder's second attempt starts.
+      if (path === '/workspace' && sandbox.mkdir.mock.calls.length > 0 && rebootProbes < 2) {
+        rebootProbes += 1;
+        throw new Error('RPCTransportError: WebSocket upgrade failed: 503 Service Unavailable');
+      }
+      return files(path);
+    });
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      Response.json({ success: true, result: { id: 'version-1' } }, { status: 200 })));
+
+    const resultPromise = CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
+      project: 'Demo App',
+    });
+    await vi.advanceTimersByTimeAsync(20_000);
+    const result = await resultPromise as Record<string, any>;
+
+    expect(result).toMatchObject({ success: true });
+    expect(sandbox.mkdir).toHaveBeenCalledTimes(2);
+    // Attempt 2 waited for the reboot rather than reusing the memoized "ready".
+    expect(rebootProbes).toBe(2);
+    // And the wake is reported to the agent even though it happened on a retry.
+    expect(result.buildEnvironment).toMatchObject({ coldStart: true });
+  });
+
+  it('says the environment was still starting when a cold-start deploy exhausts the ladder', async () => {
+    vi.useFakeTimers();
+    const { fake, sandbox } = createProjectToolFake({ deploy: true });
+    const files = sandbox.exists.getMockImplementation()!;
+    let coldProbes = 0;
+    sandbox.exists.mockImplementation(async (path: string) => {
+      if (path === '/workspace' && coldProbes < 3) {
+        coldProbes += 1;
+        throw new Error('RPCTransportError: Network connection lost');
+      }
+      return files(path);
+    });
+    sandbox.mkdir.mockRejectedValue(new Error('RPCTransportError: Network connection lost'));
+
+    const resultPromise = CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
+      project: 'Demo App',
+    });
+    const rejection = expect(resultPromise).rejects.toThrow('The build environment was still starting');
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    await rejection;
+  });
+
   it('returns the friendly build service error after transient deploy retries are exhausted', async () => {
     vi.useFakeTimers();
     const { fake, sandbox } = createProjectToolFake({ deploy: true });
@@ -7768,6 +7825,225 @@ describe('ChatThreadDO Pi turn handling', () => {
 
     await rejection;
     expect(sandbox.mkdir).toHaveBeenCalledTimes(5);
+  });
+
+  it('probes the build container once on the warm path, before the first source read', async () => {
+    const { fake, sandbox } = createProjectToolFake({ deploy: true });
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      Response.json({ success: true, result: { id: 'version-1' } }, { status: 200 })));
+
+    const result = await CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
+      project: 'Demo App',
+    }) as Record<string, unknown>;
+
+    expect(result).toMatchObject({ success: true });
+    // Warm deploys carry no cold-start annotation and pay no extra wait.
+    expect(result.buildEnvironment).toBeUndefined();
+    const probes = sandbox.exists.mock.calls.filter(([path]: [string]) => path === '/workspace');
+    expect(probes).toHaveLength(1);
+    // Readiness runs before anything touches the workdir.
+    expect(sandbox.exists.mock.invocationCallOrder[0])
+      .toBeLessThan(sandbox.mkdir.mock.invocationCallOrder[0]);
+    expect(sandbox.noteBuildSessionActivity).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits out a cold build container instead of burning the retry ladder', async () => {
+    vi.useFakeTimers();
+    const { fake, sandbox } = createProjectToolFake({ deploy: true });
+    const files = sandbox.exists.getMockImplementation()!;
+    let coldProbes = 0;
+    sandbox.exists.mockImplementation(async (path: string) => {
+      if (path === '/workspace' && coldProbes < 3) {
+        coldProbes += 1;
+        throw new Error('RPCTransportError: Network connection lost');
+      }
+      return files(path);
+    });
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      Response.json({ success: true, result: { id: 'version-1' } }, { status: 200 })));
+
+    const resultPromise = CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
+      project: 'Demo App',
+    });
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    const result = await resultPromise as Record<string, any>;
+    expect(result).toMatchObject({ success: true, project: 'Demo App' });
+    expect(coldProbes).toBe(3);
+    // The ladder never ran: the build itself only saw a ready container.
+    expect(sandbox.mkdir).toHaveBeenCalledTimes(1);
+    expect(sandbox.noteBuildSessionActivity).toHaveBeenCalledTimes(1);
+    // The agent is told the extra wait was startup, so it does not re-deploy.
+    expect(result.buildEnvironment).toMatchObject({ coldStart: true, probes: 4 });
+    expect(result.buildEnvironment.startupMs).toBeGreaterThan(0);
+  });
+
+  it('streams the cold-start progress text to the client instead of waiting silently', async () => {
+    vi.useFakeTimers();
+    const { fake, sandbox, chatThreadStub } = createProjectToolFake({ deploy: true });
+    const files = sandbox.exists.getMockImplementation()!;
+    let coldProbes = 0;
+    sandbox.exists.mockImplementation(async (path: string) => {
+      if (path === '/workspace' && coldProbes < 8) {
+        coldProbes += 1;
+        throw new Error('RPCTransportError: Network connection lost');
+      }
+      return files(path);
+    });
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      Response.json({ success: true, result: { id: 'version-1' } }, { status: 200 })));
+
+    const resultPromise = CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
+      project: 'Demo App',
+    });
+    await vi.advanceTimersByTimeAsync(30_000);
+    await resultPromise;
+
+    // Keyed by the parent js_exec tool call, which is what the client renders
+    // as streamed tool output.
+    expect(chatThreadStub.streamToolProgress).toHaveBeenCalledWith(
+      'js-exec-1',
+      'Build environment is starting…',
+    );
+    expect(chatThreadStub.streamToolProgress.mock.calls.some(
+      ([, text]: [string, string]) => text.includes('Build environment ready'),
+    )).toBe(true);
+  });
+
+  it('extends the warm session window after the build finishes, not before it starts', async () => {
+    const { fake, sandbox } = createProjectToolFake({ deploy: true });
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      Response.json({ success: true, result: { id: 'version-1' } }, { status: 200 })));
+
+    await CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
+      project: 'Demo App',
+    });
+
+    expect(sandbox.noteBuildSessionActivity).toHaveBeenCalledTimes(1);
+    const buildCall = sandbox.exec.mock.invocationCallOrder[
+      sandbox.exec.mock.calls.findIndex(([command]: [string]) => command === 'bun install && bun run build')
+    ];
+    expect(sandbox.noteBuildSessionActivity.mock.invocationCallOrder[0]).toBeGreaterThan(buildCall);
+  });
+
+  it('clamps an agent-supplied build timeout to the warm session window', async () => {
+    const { fake, sandbox } = createProjectToolFake({ deploy: true });
+
+    await CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
+      project: 'Demo App',
+      timeoutMs: 6 * 60 * 60_000,
+      dry_run: true,
+    });
+
+    expect(sandbox.exec).toHaveBeenCalledWith('bun install && bun run build', expect.objectContaining({
+      env: expect.objectContaining({ CAMELAI_BUILD_TIMEOUT_MS: String(PROJECT_BUILD_ACTIVE_SESSION_WINDOW_MS) }),
+    }));
+  });
+
+  it('returns the unavailable message without building when the container never boots', async () => {
+    vi.useFakeTimers();
+    const { fake, sandbox } = createProjectToolFake({ deploy: true });
+    sandbox.exists.mockImplementation(async (path: string) => {
+      // 503 on the control-plane upgrade: the container really is booting, so
+      // this is the case the cold-start budget exists for.
+      if (path === '/workspace') {
+        throw new Error('RPCTransportError: WebSocket upgrade failed: 503 Service Unavailable');
+      }
+      return { exists: false };
+    });
+
+    const resultPromise = CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
+      project: 'Demo App',
+    });
+    const rejection = expect(resultPromise).rejects.toThrow(
+      'Build service temporarily unavailable. Please try again in a moment.',
+    );
+    await vi.advanceTimersByTimeAsync(260_000);
+
+    await rejection;
+    expect(sandbox.mkdir).not.toHaveBeenCalled();
+    expect(sandbox.noteBuildSessionActivity).not.toHaveBeenCalled();
+    expect(
+      sandbox.exists.mock.calls.filter(([path]: [string]) => path === '/workspace').length,
+    ).toBeGreaterThan(10);
+  });
+
+  it('fails fast on a permanently broken build container instead of waiting out the budget', async () => {
+    // Real timers on purpose: a permanent startup failure must not spend the
+    // cold-start budget (the SDK says retrying cannot help).
+    const { fake, sandbox } = createProjectToolFake({ deploy: true });
+    sandbox.exists.mockImplementation(async (path: string) => {
+      if (path === '/workspace') {
+        throw new Error(
+          'Container failed to start due to a permanent error. Check your container configuration.',
+        );
+      }
+      return { exists: false };
+    });
+
+    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
+      project: 'Demo App',
+    })).rejects.toThrow('will not recover on retry');
+    expect(
+      sandbox.exists.mock.calls.filter(([path]: [string]) => path === '/workspace'),
+    ).toHaveLength(1);
+    expect(sandbox.mkdir).not.toHaveBeenCalled();
+    expect(sandbox.noteBuildSessionActivity).not.toHaveBeenCalled();
+  });
+
+  it('bounds a 500 control-plane upgrade to a few probes and names it a configuration failure', async () => {
+    vi.useFakeTimers();
+    const { fake, sandbox } = createProjectToolFake({ deploy: true });
+    sandbox.exists.mockImplementation(async (path: string) => {
+      // Under transport:"rpc" the SDK discards the permanent-error body; the
+      // 500 status is all that survives.
+      if (path === '/workspace') {
+        throw new Error('RPCTransportError: WebSocket upgrade failed: 500 Internal Server Error');
+      }
+      return { exists: false };
+    });
+
+    const resultPromise = CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
+      project: 'Demo App',
+    });
+    const rejection = expect(resultPromise).rejects.toThrow('will not recover on retry');
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    await rejection;
+    const probes = sandbox.exists.mock.calls.filter(([path]: [string]) => path === '/workspace');
+    expect(probes.length).toBeLessThanOrEqual(4);
+    expect(sandbox.mkdir).not.toHaveBeenCalled();
+  });
+
+  it('keeps a storage-mount failure terminal when the readiness probe surfaces it', async () => {
+    // Real timers on purpose: a mount misconfiguration must fail immediately
+    // rather than wait out the cold-start budget.
+    const { fake, sandbox } = createProjectToolFake({ deploy: true });
+    sandbox.exists.mockImplementation(async (path: string) => {
+      if (path === '/workspace') {
+        throw new Error(
+          'Container failed to start: S3FS mount failed: fuse: device not found, try modprobe fuse first',
+        );
+      }
+      return { exists: false };
+    });
+
+    await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
+      project: 'Demo App',
+    })).rejects.toThrow('Retrying will not help');
+    expect(
+      sandbox.exists.mock.calls.filter(([path]: [string]) => path === '/workspace'),
+    ).toHaveLength(1);
+    expect(sandbox.mkdir).not.toHaveBeenCalled();
+  });
+
+  it('never probes or extends the build container for tools that do not build', async () => {
+    const { fake, sandbox } = createProjectToolFake();
+
+    await CodeModeToolsBinding.prototype.callTool.call(fake, 'list_commits', { project: 'Demo App' });
+
+    expect(sandbox.exists).not.toHaveBeenCalled();
+    expect(sandbox.noteBuildSessionActivity).not.toHaveBeenCalled();
   });
 
   it('does not retry a permanent FUSE mount configuration failure', async () => {
@@ -10381,6 +10657,28 @@ describe('ChatThreadDO Pi turn handling', () => {
       tool: 'js_exec',
       status: 'completed',
       isError: false,
+    });
+  });
+
+  it('streams code-mode tool progress as output of the parent tool call', async () => {
+    const { fake, events } = createPiEventFake();
+
+    await ChatThreadDO.prototype['streamToolProgress'].call(
+      fake,
+      'tool_js_exec_1',
+      'Build environment is starting…',
+    );
+    // Ignored: nothing to key the delta to, and empty text would render blank.
+    await ChatThreadDO.prototype['streamToolProgress'].call(fake, '', 'ignored');
+    await ChatThreadDO.prototype['streamToolProgress'].call(fake, 'tool_js_exec_1', '   ');
+
+    const runtimeEvents = events.filter((event) => event.type === 'runtime_event');
+    expect(runtimeEvents).toHaveLength(1);
+    expect(runtimeEvents[0].event.method).toBe('item/commandExecution/outputDelta');
+    expect(runtimeEvents[0].event.params).toEqual({
+      threadId: 'thread1',
+      itemId: 'tool_js_exec_1',
+      delta: 'Build environment is starting…\n',
     });
   });
 

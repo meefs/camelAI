@@ -1,4 +1,17 @@
+import {
+  PROJECT_BUILD_ACTIVE_SESSION_MAX_WINDOW_MS,
+  PROJECT_BUILD_ACTIVE_SESSION_WINDOW_MS,
+} from "./container-sizing.js";
+
 const MAX_PROJECT_BUILD_SANDBOX_KEY_LENGTH = 63;
+
+/**
+ * Durable Object storage key holding the epoch-ms deadline until which an active
+ * build session keeps the container awake. Persisted (not just in-memory) so a
+ * DO eviction/restart mid-session does not drop the session back to the bare 2m
+ * idle window.
+ */
+export const PROJECT_BUILD_SESSION_ACTIVITY_KEY = "camelaiBuildSessionActiveUntilMs";
 
 /**
  * Stable Durable Object name for an org's shared project-build sandbox.
@@ -22,4 +35,34 @@ function stableHexHash(value: string): string {
     hash = Math.imul(hash, 0x01000193);
   }
   return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+/**
+ * New warm-session deadline, or null when the stored one already covers it.
+ * Returning null keeps a repeated touch from writing storage on every build.
+ */
+export function nextBuildSessionDeadline(
+  nowMs: number,
+  storedUntilMs: number | undefined,
+  windowMs: number = PROJECT_BUILD_ACTIVE_SESSION_WINDOW_MS,
+): number | null {
+  const bounded = Math.min(
+    Math.max(0, Number.isFinite(windowMs) ? windowMs : 0),
+    PROJECT_BUILD_ACTIVE_SESSION_MAX_WINDOW_MS,
+  );
+  if (bounded <= 0) return null;
+  const deadline = nowMs + bounded;
+  const stored = typeof storedUntilMs === "number" && Number.isFinite(storedUntilMs) ? storedUntilMs : 0;
+  return deadline > stored ? deadline : null;
+}
+
+/**
+ * Whether the idle reaper should be deferred: the owning org used a build tool
+ * recently enough that the next deploy would otherwise pay a cold boot.
+ */
+export function shouldKeepBuildSandboxAwake(
+  nowMs: number,
+  storedUntilMs: number | undefined,
+): boolean {
+  return typeof storedUntilMs === "number" && Number.isFinite(storedUntilMs) && nowMs < storedUntilMs;
 }
