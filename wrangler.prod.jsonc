@@ -72,7 +72,7 @@
       "class_name": "ProjectBuildSandbox",
       "image": "./workers/main/project-build-sandbox.Dockerfile",
       "instance_type": "standard-3",
-      "max_instances": 100,
+      "max_instances": 50,
     },
     {
       // Unified analysis container (notebooks + shell + DuckDB) — successor to
@@ -80,12 +80,12 @@
       // DuckDB/notebook work without standard-4's provisioned memory/disk cost.
       // The account-wide vCPU quota is shared across all environments and
       // application creation/scale-up is rejected if the requested max_instances
-      // would exceed it; 100 × 2 = 200 vCPU fits with headroom. Ceiling is
+      // would exceed it; 50 × 2 = 100 vCPU fits with headroom. Ceiling is
       // demand-driven, not reserved; scale-to-zero when idle.
       "class_name": "AnalysisSandbox",
       "image": "./workers/main/analysis-sandbox.Dockerfile",
       "instance_type": "standard-3",
-      "max_instances": 100,
+      "max_instances": 50,
     },
     {
       // Trusted db-query runner with static-IP egress via the sandbox-host

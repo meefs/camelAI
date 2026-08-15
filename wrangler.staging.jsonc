@@ -69,7 +69,7 @@
       "class_name": "ProjectBuildSandbox",
       "image": "./workers/main/project-build-sandbox.Dockerfile",
       "instance_type": "standard-3",
-      "max_instances": 25,
+      "max_instances": 3,
     },
     {
       // Unified analysis container — successor to the warehouse tier. Match prod's
@@ -77,7 +77,7 @@
       "class_name": "AnalysisSandbox",
       "image": "./workers/main/analysis-sandbox.Dockerfile",
       "instance_type": "standard-3",
-      "max_instances": 10,
+      "max_instances": 2,
     },
     {
       // Trusted db-query runner with static-IP egress via the sandbox-host
@@ -86,7 +86,7 @@
       "class_name": "DbQuerySandbox",
       "image": "./workers/main/db-query-sandbox.Dockerfile",
       "instance_type": "standard-1",
-      "max_instances": 10,
+      "max_instances": 2,
     },
   ],
   "artifacts": [
