@@ -1,6 +1,7 @@
 import { env, runInDurableObject } from 'cloudflare:test';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { ChatThreadDO } from '../src/chat-thread-do';
+import { recordObservabilityEvent } from '../src/observability';
 import * as memoryTelemetry from '../src/chat-thread/chat-memory-telemetry';
 import { collectChatMemoryStats } from '../src/chat-thread/chat-memory-telemetry';
 
@@ -223,6 +224,120 @@ describe('privacy-safe chat memory aggregates', () => {
     );
     ChatThreadDO.prototype['endChatMemoryPhase'].call(fake, heavy);
     expect(events).toHaveLength(4);
+  });
+
+  it('samples pi_context_budget on the same rule, so a 25-request turn cannot flood', () => {
+    // One event per provider request would be 25 rows a turn on every thread.
+    // The budget event rides the phase sampler: throttled while the thread is
+    // small, unthrottled once it is heavy enough to be an OOM candidate.
+    const events: Array<Record<string, unknown>> = [];
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    fake.chatContext = { threadId: 'thread-id' };
+    fake.lastChatMemoryPhaseAt = new Map();
+    // The budget event reads the LAST measured stats (the phase start already
+    // paid for them) instead of running another aggregate per provider request.
+    const stats = { totalRows: 1, totalBytes: 42, maxRowBytes: 42, stores: {} };
+    fake.cachedChatMemoryStats = stats;
+    fake.readChatMemoryStats = () => {
+      throw new Error('recordPiContextBudget must not re-measure the thread');
+    };
+    fake.recordChatThreadObservabilityEvent = (
+      _event: string,
+      details: Record<string, unknown>,
+    ) => events.push(details);
+    const footprint = {
+      messageCount: 3,
+      tokens: 1_000,
+      bytes: 2_000,
+      imageCount: 1,
+      imageChars: 500,
+    };
+    const record = (outcome: Record<string, unknown> = { status: 'unchanged' }) =>
+      ChatThreadDO.prototype['recordPiContextBudget'].call(
+        fake,
+        footprint,
+        { id: 'model-x' },
+        outcome,
+      );
+
+    record();
+    record();
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      operation: 'provider_request_prepare',
+      status: 'unchanged',
+      count: 1_000,
+      size: 2_000,
+      model: 'model-x',
+      // The last extra count is the size of the view that actually shipped; with
+      // nothing compacted it is the size that went in.
+      extraCounts: [1, 500, 3, 2_000],
+    });
+
+    stats.totalBytes = 1024 * 1024;
+    record();
+    record();
+    expect(events).toHaveLength(3);
+
+    // A cut that shrank the context reports both numbers, and the one failure
+    // mode the alert cares about raises severity on its own.
+    record({ status: 'summarized', resultTokens: 300, resultBytes: 600 });
+    expect(events[3]).toMatchObject({
+      status: 'summarized',
+      size: 2_000,
+      extraCounts: [1, 500, 3, 600],
+    });
+    record({ status: 'no_cut' });
+    expect(events[4]).toMatchObject({ status: 'no_cut', severity: 'warn' });
+  });
+});
+
+describe('observability numeric dimensions', () => {
+  it('appends extra counts after the fixed doubles, leaving double1-5 in place', () => {
+    // Existing dashboards read double1..double5 positionally, so anything new
+    // has to land past them or every historical query silently changes meaning.
+    const writeDataPoint = vi.fn();
+    recordObservabilityEvent(
+      { OBSERVABILITY_EVENTS: { writeDataPoint } } as any,
+      {
+        event: 'pi_context_budget',
+        component: 'chat_thread_do',
+        durationMs: 5,
+        statusCode: null,
+        count: 1_000,
+        size: 2_000,
+        timestamp: 111,
+        extraCounts: [7, 8, 9],
+      },
+    );
+
+    expect(writeDataPoint.mock.calls[0][0].doubles).toEqual([
+      111, 5, 0, 1_000, 2_000, 7, 8, 9,
+    ]);
+
+    // Bounded, and never a hole: a runaway array cannot blow the row's limits.
+    writeDataPoint.mockClear();
+    recordObservabilityEvent(
+      { OBSERVABILITY_EVENTS: { writeDataPoint } } as any,
+      {
+        event: 'pi_context_budget',
+        component: 'chat_thread_do',
+        timestamp: 111,
+        extraCounts: [1, 2, 3, 4, 5, 6, 7, undefined as never],
+      },
+    );
+    expect(writeDataPoint.mock.calls[0][0].doubles).toEqual([
+      111, 0, 0, 0, 0, 1, 2, 3, 4, 5,
+    ]);
+  });
+
+  it('writes no extra doubles for the events that do not use them', () => {
+    const writeDataPoint = vi.fn();
+    recordObservabilityEvent(
+      { OBSERVABILITY_EVENTS: { writeDataPoint } } as any,
+      { event: 'chat_memory_phase', component: 'chat_thread_do', timestamp: 111 },
+    );
+    expect(writeDataPoint.mock.calls[0][0].doubles).toHaveLength(5);
   });
 });
 

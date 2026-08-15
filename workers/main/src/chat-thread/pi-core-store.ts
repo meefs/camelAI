@@ -35,11 +35,30 @@ import type { ChatContextState } from "./types";
 
 export type PiCoreImagePolicy = "reference" | "render" | "provider";
 
+/**
+ * How many images this request will pull back out of R2. A count, because the
+ * cost being bounded is I/O plus a freshly materialized base64 string per
+ * object; inline images are already resident and are not charged against it.
+ */
 export const PI_PROVIDER_IMAGE_HYDRATION_MAX_COUNT = 2;
+/**
+ * How much image base64 the provider context may carry in TOTAL — hydrated from
+ * R2 or already inline. Inline used to escape this entirely: the budget was
+ * enforced only inside the R2 branch, and an image at or under
+ * `PI_MAX_PERSISTED_IMAGE_DATA_CHARS` is never externalized, so a screenshot
+ * thread put an unbounded amount of base64 into every one of the ~25 provider
+ * bodies of a turn with nothing anywhere to stop it. A live turn's own tool
+ * results are worse still — up to `INLINE_IMAGE_MAX_BASE64_CHARS` (4.5 MB) each.
+ * The budget now means what its name says regardless of where the bytes came
+ * from, which is also what makes the degraded rung's 500 KB an honest cap
+ * instead of a cap on R2 images only.
+ */
 export const PI_PROVIDER_IMAGE_HYDRATION_MAX_DECLARED_CHARS = 6_000_000;
 
 export interface PiImageHydrationBudget {
+  /** Maximum images hydrated from R2. Inline images do not consume it. */
   maxCount: number;
+  /** Maximum total base64 chars in the provider context, inline or hydrated. */
   maxDeclaredChars: number;
 }
 
@@ -349,7 +368,25 @@ export class PiCoreMessageStore {
     const record = value as Record<string, unknown>;
     if (record.type === "image") {
       const ref = this.readPiR2ImageReference(record);
-      if (ref && typeof record.data === "string" && record.data.length === 0) {
+      const inlineChars = typeof record.data === "string" ? record.data.length : 0;
+      if (inlineChars > 0) {
+        // An INLINE image: nothing to fetch, but it still lands in the provider
+        // body, so it is charged against the same shared budget as a hydrated
+        // one. Same reverse walk, so the most recent images win the budget and
+        // older ones degrade to the same text marker. The source graph is
+        // untouched — this is a per-request view, exactly like the R2 branch.
+        const availableChars = Math.max(0, budget.maxDeclaredChars - state.declaredChars);
+        if (inlineChars > availableChars) {
+          const mimeType = typeof record.mimeType === "string" ? record.mimeType : "image/unknown";
+          return {
+            type: "text",
+            text: `(image omitted from provider context: hydration budget exceeded; ${mimeType}, ${inlineChars} base64 chars)`,
+          };
+        }
+        state.declaredChars += inlineChars;
+        return value;
+      }
+      if (ref && inlineChars === 0) {
         const availableChars = Math.max(0, budget.maxDeclaredChars - state.declaredChars);
         if (state.count >= budget.maxCount || ref.size > availableChars) {
           return {

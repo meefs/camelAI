@@ -49,6 +49,26 @@ export function piCompactionReserveTokens(model: Model<any> | null | undefined):
   return Math.max(16_384, Math.ceil(contextWindow * 0.1), outputReserveTokens);
 }
 
+/**
+ * The BYTE half of the compaction trigger, and the only bound on how much
+ * inline image payload a working set may carry.
+ *
+ * Tokens describe what a provider bills; they stopped describing memory the
+ * moment an image was charged what an image actually costs
+ * ({@link PI_IMAGE_CONTEXT_TOKENS}). Forty 500 KB screenshots estimate ~150k
+ * tokens — comfortably inside a 200k window — while holding 20 MB of base64
+ * resident and serializing it into every provider body of the turn, inside a
+ * 128 MB isolate that also holds the session transcript, the sanitized view,
+ * the hydrated view and the journal tail. So a context over this ceiling
+ * compacts even when its token count is comfortable.
+ *
+ * 16 MB, not the 24 MB the proposal opened with: the measured OOM population
+ * died with roughly this much resident, and every per-request copy is a
+ * multiple of it. It is a ceiling on the ESTIMATE, so it wants headroom under
+ * the isolate limit, not parity with it.
+ */
+export const PI_CONTEXT_MAX_WORKING_SET_BYTES = 16_000_000;
+
 export function estimatePiCompactionTokens(messages: AgentMessage[]): number {
   return Math.ceil(estimatePiContextTokens(messages) * 1.12);
 }
@@ -152,10 +172,11 @@ export async function loadPiCompleteSimple(): Promise<typeof import("@earendil-w
 }
 
 export function estimatePiContextTokens(messages: AgentMessage[]): number {
-  return messages.reduce(
-    (sum, message) => sum + estimatePiMessageTokens(message),
-    0,
-  );
+  let tokens = 0;
+  for (let index = 0; index < messages.length; index++) {
+    tokens += piMessageEstimateAt(messages, index).tokens;
+  }
+  return tokens;
 }
 
 /**
@@ -275,31 +296,230 @@ export function stringifyPiMessageForTokenCount(message: AgentMessage): string {
   }
 }
 
-export function estimatePiMessageTokens(message: AgentMessage): number {
-  const record = message as unknown as { role?: unknown; content?: unknown };
-  const text = stringifyPiMessageForTokenCount(message);
-  return estimatePiTextTokens(text) + estimatePiImageMemoryTokens(record.content);
+/**
+ * What an image part costs the CONTEXT, which is a different question from what
+ * it costs MEMORY (see {@link estimatePiMessageBytes}).
+ *
+ * Every provider we use bills an image by its PIXEL AREA after its own
+ * downscale — roughly `(width x height) / 750`, clamped by the provider's max
+ * dimension and megapixel cap. Charging the base64 LENGTH instead — which this
+ * used to do, at 0.75 tokens/char — put a single 400 KB screenshot at ~300_000
+ * tokens, above the compaction threshold of every model we serve. One
+ * screenshot then forced a fresh summarization on every one of the ~25 provider
+ * requests in a turn, permanently, for the life of the thread: the memory and
+ * latency failure this constant exists to prevent.
+ *
+ * Flat, and deliberately NOT keyed on encoded length in either direction.
+ * Encoded length does not track pixel area at all: a flat-UI page screenshot
+ * downscaled to 2000px compresses to well under 400 KB of base64 while costing
+ * 3_000+ tokens, and a photographic JPEG at 900px can exceed 400 KB while
+ * costing under 1_200. An earlier revision stepped the charge up past 400_000
+ * base64 chars; that step was measuring the wrong quantity and is gone.
+ *
+ * The number: `prepareInlineImage*` (`image-tool-content.ts`) downscales every
+ * inline image to a 2000px long edge before it enters the transcript, so the
+ * realistic worst case is 2000x2000 = 4 MP, which the high-resolution tier of
+ * the models this catalog serves (claude-sonnet-5 / fable-5 / opus-5) clamps to
+ * ~3.75 MP ≈ 5_000 tokens. A 16:9 full-page capture at the same ceiling is
+ * 2000x1125 = 2.25 MP ≈ 3_000 tokens, which is the shape that actually
+ * dominates screenshot threads, so that is the charge. The residual is bounded
+ * on both sides: {@link observedPiContextTokens} floors the estimate with what
+ * the provider really billed for everything up to the last assistant turn, so
+ * only images arriving after it are estimated at all, and the working set is
+ * gated on BYTES separately, so an under-charge here can no longer hide a
+ * multi-megabyte context.
+ *
+ * Doing better than a flat charge needs the true dimensions, which an image
+ * part does not carry today ({ type, data, mimeType } plus an R2 ref with
+ * `size` only). `PreparedInlineImage` already knows `maxInlineDimension`;
+ * plumbing real width/height onto the part and estimating
+ * `min(ceil(w*h/750), providerCeiling)` is the upgrade path. Do not approximate
+ * it from `data.length`.
+ */
+export const PI_IMAGE_CONTEXT_TOKENS = 3_000;
+
+/** Inline + externally-declared base64 chars an image part carries. */
+function piImagePartBase64Chars(part: Record<string, unknown>): number {
+  const inlineChars = typeof part.data === "string" ? part.data.length : 0;
+  const metadata = part.metadata && typeof part.metadata === "object"
+    ? part.metadata as Record<string, unknown>
+    : undefined;
+  const ref = metadata?.[PI_R2_IMAGE_REF_METADATA_KEY];
+  const declaredChars = ref && typeof ref === "object"
+    ? Math.max(0, Math.floor(Number((ref as Record<string, unknown>).size) || 0))
+    : 0;
+  return Math.max(inlineChars, declaredChars);
 }
 
-/** Charge inline or externally-declared base64 size before provider hydration. */
-export function estimatePiImageMemoryTokens(content: unknown): number {
-  if (!Array.isArray(content)) return 0;
-  let tokens = 0;
+export interface PiImageContentStats {
+  count: number;
+  /** Base64 characters, inline or declared by an R2 reference. */
+  chars: number;
+}
+
+/** Image parts of one message's content, counted once for tokens and bytes. */
+export function piImageContentStats(content: unknown): PiImageContentStats {
+  if (!Array.isArray(content)) return { count: 0, chars: 0 };
+  let count = 0;
+  let chars = 0;
   for (const part of content) {
     if (!part || typeof part !== "object") continue;
     const record = part as Record<string, unknown>;
     if (record.type !== "image") continue;
-    const inlineChars = typeof record.data === "string" ? record.data.length : 0;
-    const metadata = record.metadata && typeof record.metadata === "object"
-      ? record.metadata as Record<string, unknown>
-      : undefined;
-    const ref = metadata?.[PI_R2_IMAGE_REF_METADATA_KEY];
-    const declaredChars = ref && typeof ref === "object"
-      ? Math.max(0, Math.floor(Number((ref as Record<string, unknown>).size) || 0))
-      : 0;
-    tokens += Math.ceil(Math.max(inlineChars, declaredChars) * 0.75);
+    count += 1;
+    chars += piImagePartBase64Chars(record);
   }
-  return tokens;
+  return { count, chars };
+}
+
+/**
+ * Context cost of a message's images: flat per image. Not a memory signal —
+ * {@link estimatePiMessageBytes} is. (Was `estimatePiImageMemoryTokens`; the old
+ * name described what the number was wrongly being used for.)
+ */
+export function estimatePiImageContextTokens(content: unknown): number {
+  return piImageContentStats(content).count * PI_IMAGE_CONTEXT_TOKENS;
+}
+
+/** Everything one message contributes, counted in a single pass. */
+export interface PiMessageEstimate {
+  /** Provider-context tokens (text heuristic + capped image charge). */
+  tokens: number;
+  /**
+   * Payload characters this message keeps resident: its serialized text plus
+   * the base64 its images carry inline or will hydrate from R2. A character
+   * count, not a `TextEncoder` pass — the transcript is ASCII-dominant and the
+   * point is a cheap ceiling, not exact UTF-8.
+   */
+  bytes: number;
+  imageCount: number;
+  imageChars: number;
+}
+
+/**
+ * Per-message estimates, keyed on message identity.
+ *
+ * Pi messages are APPEND-ONLY as this worker sees them: `Agent.processEvents`
+ * pushes a finished message onto `state.messages` at `message_end` and nothing
+ * ever rewrites an element, and every transform in this worker is
+ * copy-on-write (`annotatePiProviderErrorMessages`, `stampPiRenderMessageId`,
+ * `withPiRenderMessageId`, `attachCodeModeArtifactsToToolResult`,
+ * `repairPiMessageHistoryForReplay`, `sanitizePiModelMessage`,
+ * `hydratePiStoredImages` all return new objects). So identity is a sound key
+ * for every message except one: the assistant reply currently being streamed.
+ *
+ * That one is mutated IN PLACE. pi-ai's providers build the reply as a single
+ * `output` object and push it as `partial` on every delta
+ * (`api/anthropic-messages.js`, `api/openai-responses.js`, and every sibling),
+ * pi-agent-core's loop puts that same object into the message list it hands to
+ * `transformContext` (`agent-loop.js`: `context.messages.push(partialMessage)`
+ * at `start`, `context.messages[last] = partialMessage` on each delta,
+ * `context.messages[last] = finalMessage` at the end), and `result()` resolves
+ * to the very same object — so a memo taken mid-stream would stick to the
+ * settled message for the life of the isolate, permanently under-counting it.
+ *
+ * There is NO shape signal that distinguishes a live partial: every provider
+ * constructs `output` with `stopReason: "stop"` and a zeroed `usage` before the
+ * first byte arrives, so neither field can be used as a settled-marker. What is
+ * reliable is POSITION — the loop only ever writes the partial into the last
+ * slot of the list — so the walks below memoize every element except the last
+ * and re-estimate the last one from scratch. That is one extra serialization of
+ * one message per walk, and it holds without depending on when a third-party
+ * package happens to call `transformContext`.
+ *
+ * The single-message entry points ({@link estimatePiMessageTokens} and
+ * {@link estimatePiMessageBytes}) have no position to reason about, so they
+ * never read or write the memo.
+ */
+const piMessageEstimates = new WeakMap<object, PiMessageEstimate>();
+
+function computePiMessageEstimate(message: AgentMessage): PiMessageEstimate {
+  const record = message as unknown as { content?: unknown };
+  const text = stringifyPiMessageForTokenCount(message);
+  const images = piImageContentStats(record.content);
+  return {
+    tokens: estimatePiTextTokens(text) + images.count * PI_IMAGE_CONTEXT_TOKENS,
+    bytes: text.length + images.chars,
+    imageCount: images.count,
+    imageChars: images.chars,
+  };
+}
+
+/**
+ * The memoized estimate of `messages[index]`. The last element of any list is
+ * computed fresh because it — and only it — can be the assistant partial the
+ * provider transport is still mutating (see {@link piMessageEstimates}).
+ */
+function piMessageEstimateAt(
+  messages: AgentMessage[],
+  index: number,
+): PiMessageEstimate {
+  const message = messages[index] as AgentMessage;
+  if (index >= messages.length - 1 || !message || typeof message !== "object") {
+    return computePiMessageEstimate(message);
+  }
+  const key = message as unknown as object;
+  const cached = piMessageEstimates.get(key);
+  if (cached) return cached;
+  const estimate = computePiMessageEstimate(message);
+  piMessageEstimates.set(key, estimate);
+  return estimate;
+}
+
+/** Single-message estimate. Never memoized: see {@link piMessageEstimates}. */
+export function estimatePiMessageTokens(message: AgentMessage): number {
+  return computePiMessageEstimate(message).tokens;
+}
+
+/**
+ * Honest payload size, split out from the token estimate on purpose: tokens gate
+ * summarization, bytes describe the working set. Keeping one number for both is
+ * what let an image's memory cost masquerade as a context cost.
+ */
+export function estimatePiMessageBytes(message: AgentMessage): number {
+  return computePiMessageEstimate(message).bytes;
+}
+
+export function estimatePiContextBytes(messages: AgentMessage[]): number {
+  let bytes = 0;
+  for (let index = 0; index < messages.length; index++) {
+    bytes += piMessageEstimateAt(messages, index).bytes;
+  }
+  return bytes;
+}
+
+/** Tokens, bytes and image shape of a whole context in ONE walk of the list. */
+export interface PiContextFootprint {
+  messageCount: number;
+  /** Same value {@link effectivePiContextTokens} returns for this list. */
+  tokens: number;
+  bytes: number;
+  imageCount: number;
+  imageChars: number;
+}
+
+export function estimatePiContextFootprint(messages: AgentMessage[]): PiContextFootprint {
+  let tokens = 0;
+  let bytes = 0;
+  let imageCount = 0;
+  let imageChars = 0;
+  for (let index = 0; index < messages.length; index++) {
+    const estimate = piMessageEstimateAt(messages, index);
+    tokens += estimate.tokens;
+    bytes += estimate.bytes;
+    imageCount += estimate.imageCount;
+    imageChars += estimate.imageChars;
+  }
+  return {
+    messageCount: messages.length,
+    tokens: Math.max(
+      Math.ceil(tokens * 1.12),
+      observedPiContextTokens(messages),
+    ),
+    bytes,
+    imageCount,
+    imageChars,
+  };
 }
 
 export function stringifyPiUserContentForCompaction(content: unknown): string {
@@ -354,11 +574,33 @@ export function stringifyPiToolResultContentForCompaction(content: unknown): str
     .join("\n");
 }
 
-export function findPiCompactionCutIndex(messages: AgentMessage[], keepRecentTokens: number): number {
+/**
+ * How many payload characters the kept tail may carry, independently of its
+ * token budget. Images are token-cheap and byte-expensive — that asymmetry is
+ * the whole point of {@link PI_IMAGE_CONTEXT_TOKENS} — so a tail bounded only in
+ * tokens is not bounded in memory at all: at 3_000 tokens an image, a 20_000
+ * token tail retains six-plus screenshots, several megabytes of base64 that are
+ * then serialized into every provider body of the turn. This is not a tuning of
+ * `keepRecentTokens` (which is unchanged, and still what decides how much
+ * CONVERSATION survives a cut); it is the byte half of the same budget, and it
+ * only ever binds on payload the token side cannot see. ~1.5 MB of base64 is
+ * roughly three full-page screenshots, which is what a kept tail needs to stay
+ * coherent about what the agent was just looking at.
+ */
+export const PI_COMPACTION_KEEP_RECENT_BYTES = 1_500_000;
+
+export function findPiCompactionCutIndex(
+  messages: AgentMessage[],
+  keepRecentTokens: number,
+  keepRecentBytes: number = PI_COMPACTION_KEEP_RECENT_BYTES,
+): number {
   let tokens = 0;
+  let bytes = 0;
   for (let index = messages.length - 1; index >= 0; index--) {
-    tokens += estimatePiContextTokens([messages[index] as AgentMessage]);
-    if (tokens >= keepRecentTokens) {
+    const estimate = piMessageEstimateAt(messages, index);
+    tokens += estimate.tokens;
+    bytes += estimate.bytes;
+    if (tokens >= keepRecentTokens || bytes >= keepRecentBytes) {
       for (let cut = index; cut < messages.length; cut++) {
         const role = (messages[cut] as { role?: unknown }).role;
         if (role === "user" || role === "assistant") {
@@ -426,8 +668,9 @@ export function chunkPiMessagesForSummary(messages: AgentMessage[], inputTokenBu
   const chunks: AgentMessage[][] = [];
   let chunk: AgentMessage[] = [];
   let chunkTokens = 0;
-  for (const message of messages) {
-    const messageTokens = Math.max(1, estimatePiMessageTokens(message));
+  for (let index = 0; index < messages.length; index++) {
+    const message = messages[index] as AgentMessage;
+    const messageTokens = Math.max(1, piMessageEstimateAt(messages, index).tokens);
     if (chunk.length > 0 && chunkTokens + messageTokens > inputTokenBudget) {
       chunks.push(chunk);
       chunk = [];

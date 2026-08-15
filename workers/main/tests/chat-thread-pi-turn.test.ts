@@ -32,6 +32,13 @@ import {
   createPiSummaryMessage,
   estimatePiTextTokens,
   estimatePiMessageTokens,
+  estimatePiMessageBytes,
+  estimatePiContextBytes,
+  estimatePiContextFootprint,
+  estimatePiImageContextTokens,
+  PI_IMAGE_CONTEXT_TOKENS,
+  PI_CONTEXT_MAX_WORKING_SET_BYTES,
+  PI_COMPACTION_KEEP_RECENT_BYTES,
   piCompactionReserveTokens,
   piModelContextWindow,
   capPiMainRequestOutput,
@@ -13436,7 +13443,66 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(content.every((part) => part.data === '')).toBe(true);
   });
 
-  it('charges inline and referenced images to pre-provider context estimation', () => {
+  it('charges INLINE images against the same provider image budget', async () => {
+    // The hole this closes: the budget was enforced only inside the R2 branch,
+    // and an image at or under PI_MAX_PERSISTED_IMAGE_DATA_CHARS is never
+    // externalized — so a screenshot thread put unbounded base64 into every
+    // provider body with nothing anywhere to stop it, and the degraded rung's
+    // 500 KB cap was a cap on R2 images only.
+    const store = new PiCoreMessageStore({
+      sql: () => ({}) as SqlStorage,
+      r2: () => ({ get: vi.fn() }) as unknown as R2Bucket,
+      chatContext: () => null,
+    });
+    const content = Array.from({ length: 4 }, () => ({
+      type: 'image',
+      mimeType: 'image/png',
+      data: 'A'.repeat(400_000),
+    }));
+
+    const hydrated = await store.hydratePiStoredImages(content, {
+      maxCount: 2,
+      maxDeclaredChars: 900_000,
+    }) as Array<Record<string, unknown>>;
+
+    // Reverse walk, so the MOST RECENT images win the budget, same as for refs.
+    expect(hydrated[2]).toBe(content[2]);
+    expect(hydrated[3]).toBe(content[3]);
+    expect(hydrated[0]).toEqual({
+      type: 'text',
+      text: '(image omitted from provider context: hydration budget exceeded; image/png, 400000 base64 chars)',
+    });
+    expect(hydrated[1]).toEqual(hydrated[0]);
+    // The session graph is untouched: this is a per-request view.
+    expect(content.every((part) => part.data.length === 400_000)).toBe(true);
+  });
+
+  it('lets a degraded budget clamp an inline screenshot transcript to one image', async () => {
+    // Rung 3's stated cap — one small image — was inert against inline base64.
+    const store = new PiCoreMessageStore({
+      sql: () => ({}) as SqlStorage,
+      r2: () => ({ get: vi.fn() }) as unknown as R2Bucket,
+      chatContext: () => null,
+    });
+    const content = Array.from({ length: 20 }, () => ({
+      type: 'image',
+      mimeType: 'image/png',
+      data: 'A'.repeat(500_000),
+    }));
+
+    const hydrated = await store.hydratePiStoredImages(content, {
+      maxCount: 1,
+      maxDeclaredChars: 500_000,
+    }) as Array<Record<string, unknown>>;
+
+    const surviving = hydrated.filter((part) => part.type === 'image');
+    expect(surviving).toHaveLength(1);
+    expect(surviving[0]).toBe(content[19]);
+  });
+
+  it('charges inline and referenced images the same flat context cost', () => {
+    // Both parts are one image each as far as the provider is concerned; whether
+    // the base64 is inline or waiting in R2 changes MEMORY, not context.
     const message = {
       role: 'user',
       content: [
@@ -13454,7 +13520,16 @@ describe('ChatThreadDO Pi turn handling', () => {
       ],
     } as any;
 
-    expect(estimatePiMessageTokens(message)).toBeGreaterThanOrEqual(9_000);
+    expect(estimatePiImageContextTokens(message.content)).toBe(
+      PI_IMAGE_CONTEXT_TOKENS * 2,
+    );
+    // The old rule charged base64 length at 0.75 tokens/char — 9_000 tokens for
+    // these two small images, and 300_000 for one real screenshot.
+    expect(estimatePiMessageTokens(message)).toBeLessThan(
+      PI_IMAGE_CONTEXT_TOKENS * 2 + 1_000,
+    );
+    // Bytes, which is what those base64 chars actually cost, stay visible.
+    expect(estimatePiMessageBytes(message)).toBeGreaterThanOrEqual(12_000);
   });
 
   it('sanitizes unsupported image tool outputs before Pi can persist them', () => {
@@ -15390,4 +15465,727 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
   });
 
+});
+
+/**
+ * The whale working-set fix: an image costs what a provider bills for an image,
+ * not what its base64 weighs, and the per-request context estimate is computed
+ * once instead of three times. The failure being regression-tested is a real
+ * production shape — one screenshot pinned the estimate above the compaction
+ * threshold for the life of the thread, so every one of the ~25 provider
+ * requests in a turn paid for a fresh summarization.
+ */
+describe('Pi image context charge and per-request context estimation', () => {
+  const WHALE_MODEL = { id: 'whale-model', contextWindow: 200_000, maxTokens: 8_000 } as any;
+  const WHALE_THRESHOLD =
+    piModelContextWindow(WHALE_MODEL) - piCompactionReserveTokens(WHALE_MODEL);
+
+  function imagePart(sizeChars: number, index = 0) {
+    return {
+      type: 'image',
+      mimeType: 'image/png',
+      data: '',
+      metadata: {
+        chiridionR2Image: {
+          key: `shot-${index}`,
+          mimeType: 'image/png',
+          size: sizeChars,
+          sha256: `sha-${index}`,
+          storedAt: 1,
+        },
+      },
+    };
+  }
+
+  /**
+   * An INLINE screenshot: base64 sitting in the row, no R2 reference. This is
+   * the shape that escapes every existing bound — anything at or under
+   * PI_MAX_PERSISTED_IMAGE_DATA_CHARS (512_000) is never externalized, so it is
+   * never a ref, and a live turn's own tool results are inline by definition.
+   */
+  function inlineImagePart(sizeChars: number) {
+    return { type: 'image', mimeType: 'image/png', data: 'A'.repeat(sizeChars) };
+  }
+
+  /** A screenshot-driven agent transcript: N tool calls, each returning an image. */
+  function whaleImageTranscript(
+    imageCount: number,
+    proseChars: number,
+    makeImage: (index: number) => Record<string, unknown> = (index) => imagePart(500_000, index),
+  ) {
+    const messages: any[] = [
+      { role: 'user', content: 'build me a game', timestamp: 1 },
+    ];
+    for (let index = 0; index < imageCount; index++) {
+      messages.push({
+        role: 'assistant',
+        content: [
+          { type: 'toolCall', id: `shot-${index}`, name: 'take_screenshot', arguments: {} },
+        ],
+        stopReason: 'toolUse',
+        timestamp: 2 + index * 2,
+      });
+      messages.push({
+        role: 'toolResult',
+        toolCallId: `shot-${index}`,
+        toolName: 'take_screenshot',
+        content: [
+          makeImage(index),
+          { type: 'text', text: syntheticProse(proseChars) },
+        ],
+        timestamp: 3 + index * 2,
+      });
+    }
+    return messages;
+  }
+
+  /** The same transcript with the base64 inline, i.e. the live-turn shape. */
+  function whaleInlineImageTranscript(imageCount: number, proseChars: number) {
+    return whaleImageTranscript(imageCount, proseChars, () => inlineImagePart(500_000));
+  }
+
+  function whaleFake(overrides: Record<string, any> = {}) {
+    const fake = Object.create(ChatThreadDO.prototype) as any;
+    let stored: any = null;
+    fake.loadPiCoreCompaction = vi.fn(() => stored);
+    fake.persistPiCoreCompaction = vi.fn((summary: string, firstKeptIndex: number) => {
+      stored = { summary, firstKeptIndex, updatedAt: 1 };
+    });
+    fake.piEphemeralCompaction = null;
+    fake.piDegradedResumeAttempt = false;
+    fake.piMainBaselineIndex = 0;
+    fake.chatContext = { threadId: 'thread-whale' };
+    fake.recordChatThreadObservabilityEvent = vi.fn();
+    fake.hydratePiStoredImages = vi.fn(async (value: any) => value);
+    Object.assign(fake, overrides);
+    return fake;
+  }
+
+  const summarizingCompleteSimple = () =>
+    vi.fn(async () => ({ content: [{ type: 'text', text: 'compact summary' }] }));
+
+  // --- Change A: the charge itself ---
+
+  it('charges one screenshot far below the compaction threshold', () => {
+    // The headline regression. At 0.75 tokens per base64 char this single
+    // message estimated ~375_000 tokens against a 180_000 threshold, so the
+    // thread was permanently "too big" and never stopped being compacted.
+    const messages = [
+      { role: 'user', content: 'what does this look like?', timestamp: 1 },
+      {
+        role: 'toolResult',
+        toolCallId: 'shot',
+        toolName: 'take_screenshot',
+        content: [imagePart(500_000)],
+        timestamp: 2,
+      },
+    ] as any;
+
+    expect(effectivePiContextTokens(messages)).toBeLessThan(WHALE_THRESHOLD / 10);
+    expect(findPiCompactionCutIndex(messages, 20_000)).toBe(0);
+  });
+
+  it('still crosses the threshold on a genuinely image-heavy context', () => {
+    // Flat is not free: enough images do fill a window, and compaction must
+    // still fire for them.
+    const content = Array.from({ length: 140 }, (_, index) => imagePart(4_000, index));
+    const messages = [
+      { role: 'user', content: 'here is the whole album', timestamp: 1 },
+      { role: 'toolResult', toolCallId: 'album', toolName: 'read_images', content, timestamp: 2 },
+    ] as any;
+
+    expect(estimatePiImageContextTokens(content)).toBe(140 * PI_IMAGE_CONTEXT_TOKENS);
+    expect(effectivePiContextTokens(messages)).toBeGreaterThan(WHALE_THRESHOLD);
+  });
+
+  it('charges every image the same, whatever its base64 weighs', () => {
+    // Encoded length does not track pixel area, which is what providers bill: a
+    // flat-UI page screenshot at 2000px compresses small and costs 3_000+ tokens,
+    // a photographic JPEG at 900px encodes large and costs under 1_200. An
+    // earlier revision stepped the charge up past 400_000 base64 chars; that
+    // step was reading the wrong quantity, so there is no step to read.
+    for (const chars of [4_000, 399_999, 400_000, 500_000, 8_000_000]) {
+      expect(estimatePiImageContextTokens([imagePart(chars)]))
+        .toBe(PI_IMAGE_CONTEXT_TOKENS);
+    }
+    // The size is charged as BYTES instead, which is the number that varies.
+    expect(estimatePiMessageBytes({
+      role: 'user', content: [imagePart(8_000_000)],
+    } as any)).toBeGreaterThanOrEqual(8_000_000);
+  });
+
+  it('charges an image near what the models this catalog serves actually bill', () => {
+    // `prepareInlineImage*` downscales to a 2000px long edge, so a full-page
+    // capture is at most 2000x1125 = 2.25 MP -> ~3_000 provider tokens, and the
+    // absolute ceiling (2000x2000, clamped by the high-resolution tier to
+    // ~3.75 MP) is ~5_000. The charge must sit in that band: 1_600 was the
+    // pre-4.7 low-resolution figure and undercounted a real screenshot ~2x.
+    const pixelCost = (width: number, height: number) => Math.ceil((width * height) / 750);
+    expect(PI_IMAGE_CONTEXT_TOKENS).toBeGreaterThanOrEqual(pixelCost(2000, 1125) * 0.9);
+    expect(PI_IMAGE_CONTEXT_TOKENS).toBeLessThanOrEqual(pixelCost(2000, 1875));
+  });
+
+  it('keeps the dense-blob text rule untouched', () => {
+    // Long base64 inside TEXT (an agent moving a generated file, a data URL in a
+    // tool result) is a different rule with its own justification. Change A must
+    // not have relaxed it.
+    const blob = syntheticBase64(40_000);
+    expect(estimatePiTextTokens(blob)).toBeGreaterThan(blob.length * 0.7);
+  });
+
+  // --- Change A: honest bytes, kept separate from tokens ---
+
+  it('reports image payload as bytes while charging it as one image of tokens', () => {
+    const message = {
+      role: 'toolResult',
+      toolCallId: 'shot',
+      toolName: 'take_screenshot',
+      content: [
+        { type: 'image', mimeType: 'image/png', data: 'a'.repeat(300_000) },
+        imagePart(500_000, 1),
+        { type: 'text', text: 'x'.repeat(1_000) },
+      ],
+      timestamp: 1,
+    } as any;
+
+    // Inline base64 + declared R2 base64 + the serialized text.
+    expect(estimatePiMessageBytes(message)).toBeGreaterThanOrEqual(800_000);
+    // ...and the same message is worth two images of context.
+    expect(estimatePiMessageTokens(message)).toBeLessThan(
+      PI_IMAGE_CONTEXT_TOKENS * 2 + 1_000,
+    );
+  });
+
+  it('sums context bytes across a transcript', () => {
+    const messages = whaleImageTranscript(4, 1_000);
+    const expected = messages.reduce(
+      (sum: number, message: any) => sum + estimatePiMessageBytes(message),
+      0,
+    );
+
+    expect(estimatePiContextBytes(messages)).toBe(expected);
+    expect(estimatePiContextBytes(messages)).toBeGreaterThanOrEqual(4 * 500_000);
+    // Bytes and tokens now say different things about the same transcript, which
+    // is the point of splitting them.
+    expect(estimatePiContextBytes(messages)).toBeGreaterThan(
+      estimatePiContextFootprint(messages).tokens * 10,
+    );
+  });
+
+  it('describes a context in one walk: tokens, bytes and image shape', () => {
+    const messages = whaleImageTranscript(3, 2_000);
+    const footprint = estimatePiContextFootprint(messages);
+
+    expect(footprint.messageCount).toBe(messages.length);
+    expect(footprint.imageCount).toBe(3);
+    expect(footprint.imageChars).toBe(3 * 500_000);
+    expect(footprint.bytes).toBe(estimatePiContextBytes(messages));
+    // Exactly the number the compaction decision uses.
+    expect(footprint.tokens).toBe(effectivePiContextTokens(messages));
+  });
+
+  // --- Change B: the per-message memo ---
+
+  /** A message whose `content` reads are counted, to see estimation happen. */
+  function countingMessage(base: Record<string, unknown>) {
+    const content = base.content;
+    const message = { ...base } as Record<string, unknown>;
+    let reads = 0;
+    Object.defineProperty(message, 'content', {
+      enumerable: true,
+      get() {
+        reads += 1;
+        return content;
+      },
+    });
+    return { message: message as any, reads: () => reads };
+  }
+
+  /** The shape pi-ai really hands us: a live partial, indistinguishable by field. */
+  function streamingPartial() {
+    // Every provider constructs `output` with stopReason ALREADY "stop" and a
+    // zeroed usage before the first byte (api/anthropic-messages.js:316,
+    // openai-responses.js:78, bedrock-converse-stream.js:33, google-vertex.js:38,
+    // ...), pushes it as `{ type: 'start', partial: output }`, and mutates it in
+    // place through every delta. `result()` resolves to that same object, so the
+    // settled message keeps its identity. Nothing on it says "still streaming".
+    return {
+      role: 'assistant',
+      content: [] as any[],
+      stopReason: 'stop',
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 },
+      timestamp: 2,
+    } as any;
+  }
+
+  it('estimates an interior message once and reuses it by identity', () => {
+    const { message, reads } = countingMessage({
+      role: 'toolResult',
+      toolCallId: 'shot',
+      toolName: 'take_screenshot',
+      content: [imagePart(500_000), { type: 'text', text: syntheticProse(4_000) }],
+      timestamp: 1,
+    });
+    const context = [message, { role: 'user', content: 'and now?', timestamp: 2 }] as any;
+
+    const first = estimatePiContextFootprint(context).tokens;
+    const readsAfterFirst = reads();
+    for (let i = 0; i < 20; i++) estimatePiContextFootprint(context);
+    estimatePiContextBytes(context);
+    findPiCompactionCutIndex(context, 20_000);
+
+    expect(readsAfterFirst).toBeGreaterThan(0);
+    expect(reads()).toBe(readsAfterFirst);
+    expect(estimatePiContextFootprint(context).tokens).toBe(first);
+
+    // A structurally identical but distinct object is a different key: the memo
+    // is keyed on identity, never on content.
+    const twin = countingMessage({
+      role: 'toolResult',
+      toolCallId: 'shot',
+      toolName: 'take_screenshot',
+      content: [imagePart(500_000), { type: 'text', text: syntheticProse(4_000) }],
+      timestamp: 1,
+    });
+    const twinContext = [twin.message, { role: 'user', content: 'and now?', timestamp: 2 }] as any;
+    expect(estimatePiContextFootprint(twinContext).tokens).toBe(first);
+    expect(twin.reads()).toBeGreaterThan(0);
+  });
+
+  it('never memoizes the last message, which is the one the provider mutates', () => {
+    // The regression this pins: a shape-based guard ("an assistant message with
+    // no stopReason may still be streaming") is inoperative, because pi-ai
+    // pre-sets stopReason to "stop" on the partial. Position is the real signal —
+    // pi-agent-core only ever writes the partial into the LAST slot.
+    const partial = streamingPartial();
+    const context = [
+      { role: 'user', content: 'draw me a game', timestamp: 1 },
+      partial,
+    ] as any;
+
+    const before = estimatePiContextFootprint(context).tokens;
+    // ...deltas arrive and mutate the very object already in the list.
+    partial.content.push({ type: 'text', text: syntheticProse(40_000) });
+    expect(estimatePiContextFootprint(context).tokens).toBeGreaterThan(before + 9_000);
+
+    // And no stale entry was left behind: once the turn moves on and the message
+    // is interior, it is memoized at its FINAL size, not the size it had while
+    // it was being written.
+    const settledTokens = estimatePiContextFootprint(context).tokens;
+    const grown = [...context, { role: 'user', content: 'thanks', timestamp: 3 }] as any;
+    expect(estimatePiContextFootprint(grown).tokens).toBeGreaterThanOrEqual(settledTokens);
+    partial.content.push({ type: 'text', text: syntheticProse(40_000) });
+    // Interior now, so this later mutation is legitimately invisible — nothing
+    // mutates an interior message, which is the invariant the memo rests on.
+    expect(estimatePiContextFootprint(grown).tokens).toBeLessThan(settledTokens * 2);
+  });
+
+  it('reads a live partial fresh through every estimator entry point', () => {
+    const partial = streamingPartial();
+    const { message: counted, reads } = countingMessage(partial);
+    const context = [{ role: 'user', content: 'go', timestamp: 1 }, counted] as any;
+
+    estimatePiContextFootprint(context);
+    const afterFirst = reads();
+    estimatePiContextFootprint(context);
+    estimatePiContextBytes(context);
+    expect(reads()).toBeGreaterThan(afterFirst);
+  });
+
+  // --- Change B: computed once per request and threaded in ---
+
+  it('threads one context estimate into compaction instead of recomputing it', async () => {
+    const messages = whaleImageTranscript(2, 1_000);
+    const fake = whaleFake({
+      compactPiContext: vi.fn(async (input: any) => input),
+      piMainBaselineIndex: messages.length,
+    });
+
+    await ChatThreadDO.prototype['transformPiProviderContext'].call(
+      fake,
+      messages,
+      WHALE_MODEL,
+      'key',
+      summarizingCompleteSimple(),
+      undefined,
+    );
+
+    expect(fake.compactPiContext.mock.calls[0][5]).toMatchObject({
+      committedBound: messages.length,
+      contextTokens: effectivePiContextTokens(messages),
+    });
+  });
+
+  it('does not re-estimate the context when the caller already did', async () => {
+    // A one-message list is all-last, so it is never memoized and any estimation
+    // of it is visible. Below BOTH budgets with threaded numbers => the whole
+    // walk is skipped.
+    const { message, reads } = countingMessage({
+      role: 'assistant',
+      content: [{ type: 'text', text: syntheticProse(200_000) }],
+      timestamp: 1,
+    });
+    const fake = whaleFake();
+
+    await ChatThreadDO.prototype['compactPiContext'].call(
+      fake,
+      [message],
+      WHALE_MODEL,
+      'key',
+      summarizingCompleteSimple(),
+      undefined,
+      { committedBound: 1, contextTokens: 10, contextBytes: 10 },
+    );
+    expect(reads()).toBe(0);
+
+    // Without the threaded value it falls back to computing it itself.
+    await ChatThreadDO.prototype['compactPiContext'].call(
+      fake,
+      [message],
+      WHALE_MODEL,
+      'key',
+      summarizingCompleteSimple(),
+      undefined,
+      { committedBound: 1 },
+    );
+    expect(reads()).toBeGreaterThan(0);
+  });
+
+  // --- The headline: at most one summarization per turn ---
+
+  it('summarizes an image-bearing transcript at most once across a whole turn', async () => {
+    // 25 provider requests, the shape of one agent-loop turn. Before Change A
+    // the kept tail always contained an image, so the reuse checks never passed
+    // and this transcript paid for 25 summarizations (each fanned out into
+    // chunked provider calls, each allocating three transcript-sized strings).
+    const messages = whaleImageTranscript(30, 16_000);
+    const completeSimple = summarizingCompleteSimple();
+    const fake = whaleFake({ piMainBaselineIndex: messages.length });
+
+    expect(effectivePiContextTokens(messages)).toBeGreaterThan(WHALE_THRESHOLD);
+
+    // What ONE summarization of this prefix costs (it is chunked, so that is
+    // more than one provider call). The turn must not exceed it.
+    const oneSummarization = summarizingCompleteSimple();
+    await summarizePiMessages(
+      messages.slice(0, findPiCompactionCutIndex(messages, 20_000)),
+      WHALE_MODEL,
+      'key',
+      oneSummarization,
+    );
+    const callsForOneSummarization = oneSummarization.mock.calls.length;
+
+    const views: any[] = [];
+    for (let request = 0; request < 25; request++) {
+      views.push(
+        await ChatThreadDO.prototype['transformPiProviderContext'].call(
+          fake,
+          messages,
+          WHALE_MODEL,
+          'key',
+          completeSimple,
+          undefined,
+        ),
+      );
+    }
+
+    expect(completeSimple).toHaveBeenCalledTimes(callsForOneSummarization);
+    expect(fake.persistPiCoreCompaction).toHaveBeenCalledTimes(1);
+    // Every request still gets a compacted, in-window context.
+    for (const view of views) {
+      expect(String((view[0] as { content: unknown }).content)).toContain('compact summary');
+      expect(effectivePiContextTokens(view)).toBeLessThan(WHALE_THRESHOLD);
+    }
+  });
+
+  it('accepts the ephemeral memo on an image thread instead of rejecting it every request', async () => {
+    // The cut lands above the committed pi_core rows (mid-resume), so it can
+    // only live in memory. That memo is accepted only if the kept tail is under
+    // the threshold — which one image used to make impossible.
+    const messages = whaleImageTranscript(30, 16_000);
+    const completeSimple = summarizingCompleteSimple();
+    const fake = whaleFake({ piMainBaselineIndex: 1 });
+    const oneSummarization = summarizingCompleteSimple();
+    await summarizePiMessages(
+      messages.slice(0, findPiCompactionCutIndex(messages, 20_000)),
+      WHALE_MODEL,
+      'key',
+      oneSummarization,
+    );
+
+    for (let request = 0; request < 10; request++) {
+      await ChatThreadDO.prototype['transformPiProviderContext'].call(
+        fake,
+        messages,
+        WHALE_MODEL,
+        'key',
+        completeSimple,
+        undefined,
+      );
+    }
+
+    expect(completeSimple).toHaveBeenCalledTimes(oneSummarization.mock.calls.length);
+    expect(fake.persistPiCoreCompaction).not.toHaveBeenCalled();
+    expect(fake.piEphemeralCompaction).toMatchObject({ summary: 'compact summary' });
+    const budgetEvents = fake.recordChatThreadObservabilityEvent.mock.calls.filter(
+      ([event]: [string]) => event === 'pi_context_budget',
+    );
+    expect(budgetEvents[0][1]).toMatchObject({ status: 'summarized' });
+  });
+
+  it('leaves the degraded rung aimed at large threads, not at one screenshot', async () => {
+    // Rung 3's floor is half the threshold. With the old charge a single image
+    // cleared it trivially, so a memory-killed turn spent a provider call
+    // summarizing a thread that was never the memory problem.
+    const messages = whaleImageTranscript(1, 2_000);
+    const completeSimple = summarizingCompleteSimple();
+    const fake = whaleFake({ piDegradedResumeAttempt: true, piMainBaselineIndex: 3 });
+
+    expect(effectivePiContextTokens(messages)).toBeLessThan(
+      WHALE_THRESHOLD * PI_DEGRADED_COMPACTION_FLOOR_FRACTION,
+    );
+
+    const view = await ChatThreadDO.prototype['transformPiProviderContext'].call(
+      fake,
+      messages,
+      WHALE_MODEL,
+      'key',
+      completeSimple,
+      undefined,
+    );
+
+    expect(completeSimple).not.toHaveBeenCalled();
+    expect(view).toHaveLength(messages.length);
+    expect(fake.piEphemeralCompaction).toBeNull();
+  });
+
+  // --- Change C: bytes gate compaction, not just tokens ---
+
+  it('forces a cut on a token-cheap, byte-heavy context', async () => {
+    // The trade Change A makes: an image is charged what an image bills, so a
+    // screenshot thread stops being permanently "too big" in TOKENS — and stops
+    // being visible to a token-only gate at all. 40 inline screenshots estimate
+    // well under a 200k window while holding 20 MB resident and serializing it
+    // into all ~25 provider bodies of the turn, in a 128 MB isolate. Bytes are
+    // the second trigger, and they are what catches this.
+    const messages = whaleInlineImageTranscript(40, 1_000);
+    const footprint = estimatePiContextFootprint(messages);
+    const completeSimple = summarizingCompleteSimple();
+    const fake = whaleFake({ piMainBaselineIndex: messages.length });
+
+    expect(footprint.tokens).toBeLessThan(WHALE_THRESHOLD);
+    expect(footprint.bytes).toBeGreaterThan(PI_CONTEXT_MAX_WORKING_SET_BYTES);
+
+    const view = await ChatThreadDO.prototype['transformPiProviderContext'].call(
+      fake,
+      messages,
+      WHALE_MODEL,
+      'key',
+      completeSimple,
+      undefined,
+    );
+
+    expect(completeSimple).toHaveBeenCalled();
+    expect(fake.persistPiCoreCompaction).toHaveBeenCalledTimes(1);
+    expect(estimatePiContextBytes(view)).toBeLessThan(PI_CONTEXT_MAX_WORKING_SET_BYTES);
+  });
+
+  it('bounds the kept tail in bytes as well as tokens', () => {
+    // The cut's other half. At 3_000 tokens an image a 20k-token tail retains
+    // six-plus screenshots — megabytes of base64 that ship on every request —
+    // because nothing on the token side can see them. keepRecentTokens is
+    // unchanged; this is the byte budget beside it.
+    const messages = whaleInlineImageTranscript(40, 1_000);
+    const cut = findPiCompactionCutIndex(messages, 20_000);
+    const tail = messages.slice(cut);
+
+    expect(cut).toBeGreaterThan(0);
+    expect(estimatePiContextBytes(tail)).toBeLessThan(
+      PI_COMPACTION_KEEP_RECENT_BYTES + 500_000,
+    );
+    // Without the byte budget the same tail is an order of magnitude fatter.
+    const tokenOnlyTail = messages.slice(
+      findPiCompactionCutIndex(messages, 20_000, Number.MAX_SAFE_INTEGER),
+    );
+    expect(estimatePiContextBytes(tokenOnlyTail)).toBeGreaterThan(
+      estimatePiContextBytes(tail) * 2,
+    );
+  });
+
+  it('shrinks an image-heavy degraded resume instead of returning it whole', async () => {
+    // Rung 3 runs only after the turn has already been killed by isolate death,
+    // and its whole job is to make the request small. A token-only floor cannot
+    // do that any more: 20 inline screenshots are ~10 MB and only ~70k estimated
+    // tokens, under half of any threshold. The rung needs a byte lever, or it is
+    // inert on exactly the cohort it exists for.
+    const messages = whaleInlineImageTranscript(20, 2_000);
+    const completeSimple = summarizingCompleteSimple();
+    const fake = whaleFake({ piDegradedResumeAttempt: true, piMainBaselineIndex: 1 });
+
+    expect(effectivePiContextTokens(messages)).toBeLessThan(
+      WHALE_THRESHOLD * PI_DEGRADED_COMPACTION_FLOOR_FRACTION,
+    );
+    expect(estimatePiContextBytes(messages)).toBeGreaterThan(9_000_000);
+
+    const view = await ChatThreadDO.prototype['transformPiProviderContext'].call(
+      fake,
+      messages,
+      WHALE_MODEL,
+      'key',
+      completeSimple,
+      undefined,
+    );
+
+    expect(completeSimple).toHaveBeenCalled();
+    expect(estimatePiContextBytes(view)).toBeLessThan(
+      estimatePiContextBytes(messages) / 4,
+    );
+    // Ephemeral, exactly as rung 3 requires: no durable row from a degraded attempt.
+    expect(fake.persistPiCoreCompaction).not.toHaveBeenCalled();
+    expect(fake.piEphemeralCompaction).toMatchObject({ summary: 'compact summary' });
+  });
+
+  // --- Telemetry ---
+
+  it('emits pi_context_budget once per provider request, sampled like chat_memory_phase', async () => {
+    const messages = whaleImageTranscript(3, 2_000);
+    const footprint = estimatePiContextFootprint(messages);
+    const fake = whaleFake({
+      compactPiContext: vi.fn(async (input: any) => input),
+      piMainBaselineIndex: messages.length,
+    });
+
+    await ChatThreadDO.prototype['transformPiProviderContext'].call(
+      fake,
+      messages,
+      WHALE_MODEL,
+      'key',
+      summarizingCompleteSimple(),
+      undefined,
+    );
+
+    expect(fake.recordChatThreadObservabilityEvent).toHaveBeenCalledWith(
+      'pi_context_budget',
+      expect.objectContaining({
+        operation: 'provider_request_prepare',
+        status: 'unchanged',
+        count: footprint.tokens,
+        size: footprint.bytes,
+        model: 'whale-model',
+        // imageCount, imageChars, messageCount, post-compaction bytes — double6 onward.
+        extraCounts: [3, 3 * 500_000, messages.length, footprint.bytes],
+        sampleKey: 'thread-whale',
+      }),
+    );
+
+    // Small thread, second request in the same second: sampled out, exactly like
+    // chat_memory_phase, so a 25-request turn cannot flood Analytics Engine.
+    fake.recordChatThreadObservabilityEvent.mockClear();
+    await ChatThreadDO.prototype['transformPiProviderContext'].call(
+      fake,
+      messages,
+      WHALE_MODEL,
+      'key',
+      summarizingCompleteSimple(),
+      undefined,
+    );
+    expect(fake.recordChatThreadObservabilityEvent).not.toHaveBeenCalledWith(
+      'pi_context_budget',
+      expect.anything(),
+    );
+  });
+
+  it('reports the memo hit and the summarization that produced it', async () => {
+    const messages = whaleImageTranscript(30, 16_000);
+    const fake = whaleFake({ piMainBaselineIndex: 1 });
+    const statuses: string[] = [];
+    fake.recordChatThreadObservabilityEvent = vi.fn((event: string, details: any) => {
+      if (event === 'pi_context_budget') statuses.push(details.status);
+    });
+
+    for (let request = 0; request < 3; request++) {
+      // Defeat the 10s sampling window so every request reports.
+      fake.lastChatMemoryPhaseAt = new Map();
+      await ChatThreadDO.prototype['transformPiProviderContext'].call(
+        fake,
+        messages,
+        WHALE_MODEL,
+        'key',
+        summarizingCompleteSimple(),
+        undefined,
+      );
+    }
+
+    expect(statuses).toEqual(['summarized', 'memo_hit', 'memo_hit']);
+  });
+
+  it('distinguishes durable-row reuse from a context that needed nothing', async () => {
+    // The normal path, which the memo test above never reaches: the first
+    // request writes a pi_core_compaction row AND clears the memo, so every
+    // later request returns a compacted view from the durable row. That reported
+    // "unchanged" — the same word as "below threshold" and as "we were over
+    // budget and found nothing to cut" — which made the event unable to answer
+    // the question it was added for.
+    const messages = whaleImageTranscript(30, 16_000);
+    const statuses: string[] = [];
+    const resultBytes: number[] = [];
+    const fake = whaleFake({ piMainBaselineIndex: messages.length });
+    fake.recordChatThreadObservabilityEvent = vi.fn((event: string, details: any) => {
+      if (event !== 'pi_context_budget') return;
+      statuses.push(details.status);
+      resultBytes.push(details.extraCounts[3]);
+    });
+
+    for (let request = 0; request < 3; request++) {
+      fake.lastChatMemoryPhaseAt = new Map();
+      await ChatThreadDO.prototype['transformPiProviderContext'].call(
+        fake,
+        messages,
+        WHALE_MODEL,
+        'key',
+        summarizingCompleteSimple(),
+        undefined,
+      );
+    }
+
+    expect(statuses).toEqual(['summarized', 'row_hit', 'row_hit']);
+    expect(fake.piEphemeralCompaction).toBeNull();
+    // ...and the event shows what compaction achieved, not only what went in.
+    const footprint = estimatePiContextFootprint(messages);
+    for (const bytes of resultBytes) {
+      expect(bytes).toBeLessThan(footprint.bytes / 2);
+    }
+  });
+
+  it('reports an over-budget context that could not be cut', async () => {
+    // One enormous message: over budget, but the cut index has nowhere to land,
+    // so the whole thing ships to the provider anyway. Byte-identical to a
+    // healthy request in telemetry until this status existed.
+    const messages = [
+      {
+        role: 'user',
+        content: [inlineImagePart(1_000), { type: 'text', text: syntheticProse(900_000) }],
+        timestamp: 1,
+      },
+    ] as any;
+    const statuses: string[] = [];
+    const fake = whaleFake({ piMainBaselineIndex: 1 });
+    fake.recordChatThreadObservabilityEvent = vi.fn((event: string, details: any) => {
+      if (event === 'pi_context_budget') statuses.push(details.status);
+    });
+
+    expect(effectivePiContextTokens(messages)).toBeGreaterThan(WHALE_THRESHOLD);
+
+    const view = await ChatThreadDO.prototype['transformPiProviderContext'].call(
+      fake,
+      messages,
+      WHALE_MODEL,
+      'key',
+      summarizingCompleteSimple(),
+      undefined,
+    );
+
+    expect(view).toHaveLength(1);
+    expect(statuses).toEqual(['no_cut']);
+  });
 });

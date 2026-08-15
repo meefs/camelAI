@@ -242,6 +242,10 @@ import {
   piCompactionReserveTokens,
   capPiMainRequestOutput,
   effectivePiContextTokens,
+  estimatePiContextBytes,
+  estimatePiContextFootprint,
+  PI_CONTEXT_MAX_WORKING_SET_BYTES,
+  type PiContextFootprint,
   isPiLengthStopContextExhaustion,
   shouldCompactPiAfterAssistantUsage,
   loadPiCompleteSimple,
@@ -612,16 +616,30 @@ export function exceededPiTurnResumeBudget(
   if (attempt.total > PI_TURN_TOTAL_RESUME_BUDGET) return "total";
   return null;
 }
-// Image hydration budget for a DEGRADED resume (ladder rung 3). The default
-// (2 images / 6M base64 chars) is a sane provider-context bound but a poor
-// memory bound for a turn that has already been memory-killed three times: the
+// Image budget for a DEGRADED resume (ladder rung 3). The default (2 hydrated
+// images / 6M base64 chars) is a sane provider-context bound but a poor memory
+// bound for a turn that has already been memory-killed three times: the
 // hydrated base64, its R2 body and the request copy all live at once. One small
 // image is enough to keep a screenshot-driven turn coherent; anything larger is
 // replaced with the same "(image omitted…)" text the default budget uses.
+// `maxDeclaredChars` covers INLINE base64 too, not only what is pulled from R2 —
+// a screenshot at or under PI_MAX_PERSISTED_IMAGE_DATA_CHARS is never
+// externalized, so a budget that only saw R2 refs left rung 3 with no lever at
+// all on exactly the image-heavy threads it exists for.
 const PI_DEGRADED_RESUME_IMAGE_HYDRATION_BUDGET: PiImageHydrationBudget = {
   maxCount: 1,
   maxDeclaredChars: 500_000,
 };
+// Payload-byte ceiling a DEGRADED resume (ladder rung 3) forces compaction at,
+// alongside the token floor below. The rung exists to make the request small
+// after an isolate death, and the token floor alone stopped being able to do
+// that once an image was charged what an image costs: 20 inline screenshots are
+// ~10 MB of resident base64 and only ~70k estimated tokens, well under half of
+// any threshold. A few megabytes is past anything a healthy turn carries and
+// far under what killed the isolate, so it fires on the target population
+// without touching the mid-size threads the floor fraction deliberately spares
+// (one screenshot is ~0.5 MB and still a no-op here).
+const PI_DEGRADED_COMPACTION_MAX_WORKING_SET_BYTES = 4_000_000;
 // How full the context must already be before a DEGRADED resume (ladder rung 3)
 // pulls compaction forward. Compaction's own floor is `keepRecentTokens` (20k), so
 // forcing it unconditionally would summarize any thread over ~20k — roughly an
@@ -920,6 +938,40 @@ type ChatReplayOutcome =
 interface WakeOomGuardRecord {
   count: number;
   at: number;
+}
+
+/**
+ * What one provider request's compaction actually did, for `pi_context_budget`.
+ *
+ * Every exit from `compactPiContext` names itself, because the interesting ones
+ * are otherwise indistinguishable. On the normal path the FIRST request of a
+ * turn summarizes and writes a durable `pi_core_compaction` row (which clears
+ * the in-memory memo), so every later request takes the durable-row branch —
+ * a healthy reuse that used to report the same `unchanged` as "the context was
+ * always in budget" and as "we were over budget and found nothing to cut". That
+ * last one is a real failure: the full oversized context ships anyway. It is
+ * `no_cut` now, and the alert this event exists for ("more than one
+ * `summarized` per turn is a regression") can finally see the difference.
+ */
+type PiCompactionStatus =
+  /** In budget on both tokens and bytes; nothing to do. */
+  | "unchanged"
+  /** Reused the in-memory cut from earlier in this stream invocation. */
+  | "memo_hit"
+  /** Reused the durable `pi_core_compaction` row. */
+  | "row_hit"
+  /** Ran a summarization (provider call or fallback summary). */
+  | "summarized"
+  /** Over budget, but the cut index landed nowhere: the whole context ships. */
+  | "no_cut";
+
+interface PiCompactionOutcome {
+  status: PiCompactionStatus;
+  /**
+   * Payload bytes of the view actually returned, so the event shows what
+   * compaction achieved and not only what went into it.
+   */
+  resultBytes?: number;
 }
 
 /**
@@ -6235,6 +6287,72 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     }
   }
 
+  /**
+   * The memory-instrumentation sampling rule, shared by every event that wants
+   * it: keep every breadcrumb for memory-heavy threads (the OOM population is
+   * fully instrumented), and for small threads emit the first occurrence and
+   * then at most one per key every 10 seconds, so provider/persistence loops
+   * cannot flood Analytics Engine. Records the emission when it returns true.
+   */
+  private shouldSampleChatMemoryEvent(
+    key: string,
+    now: number,
+    totalBytes: number,
+  ): boolean {
+    const lastAt = this.lastChatMemoryPhaseAt?.get(key) ?? 0;
+    if (totalBytes < 1024 * 1024 && now - lastAt < 10_000) return false;
+    (this.lastChatMemoryPhaseAt ??= new Map()).set(key, now);
+    return true;
+  }
+
+  /**
+   * One line per provider request describing what the context actually costs and
+   * what compaction did about it — the event that proves or disproves the
+   * image-charge thesis. `count`/`size` are the tokens and payload bytes going
+   * IN (deliberately separate numbers now: tokens gate summarization, bytes
+   * describe the working set); `status` carries the compaction outcome; the
+   * extra doubles are imageCount, imageChars, messageCount and the payload bytes
+   * of the view that actually shipped, in that order — so a row shows both what
+   * the context weighed and what compaction got it down to.
+   *
+   * The alert this exists for: more than one `summarized` per turn is a
+   * regression, full stop. Its companion: any `no_cut` means an over-budget
+   * context shipped whole.
+   */
+  private recordPiContextBudget(
+    footprint: PiContextFootprint,
+    model: Model<any> | null | undefined,
+    outcome: PiCompactionOutcome,
+  ): void {
+    const now = Date.now();
+    // Deliberately the LAST measured size rather than a fresh
+    // `readChatMemoryStats()`: this runs on every provider request, inside the
+    // `provider_request_prepare` phase whose own start already measured, and the
+    // aggregate is a full scan of the thread's payload columns — exactly the
+    // work this whole change is trying to stop doing 25 times a turn. The value
+    // is only used to pick a sampling rate, and it is from this same request.
+    const totalBytes = this.cachedChatMemoryStats?.totalBytes ?? 0;
+    if (!this.shouldSampleChatMemoryEvent("pi_context_budget", now, totalBytes)) {
+      return;
+    }
+    this.recordChatThreadObservabilityEvent("pi_context_budget", {
+      operation: "provider_request_prepare",
+      status: outcome.status,
+      severity: outcome.status === "no_cut" ? "warn" : undefined,
+      count: footprint.tokens,
+      size: footprint.bytes,
+      model: typeof model?.id === "string" ? model.id : null,
+      provider: this.piCurrentUsageProvider || null,
+      extraCounts: [
+        footprint.imageCount,
+        footprint.imageChars,
+        footprint.messageCount,
+        outcome.resultBytes ?? footprint.bytes,
+      ],
+      sampleKey: this.chatContext?.threadId,
+    });
+  }
+
   private startChatMemoryPhase(operation: string): {
     operation: string;
     startedAt: number;
@@ -6242,13 +6360,12 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   } {
     const startedAt = Date.now();
     const stats = this.readChatMemoryStats();
-    // Keep every breadcrumb for memory-heavy threads. For small threads, emit
-    // the first occurrence and then at most one pair per phase every 10 seconds;
-    // this prevents provider/persistence loops from flooding Analytics Engine.
-    const lastPhaseAt = this.lastChatMemoryPhaseAt?.get(operation) ?? 0;
-    const emitted = stats.totalBytes >= 1024 * 1024 || startedAt - lastPhaseAt >= 10_000;
+    const emitted = this.shouldSampleChatMemoryEvent(
+      operation,
+      startedAt,
+      stats.totalBytes,
+    );
     if (emitted) {
-      (this.lastChatMemoryPhaseAt ??= new Map()).set(operation, startedAt);
       this.recordChatThreadObservabilityEvent("chat_memory_phase", {
         operation,
         status: "start",
@@ -6352,6 +6469,8 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       sampleKey?: string | null;
       insertedCount?: number;
       updatedCount?: number;
+      /** Event-specific numeric dimensions; see {@link recordObservabilityEvent}. */
+      extraCounts?: (number | null | undefined)[];
     } = {},
   ): void {
     const context = this.chatContext;
@@ -6395,6 +6514,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       durationMs: details.durationMs,
       count,
       size: details.size,
+      extraCounts: details.extraCounts,
       sampleIndex: details.sampleKey,
     });
   }
@@ -7425,6 +7545,19 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     signal?: AbortSignal,
   ): Promise<AgentMessage[]> {
     const degraded = this.piDegradedResumeAttempt;
+    // The ONE estimate of this request. It used to be computed three times
+    // inside compactPiContext, each time re-serializing every message and
+    // re-scanning it with the dense-blob regex — O(3B) of transient string per
+    // request, 25 times a turn. Threading it in also gives the budget event a
+    // number that is exactly what the compaction decision was made on.
+    const footprint = estimatePiContextFootprint(messages);
+    const outcome: PiCompactionOutcome = { status: "unchanged" };
+    const compactionOptions = {
+      committedBound: this.piMainBaselineIndex,
+      contextTokens: footprint.tokens,
+      contextBytes: footprint.bytes,
+      outcome,
+    };
     const compacted = await this.compactPiContext(
       messages,
       model,
@@ -7433,13 +7566,15 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       signal,
       degraded
         ? {
+            ...compactionOptions,
             force: true,
             persist: false,
             forceFloorFraction: PI_DEGRADED_COMPACTION_FLOOR_FRACTION,
-            committedBound: this.piMainBaselineIndex,
+            byteCeiling: PI_DEGRADED_COMPACTION_MAX_WORKING_SET_BYTES,
           }
-        : { committedBound: this.piMainBaselineIndex },
+        : compactionOptions,
     );
+    this.recordPiContextBudget(footprint, model, outcome);
     const hydrated = (await this.hydratePiStoredImages(
       compacted.map((message) => sanitizePiModelMessage(message)),
       degraded ? PI_DEGRADED_RESUME_IMAGE_HYDRATION_BUDGET : undefined,
@@ -7500,6 +7635,24 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       persist?: boolean;
       /** Session index below which indexes map to committed pi_core rows. */
       committedBound?: number;
+      /**
+       * `effectivePiContextTokens(messages)`, already computed by the caller.
+       * Same number, not recomputed; omitted callers still get it computed here.
+       */
+      contextTokens?: number;
+      /**
+       * `estimatePiContextBytes(messages)`, already computed by the caller.
+       * Same number, not recomputed; omitted callers still get it computed here.
+       */
+      contextBytes?: number;
+      /**
+       * Payload-byte ceiling this context must stay under, independently of its
+       * token count. Defaults to {@link PI_CONTEXT_MAX_WORKING_SET_BYTES}; the
+       * degraded rung passes a lower one.
+       */
+      byteCeiling?: number;
+      /** Written by this method so the caller can report what the request did. */
+      outcome?: PiCompactionOutcome;
     } = {},
   ): Promise<AgentMessage[]> {
     const force = options.force === true;
@@ -7514,13 +7667,51 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     // request the provider billed at 216,184 — far enough under the threshold
     // that compaction never ran while the thread was already too full to
     // answer. Measured against that same thread this lands within 0.02%.
-    const tokens = effectivePiContextTokens(messages);
+    const tokens = options.contextTokens ?? effectivePiContextTokens(messages);
+    // The second, independent trigger. Tokens describe the provider's bill;
+    // bytes describe the working set, and since an image is charged what an
+    // image costs, the two no longer move together. A screenshot-driven
+    // transcript can sit far below the token threshold while holding tens of
+    // megabytes resident — the shape that killed the isolate — so either
+    // dimension being over budget is enough to force a cut.
+    const bytes = options.contextBytes ?? estimatePiContextBytes(messages);
+    const byteCeiling = options.byteCeiling ?? PI_CONTEXT_MAX_WORKING_SET_BYTES;
     const threshold = contextWindow - reserveTokens;
     const floor = force
       ? Math.max(0, Math.floor(threshold * (options.forceFloorFraction ?? 0)))
       : threshold;
-    if (tokens < floor) {
-      return messages;
+    const outcome = options.outcome;
+    /**
+     * Record what this request did and hand back the view. `status` is the only
+     * thing `pi_context_budget` can use to tell "compaction reused a durable cut"
+     * from "compaction found nothing to cut" from "the context was in budget" —
+     * all three used to report `unchanged`, which made the one alert this event
+     * exists for unable to see its own failure mode.
+     */
+    const finish = (
+      view: AgentMessage[],
+      status: PiCompactionStatus,
+      viewBytes?: number,
+    ): AgentMessage[] => {
+      if (outcome) {
+        outcome.status = status;
+        outcome.resultBytes = view === messages
+          ? bytes
+          : viewBytes ?? estimatePiContextBytes(view);
+      }
+      return view;
+    };
+    // A view is only reusable if it is inside BOTH budgets: a byte-triggered
+    // compaction that accepted a token-cheap, multi-megabyte cached view would
+    // return exactly the context it was invoked to shrink. Returns the view's
+    // byte count so the caller does not weigh it twice.
+    const withinBudget = (view: AgentMessage[]): number | null => {
+      if (effectivePiContextTokens(view) >= threshold) return null;
+      const viewBytes = estimatePiContextBytes(view);
+      return viewBytes < byteCeiling ? viewBytes : null;
+    };
+    if (tokens < floor && bytes < byteCeiling) {
+      return finish(messages, "unchanged");
     }
 
     {
@@ -7538,7 +7729,13 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
           createPiSummaryMessage(memo.summary),
           ...messages.slice(memo.firstKeptIndex),
         ];
-        if (effectivePiContextTokens(view) < threshold) return view;
+        // Per-message estimates are memoized on message identity, so weighing
+        // this view costs the summary message plus the kept tail, not another
+        // walk of the whole transcript.
+        const viewBytes = withinBudget(view);
+        if (viewBytes !== null) {
+          return finish(view, "memo_hit", viewBytes);
+        }
       }
     }
 
@@ -7546,22 +7743,26 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     const startsWithExistingSummary =
       Boolean(existing) && isPiSummaryMessage(messages[0]);
     if (existing && startsWithExistingSummary) {
-      if (tokens < contextWindow - reserveTokens) {
-        return messages;
+      if (tokens < threshold && bytes < byteCeiling) {
+        return finish(messages, "row_hit");
       }
     } else if (existing && existing.firstKeptIndex > 0 && existing.firstKeptIndex < messages.length) {
-      const tail = messages.slice(existing.firstKeptIndex);
-      if (effectivePiContextTokens([
+      const view = [
         createPiSummaryMessage(existing.summary),
-        ...tail,
-      ]) < contextWindow - reserveTokens) {
-        return [createPiSummaryMessage(existing.summary), ...tail];
+        ...messages.slice(existing.firstKeptIndex),
+      ];
+      const viewBytes = withinBudget(view);
+      if (viewBytes !== null) {
+        return finish(view, "row_hit", viewBytes);
       }
     }
 
     const firstKeptIndex = findPiCompactionCutIndex(messages, keepRecentTokens);
     if (firstKeptIndex <= 0 || firstKeptIndex >= messages.length) {
-      return messages;
+      // Over budget with nothing to cut. Distinct from `unchanged` on purpose:
+      // this is the case where the full, oversized context ships to the provider
+      // anyway, and it must not be invisible in telemetry.
+      return finish(messages, "no_cut");
     }
 
     const previousSummary = existing?.summary;
@@ -7605,7 +7806,10 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         previousSummary,
       );
       recordCut(summary);
-      return [createPiSummaryMessage(summary), ...messages.slice(firstKeptIndex)];
+      return finish(
+        [createPiSummaryMessage(summary), ...messages.slice(firstKeptIndex)],
+        "summarized",
+      );
     } catch (error) {
       console.error("[ChatThreadDO] Pi context compaction failed", error);
       const fallbackSummary = createFallbackPiCompactionSummary(
@@ -7613,7 +7817,10 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         error,
       );
       recordCut(fallbackSummary);
-      return [createPiSummaryMessage(fallbackSummary), ...messages.slice(firstKeptIndex)];
+      return finish(
+        [createPiSummaryMessage(fallbackSummary), ...messages.slice(firstKeptIndex)],
+        "summarized",
+      );
     }
   }
 
