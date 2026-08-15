@@ -77,7 +77,7 @@ The port defaults to `3001` and can be changed with `VITE_DEV_PORT`.
 ## Architecture
 
 ```text
-React Router SSR + browser WebSocket
+React Router SSR + browser HTTP/SSE
                   |
                   v
        Cloudflare main Worker
@@ -128,7 +128,7 @@ For deeper implementation details and repository conventions, see
 | Path | Purpose |
 | --- | --- |
 | `src/` | React Router application, routes, UI, and shared libraries |
-| `workers/main/` | Main Worker, Durable Objects, WebSockets, MCP, and sandbox services |
+| `workers/main/` | Main Worker, Durable Objects, HTTP/SSE transports (plus the `/ws/logs` log tail), MCP, and sandbox services |
 | `workers/dispatcher/` | Routing for published user applications |
 | `workers/app-usage-guard/` | Usage monitoring and reversible app quarantine |
 | `workers/bedrock-provider/` | Anthropic-to-Bedrock AI Gateway provider |

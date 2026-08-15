@@ -8,6 +8,7 @@ export type ClientEventSource =
   | 'chat_runner'
   | 'chat_sse'
   | 'chat_new_thread'
+  | 'workspace_status_stream'
   | 'version_skew';
 
 export type ClientTelemetrySeverity =

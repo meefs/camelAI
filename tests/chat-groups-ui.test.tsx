@@ -2822,10 +2822,10 @@ describe("workspace status stream transport", () => {
     }
   });
 
-  it("retries a denied attach without surfacing a frame", async () => {
+  it("retries a retryable attach failure without surfacing a frame", async () => {
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(new Response("Forbidden", { status: 403 }))
+      .mockResolvedValueOnce(new Response("Overloaded", { status: 503 }))
       .mockResolvedValue(
         sseResponse(`data: {"type":"thread_status_snapshot"}\n\n`),
       );
@@ -2841,6 +2841,91 @@ describe("workspace status stream transport", () => {
         expect(messages).toHaveLength(1);
       });
       expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+    } finally {
+      stream.close();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  // Regression: the retired status WebSocket retried a hard verdict forever
+  // with no error surface, which is how a removed route turned into an
+  // invisible permanent loop on stale tabs. A terminal attach status must stop
+  // the transport instead.
+  it.each([
+    ["401", 401],
+    ["403", 403],
+    ["404", 404],
+  ])("stops retrying after a terminal %s attach", async (_label, status) => {
+    const streamUrl = "/api/workspaces/workspace_1/status/stream";
+    // The telemetry beacon falls back to fetch, so count attach attempts by URL
+    // rather than by total fetch calls.
+    const attachCalls = () =>
+      fetchMock.mock.calls.filter((call) => call[0] === streamUrl).length;
+    const fetchMock = vi.fn(async (input: unknown) =>
+      input === streamUrl
+        ? new Response("nope", { status })
+        : new Response(null, { status: 204 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const stream = realStatusStreamOpen({
+      url: streamUrl,
+      onMessage: () => {},
+    });
+
+    try {
+      await waitFor(() => {
+        expect(attachCalls()).toBeGreaterThanOrEqual(1);
+      });
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      expect(attachCalls()).toBe(1);
+    } finally {
+      stream.close();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("reports every failed attach so the app shell can check for version skew", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("Overloaded", { status: 503 }))
+      .mockResolvedValueOnce(new Response("gone", { status: 404 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const failures: Array<number | null> = [];
+    const stream = realStatusStreamOpen({
+      url: "/api/workspaces/workspace_1/status/stream",
+      onMessage: () => {},
+      onAttachFailure: (status) => failures.push(status),
+    });
+
+    try {
+      await waitFor(() => {
+        expect(failures).toEqual([503, 404]);
+      });
+    } finally {
+      stream.close();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("reports a transport-level failure with no status", async () => {
+    const fetchMock = vi.fn(async () => {
+      throw new TypeError("Failed to fetch");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const failures: Array<number | null> = [];
+    const stream = realStatusStreamOpen({
+      url: "/api/workspaces/workspace_1/status/stream",
+      onMessage: () => {},
+      onAttachFailure: (status) => failures.push(status),
+    });
+
+    try {
+      // A transport failure has no status to classify, so it stays retryable —
+      // only the report is asserted here.
+      await waitFor(() => {
+        expect(failures.length).toBeGreaterThanOrEqual(1);
+      });
+      expect(failures.every((status) => status === null)).toBe(true);
     } finally {
       stream.close();
       vi.unstubAllGlobals();

@@ -10,7 +10,6 @@
  * - /api/integrations/telegram/webhook → Telegram Bot API webhook
  * - email() → Workspace email ingress (Cloudflare Email Routing)
  * - /api/threads/:id/preview → Thread preview API
- * - /agents/chat-thread/:thread → ChatThreadDO Agents SDK WebSocket (legacy)
  * - /agents/chat-thread/:thread/sse → ChatThreadDO chat stream (SSE)
  * - /agents/chat-thread/:thread/call → ChatThreadDO chat frames (POST)
  * - * → React Router SSR
@@ -18,7 +17,6 @@
 
 import { createRequestHandler } from 'react-router';
 import { DurableObject } from 'cloudflare:workers';
-import { routeAgentRequest } from 'agents';
 export { ContainerProxy, Sandbox } from '@cloudflare/sandbox';
 import type { Env, Route, RouteContext } from './types.js';
 import { handleSlackEventsQueue } from './slack-events-queue.js';
@@ -55,7 +53,6 @@ import {
   handleDiscordOAuthCallback,
   handleDiscordOAuthStart,
 } from './routes/discord-integrations.js';
-import { handleWorkspaceStatusWebSocket } from './routes/websocket.js';
 import { handleWorkspaceStatusStream } from './routes/status-stream.js';
 import { handleLogsWebSocket } from './routes/logs-websocket.js';
 import { handleOAuthMetadata, handleResourceMetadata } from './routes/well-known.js';
@@ -74,8 +71,7 @@ import { requireChatWebSocketAccess } from './helpers/auth.js';
 import { stripReservedTransportHeaders } from './chat-thread/transport-headers.js';
 import { getThreadStub } from './helpers/stubs.js';
 import { text } from './helpers/response.js';
-import { rejectedChatWebSocketUpgrade } from '../../../src/lib/chat-ws-close';
-import { recordObservabilityEvent } from './observability.js';
+import { normalizePathForObservability, recordObservabilityEvent } from './observability.js';
 
 // Re-exports for wrangler
 export { ChiridionMcp } from './mcp-handler.js';
@@ -290,9 +286,10 @@ const routes: Route[] = [
   // Workspace thread-status SSE stream (replaces the status WebSocket).
   { method: 'GET', path: /^\/api\/workspaces\/([^/]+)\/status\/stream$/, handler: handleWorkspaceStatusStream },
 
-  // WebSocket routes
+  // WebSocket routes. Only `wrangler tail` log streaming still speaks WebSocket
+  // (cf-api-proxy hands this URL back as the tail endpoint); chat and workspace
+  // status are HTTP+SSE.
   { method: 'GET', path: /^\/ws\/logs$/, handler: handleLogsWebSocket, websocket: true },
-  { method: 'GET', path: /^\/ws\/workspaces\/([^/]+)\/status$/, handler: handleWorkspaceStatusWebSocket, websocket: true },
 ];
 
 // =============================================================================
@@ -311,14 +308,12 @@ const reactRouterHandler = createRequestHandler(
 
 /**
  * Chat transports sharing one authorization unit. The telemetry event NAMES are
- * identical across all three (dashboards filter on them); `operation`
- * distinguishes them, and the WebSocket value is unchanged so existing queries
- * keep matching.
+ * unchanged from the retired WebSocket upgrade path (dashboards filter on
+ * them); `operation` distinguishes the two HTTP transports.
  */
-type ChatTransport = 'websocket' | 'sse' | 'call';
+type ChatTransport = 'sse' | 'call';
 
 const CHAT_TRANSPORT_AUTH_OPERATIONS: Record<ChatTransport, string> = {
-  websocket: 'authorizeChatAgentConnect',
   sse: 'authorizeChatTransportRequest:sse',
   call: 'authorizeChatTransportRequest:call',
 };
@@ -357,7 +352,6 @@ async function authorizeChatTransportRequest(
       errorName: error instanceof Error ? error.name : 'Error',
       sampleIndex: threadId,
     });
-    if (transport === 'websocket') throw error;
     // requireChatWebSocketAccess throws on a non-transient session-invalidation
     // check failure. An HTTP transport must render that itself: an uncaught
     // throw is an opaque 500 the client would retry against forever.
@@ -384,15 +378,10 @@ async function authorizeChatTransportRequest(
       errorMessage: reasonText.slice(0, 200),
       sampleIndex: threadId,
     });
-    // HTTP transports return the denial as-is — the statuses already carry the
-    // terminal/retryable split (400/401/403/404 terminal, 409/429/5xx
-    // retryable). A WebSocket has no such channel, so accept+close with an
-    // application code instead (401/403/404 → 44xx terminal; 5xx → 1013).
-    if (transport !== 'websocket') return access.error;
-    return rejectedChatWebSocketUpgrade({
-      httpStatus: status,
-      reason: reasonText,
-    });
+    // The denial goes back as-is — the statuses already carry the
+    // terminal/retryable split the client classifies on (400/401/403/404
+    // terminal, 409/429/5xx retryable).
+    return access.error;
   }
 
   const { session, userId } = access;
@@ -471,7 +460,7 @@ async function authorizeChatTransportRequest(
 
 async function handleChatTransportRequest(
   { req, env, match }: RouteContext,
-  transport: 'sse' | 'call',
+  transport: ChatTransport,
 ): Promise<Response> {
   // Raw, undecoded path segment: partyserver derives the DO name the same way,
   // so an escapable character must not address a different Durable Object.
@@ -492,16 +481,12 @@ export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
     const method = req.method;
+    // No chat/agent WebSocket upgrade path exists any more: only routes marked
+    // `websocket: true` (currently just /ws/logs) answer an upgrade, and every
+    // other upgrade attempt — including a stale bundle reaching for
+    // /agents/chat-thread/:id or /ws/workspaces/:id/status — falls through to
+    // the 404 below without touching authorization.
     const isWebSocket = req.headers.get('Upgrade') === 'websocket';
-    if (isWebSocket) {
-      const agentResponse = await routeAgentRequest(req, env, {
-        onBeforeConnect: (request, agent) =>
-          agent.className === 'CHAT_THREAD'
-            ? authorizeChatTransportRequest(request, env, agent.name, 'websocket')
-            : request,
-      });
-      if (agentResponse) return agentResponse;
-    }
 
     for (const route of routes) {
       if (isWebSocket && !route.websocket) continue;
@@ -516,6 +501,25 @@ export default {
     }
 
     if (isWebSocket) {
+      // A stale bundle reaching for a retired transport lands here. A non-101
+      // answer is NOT a terminal signal to a browser client: the handshake
+      // failure surfaces as close code 1006, which every reconnecting client we
+      // ship (partysocket, the Agents SDK's `isTerminalCloseEvent`) classifies
+      // as retryable, so those tabs re-attempt on backoff until a reload or a
+      // version-skew check heals them. Name the event so that population is
+      // visible in the observability stream instead of only as raw 404 volume.
+      const upgradePath = normalizePathForObservability(url.pathname);
+      recordObservabilityEvent(env, {
+        event: 'ws_upgrade_route_removed',
+        severity: 'warn',
+        component: 'main-worker',
+        operation: 'websocketUpgrade',
+        status: 'not_found',
+        method,
+        path: upgradePath,
+        statusCode: 404,
+        sampleIndex: upgradePath,
+      });
       return new Response('Not Found', { status: 404 });
     }
 

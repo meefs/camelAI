@@ -43,7 +43,13 @@ const TOKEN_REFRESH_RATE_LIMIT_DEFAULT_MS = 2 * 60 * 1000;
 const THREAD_STREAMING_LEASE_TTL_MS = 5 * 60 * 1000;
 // Fire the lease-sweep alarm just past the earliest possible expiry.
 const THREAD_STREAMING_LEASE_ALARM_SLACK_MS = 1000;
+// Tag of the retired hibernatable status socket. No socket is accepted with it
+// any more; it survives only so sockets a previous release accepted can be
+// found and closed (see retireLegacyStatusSockets).
 const WORKSPACE_STATUS_SOCKET_TAG = 'status';
+// 1012 (service restart) is the honest reason and is non-terminal, which is
+// what we want: the stale client reconnects, gets a 404, and is counted.
+const WORKSPACE_STATUS_SOCKET_RETIRED_CLOSE_CODE = 1012;
 // SSE streams cannot hibernate and nothing else writes bytes while a workspace
 // is quiet, so a comment heartbeat is the only thing keeping intermediaries
 // from dropping an idle sidebar stream.
@@ -617,17 +623,46 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       runningStartedAt,
     });
     this.publishThreadStatusEvent(`data: ${payload}\n\n`);
-    // Legacy hibernatable status sockets: stale bundles in the field hold these
-    // for hours after a deploy, so they keep receiving fan-out this release.
+    this.retireLegacyStatusSockets();
+  }
+
+  /**
+   * The '/status' upgrade branch is gone, but a hibernatable socket accepted by
+   * a previous release can be restored onto this instance after the deploy.
+   * Nothing writes to it any more, so leaving it OPEN would strand a stale tab
+   * with frozen indicators and no close event to react to — a silent failure,
+   * strictly worse than the visible reconnect path. Close it instead: the
+   * client's reconnect attempt gets the plain 404 the route table now returns,
+   * which is telemetered (`ws_upgrade_route_removed`) and heals on reload.
+   *
+   * Deliberately unguarded: `getWebSockets` is O(0) once the sweep has run (a
+   * closing socket is skipped by the readyState check and drops out of the tag
+   * shortly after), and a per-instance boolean would silently skip sockets
+   * restored after the first call.
+   */
+  private retireLegacyStatusSockets(): void {
     for (const socket of this.ctx.getWebSockets(WORKSPACE_STATUS_SOCKET_TAG)) {
-      if (socket.readyState !== WebSocket.OPEN) {
-        continue;
-      }
+      if (socket.readyState !== WebSocket.OPEN) continue;
       try {
-        socket.send(payload);
+        socket.close(WORKSPACE_STATUS_SOCKET_RETIRED_CLOSE_CODE, 'status transport retired');
       } catch {}
     }
   }
+
+  // Hibernation handlers for those same legacy sockets. No socket is ever
+  // accepted by this class any more, so these only ever see a stale bundle's
+  // frame/close: answer by retiring the socket rather than faulting the isolate
+  // on an unhandled delivery.
+  webSocketMessage(socket: WebSocket): void {
+    if (socket.readyState !== WebSocket.OPEN) return;
+    try {
+      socket.close(WORKSPACE_STATUS_SOCKET_RETIRED_CLOSE_CODE, 'status transport retired');
+    } catch {}
+  }
+
+  webSocketClose(): void {}
+
+  webSocketError(): void {}
 
   private threadStatusSnapshotPayload(): string {
     const runningThreads = this.listStreamingThreadStatuses();
@@ -644,10 +679,6 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
         latestActivityAt: thread.latestActivityAt,
       })),
     });
-  }
-
-  private sendThreadStatusSnapshot(socket: WebSocket): void {
-    socket.send(this.threadStatusSnapshotPayload());
   }
 
   private publishThreadStatusEvent(event: string): void {
@@ -738,23 +769,15 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    // Cheapest reliable moment to catch a socket restored from hibernation onto
+    // this instance: any fetch means the DO is awake and running new code.
+    this.retireLegacyStatusSockets();
     if (url.pathname === '/status/stream' && request.method === 'GET') {
       return this.openThreadStatusStream();
     }
-    if (url.pathname !== '/status' || request.headers.get('Upgrade') !== 'websocket') {
-      return new Response('Not found', { status: 404 });
-    }
-
-    const pair = new WebSocketPair();
-    const [client, server] = Object.values(pair);
-    this.ctx.acceptWebSocket(server, [WORKSPACE_STATUS_SOCKET_TAG]);
-    server.serializeAttachment({ connectedAt: Date.now() });
-
-    try {
-      this.sendThreadStatusSnapshot(server);
-    } catch {}
-
-    return new Response(null, { status: 101, webSocket: client });
+    // The status SSE stream is the only transport this DO serves over fetch;
+    // the retired '/status' WebSocket upgrade lands here as a plain 404.
+    return new Response('Not found', { status: 404 });
   }
 
   private log(

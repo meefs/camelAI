@@ -5,6 +5,10 @@
  * text/event-stream, and a denial is a real status the client can classify as
  * terminal (400/401/403/404) or retryable (409/429/5xx) — replacing the
  * accept-then-close-with-4403 trick the WebSocket upgrade needed.
+ *
+ * The legacy upgrade routes are gone entirely (2026-08-15), so the guard cases
+ * below are joined by removal regressions: an upgrade attempt must 404 without
+ * running authorization, and /ws/logs must keep working.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -158,5 +162,116 @@ describe('Chat transport access guard', () => {
 
     // A miss must not fall through to the SPA shell (200 text/html).
     expect(response.status).toBe(404);
+  });
+
+  it('404s a chat WebSocket upgrade without running authorization', async () => {
+    const { workspaceId, threadId, signedToken } = await setupMemberSession();
+
+    // A fully authorized session: before the legacy path was removed this
+    // handshake admitted with 101. It must now miss the route table entirely —
+    // no upgrade, no accept-then-close, and no auth round trip.
+    const response = await SELF.fetch(
+      `http://example/agents/chat-thread/${threadId}?workspaceId=${workspaceId}&_pk=pk-ws`,
+      {
+        headers: {
+          Upgrade: 'websocket',
+          Connection: 'Upgrade',
+          'Sec-WebSocket-Version': '13',
+          'X-Chiridion-Session-Id': signedToken,
+        },
+      },
+    );
+
+    expect(response.status).toBe(404);
+    expect(response.webSocket).toBeNull();
+  });
+
+  it('404s an unauthenticated chat WebSocket upgrade the same way', async () => {
+    const { workspaceId, threadId } = await setupMemberSession();
+
+    // A denial would have been 401/403 (or a 101 + 4401 close). The route is
+    // gone, so a stale bundle gets an ordinary 404 either way.
+    const response = await SELF.fetch(
+      `http://example/agents/chat-thread/${threadId}?workspaceId=${workspaceId}&_pk=pk-ws`,
+      {
+        headers: {
+          Upgrade: 'websocket',
+          Connection: 'Upgrade',
+          'Sec-WebSocket-Version': '13',
+        },
+      },
+    );
+
+    expect(response.status).toBe(404);
+    expect(response.webSocket).toBeNull();
+  });
+
+  it('404s the removed workspace status WebSocket route', async () => {
+    const { workspaceId, signedToken } = await setupMemberSession();
+
+    const response = await SELF.fetch(
+      `http://example/ws/workspaces/${encodeURIComponent(workspaceId)}/status`,
+      {
+        headers: {
+          Upgrade: 'websocket',
+          Connection: 'Upgrade',
+          'Sec-WebSocket-Version': '13',
+          'X-Chiridion-Session-Id': signedToken,
+        },
+      },
+    );
+
+    expect(response.status).toBe(404);
+    expect(response.webSocket).toBeNull();
+  });
+
+  it('records the removed-route upgrade so stale bundles are countable', async () => {
+    // A stale bundle does NOT stop after this 404: a failed handshake surfaces
+    // as close code 1006, which every reconnecting client treats as retryable.
+    // The event is how that population stays visible (and sizeable) instead of
+    // hiding in raw 404 volume — see plans/sse-migration/WS-REMOVAL.md.
+    const writes: Array<{ blobs?: unknown[]; doubles?: unknown[] }> = [];
+    const envWithDataset = env as unknown as Record<string, unknown>;
+    const previous = envWithDataset.OBSERVABILITY_EVENTS;
+    envWithDataset.OBSERVABILITY_EVENTS = {
+      writeDataPoint: (point: { blobs?: unknown[]; doubles?: unknown[] }) => {
+        writes.push(point);
+      },
+    };
+
+    try {
+      const response = await SELF.fetch('http://example/ws/workspaces/ws-abc/status', {
+        headers: {
+          Upgrade: 'websocket',
+          Connection: 'Upgrade',
+          'Sec-WebSocket-Version': '13',
+        },
+      });
+      expect(response.status).toBe(404);
+    } finally {
+      envWithDataset.OBSERVABILITY_EVENTS = previous;
+    }
+
+    const removalEvents = writes.filter(
+      (point) => (point.blobs as string[] | undefined)?.[0] === 'ws_upgrade_route_removed',
+    );
+    expect(removalEvents).toHaveLength(1);
+    expect((removalEvents[0].blobs as string[])[7]).toBe('/ws/workspaces/ws-abc/status');
+  });
+
+  it('keeps answering the /ws/logs upgrade route (wrangler tail)', async () => {
+    // The one surviving WebSocket route: the CF API proxy hands this URL back
+    // as the tail endpoint. Unauthenticated, it must reject on its own terms
+    // (400 for the missing scriptName) rather than fall into the blanket 404 —
+    // proof the `websocket: true` route machinery is still wired up.
+    const response = await SELF.fetch('http://example/ws/logs', {
+      headers: {
+        Upgrade: 'websocket',
+        Connection: 'Upgrade',
+        'Sec-WebSocket-Version': '13',
+      },
+    });
+
+    expect(response.status).toBe(400);
   });
 });

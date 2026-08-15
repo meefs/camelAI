@@ -1,6 +1,6 @@
 /**
  * Chat SSE terminality helpers shared by the browser transport and its
- * telemetry/lifecycle handlers (supersedes chat-ws-close.ts).
+ * telemetry/lifecycle handlers (superseded the removed chat-ws-close.ts).
  *
  * HTTP replaces WebSocket close codes as the denial channel: the attach
  * response status carries the verdict before the stream opens, and a mid-stream

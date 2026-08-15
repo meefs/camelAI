@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   checkForVersionSkew,
+  isReloadSafeNow,
+  registerReloadSafetyGuard,
   resetVersionSkewStateForTests,
 } from "@/lib/version-skew";
 import { APP_BUILD_ID } from "@/lib/app-build-id";
@@ -138,5 +140,75 @@ describe("checkForVersionSkew", () => {
     });
     expect(reload).not.toHaveBeenCalled();
     expect(onUpdateAvailable).not.toHaveBeenCalled();
+  });
+});
+
+describe("reload safety guards", () => {
+  beforeEach(() => {
+    resetVersionSkewStateForTests();
+    window.sessionStorage.clear();
+    Object.defineProperty(navigator, "sendBeacon", {
+      configurable: true,
+      writable: true,
+      value: () => true,
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("is safe with no guards registered", () => {
+    // A route holding no user state (settings, workspace list) must be able to
+    // self-heal silently — that cohort had no version-skew check at all before.
+    expect(isReloadSafeNow()).toBe(true);
+  });
+
+  it("lets any registered guard veto the reload", () => {
+    const unregister = registerReloadSafetyGuard(() => true);
+    const unregisterDraft = registerReloadSafetyGuard(() => false);
+    expect(isReloadSafeNow()).toBe(false);
+    unregisterDraft();
+    expect(isReloadSafeNow()).toBe(true);
+    unregister();
+  });
+
+  it("treats a throwing guard as unsafe", () => {
+    const unregister = registerReloadSafetyGuard(() => {
+      throw new Error("boom");
+    });
+    expect(isReloadSafeNow()).toBe(false);
+    unregister();
+  });
+
+  it("blocks the silent reload when a guard vetoes, and prompts instead", async () => {
+    stubServerBuildId("build-new");
+    const reload = stubReload();
+    const onUpdateAvailable = vi.fn();
+    const unregister = registerReloadSafetyGuard(() => false);
+
+    await checkForVersionSkew({
+      trigger: "status_stream_error",
+      safeToReload: isReloadSafeNow,
+      onUpdateAvailable,
+    });
+
+    expect(reload).not.toHaveBeenCalled();
+    expect(onUpdateAvailable).toHaveBeenCalledTimes(1);
+    unregister();
+  });
+
+  it("reloads on a status_stream_error trigger when nothing vetoes", async () => {
+    stubServerBuildId("build-new");
+    const reload = stubReload();
+
+    await checkForVersionSkew({
+      trigger: "status_stream_error",
+      safeToReload: isReloadSafeNow,
+      onUpdateAvailable: vi.fn(),
+    });
+
+    expect(reload).toHaveBeenCalledTimes(1);
   });
 });

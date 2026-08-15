@@ -724,8 +724,8 @@ interface ChatTransportFrame {
   method?: unknown;
   id?: unknown;
 }
-// SSE has no runtime-answered ping/pong analogue (ctx.setWebSocketAutoResponse),
-// so the DO writes its own comment keepalive. The same tick runs the idle sweep.
+// SSE has no runtime-answered ping/pong analogue, so the DO writes its own
+// comment keepalive. The same tick runs the idle sweep.
 const SSE_HEARTBEAT_INTERVAL_MS = 25_000;
 // How long a thread with no work must stay quiet before the stream is closed
 // with `bye {"reason":"idle"}`. The client reopens on demand (send, focus,
@@ -1327,16 +1327,9 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   constructor(ctx: DurableObjectState, env: ChatEnv) {
     super(ctx, env as unknown as ChatAgentEnv);
 
-    // Hibernatable ping/pong so middleboxes and hidden tabs can keep the socket
-    // alive without application traffic. Pair is matched by the browser or any
-    // client that sends the request string as a WS text frame.
-    try {
-      this.ctx.setWebSocketAutoResponse(
-        new WebSocketRequestResponsePair("ping", "pong"),
-      );
-    } catch {
-      // Older local runtimes may lack auto-response; chat still works without it.
-    }
+    // No ctx.setWebSocketAutoResponse pair is registered: no WebSocket can
+    // reach this DO any more, and the SSE transport keepalive is its own
+    // comment heartbeat (SSE_HEARTBEAT_INTERVAL_MS).
 
     // AIChatAgent's constructor reassigned this.onMessage to a wrapper that
     // services cf_agent_* chat-protocol frames (chat_clear, chat_messages,
@@ -2700,9 +2693,10 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
 
-    if (request.headers.get("Upgrade") === "websocket") {
-      return super.fetch(request);
-    }
+    // No WebSocket upgrade is ever delegated to `Server.fetch`: the worker has
+    // no chat upgrade route left, so an upgrade cannot reach this DO. The
+    // partyserver/Agents connection machinery below is still live — the SSE
+    // shim drives onConnect/onMessage/onClose through it.
 
     // Chat transport (SSE receive + POST send). This override never delegates
     // plain HTTP to `Server.fetch`, so startup (onStart: stream restore, chat

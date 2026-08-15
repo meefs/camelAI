@@ -448,29 +448,149 @@ describe("WorkspaceDO thread status", () => {
     expect(response.status).toBe(404);
   });
 
-  it("still serves the legacy status websocket", async () => {
+  it("404s the removed status websocket upgrade instead of accepting it", async () => {
     const workspaceStub = await createWorkspaceStatusStub();
-    const threadId = crypto.randomUUID();
 
-    await workspaceStub.recordThreadStreaming(threadId, true);
     const response = await workspaceStub.fetch("https://workspace/status", {
       headers: { Upgrade: "websocket" },
     });
-    expect(response.status).toBe(101);
-    const socket = response.webSocket;
-    expect(socket).not.toBeNull();
-    const frames: StatusFrame[] = [];
-    socket!.addEventListener("message", (event) => {
-      frames.push(JSON.parse(event.data as string));
-    });
-    socket!.accept();
 
-    await waitForFrames(frames, 1);
-    expect(frames[0]).toMatchObject({
-      type: "thread_status_snapshot",
-      runningThreadIds: [threadId],
+    expect(response.status).toBe(404);
+    expect(response.webSocket).toBeNull();
+  });
+
+  it("closes a legacy hibernatable status socket that outlived the deploy", async () => {
+    const workspaceStub = await createWorkspaceStatusStub();
+    const threadId = crypto.randomUUID();
+    const closes: Array<{ code: number; reason: string }> = [];
+
+    // Simulate exactly what a pre-removal release left behind: a socket
+    // accepted with the 'status' tag, still attached to this DO. Nothing writes
+    // to it any more, so leaving it OPEN would strand the stale tab with frozen
+    // indicators and no close event — the failure mode this sweep exists for.
+    // The client half never leaves the DO's I/O context (the runtime forbids
+    // it), so the close listener is installed in there too.
+    await runInDurableObject(workspaceStub, (_instance, state) => {
+      const pair = new WebSocketPair();
+      const [clientSocket, serverSocket] = Object.values(pair);
+      state.acceptWebSocket(serverSocket, ["status"]);
+      clientSocket.accept();
+      clientSocket.addEventListener("close", (event) => {
+        closes.push({ code: event.code, reason: event.reason });
+      });
     });
-    socket!.close();
+
+    await expect(
+      runInDurableObject(
+        workspaceStub,
+        (_instance, state) => state.getWebSockets("status").length,
+      ),
+    ).resolves.toBe(1);
+
+    // Any broadcast on the surviving (SSE) transport retires it.
+    await workspaceStub.recordThreadStreaming(threadId, true);
+
+    for (let i = 0; i < 100 && closes.length === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(closes[0]?.code).toBe(1012);
+
+    const openSockets = await runInDurableObject(
+      workspaceStub,
+      (_instance, state) =>
+        state
+          .getWebSockets("status")
+          .filter((socket) => socket.readyState === WebSocket.OPEN).length,
+    );
+    expect(openSockets).toBe(0);
+  });
+
+  it("retires a legacy status socket on the next fetch too", async () => {
+    const workspaceStub = await createWorkspaceStatusStub();
+    const closes: number[] = [];
+
+    await runInDurableObject(workspaceStub, (_instance, state) => {
+      const pair = new WebSocketPair();
+      const [clientSocket, serverSocket] = Object.values(pair);
+      state.acceptWebSocket(serverSocket, ["status"]);
+      clientSocket.accept();
+      clientSocket.addEventListener("close", (event) => {
+        closes.push(event.code);
+      });
+    });
+
+    // A quiet workspace never broadcasts, so the fetch seam has to sweep as
+    // well — otherwise the stale socket hangs until the DO is evicted.
+    const response = await workspaceStub.fetch("https://workspace/status", {
+      headers: { Upgrade: "websocket" },
+    });
+    expect(response.status).toBe(404);
+
+    for (let i = 0; i < 100 && closes.length === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(closes[0]).toBe(1012);
+  });
+
+  it("retires a legacy status socket that sends a frame after the deploy", async () => {
+    const workspaceStub = await createWorkspaceStatusStub();
+    const closes: number[] = [];
+    let staleClient: WebSocket | null = null;
+
+    await runInDurableObject(workspaceStub, (_instance, state) => {
+      const pair = new WebSocketPair();
+      const [clientSocket, serverSocket] = Object.values(pair);
+      state.acceptWebSocket(serverSocket, ["status"]);
+      clientSocket.accept();
+      clientSocket.addEventListener("close", (event) => {
+        closes.push(event.code);
+      });
+      staleClient = clientSocket;
+    });
+
+    // An inbound frame from a stale bundle must not fault the isolate on an
+    // unhandled hibernation delivery — the DO answers by retiring the socket.
+    await runInDurableObject(workspaceStub, () => {
+      (staleClient as unknown as WebSocket).send("ping");
+    });
+
+    for (let i = 0; i < 100 && closes.length === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(closes[0]).toBe(1012);
+  });
+
+  it("keeps fanning out after the websocket branch was removed", async () => {
+    const workspaceStub = await createWorkspaceStatusStub();
+    const threadId = crypto.randomUUID();
+
+    const stream = readStatusStream(
+      await workspaceStub.fetch("https://workspace/status/stream"),
+    );
+    await waitForFrames(stream.frames, 1);
+    expect(stream.frames[0]).toMatchObject({
+      type: "thread_status_snapshot",
+      runningThreadIds: [],
+    });
+
+    // The SSE registry is the only status transport now: an incremental frame
+    // must still reach it with no hibernatable socket loop in broadcast.
+    await workspaceStub.recordThreadStreaming(threadId, true);
+    await waitForFrames(stream.frames, 2);
+    expect(stream.frames[1]).toMatchObject({
+      type: "thread_status",
+      threadId,
+      status: "running",
+    });
+
+    // No socket was ever accepted, so nothing is left hibernating on the DO.
+    const socketCount = await runInDurableObject(
+      workspaceStub,
+      (_instance, state) => state.getWebSockets().length,
+    );
+    expect(socketCount).toBe(0);
+
+    await stream.cancel();
   });
 
   it("sweeps an expired lease via the alarm and broadcasts idle", async () => {

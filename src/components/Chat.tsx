@@ -135,7 +135,12 @@ import {
   type ChatAgentStatePayload,
 } from "@/lib/chat-agent-state";
 import { usePiChatStream } from "@/lib/use-pi-chat-stream";
-import { checkForVersionSkew } from "@/lib/version-skew";
+import {
+  checkForVersionSkew,
+  isReloadSafeNow,
+  registerReloadSafetyGuard,
+  type VersionSkewTrigger,
+} from "@/lib/version-skew";
 import {
   recordCamelCodeWelcomeDismissal,
   shouldShowCamelCodeWelcome,
@@ -2979,6 +2984,11 @@ export default function Chat({
   // reconnected or woke up gets one silent reload when the tab holds no user
   // state, otherwise an "update available" toast. Safety reads through refs so
   // the callback stays stable.
+  //
+  // The visibility trigger lives at the app shell now
+  // (src/hooks/use-version-skew-watch.ts, mounted by ChatGroupsProvider) so
+  // non-chat routes self-heal too; this component contributes the chat-specific
+  // reload-safety guard and the stream_open trigger.
   const versionSkewSafetyRef = useRef({
     input: "",
     welcomeInput: "",
@@ -2991,21 +3001,28 @@ export default function Chat({
     attachmentCount: attachments.length,
     loading,
   };
+  const isChatReloadSafe = useCallback(() => {
+    const safety = versionSkewSafetyRef.current;
+    return (
+      !safety.input.trim() &&
+      !safety.welcomeInput.trim() &&
+      safety.attachmentCount === 0 &&
+      !safety.loading &&
+      !isStreamingRef.current &&
+      pendingMessagesRef.current.length === 0
+    );
+  }, []);
+  useEffect(
+    () => registerReloadSafetyGuard(isChatReloadSafe),
+    [isChatReloadSafe],
+  );
   const runVersionSkewCheck = useCallback(
-    (trigger: "stream_open" | "visibility") => {
+    (trigger: VersionSkewTrigger) => {
       void checkForVersionSkew({
         trigger,
-        safeToReload: () => {
-          const safety = versionSkewSafetyRef.current;
-          return (
-            !safety.input.trim() &&
-            !safety.welcomeInput.trim() &&
-            safety.attachmentCount === 0 &&
-            !safety.loading &&
-            !isStreamingRef.current &&
-            pendingMessagesRef.current.length === 0
-          );
-        },
+        // Global: an unrelated component's unsaved state must veto the reload
+        // just as the composer's own draft does.
+        safeToReload: isReloadSafeNow,
         onUpdateAvailable: (reload) => {
           toast("camelAI has been updated", {
             id: "camelai-version-skew",
@@ -3018,16 +3035,6 @@ export default function Chat({
     },
     [],
   );
-  useEffect(() => {
-    const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") {
-        runVersionSkewCheck("visibility");
-      }
-    };
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    return () =>
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-  }, [runVersionSkewCheck]);
 
   const handleAgentOpen = useCallback(() => {
     const id = threadId;

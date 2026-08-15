@@ -1,10 +1,12 @@
 /**
- * Remaining non-Agent WebSocket helpers.
+ * Shared inbound-chat message shaping (mention context, file-safety, author
+ * attribution) for non-browser senders — Slack/Discord/Telegram/email ingress.
+ *
+ * Named for the WebSocket route that used to live here; the transport itself is
+ * HTTP+SSE now (routes/status-stream.ts, index.ts chat transport).
  */
 
 import type { RouteContext } from '../types.js';
-import { requireWorkspaceAccess } from '../helpers/auth.js';
-import { text } from '../helpers/response.js';
 import {
   formatAttributedUserMessage,
   type ChatAuthorIdentity,
@@ -12,30 +14,6 @@ import {
 import { injectFileSafetyMessage } from '../file-safety.js';
 import { applyMentionContext } from '../mention-context.js';
 import { WorkspaceFilesystemClient } from '../workspace-filesystem-do.js';
-
-export async function handleWorkspaceStatusWebSocket({
-  req,
-  env,
-  match,
-}: RouteContext): Promise<Response> {
-  const workspaceIdFromPath = decodeURIComponent(match[1] ?? '').trim();
-  if (!workspaceIdFromPath) {
-    return text('Missing workspaceId', 400);
-  }
-
-  const access = await requireWorkspaceAccess(req, env);
-  if ('error' in access) return access.error;
-  if (access.workspaceId !== workspaceIdFromPath) {
-    return text('Forbidden', 403);
-  }
-
-  const doUrl = new URL('https://workspace/status');
-  const modifiedReq = new Request(doUrl.toString(), {
-    method: 'GET',
-    headers: req.headers,
-  });
-  return access.wsStub.fetch(modifiedReq);
-}
 
 export async function buildRunnerUserMessageContent(
   env: RouteContext['env'],

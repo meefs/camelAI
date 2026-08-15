@@ -20,6 +20,9 @@ import type {
 } from "@/types";
 import { useAuthData } from "@/hooks/use-auth-data";
 import { getChatDebugFlags } from "@/lib/chat-debug-flags";
+import { isTerminalChatSseHttpStatus } from "@/lib/chat-sse-close";
+import { reportClientEvent } from "@/lib/client-error-reporting";
+import { useVersionSkewWatch } from "@/hooks/use-version-skew-watch";
 import { maxThreadStatus } from "@/lib/thread-status";
 import { isPlaceholderThreadTitle } from "@/lib/thread-title";
 import { writePinnedGroupCountHint } from "@/lib/pinned-groups-cookie";
@@ -147,6 +150,13 @@ function mergeThreadMetadata(
 export interface WorkspaceStatusStreamOptions {
   url: string;
   onMessage: (data: string) => void;
+  /**
+   * A stream that failed to attach (network error, or a response that is not a
+   * live event-stream). Fires on every failed attempt, terminal or not, so the
+   * caller can run a version-skew check: "this transport stopped answering" is
+   * exactly the shape a retired route takes on a stale tab.
+   */
+  onAttachFailure?: (status: number | null) => void;
 }
 
 export interface WorkspaceStatusStreamHandle {
@@ -180,9 +190,10 @@ function parseStatusStreamEvent(frame: string): string | null {
   return data.length > 0 ? data.join("\n") : null;
 }
 
-function openWorkspaceStatusStream({
+export function openWorkspaceStatusStream({
   url,
   onMessage,
+  onAttachFailure,
 }: WorkspaceStatusStreamOptions): WorkspaceStatusStreamHandle {
   const abortController = new AbortController();
   let closed = false;
@@ -199,6 +210,28 @@ function openWorkspaceStatusStream({
     }, delay);
   };
 
+  /**
+   * Stop for good. A terminal attach status (401/403/404/4xx that is not in the
+   * retryable set) is a verdict, not a blip: retrying it forever is the doom
+   * loop the retired WebSocket transports produced on stale tabs, and it is
+   * invisible because a reconnecting client shows no error. The chat SSE client
+   * already classifies attach statuses this way — `isTerminalChatSseHttpStatus`
+   * is the shared predicate, not a chat-specific one.
+   */
+  const stopTerminally = (status: number) => {
+    closed = true;
+    if (retryTimer !== null) window.clearTimeout(retryTimer);
+    retryTimer = null;
+    reportClientEvent({
+      source: "workspace_status_stream",
+      event: "status_stream_terminal",
+      severity: "warn",
+      status: String(status),
+      message: "Workspace status stream stopped: terminal attach status.",
+      details: { httpStatus: status },
+    });
+  };
+
   const connect = async () => {
     if (closed) return;
     let attachedAt: number | null = null;
@@ -210,6 +243,11 @@ function openWorkspaceStatusStream({
         signal: abortController.signal,
       });
       if (!response.ok || !response.body) {
+        onAttachFailure?.(response.status);
+        if (isTerminalChatSseHttpStatus(response.status)) {
+          stopTerminally(response.status);
+          return;
+        }
         scheduleReconnect();
         return;
       }
@@ -242,6 +280,12 @@ function openWorkspaceStatusStream({
       Date.now() - attachedAt >= STATUS_STREAM_MIN_UPTIME_MS
     ) {
       attempt = 0;
+    } else if (attachedAt === null && !closed) {
+      // Never attached and this was not our own teardown: a transport-level
+      // failure with no status to classify (DNS/TLS/offline, or a handshake the
+      // browser refused). Report it; the caller decides whether the tab is
+      // simply running a retired bundle.
+      onAttachFailure?.(null);
     }
     scheduleReconnect();
   };
@@ -1072,6 +1116,11 @@ export function ChatGroupsProvider({
 }) {
   const { currentWorkspace } = useAuthData();
   const revalidator = useRevalidator();
+  // App-shell version-skew watch: this provider is mounted on every non-embed
+  // page, so it is the only place a tab that never opens a chat can notice it
+  // is running a retired bundle.
+  const runVersionSkewCheck = useVersionSkewWatch();
+  const runVersionSkewCheckRef = useLatestRef(runVersionSkewCheck);
   const chatDebugFlags = getChatDebugFlags();
   const statusSocketEnabled = !disableLiveStatus && chatDebugFlags.statusSocket;
   const statusRevalidateEnabled = !disableLiveStatus && chatDebugFlags.statusRevalidate;
@@ -1921,6 +1970,12 @@ export function ChatGroupsProvider({
     const stream = workspaceStatusStream.open({
       url: streamUrl,
       onMessage: handleStatusMessage,
+      // A status stream that cannot attach is the app-shell signal that this
+      // tab may be running a bundle whose transport the server retired; the
+      // check is throttled internally, so a backoff loop cannot spam it.
+      onAttachFailure: () => {
+        runVersionSkewCheckRef.current("status_stream_error");
+      },
     });
 
     return () => {
