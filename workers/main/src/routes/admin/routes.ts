@@ -145,6 +145,7 @@ import {
   type DbQuerySandboxStub,
 } from "../../db-query-service.js";
 import { buildLogTail, cleanBuildLog, projectBuildSandboxKey, runProjectBuild } from "../../project-build-service.js";
+import { runWithProjectBuildReadiness } from "../../project-build-readiness.js";
 import type { ProjectBuildSandboxLike } from "../../project-worker-bundle.js";
 import { waitUntil } from "cloudflare:workers";
 import { refreshOrgCustomDomainHostnamesForAdmin } from "../../../../../src/lib/admin-custom-domain.server.js";
@@ -755,6 +756,7 @@ routes.post(
       200: ProjectBuildVerifyResponseSchema,
       400: ErrorSchema,
       404: ErrorSchema,
+      503: ErrorSchema,
     },
   }),
   async (c) => {
@@ -774,12 +776,56 @@ routes.post(
       transport: "rpc",
     }) as unknown as ProjectBuildSandboxLike;
 
-    const result = await runProjectBuild({
-      projectId: project.id,
-      files: new ProjectFilesystemClient(c.env, project.id),
-      sandbox,
-      timeoutMs: body.timeout_ms,
-    });
+    // Gated exactly like deploy_project: this route drives the same container,
+    // and an ungated admin repro on a sleeping (or zombie) container reports a
+    // failure the user-facing path would have absorbed.
+    let result: Awaited<ReturnType<typeof runProjectBuild>>;
+    try {
+      result = await runWithProjectBuildReadiness(
+        sandbox,
+        () => runProjectBuild({
+          projectId: project.id,
+          files: new ProjectFilesystemClient(c.env, project.id),
+          sandbox,
+          timeoutMs: body.timeout_ms,
+        }),
+        {
+          operation: "project_build_verify",
+          onEvent: (event) => recordObservabilityEvent(c.env, {
+            event: event.type === "cold_start"
+              ? "build_sandbox_cold_start"
+              : event.type === "zombie_detected"
+                ? "build_sandbox_zombie_detected"
+                : event.type === "startup_failed"
+                  ? "build_sandbox_startup_failed"
+                  : "build_sandbox_ready_timeout",
+            severity: event.type === "cold_start" ? "info" : "error",
+            component: "admin",
+            operation: "project-build-verify",
+            status: event.type,
+            durationMs: event.waitedMs,
+            count: event.attempts,
+            errorName: event.cause,
+            workspaceId,
+          }),
+        },
+      );
+    } catch (error) {
+      // The gate's terminal messages (never ready, permanently broken image,
+      // unusable storage mount) are the useful answer for an operator running a
+      // repro — an opaque 500 is not.
+      const message = error instanceof Error ? error.message : String(error);
+      recordObservabilityEvent(c.env, {
+        event: "project_build_verify",
+        severity: "error",
+        component: "admin",
+        operation: "project-build-verify",
+        status: "unavailable",
+        workspaceId,
+        errorMessage: message,
+      });
+      return c.json({ error: message }, 503);
+    }
 
     recordObservabilityEvent(c.env, {
       event: "project_build_verify",

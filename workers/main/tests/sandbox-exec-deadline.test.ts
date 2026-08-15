@@ -17,10 +17,12 @@ import {
   PROJECT_BUILD_MAX_TIMEOUT_MS,
   ANALYSIS_PROJECT_IO_MAX_OVERHEAD_MS,
   analysisProjectIoOverheadMs,
-  withProjectBuildServiceErrorMapping,
 } from '../src/code-mode-tools';
 import { DEFAULT_BUILD_TIMEOUT_MS } from '../src/project-build-service';
-import { projectBuildTransientCause } from '../src/project-build-readiness';
+import {
+  projectBuildTransientCause,
+  withProjectBuildServiceErrorMapping,
+} from '../src/project-build-readiness';
 import { runDbQuery, type DbQueryDeps, type DbQueryRequest } from '../src/db-query-service';
 
 afterEach(() => {

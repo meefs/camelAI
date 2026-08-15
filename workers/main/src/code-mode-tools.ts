@@ -60,14 +60,11 @@ import { PROJECT_BUILD_ACTIVE_SESSION_WINDOW_MS } from "./container-sizing";
 import { recordErrorEvent, recordObservabilityEvent } from "./observability";
 import { buildLogTail, cleanBuildLog, DEFAULT_BUILD_TIMEOUT_MS, projectBuildSandboxKey, runProjectAddDependency, runProjectBuild, type ProjectBuildResult } from "./project-build-service";
 import {
+  createProjectBuildReadinessGate,
   ensureBuildSandboxReady,
-  isProjectBuildServiceUnavailableError,
-  isProjectBuildStorageMountError,
-  projectBuildTransientCause,
-  PROJECT_BUILD_COLD_START_BUDGET_MS,
-  PROJECT_BUILD_SERVICE_UNAVAILABLE_MESSAGE,
-  PROJECT_BUILD_STORAGE_MOUNT_MESSAGE,
+  withProjectBuildServiceErrorMapping,
   type ProjectBuildReadinessEvent,
+  type ProjectBuildReadinessGate,
   type ProjectBuildReadinessResult,
 } from "./project-build-readiness";
 import { collectWorkerBundleFromSandbox, findUnexportedDurableObjectClasses, type ProjectBuildSandboxLike } from "./project-worker-bundle";
@@ -86,7 +83,6 @@ import {
 } from "./analysis-service";
 import {
   createSandboxExecDeadline,
-  isSandboxDeadlineExceededError,
   SANDBOX_EXEC_DEADLINE_GRACE_MS,
   type SandboxDeadlineExceededEvent,
   type SandboxExecDeadline,
@@ -1511,7 +1507,74 @@ function normalizeDeployScriptName(value: unknown): string {
   return normalized;
 }
 
-const PROJECT_BUILD_SERVICE_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000] as const;
+/**
+ * Distinct tool failures one binding instance records as
+ * `code_mode_project_tool_call_failed`. A js_exec script is model-written and
+ * can loop; the budget keeps a pathological loop from turning one bad tool call
+ * into thousands of error rows while still capturing every distinct failure of
+ * a normal turn.
+ */
+export const CODE_MODE_TOOL_FAILURE_EVENT_BUDGET = 20;
+
+/**
+ * Bound on a value-failure message.
+ *
+ * It is both the AE blob and the dedupe key, so an unbounded message would let
+ * distinct platform text burn the per-instance budget one row at a time. Long
+ * enough to identify a failure, short enough that the key stays a key.
+ */
+export const CODE_MODE_VALUE_FAILURE_MESSAGE_MAX = 200;
+
+/**
+ * The message for a tool failure that arrived as a VALUE, or null when the
+ * result is not a recordable failure.
+ *
+ * Code Mode's operational tools report their outcome in the payload
+ * (`{ success: false }` for deploy_project/add_shadcn_component/…, `{ ok:
+ * false }` for run_notebook), and that is the class this event exists for: a
+ * gated deploy that failed every attempt used to show nothing in telemetry.
+ *
+ * Two shapes are deliberately NOT failures here:
+ *
+ *  - A SHELL OUTCOME (`exitCode`/`stdout`/`stderr` present): `analysis_exec`,
+ *    `run_code`, `run_notebook` and `add_python_dependency` set `ok:false` for
+ *    any non-zero exit of user/agent code — a `grep` that matched nothing is not
+ *    a tool failure. Their `error` field is `execError()`, i.e. the container's
+ *    RAW stderr (falling back to raw stdout), which must never be lifted into
+ *    the error-analytics dataset: it is user program output over connected data.
+ *    The full text still reaches the agent, the tool result and the R2 spill.
+ *  - A CANCELLATION (`cancelled: true`): a user declining a destructive
+ *    confirmation is a deliberate no-op, not an error.
+ */
+export function toolValueFailureMessage(data: unknown): string | null {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  const record = data as Record<string, unknown>;
+  if (record.success !== false && record.ok !== false) return null;
+  if (record.cancelled === true) return null;
+  if (isShellOutcomeResult(record)) return null;
+  for (const key of ["errorSummary", "error", "errorMessage", "message"]) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim().slice(0, CODE_MODE_VALUE_FAILURE_MESSAGE_MAX);
+    }
+  }
+  return "tool reported an unsuccessful outcome";
+}
+
+/** Error shape for a failure that was a VALUE: named, stackless, low-cardinality. */
+function stacklessValueFailure(message: string): Error {
+  const error = new Error(message);
+  error.name = "ToolValueFailure";
+  error.stack = "";
+  return error;
+}
+
+/** A result carrying a command's own exit status/output rather than a tool error. */
+function isShellOutcomeResult(record: Record<string, unknown>): boolean {
+  return typeof record.exitCode === "number" ||
+    typeof record.stdout === "string" ||
+    typeof record.stderr === "string";
+}
 
 /**
  * Upper bound on an agent-supplied build timeout. `timeoutMs` reaches us from
@@ -1626,67 +1689,6 @@ const PROJECT_BUILD_EXEC_LIMITS: SandboxExecLimits = {
   maxTimeoutMs: PROJECT_BUILD_MAX_TIMEOUT_MS,
   overheadMs: PROJECT_BUILD_IO_OVERHEAD_MS,
 };
-
-export async function withProjectBuildServiceErrorMapping<T>(
-  operationName: "add_dependency" | "deploy_project",
-  operation: () => Promise<T>,
-  hooks: {
-    /**
-     * Invoked before each retry sleep. The readiness gate re-arms here so
-     * attempt 2+ waits for a container that died mid-build instead of running
-     * blind against it (the wait stays bounded by one shared cold-boot budget).
-     */
-    onTransient?: (error: unknown) => void;
-    /** Final user-facing message; carries cold-start context when we have it. */
-    unavailableMessage?: () => string;
-    /**
-     * The tool call's shared exec budget. Two jobs here: the backoff sleep is
-     * charged OUTSIDE it (waiting is not building), and an exhausted budget
-     * ends the ladder — retrying into a spent budget could only start builds we
-     * would abandon immediately, and the SDK gives us no way to cancel them.
-     */
-    deadline?: SandboxExecDeadline;
-  } = {},
-): Promise<T> {
-  const unavailableMessage = () =>
-    hooks.unavailableMessage?.() ?? PROJECT_BUILD_SERVICE_UNAVAILABLE_MESSAGE;
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      return await operation();
-    } catch (error) {
-      if (isProjectBuildStorageMountError(error)) {
-        throw new Error(PROJECT_BUILD_STORAGE_MOUNT_MESSAGE, { cause: error });
-      }
-      if (!isProjectBuildServiceUnavailableError(error)) throw error;
-      // A spent budget is terminal, whatever rung we are on: another attempt
-      // could only be dispatched into a sub-slice (or refused outright), and an
-      // abandoned build cannot be cancelled — it would overlap the previous one
-      // in the SAME per-project workdir. Keep the deadline's own message so the
-      // agent shrinks the build instead of being told to try again in a moment.
-      if (isSandboxDeadlineExceededError(error) && hooks.deadline?.exhausted !== false) {
-        throw error;
-      }
-      const retryDelayMs = PROJECT_BUILD_SERVICE_RETRY_DELAYS_MS[attempt];
-      if (retryDelayMs == null) {
-        if (isSandboxDeadlineExceededError(error)) throw error;
-        throw new Error(unavailableMessage(), { cause: error });
-      }
-      hooks.onTransient?.(error);
-      console.warn("[project-build] transient service failure; retrying", {
-        operation: operationName,
-        attempt: attempt + 1,
-        maxAttempts: PROJECT_BUILD_SERVICE_RETRY_DELAYS_MS.length + 1,
-        retryDelayMs,
-        cause: projectBuildTransientCause(error),
-        error: error instanceof Error ? error.message : String(error),
-      });
-      const sleep = () => new Promise((resolve) => setTimeout(resolve, retryDelayMs));
-      // Backoff is not build time: charging it to the exec budget would leave
-      // the next attempt a slice too small to build in.
-      await (hooks.deadline ? hooks.deadline.excluding(sleep) : sleep());
-    }
-  }
-}
 
 function summarizeProjectBuildResult(build: ProjectBuildResult): Record<string, unknown> {
   const excerpt = build.success ? null : buildLogTail(buildFailureRawOutput(build));
@@ -2015,6 +2017,13 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
 
   private discordSendInvocationCount = 0;
 
+  /**
+   * Dedupe/budget keys for recordCodeModeToolFailure (per binding instance).
+   * Lazily created: tests construct this binding with Object.create(), which
+   * never runs field initializers.
+   */
+  private recordedToolFailures?: Set<string>;
+
   private get workspaceFs(): WorkspaceFilesystemClient {
     const { workspaceId } = this.ctx.props;
     if (!workspaceId) {
@@ -2062,73 +2071,15 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   /**
    * Readiness gate for a single build-tool call.
    *
-   * `ensureReady` is invoked immediately before the first sandbox operation
-   * (never on paths that don't touch the build container, e.g. notebook
-   * deploys) and is memoized so the surrounding retry ladder does not re-wait a
-   * full cold-boot budget per attempt. `invalidate` re-arms it after a
-   * transient failure, so an attempt that runs against a container which died
-   * mid-build waits for the reboot instead of running blind — the cumulative
-   * readiness wait across all attempts stays bounded by ONE cold-boot budget.
-   *
-   * That bound counts WAITING only, not the build in between: an absolute
-   * deadline latched on the first call meant a 200s build left attempt 2 a
-   * 1ms probe window, which failed instantly as "temporarily unavailable"
-   * instead of waiting out the reboot the invalidate was asking for.
-   *
-   * `annotate` stamps a cold wake onto the tool result so the agent — and
-   * through it the user — reads the extra minute as "the environment was
-   * starting" instead of retrying into the same boot window;
-   * `unavailableMessage` carries the same context onto the failure path.
+   * The gate itself lives in project-build-readiness.ts (the admin verify route
+   * runs the same one); this only binds it to the binding's own telemetry,
+   * progress streaming and org scope.
    */
   private projectBuildReadinessGate(
     operation: "add_dependency" | "deploy_project",
-  ): {
-    ensureReady: (sandbox: ProjectBuildSandboxLike) => Promise<void>;
-    invalidate: () => void;
-    annotate: <T>(result: T) => T;
-    unavailableMessage: () => string;
-  } {
-    let pending: Promise<void> | null = null;
-    // Sticky across re-arms: a later warm probe must not erase the fact that
-    // this tool call already paid for a wake.
-    let coldStart: ProjectBuildReadinessResult | null = null;
-    // Readiness wall-clock already spent by earlier attempts of THIS tool call.
-    let waitedMs = 0;
-    return {
-      ensureReady: (sandbox) => (pending ??= (() => {
-        const startedAtMs = Date.now();
-        const budgetMs = Math.max(0, PROJECT_BUILD_COLD_START_BUDGET_MS - waitedMs);
-        return this.awaitProjectBuildSandboxReady(sandbox, operation, budgetMs)
-          .then((result) => {
-            if (result.coldStart) coldStart ??= result;
-          })
-          .finally(() => {
-            waitedMs += Math.max(0, Date.now() - startedAtMs);
-          });
-      })()),
-      invalidate: () => {
-        pending = null;
-      },
-      unavailableMessage: () => {
-        if (!coldStart) return PROJECT_BUILD_SERVICE_UNAVAILABLE_MESSAGE;
-        return `${PROJECT_BUILD_SERVICE_UNAVAILABLE_MESSAGE} ` +
-          `The build environment was still starting (waited ${coldStart.waitedMs}ms for it to wake).`;
-      },
-      annotate: <T,>(result: T): T => {
-        if (!coldStart) return result;
-        if (!result || typeof result !== "object" || Array.isArray(result)) return result;
-        return {
-          ...result,
-          buildEnvironment: {
-            coldStart: true,
-            startupMs: coldStart.waitedMs,
-            probes: coldStart.attempts,
-            message:
-              "The build container was asleep and had to start; the extra wait was startup, not the build.",
-          },
-        };
-      },
-    };
+  ): ProjectBuildReadinessGate {
+    return createProjectBuildReadinessGate((sandbox, budgetMs) =>
+      this.awaitProjectBuildSandboxReady(sandbox, operation, budgetMs));
   }
 
   private async awaitProjectBuildSandboxReady(
@@ -2219,16 +2170,22 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     const props = this.ctx?.props;
     // A permanently broken container is a configuration problem, not a slow
     // boot — it gets its own event so cold-start dashboards stay boot-shaped.
+    // Same for a zombie: the wait is real, but the cause is a dead shell layer,
+    // and the DO's own build_sandbox_zombie_restart records what was done.
     const eventName = event.type === "cold_start"
       ? "build_sandbox_cold_start"
-      : event.type === "startup_failed"
-        ? "build_sandbox_startup_failed"
-        : "build_sandbox_ready_timeout";
+      : event.type === "zombie_detected"
+        ? "build_sandbox_zombie_detected"
+        : event.type === "startup_failed"
+          ? "build_sandbox_startup_failed"
+          : "build_sandbox_ready_timeout";
     const status = event.type === "cold_start"
       ? "ready"
-      : event.type === "startup_failed"
-        ? "startup_failed"
-        : "timeout";
+      : event.type === "zombie_detected"
+        ? (event.restarted ? "restarted" : "restart_suppressed")
+        : event.type === "startup_failed"
+          ? "startup_failed"
+          : "timeout";
     recordObservabilityEvent(this.env, {
       event: eventName,
       severity: event.type === "cold_start" ? "info" : "error",
@@ -3169,33 +3126,76 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       const result = await this.callTool(name, rawArgs);
       const data = simplifyAgentWebToolResult(name, result);
       this.recordCodeModeToolCall(name, startedAtMs, true, "", data);
+      // A tool that reports its own operational failure as a VALUE
+      // (deploy_project's { success: false }) never reaches the catch below, so
+      // the throw-path event above used to miss exactly the failures the agent
+      // sees most: production had a build failing every attempt with nothing in
+      // telemetry at all. Record it here with the same shape — minus the shell
+      // outcomes, which are domain results, not tool failures (see
+      // toolValueFailureMessage).
+      const valueFailure = toolValueFailureMessage(data);
+      if (valueFailure !== null) {
+        this.recordCodeModeToolFailure(name, valueFailure, undefined, "value");
+      }
       return { ok: true, data };
     } catch (error) {
       const message = error instanceof Error && error.message ? error.message : String(error);
       this.recordCodeModeToolCall(name, startedAtMs, false, message, undefined);
-      const props = this.ctx?.props;
-      if (name === "deploy_project") {
-        console.error("[code-mode] project tool call failed", {
-          toolName: name,
-          origin: "tool",
-          workspaceId: props?.workspaceId,
-          threadId: props?.threadId,
-          error: message,
-        });
-        recordErrorEvent(this.env, {
-          event: "code_mode_project_tool_call_failed",
-          component: "CodeModeToolsBinding",
-          operation: name,
-          status: "error",
-          workspaceId: props?.workspaceId,
-          threadId: props?.threadId,
-          orgId: props?.orgId,
-          userId: props?.userId,
-          error,
-        });
-      }
+      this.recordCodeModeToolFailure(name, message, error, "throw");
       return { ok: false, error: { tool: name, message, origin: "tool" } };
     }
+  }
+
+  /**
+   * One failure event for both surfaces a code-mode tool can fail through.
+   *
+   * `surfaced` distinguishes them: "throw" is an exception this envelope caught,
+   * "value" is an operational failure the tool returned. They are disjoint by
+   * construction (a call either threw or returned), so a throw that the runner
+   * later turns into an `ok: false` envelope is still recorded exactly once.
+   *
+   * Budgeted per binding instance and deduped on tool+message: a js_exec script
+   * that loops on the same failing call must not write one event per iteration.
+   *
+   * Arguments are NEVER logged — they carry user data and secrets — and neither
+   * is program output: the value path only ever passes a bounded,
+   * platform-authored message (toolValueFailureMessage).
+   */
+  private recordCodeModeToolFailure(
+    name: string,
+    message: string,
+    error: unknown,
+    surfaced: "throw" | "value",
+  ): void {
+    const recorded = (this.recordedToolFailures ??= new Set<string>());
+    const key = `${surfaced}:${name}:${message}`;
+    if (recorded.has(key)) return;
+    if (recorded.size >= CODE_MODE_TOOL_FAILURE_EVENT_BUDGET) return;
+    recorded.add(key);
+    const props = this.ctx?.props;
+    console.error("[code-mode] project tool call failed", {
+      toolName: name,
+      origin: "tool",
+      surfaced,
+      workspaceId: props?.workspaceId,
+      threadId: props?.threadId,
+      error: message,
+    });
+    recordErrorEvent(this.env, {
+      event: "code_mode_project_tool_call_failed",
+      component: "CodeModeToolsBinding",
+      operation: name,
+      status: "error",
+      // Low-cardinality dimension for "did the agent see a throw or a value".
+      provider: surfaced,
+      workspaceId: props?.workspaceId,
+      threadId: props?.threadId,
+      orgId: props?.orgId,
+      userId: props?.userId,
+      // A value failure never had a stack; fabricating one from here would fill
+      // the 4096-char errorStack blob with this method's own frames.
+      error: error ?? stacklessValueFailure(message),
+    });
   }
 
   /** Emit one `tool_calls` lake row for a call made from inside js_exec. */

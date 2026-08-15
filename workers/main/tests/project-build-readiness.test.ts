@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  createProjectBuildReadinessGate,
   ensureBuildSandboxReady,
   isProjectBuildPermanentStartupError,
   isProjectBuildServiceUnavailableError,
@@ -15,8 +16,13 @@ import {
   PROJECT_BUILD_SERVICE_UNAVAILABLE_MESSAGE,
   PROJECT_BUILD_STARTUP_FAILURE_BUDGET_MS,
   PROJECT_BUILD_STORAGE_MOUNT_MESSAGE,
+  runWithProjectBuildReadiness,
   type ProjectBuildReadinessEvent,
 } from "../src/project-build-readiness";
+import {
+  withZombieSelfHeal,
+  SANDBOX_ZOMBIE_PROBE_THRESHOLD,
+} from "../src/sandbox-zombie-recovery";
 import type { ProjectBuildSandboxLike } from "../src/project-worker-bundle";
 
 /** Virtual clock: sleeps advance time, so the tests never wait in real life. */
@@ -52,6 +58,10 @@ function readinessHarness(options: {
   probeDeadlineFires?: boolean;
   /** Simulate a sleep that overruns the requested cadence. */
   sleepOvershootMs?: number;
+  zombieProbeThreshold?: number;
+  onZombieDetected?: (
+    input: { consecutive: number; error: unknown },
+  ) => { restarted?: boolean } | void;
 }) {
   const clock = createClock(1_000, options.sleepOvershootMs ?? 0);
   const events: ProjectBuildReadinessEvent[] = [];
@@ -90,6 +100,10 @@ function readinessHarness(options: {
       sleep: clock.sleep,
       timer,
       probe,
+      ...(options.zombieProbeThreshold === undefined
+        ? {}
+        : { zombieProbeThreshold: options.zombieProbeThreshold }),
+      ...(options.onZombieDetected ? { onZombieDetected: options.onZombieDetected } : {}),
       onEvent: (event) => events.push(event),
       onProgress: (message) => progress.push(message),
     });
@@ -330,18 +344,347 @@ describe("ensureBuildSandboxReady", () => {
     expect(harness.events).toEqual([]);
   });
 
-  it("probes with exists when available and falls back to exec otherwise", async () => {
-    const withExists = {
+  it("probes through the session layer with exec, falling back to exists only without one", async () => {
+    // A zombie container answers `exists` and fails `exec`; probing the cheap
+    // layer is what let the gate conclude "ready" against a dead shell.
+    const withBoth = {
       exists: vi.fn(async () => ({ exists: true })),
-      exec: vi.fn(async () => ({ success: true })),
+      exec: vi.fn(async () => ({ exitCode: 0 })),
     } as unknown as ProjectBuildSandboxLike;
-    await ensureBuildSandboxReady(withExists);
-    expect(withExists.exists).toHaveBeenCalledWith("/workspace");
-    expect(withExists.exec).not.toHaveBeenCalled();
+    await ensureBuildSandboxReady(withBoth);
+    expect(withBoth.exec).toHaveBeenCalledWith("true", expect.objectContaining({ cwd: "/" }));
+    // The probe carries a container-side bound so a hung shell cannot sit on the
+    // client-side per-probe deadline.
+    expect((withBoth.exec as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1].timeout)
+      .toBeGreaterThan(0);
+    expect(withBoth.exists).not.toHaveBeenCalled();
 
-    const execOnly = { exec: vi.fn(async () => ({ success: true })) } as unknown as ProjectBuildSandboxLike;
-    await ensureBuildSandboxReady(execOnly);
-    expect(execOnly.exec).toHaveBeenCalledTimes(1);
+    const existsOnly = { exists: vi.fn(async () => ({ exists: true })) } as unknown as ProjectBuildSandboxLike;
+    await ensureBuildSandboxReady(existsOnly);
+    expect(existsOnly.exists).toHaveBeenCalledWith("/workspace");
+  });
+
+  it("treats a non-zero probe command as a transient, not a build failure", async () => {
+    const sandbox = {
+      exec: vi.fn(async () => ({ exitCode: 137, stderr: "killed" })),
+    } as unknown as ProjectBuildSandboxLike;
+
+    await expect(
+      ensureBuildSandboxReady(sandbox, { budgetMs: 20, probeIntervalMs: 1 }),
+    ).rejects.toThrow(PROJECT_BUILD_SERVICE_UNAVAILABLE_MESSAGE);
+  });
+});
+
+describe("zombie container self-heal", () => {
+  const SESSION_DEATH = () =>
+    Object.assign(
+      new Error("Session 'sandbox-org-1' ended because its shell exited (exit code: 128)"),
+      { name: "SessionTerminatedError" },
+    );
+
+  it("keeps probing a zombie instead of concluding ready, and fires the self-heal once", async () => {
+    const zombieRestarts: Array<{ consecutive: number }> = [];
+    const harness = readinessHarness({
+      failures: Number.POSITIVE_INFINITY,
+      failureError: SESSION_DEATH,
+      budgetMs: 10_000,
+      probeIntervalMs: 1_000,
+      onZombieDetected: (input) => {
+        zombieRestarts.push({ consecutive: input.consecutive });
+        return { restarted: true };
+      },
+    });
+
+    const error = await harness.run().then(
+      () => null,
+      (thrown: unknown) => thrown as Error,
+    );
+
+    // The gate never concluded "ready" against the dead shell: it spent the
+    // whole budget probing, exactly as it does for a cold boot.
+    expect(error?.message).toBe(PROJECT_BUILD_SERVICE_UNAVAILABLE_MESSAGE);
+    expect(harness.probe.mock.calls.length).toBeGreaterThan(SANDBOX_ZOMBIE_PROBE_THRESHOLD);
+    // Fired once per wait, at the threshold — not once per probe.
+    expect(zombieRestarts).toEqual([{ consecutive: SANDBOX_ZOMBIE_PROBE_THRESHOLD }]);
+    expect(harness.events).toEqual([
+      expect.objectContaining({
+        type: "zombie_detected",
+        cause: "session_death",
+        restarted: true,
+        attempts: SANDBOX_ZOMBIE_PROBE_THRESHOLD,
+      }),
+      expect.objectContaining({ type: "ready_timeout", cause: "session_death" }),
+    ]);
+  });
+
+  it("recovers when the restarted container comes back", async () => {
+    const harness = readinessHarness({
+      failures: SANDBOX_ZOMBIE_PROBE_THRESHOLD,
+      failureError: SESSION_DEATH,
+      budgetMs: 60_000,
+      probeIntervalMs: 1_000,
+      onZombieDetected: () => ({ restarted: true }),
+    });
+
+    const result = await harness.run();
+
+    expect(result).toMatchObject({ attempts: SANDBOX_ZOMBIE_PROBE_THRESHOLD + 1, coldStart: true });
+    expect(harness.events).toEqual([
+      expect.objectContaining({ type: "zombie_detected", restarted: true }),
+      expect.objectContaining({ type: "cold_start", cause: "session_death" }),
+    ]);
+  });
+
+  it("reports the restart as suppressed when the DO rate-limits it", async () => {
+    const harness = readinessHarness({
+      failures: Number.POSITIVE_INFINITY,
+      failureError: SESSION_DEATH,
+      budgetMs: 8_000,
+      probeIntervalMs: 1_000,
+      // A second zombie inside the cooldown: the DO refuses to restart again.
+      onZombieDetected: () => ({ restarted: false }),
+    });
+
+    await expect(harness.run()).rejects.toThrow(PROJECT_BUILD_SERVICE_UNAVAILABLE_MESSAGE);
+
+    expect(harness.events.filter((event) => event.type === "zombie_detected")).toEqual([
+      expect.objectContaining({ type: "zombie_detected", restarted: false }),
+    ]);
+  });
+
+  it("never fires on a healthy slow boot, however long it takes", async () => {
+    const zombieRestarts: unknown[] = [];
+    // 60s of ordinary wake transients (the SDK's connection-lost shape), then up.
+    const harness = readinessHarness({
+      failures: 40,
+      failureError: () => new Error("RPCTransportError: Network connection lost"),
+      budgetMs: 240_000,
+      probeIntervalMs: 1_500,
+      onZombieDetected: (input) => {
+        zombieRestarts.push(input);
+        return { restarted: true };
+      },
+    });
+
+    const result = await harness.run();
+
+    expect(result.coldStart).toBe(true);
+    expect(zombieRestarts).toEqual([]);
+    expect(harness.events).toEqual([
+      expect.objectContaining({ type: "cold_start", cause: "rpc_transport", attempts: 41 }),
+    ]);
+  });
+
+  it("resets the zombie counter when a non-session-death failure interleaves", async () => {
+    const zombieRestarts: unknown[] = [];
+    let call = 0;
+    const probe = vi.fn(async () => {
+      call += 1;
+      // Alternating session death / transport error: never N consecutive.
+      if (call % 2 === 1) {
+        throw Object.assign(new Error("SessionTerminatedError: shell exited"), {
+          name: "SessionTerminatedError",
+        });
+      }
+      throw new Error("RPCTransportError: Network connection lost");
+    });
+
+    await expect(
+      ensureBuildSandboxReady({} as ProjectBuildSandboxLike, {
+        budgetMs: 60,
+        probeIntervalMs: 1,
+        probe,
+        onZombieDetected: (input) => {
+          zombieRestarts.push(input);
+        },
+      }),
+    ).rejects.toThrow(PROJECT_BUILD_SERVICE_UNAVAILABLE_MESSAGE);
+
+    expect(probe.mock.calls.length).toBeGreaterThan(SANDBOX_ZOMBIE_PROBE_THRESHOLD);
+    expect(zombieRestarts).toEqual([]);
+  });
+
+  /**
+   * The probe crosses the DO RPC boundary, so it lands on the SUBCLASS method —
+   * and `ProjectBuildSandbox.exec` self-heals on the FIRST session death, inside
+   * the DO, before the rejection ever reaches this worker. A probe routed
+   * through `exec` therefore destroys the container before the gate can count a
+   * second consecutive death, making `SANDBOX_ZOMBIE_PROBE_THRESHOLD` and the
+   * `probe_session_death` trigger unreachable. This drives the gate through a
+   * fake DO whose `exec` is the REAL wrapper (not a stub), so that shadowing
+   * cannot come back.
+   */
+  it("probes through a heal-exempt entry point, so the DO's exec wrapper never sees it", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const store = new Map<string, number>();
+      const destroy = vi.fn(async () => {});
+      const healTarget = {
+        ctx: {
+          storage: {
+            get: async <T,>(key: string) => store.get(key) as T | undefined,
+            put: async (key: string, value: number) => {
+              store.set(key, value);
+            },
+          },
+          container: { running: true },
+        },
+        env: {},
+        destroy,
+      };
+      const dead = async () => {
+        throw SESSION_DEATH();
+      };
+      const restartZombieContainer = vi.fn(async () => ({ restarted: true, reason: "forced" }));
+      const sandbox = {
+        // The real DO override: every exec-class call self-heals immediately.
+        exec: vi.fn(() => withZombieSelfHeal(healTarget, "ProjectBuildSandbox", "exec", dead)),
+        // The real probe entry point: same session layer, no self-heal.
+        probeShell: vi.fn(dead),
+        restartZombieContainer,
+      } as unknown as ProjectBuildSandboxLike;
+
+      await expect(
+        ensureBuildSandboxReady(sandbox, { budgetMs: 40, probeIntervalMs: 1 }),
+      ).rejects.toThrow(PROJECT_BUILD_SERVICE_UNAVAILABLE_MESSAGE);
+
+      expect(sandbox.exec).not.toHaveBeenCalled();
+      expect(destroy).not.toHaveBeenCalled();
+      // The gate, not the DO's exec wrapper, decided — after N consecutive
+      // session-death probes — and it did so under the real trigger value.
+      expect(restartZombieContainer).toHaveBeenCalledTimes(1);
+      expect(restartZombieContainer.mock.calls[0]?.[0]).toMatchObject({
+        operation: "readiness_probe",
+        trigger: "probe_session_death",
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("asks the sandbox DO to restart itself by default, and survives a DO that cannot", async () => {
+    const restartZombieContainer = vi.fn(async () => ({ restarted: true, reason: "forced" }));
+    const sandbox = {
+      // The zombie shape from production: cheap ops fine, exec dead.
+      exists: vi.fn(async () => ({ exists: true })),
+      exec: vi.fn(async () => {
+        throw Object.assign(new Error("Session 'sandbox-org' shell exited (exit code: 128)"), {
+          name: "SessionTerminatedError",
+        });
+      }),
+      restartZombieContainer,
+    } as unknown as ProjectBuildSandboxLike;
+
+    await expect(
+      ensureBuildSandboxReady(sandbox, { budgetMs: 40, probeIntervalMs: 1 }),
+    ).rejects.toThrow(PROJECT_BUILD_SERVICE_UNAVAILABLE_MESSAGE);
+
+    expect(restartZombieContainer).toHaveBeenCalledTimes(1);
+    expect(restartZombieContainer).toHaveBeenCalledWith({
+      operation: "readiness_probe",
+      trigger: "probe_session_death",
+      error: expect.stringContaining("SessionTerminatedError"),
+    });
+
+    // A DO without the method (or one that throws) must not turn the wait into
+    // a different error.
+    const older = {
+      exec: vi.fn(async () => {
+        throw Object.assign(new Error("SessionTerminatedError: shell exited"), {
+          name: "SessionTerminatedError",
+        });
+      }),
+    } as unknown as ProjectBuildSandboxLike;
+    await expect(
+      ensureBuildSandboxReady(older, { budgetMs: 40, probeIntervalMs: 1 }),
+    ).rejects.toThrow(PROJECT_BUILD_SERVICE_UNAVAILABLE_MESSAGE);
+  });
+});
+
+describe("createProjectBuildReadinessGate", () => {
+  it("waits once per tool call and re-arms only when invalidated", async () => {
+    const waits: number[] = [];
+    const gate = createProjectBuildReadinessGate(async (_sandbox, budgetMs) => {
+      waits.push(budgetMs);
+      return { waitedMs: 0, attempts: 1, coldStart: false };
+    });
+    const sandbox = {} as ProjectBuildSandboxLike;
+
+    await gate.ensureReady(sandbox);
+    await gate.ensureReady(sandbox);
+    expect(waits).toHaveLength(1);
+
+    gate.invalidate();
+    await gate.ensureReady(sandbox);
+    expect(waits).toHaveLength(2);
+    // The second wait draws on what the first left of the shared budget.
+    expect(waits[1]).toBeLessThanOrEqual(waits[0]);
+  });
+
+  it("annotates a cold wake onto the result and onto the failure message", async () => {
+    const gate = createProjectBuildReadinessGate(async () => ({
+      waitedMs: 42_000,
+      attempts: 9,
+      coldStart: true,
+    }));
+
+    await gate.ensureReady({} as ProjectBuildSandboxLike);
+
+    expect(gate.annotate({ success: true })).toMatchObject({
+      buildEnvironment: { coldStart: true, startupMs: 42_000, probes: 9 },
+    });
+    expect(gate.unavailableMessage()).toContain("42000ms");
+  });
+});
+
+describe("runWithProjectBuildReadiness (admin verify seam)", () => {
+  it("waits for a stopped container instead of failing the build outright", async () => {
+    let probes = 0;
+    const probe = vi.fn(async () => {
+      probes += 1;
+      if (probes < 4) throw new Error("RPCTransportError: Network connection lost");
+      return { exitCode: 0 };
+    });
+    const build = vi.fn(async () => ({ success: true }));
+
+    const result = await runWithProjectBuildReadiness(
+      {} as ProjectBuildSandboxLike,
+      build,
+      {
+        operation: "project_build_verify",
+        budgetMs: 60_000,
+        readiness: { probe, probeIntervalMs: 1, sleep: async () => {} },
+      },
+    );
+
+    expect(probes).toBe(4);
+    // The build ran exactly once, AFTER the container answered.
+    expect(build).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ success: true, buildEnvironment: { coldStart: true } });
+  });
+
+  it("drives the same ladder: a transient build failure is retried after re-arming the gate", async () => {
+    const probe = vi.fn(async () => ({ exitCode: 0 }));
+    let attempts = 0;
+    const build = vi.fn(async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("Network connection lost");
+      return { success: true };
+    });
+
+    const result = await runWithProjectBuildReadiness(
+      {} as ProjectBuildSandboxLike,
+      build,
+      {
+        operation: "project_build_verify",
+        readiness: { probe, probeIntervalMs: 1, sleep: async () => {} },
+      },
+    );
+
+    expect(build).toHaveBeenCalledTimes(2);
+    // Re-armed: the second attempt re-probed rather than running blind.
+    expect(probe).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({ success: true });
   });
 });
 

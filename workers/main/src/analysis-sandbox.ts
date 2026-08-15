@@ -2,12 +2,25 @@ import {
   InvalidMountConfigError,
   S3FSMountError,
   Sandbox,
+  type ExecOptions,
+  type ExecResult,
   type MountBucketOptions,
 } from "@cloudflare/sandbox";
 
 import { isSelfhostRuntime, type SelfhostRuntimeEnv } from "../../../src/lib/selfhost-runtime.js";
 import { ANALYSIS_SLEEP_AFTER } from "./container-sizing.js";
 import { handleAuthenticatedConnectionsRpc } from "./routes/connections-rpc.js";
+import {
+  createSandboxZombieHealState,
+  createZombieHealTarget,
+  healZombieSandboxContainer,
+  SandboxSessionDeathTracker,
+  SANDBOX_ZOMBIE_EXEC_DEATH_THRESHOLD,
+  withZombieSelfHeal,
+  type SandboxZombieRestartOutcome,
+  type SandboxZombieRestartRequest,
+  type ZombieHealableSandbox,
+} from "./sandbox-zombie-recovery.js";
 import type { Env } from "./types.js";
 
 /**
@@ -350,14 +363,105 @@ export class AnalysisSandbox extends Sandbox<Env> {
   // `/exports` with exit 0 — a silent wrong answer.
   private mountedPaths = new Set<string>();
   private mountGates = new Map<string, (run: () => Promise<void>) => Promise<void>>();
+  // Container generation `mountedPaths` describes. `onStop` is the hook that is
+  // SUPPOSED to clear the bookkeeping, but the SDK only flushes pending stop
+  // events from startAndWaitForPorts/stop()/alarm — a `destroy()` (which is what
+  // the zombie self-heal does) does NOT run it synchronously. Pinning the
+  // generation makes a stale entry unusable even if no hook ever fires.
+  private mountedContainerGeneration: number | undefined;
+
+  /** Consecutive session deaths seen by `exec` on this DO instance. */
+  private sessionDeaths = new SandboxSessionDeathTracker();
+
+  /**
+   * Wedged-teardown bookkeeping, per DO instance (see
+   * SandboxZombieHealState).
+   */
+  private zombieHealState = createSandboxZombieHealState();
+
+  /**
+   * Same zombie self-heal the build container runs (see
+   * sandbox-zombie-recovery.ts), with one deliberate difference: it fires on the
+   * SECOND consecutive session death, not the first.
+   *
+   * The analysis path already has a cheap, correct recovery for a single death —
+   * `AnalysisService.withSessionRecovery` clears the cached session id
+   * (`resetSession`) and retries once against the SAME warm container, which is
+   * sub-second and is exactly what the SDK's self-recovering SessionTerminated
+   * class needs. Destroying on the first death would pre-empt that retry with a
+   * 30-120s cold boot plus a full re-mount. A death that survives the fresh
+   * session handshake is a real zombie, and that is what
+   * SANDBOX_ZOMBIE_EXEC_DEATH_THRESHOLD counts. The error always propagates, so
+   * the service's recovery keeps its semantics either way, and the shared
+   * cooldown still prevents a double restart.
+   */
+  override async exec(command: string, options?: ExecOptions): Promise<ExecResult> {
+    return withZombieSelfHeal(
+      this.zombieHealTarget,
+      "AnalysisSandbox",
+      "exec",
+      () => super.exec(command, options),
+      { threshold: SANDBOX_ZOMBIE_EXEC_DEATH_THRESHOLD, tracker: this.sessionDeaths },
+    );
+  }
+
+  /** Worker-side entry point for the same rate-limited self-heal. */
+  async restartZombieContainer(
+    request: SandboxZombieRestartRequest,
+  ): Promise<SandboxZombieRestartOutcome> {
+    return healZombieSandboxContainer(this.zombieHealTarget, "AnalysisSandbox", request);
+  }
+
+  /** `ctx` is protected, so the shared helper gets an explicit public view. */
+  private get zombieHealTarget(): ZombieHealableSandbox {
+    return createZombieHealTarget({
+      ctx: this.ctx,
+      env: this.env,
+      destroy: () => this.destroy(),
+      healState: this.zombieHealState,
+      onContainerDestroyed: () => this.forgetDestroyedContainerState(),
+    });
+  }
+
+  /**
+   * The container was destroyed under us (zombie self-heal). `onStop` is NOT
+   * guaranteed to run for that path, so everything that only described THAT
+   * container is dropped here: the mount bookkeeping (otherwise the retry that
+   * follows short-circuits `ensureMounted` and runs user code against a
+   * container with nothing mounted — an empty `/exports` read as exit 0), the
+   * cached session id, and the consecutive-death count.
+   */
+  private async forgetDestroyedContainerState(): Promise<void> {
+    this.clearMountBookkeeping();
+    this.sessionDeaths.reset();
+    await this.resetSession();
+  }
+
+  private clearMountBookkeeping(): void {
+    this.mountedPaths = new Set<string>();
+    this.mountGates = new Map<string, (run: () => Promise<void>) => Promise<void>>();
+  }
+
+  /**
+   * Drop mount bookkeeping left over from a previous container life. The SDK
+   * bumps `containerGeneration` on every container stop; anything recorded under
+   * an older generation describes mounts that no longer exist.
+   */
+  private syncMountBookkeepingToContainer(): void {
+    const sdk = this as unknown as { containerGeneration?: number };
+    const generation = typeof sdk.containerGeneration === "number" ? sdk.containerGeneration : 0;
+    if (this.mountedContainerGeneration === generation) return;
+    this.mountedContainerGeneration = generation;
+    this.clearMountBookkeeping();
+  }
 
   /**
    * Container went away: everything mounted into it went with it. Clear the
    * bookkeeping so the next `ensureMounted` really re-mounts.
    */
   override async onStop(): Promise<void> {
-    this.mountedPaths = new Set<string>();
-    this.mountGates = new Map<string, (run: () => Promise<void>) => Promise<void>>();
+    this.clearMountBookkeeping();
+    this.sessionDeaths.reset();
     await super.onStop();
   }
 
@@ -386,6 +490,10 @@ export class AnalysisSandbox extends Sandbox<Env> {
     options: { readOnly?: boolean } = {},
   ): Promise<void> {
     const resolvedMountPath = mountPath ?? `/${prefix}`;
+    // Never trust bookkeeping from a container that has since stopped/been
+    // destroyed: short-circuiting there is what silently runs a query against
+    // missing mounts.
+    this.syncMountBookkeepingToContainer();
     if (this.mountedPaths.has(resolvedMountPath)) return;
     let gate = this.mountGates.get(resolvedMountPath);
     if (!gate) {

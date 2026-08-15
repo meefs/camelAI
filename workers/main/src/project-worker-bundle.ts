@@ -22,11 +22,32 @@ export interface ProjectBuildSandboxLike {
   ): Promise<unknown>;
   exists?(path: string): Promise<{ exists: boolean }>;
   /**
+   * Readiness-probe entry point that runs a command through the session layer
+   * WITHOUT the DO-side zombie self-heal, so the gate's consecutive-probe
+   * threshold — not the DO's destroy-on-first-death exec wrapper — decides when
+   * a zombie is restarted. Optional: shapes without it fall back to `exec`.
+   */
+  probeShell?(command: string, options?: { cwd?: string; timeout?: number }): Promise<{
+    stdout?: string;
+    stderr?: string;
+    exitCode?: number;
+  }>;
+  /**
    * ProjectBuildSandbox-only: defer the idle reaper while the org's build
    * session is active. Optional so plain Sandbox stubs and test fakes still
    * satisfy this interface.
    */
   noteBuildSessionActivity?(windowMs?: number): Promise<void>;
+  /**
+   * Zombie self-heal (sandbox-zombie-recovery.ts): destroy a container whose
+   * shell layer is dead so the next call boots clean. Rate-limited DO-side.
+   * Optional for the same reason as above.
+   */
+  restartZombieContainer?(request: {
+    operation: string;
+    trigger: "exec_session_death" | "probe_session_death";
+    error?: string;
+  }): Promise<{ restarted: boolean; reason: string } | undefined>;
   readFile?(path: string, options?: { encoding?: "base64" | "utf8" }): Promise<{ content: string }>;
   readFileStream?(path: string): Promise<ReadableStream<Uint8Array>>;
   listFiles?(path: string, options?: { recursive?: boolean; includeHidden?: boolean }): Promise<{ files: Array<{

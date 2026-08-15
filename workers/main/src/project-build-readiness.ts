@@ -21,7 +21,10 @@ import {
   createSandboxDeadlineTimer,
   isSandboxDeadlineExceededError,
   type SandboxDeadlineTimer,
+  type SandboxExecDeadline,
 } from "./sandbox-exec-deadline.js";
+import { isSandboxSessionDeathError } from "./sandbox-session-death.js";
+import { SANDBOX_ZOMBIE_PROBE_THRESHOLD } from "./sandbox-zombie-recovery.js";
 import type { ProjectBuildSandboxLike } from "./project-worker-bundle.js";
 
 /**
@@ -84,13 +87,37 @@ export const PROJECT_BUILD_CONTAINER_STARTUP_MESSAGE =
   "Build environment failed to start and will not recover on retry. " +
   "This needs operator attention: check the build container configuration (image, instance limits) and its logs.";
 
-/** Fixed, always-present path — probing it never mutates the workdir. */
+/** Fixed, always-present path — the fallback probe never mutates the workdir. */
 const PROJECT_BUILD_READY_PROBE_PATH = "/workspace";
+
+/**
+ * The probe command. It has to run THROUGH the session/shell layer, because
+ * that is the layer that dies: a zombie container (sandbox server up, shell
+ * dead) answers `exists` happily and fails every `exec` with
+ * `SessionTerminatedError`. Probing the cheap layer is what let a gated deploy
+ * conclude "ready" instantly and then die in ~15s of ladder
+ * (plans/sse-migration/ZOMBIE-CONTAINER-FIX.md).
+ *
+ * `true` is the cheapest possible command: no output, no filesystem effect.
+ */
+const PROJECT_BUILD_READY_PROBE_COMMAND = "true";
+
+/**
+ * Container-side bound on the probe command. The client-side per-probe deadline
+ * (PROJECT_BUILD_PROBE_TIMEOUT_MS) has to stay long enough for a legitimate
+ * cold boot to complete inside one call, so it cannot double as the bound on a
+ * shell that accepted the command and never answered — this does that, and the
+ * container enforces it itself.
+ */
+export const PROJECT_BUILD_PROBE_COMMAND_TIMEOUT_MS = 15_000;
 
 /** Low-cardinality cause for the SDK's permanent-startup class. */
 const PERMANENT_STARTUP_CAUSE = "container_startup_permanent";
 /** Low-cardinality cause for a 500 on the control-plane upgrade (rpc transport). */
 const STARTUP_FAILURE_CAUSE = "container_startup_failed";
+/** Low-cardinality cause for the zombie signature (dead shell, live server). */
+export const PROJECT_BUILD_SESSION_DEATH_CAUSE = "session_death";
+const PROBE_SESSION_DEATH_CAUSE = PROJECT_BUILD_SESSION_DEATH_CAUSE;
 
 /**
  * Markers the sandbox SDK uses for its non-recoverable startup class.
@@ -152,6 +179,16 @@ export function isProjectBuildServiceUnavailableError(error: unknown): boolean {
  */
 export function projectBuildTransientCause(error: unknown): string | null {
   if (error instanceof ProjectBuildProbeTimeoutError) return "probe_timeout";
+  // The probe ran but the shell answered with a non-zero exit for `true`: the
+  // container is up and answering, its executor layer is not healthy. Transient
+  // so the gate keeps probing (and the ladder keeps retrying) rather than
+  // surfacing a raw exit code as a build failure.
+  if (error instanceof ProjectBuildProbeCommandFailedError) return "probe_command_failed";
+  // Zombie container: the sandbox server is up while its shell layer is dead.
+  // Classified transient because the self-heal (destroy → clean boot on the
+  // next call) makes it genuinely recoverable — the gate's budget and the
+  // ladder are exactly the machinery that should absorb the reboot.
+  if (isSandboxSessionDeathError(error)) return PROBE_SESSION_DEATH_CAUSE;
   // A build we abandoned on its client-side deadline: the container is wedged
   // (its own timeout should have fired and did not). Named here so retry logs
   // and telemetry carry the real cause instead of a raw message.
@@ -194,6 +231,23 @@ function budgetForCause(cause: string | null, budgetMs: number): number {
   return budgetMs;
 }
 
+/**
+ * The probe command came back non-zero. Distinct from a thrown SDK error: the
+ * container answered, so this is "not healthy yet", not "unreachable".
+ */
+export class ProjectBuildProbeCommandFailedError extends Error {
+  readonly exitCode: number | undefined;
+
+  constructor(exitCode: number | undefined, stderr?: string) {
+    super(
+      `Project build sandbox probe command exited ${exitCode ?? "unknown"}` +
+      (stderr ? `: ${stderr.slice(0, 200)}` : ""),
+    );
+    this.name = "ProjectBuildProbeCommandFailedError";
+    this.exitCode = exitCode;
+  }
+}
+
 /** A probe that blew its own deadline; treated as a transient boot signal. */
 export class ProjectBuildProbeTimeoutError extends Error {
   readonly timeoutMs: number;
@@ -233,6 +287,14 @@ export class ProjectBuildSandboxNotReadyError extends Error {
 }
 
 export type ProjectBuildReadinessEvent =
+  | {
+    type: "zombie_detected";
+    waitedMs: number;
+    attempts: number;
+    cause: string;
+    /** Whether the DO actually destroyed the container (false = rate-limited). */
+    restarted: boolean;
+  }
   | {
     type: "cold_start";
     waitedMs: number;
@@ -282,6 +344,20 @@ export interface EnsureBuildSandboxReadyOptions {
   /** Called once, when the wait crosses progressAfterMs. */
   onProgress?: (message: string) => void;
   onEvent?: (event: ProjectBuildReadinessEvent) => void;
+  /**
+   * Consecutive session-death probes that mean "zombie". Never reachable from
+   * a slow boot: transport/timeout/503 failures reset the counter.
+   */
+  zombieProbeThreshold?: number;
+  /**
+   * Self-heal hook, fired at most ONCE per wait. Defaults to the sandbox DO's
+   * own rate-limited `restartZombieContainer`.
+   */
+  onZombieDetected?: (input: {
+    sandbox: ProjectBuildSandboxLike;
+    consecutive: number;
+    error: unknown;
+  }) => Promise<{ restarted?: boolean } | void> | { restarted?: boolean } | void;
   /** Test seams. */
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -310,6 +386,8 @@ export async function ensureBuildSandboxReady(
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const timer = options.timer ?? createSandboxDeadlineTimer;
   const probe = options.probe ?? probeBuildSandbox;
+  const zombieProbeThreshold = options.zombieProbeThreshold ?? SANDBOX_ZOMBIE_PROBE_THRESHOLD;
+  const onZombieDetected = options.onZombieDetected ?? requestSandboxZombieRestart;
 
   const startedAtMs = now();
   const elapsed = () => Math.max(0, now() - startedAtMs);
@@ -318,6 +396,11 @@ export async function ensureBuildSandboxReady(
   let announcedProgress = false;
   let lastCause: string | null = null;
   let lastError: unknown = null;
+  // Zombie bookkeeping: consecutive session-death probes only. ANY other
+  // failure (transport, 503, timeout) resets it, which is what makes a healthy
+  // slow boot structurally incapable of triggering the self-heal.
+  let consecutiveSessionDeaths = 0;
+  let requestedZombieRestart = false;
 
   for (;;) {
     // Budget is checked at the top, not only after a probe settles, so a probe
@@ -364,6 +447,28 @@ export async function ensureBuildSandboxReady(
       lastCause = cause;
       lastError = error;
       const waitedMs = elapsed();
+      if (cause === PROBE_SESSION_DEATH_CAUSE) {
+        consecutiveSessionDeaths += 1;
+        if (consecutiveSessionDeaths >= zombieProbeThreshold && !requestedZombieRestart) {
+          // Once per wait: the DO rate-limits it too, but re-asking every
+          // cadence tick would add a DO round trip to each probe for nothing.
+          requestedZombieRestart = true;
+          const outcome = await onZombieDetected({
+            sandbox,
+            consecutive: consecutiveSessionDeaths,
+            error,
+          });
+          options.onEvent?.({
+            type: "zombie_detected",
+            waitedMs,
+            attempts,
+            cause,
+            restarted: outcome?.restarted === true,
+          });
+        }
+      } else {
+        consecutiveSessionDeaths = 0;
+      }
       const causeBudgetMs = budgetForCause(cause, budgetMs);
       if (waitedMs + probeIntervalMs >= causeBudgetMs) {
         throw readinessTimeout({
@@ -450,11 +555,284 @@ async function runProbeWithDeadline(
 }
 
 /**
- * Cheapest operation that proves the container is up: the same `exists` call the
- * source-manifest read already makes as its first sandbox touch. `exec` is the
- * fallback for sandbox shapes without `exists`.
+ * Ask the sandbox DO to destroy a zombie container so the next call boots
+ * clean. Best-effort in every direction: the DO applies its own cooldown, an
+ * older/foreign sandbox shape simply has no such method, and a failure here
+ * must never turn a readiness wait into a hard error.
+ */
+async function requestSandboxZombieRestart(input: {
+  sandbox: ProjectBuildSandboxLike;
+  consecutive: number;
+  error: unknown;
+}): Promise<{ restarted?: boolean } | void> {
+  const restart = input.sandbox.restartZombieContainer;
+  if (typeof restart !== "function") return;
+  try {
+    const outcome = await input.sandbox.restartZombieContainer?.({
+      operation: "readiness_probe",
+      trigger: "probe_session_death",
+      // Only the text crosses the RPC hop; the Error instance would not.
+      error: input.error instanceof Error
+        ? `${input.error.name}: ${input.error.message}`
+        : String(input.error),
+    });
+    return { restarted: outcome?.restarted === true };
+  } catch (error) {
+    console.warn("[project-build] zombie container restart request failed", {
+      consecutive: input.consecutive,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return { restarted: false };
+  }
+}
+
+/**
+ * Prove the container can RUN something, not merely that it answers.
+ *
+ * Probe order: `probeShell` (a DO entry point that runs the command through the
+ * session layer WITHOUT the DO-side zombie self-heal), then `exec`, then
+ * `exists`. `exists` used to be first, which is exactly how a zombie passed the
+ * gate.
+ *
+ * Preferring `probeShell` is what keeps `SANDBOX_ZOMBIE_PROBE_THRESHOLD`
+ * meaningful: `ProjectBuildSandbox.exec` heals on the FIRST session death,
+ * inside the DO, before the rejection crosses back to this worker — so a probe
+ * routed through `exec` destroys the container before this loop can count a
+ * second consecutive death, and the gate's own escalation would only ever run
+ * after the DO's cooldown had already suppressed it. `exec` stays as the
+ * fallback for sandbox shapes (older bindings, test fakes) without `probeShell`.
  */
 async function probeBuildSandbox(sandbox: ProjectBuildSandboxLike): Promise<unknown> {
-  if (sandbox.exists) return sandbox.exists(PROJECT_BUILD_READY_PROBE_PATH);
-  return sandbox.exec("true", { cwd: "/" });
+  const hasShellProbe = typeof sandbox.probeShell === "function" || typeof sandbox.exec === "function";
+  if (!hasShellProbe) {
+    if (typeof sandbox.exists !== "function") {
+      throw new Error("Project build sandbox exposes no probe surface");
+    }
+    return sandbox.exists(PROJECT_BUILD_READY_PROBE_PATH);
+  }
+  // Called THROUGH the sandbox (never a detached/bound reference): these are RPC
+  // stub properties, and `this` is what carries the DO call.
+  const probeOptions = { cwd: "/", timeout: PROJECT_BUILD_PROBE_COMMAND_TIMEOUT_MS };
+  const result = typeof sandbox.probeShell === "function"
+    ? await sandbox.probeShell(PROJECT_BUILD_READY_PROBE_COMMAND, probeOptions)
+    : await sandbox.exec(PROJECT_BUILD_READY_PROBE_COMMAND, probeOptions);
+  const exitCode = result?.exitCode;
+  // A missing exitCode is the shape older/mocked sandboxes return on success;
+  // only an explicit non-zero is a failed probe.
+  if (typeof exitCode === "number" && exitCode !== 0) {
+    throw new ProjectBuildProbeCommandFailedError(exitCode, result?.stderr);
+  }
+  return result;
+}
+
+/**
+ * Backoff for the ladder. Four retries after the first attempt — long enough to
+ * ride out a blip on a warm container, short enough that a genuinely broken one
+ * surfaces quickly (readiness, not this ladder, is what absorbs a cold boot).
+ */
+export const PROJECT_BUILD_SERVICE_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000] as const;
+
+// ---------------------------------------------------------------------------
+// Retry ladder for a build-tool call
+// ---------------------------------------------------------------------------
+
+/**
+ * Retry the operation past transient container failures, mapping the terminal
+ * ones onto their user-facing messages.
+ *
+ * Lives beside the gate (rather than in the tool binding it grew up in) so the
+ * admin verify route drives the SAME ladder — a second, subtly different
+ * ladder is how the two paths diverged in the first place.
+ */
+export async function withProjectBuildServiceErrorMapping<T>(
+  operationName: string,
+  operation: () => Promise<T>,
+  hooks: {
+    /**
+     * Invoked before each retry sleep. The readiness gate re-arms here so
+     * attempt 2+ waits for a container that died mid-build instead of running
+     * blind against it (the wait stays bounded by one shared cold-boot budget).
+     */
+    onTransient?: (error: unknown) => void;
+    /** Final user-facing message; carries cold-start context when we have it. */
+    unavailableMessage?: () => string;
+    /**
+     * The tool call's shared exec budget. Two jobs here: the backoff sleep is
+     * charged OUTSIDE it (waiting is not building), and an exhausted budget
+     * ends the ladder — retrying into a spent budget could only start builds we
+     * would abandon immediately, and the SDK gives us no way to cancel them.
+     */
+    deadline?: SandboxExecDeadline;
+  } = {},
+): Promise<T> {
+  const unavailableMessage = () =>
+    hooks.unavailableMessage?.() ?? PROJECT_BUILD_SERVICE_UNAVAILABLE_MESSAGE;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (isProjectBuildStorageMountError(error)) {
+        throw new Error(PROJECT_BUILD_STORAGE_MOUNT_MESSAGE, { cause: error });
+      }
+      if (!isProjectBuildServiceUnavailableError(error)) throw error;
+      // A spent budget is terminal, whatever rung we are on: another attempt
+      // could only be dispatched into a sub-slice (or refused outright), and an
+      // abandoned build cannot be cancelled — it would overlap the previous one
+      // in the SAME per-project workdir. Keep the deadline's own message so the
+      // agent shrinks the build instead of being told to try again in a moment.
+      if (isSandboxDeadlineExceededError(error) && hooks.deadline?.exhausted !== false) {
+        throw error;
+      }
+      const retryDelayMs = PROJECT_BUILD_SERVICE_RETRY_DELAYS_MS[attempt];
+      if (retryDelayMs == null) {
+        if (isSandboxDeadlineExceededError(error)) throw error;
+        throw new Error(unavailableMessage(), { cause: error });
+      }
+      hooks.onTransient?.(error);
+      console.warn("[project-build] transient service failure; retrying", {
+        operation: operationName,
+        attempt: attempt + 1,
+        maxAttempts: PROJECT_BUILD_SERVICE_RETRY_DELAYS_MS.length + 1,
+        retryDelayMs,
+        cause: projectBuildTransientCause(error),
+        error: error instanceof Error ? error.message : String(error),
+      });
+      const sleep = () => new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+      // Backoff is not build time: charging it to the exec budget would leave
+      // the next attempt a slice too small to build in.
+      await (hooks.deadline ? hooks.deadline.excluding(sleep) : sleep());
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Readiness gate for one build-tool call
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-call gate around `ensureBuildSandboxReady`.
+ *
+ * `ensureReady` is invoked immediately before the first sandbox operation and
+ * is memoized so the surrounding retry ladder does not re-wait a full cold-boot
+ * budget per attempt. `invalidate` re-arms it after a transient failure, so an
+ * attempt that runs against a container which died mid-build waits for the
+ * reboot instead of running blind — the cumulative readiness wait across all
+ * attempts stays bounded by ONE cold-boot budget.
+ *
+ * That bound counts WAITING only, not the build in between: an absolute
+ * deadline latched on the first call meant a 200s build left attempt 2 a 1ms
+ * probe window, which failed instantly as "temporarily unavailable" instead of
+ * waiting out the reboot the invalidate was asking for.
+ *
+ * `annotate` stamps a cold wake onto the tool result so the agent — and through
+ * it the user — reads the extra minute as "the environment was starting"
+ * instead of retrying into the same boot window; `unavailableMessage` carries
+ * the same context onto the failure path.
+ *
+ * Lives here (not in the tool binding) because the admin verify route runs the
+ * same build against the same container and needs the same gate.
+ */
+export interface ProjectBuildReadinessGate {
+  ensureReady: (sandbox: ProjectBuildSandboxLike) => Promise<void>;
+  invalidate: () => void;
+  annotate: <T>(result: T) => T;
+  unavailableMessage: () => string;
+}
+
+export function createProjectBuildReadinessGate(
+  waitForReady: (
+    sandbox: ProjectBuildSandboxLike,
+    budgetMs: number,
+  ) => Promise<ProjectBuildReadinessResult>,
+  options: { budgetMs?: number; now?: () => number } = {},
+): ProjectBuildReadinessGate {
+  const totalBudgetMs = options.budgetMs ?? PROJECT_BUILD_COLD_START_BUDGET_MS;
+  const now = options.now ?? (() => Date.now());
+  let pending: Promise<void> | null = null;
+  // Sticky across re-arms: a later warm probe must not erase the fact that this
+  // tool call already paid for a wake.
+  let coldStart: ProjectBuildReadinessResult | null = null;
+  // Readiness wall-clock already spent by earlier attempts of THIS call.
+  let waitedMs = 0;
+  return {
+    ensureReady: (sandbox) => (pending ??= (() => {
+      const startedAtMs = now();
+      const budgetMs = Math.max(0, totalBudgetMs - waitedMs);
+      return waitForReady(sandbox, budgetMs)
+        .then((result) => {
+          if (result.coldStart) coldStart ??= result;
+        })
+        .finally(() => {
+          waitedMs += Math.max(0, now() - startedAtMs);
+        });
+    })()),
+    invalidate: () => {
+      pending = null;
+    },
+    unavailableMessage: () => {
+      if (!coldStart) return PROJECT_BUILD_SERVICE_UNAVAILABLE_MESSAGE;
+      return `${PROJECT_BUILD_SERVICE_UNAVAILABLE_MESSAGE} ` +
+        `The build environment was still starting (waited ${coldStart.waitedMs}ms for it to wake).`;
+    },
+    annotate: <T,>(result: T): T => {
+      if (!coldStart) return result;
+      if (!result || typeof result !== "object" || Array.isArray(result)) return result;
+      return {
+        ...result,
+        buildEnvironment: {
+          coldStart: true,
+          startupMs: coldStart.waitedMs,
+          probes: coldStart.attempts,
+          message:
+            "The build container was asleep and had to start; the extra wait was startup, not the build.",
+        },
+      };
+    },
+  };
+}
+
+/**
+ * Run one build-container operation behind the gate AND the ladder.
+ *
+ * This is the whole "wait for the container, then retry blips" contract in one
+ * call, for callers that do not need the tool binding's streaming/annotation
+ * (the admin verify route). deploy_project keeps driving the two pieces
+ * directly because it interleaves other work — a notebook branch, a snapshot, a
+ * dispatch upload — between them.
+ */
+export async function runWithProjectBuildReadiness<T>(
+  sandbox: ProjectBuildSandboxLike,
+  run: () => Promise<T>,
+  options: {
+    /** Low-cardinality name for logs. */
+    operation: string;
+    budgetMs?: number;
+    onProgress?: (message: string) => void;
+    onEvent?: (event: ProjectBuildReadinessEvent) => void;
+    deadline?: SandboxExecDeadline;
+    /** Test seam, forwarded to ensureBuildSandboxReady. */
+    readiness?: Omit<EnsureBuildSandboxReadyOptions, "budgetMs" | "onProgress" | "onEvent">;
+  },
+): Promise<T> {
+  const gate = createProjectBuildReadinessGate(
+    (target, budgetMs) => ensureBuildSandboxReady(target, {
+      ...options.readiness,
+      budgetMs,
+      ...(options.onProgress ? { onProgress: options.onProgress } : {}),
+      ...(options.onEvent ? { onEvent: options.onEvent } : {}),
+    }),
+    options.budgetMs === undefined ? {} : { budgetMs: options.budgetMs },
+  );
+  return gate.annotate(await withProjectBuildServiceErrorMapping(options.operation, async () => {
+    // Cold-boot waiting is charged to the gate's own budget, never to the
+    // caller's exec deadline: a container that has to wake first must not hand
+    // the operation a truncated slice.
+    if (options.deadline) await options.deadline.excluding(() => gate.ensureReady(sandbox));
+    else await gate.ensureReady(sandbox);
+    return run();
+  }, {
+    onTransient: () => gate.invalidate(),
+    unavailableMessage: () => gate.unavailableMessage(),
+    ...(options.deadline ? { deadline: options.deadline } : {}),
+  }));
 }

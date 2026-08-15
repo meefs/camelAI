@@ -1,4 +1,4 @@
-import { Sandbox } from "@cloudflare/sandbox";
+import { Sandbox, type ExecOptions, type ExecResult } from "@cloudflare/sandbox";
 
 import {
   PROJECT_BUILD_ACTIVE_SESSION_WINDOW_MS,
@@ -10,6 +10,15 @@ import {
   PROJECT_BUILD_SESSION_ACTIVITY_KEY,
   shouldKeepBuildSandboxAwake,
 } from "./project-build-sandbox-lifecycle.js";
+import {
+  createSandboxZombieHealState,
+  createZombieHealTarget,
+  healZombieSandboxContainer,
+  withZombieSelfHeal,
+  type SandboxZombieRestartOutcome,
+  type SandboxZombieRestartRequest,
+  type ZombieHealableSandbox,
+} from "./sandbox-zombie-recovery.js";
 import type { Env } from "./types.js";
 
 /**
@@ -23,6 +32,67 @@ import type { Env } from "./types.js";
  */
 export class ProjectBuildSandbox extends Sandbox<Env> {
   sleepAfter = PROJECT_BUILD_SLEEP_AFTER;
+
+  /**
+   * Every exec-class call goes through the zombie self-heal: a container whose
+   * sandbox server still answers file/HTTP operations while its shell layer is
+   * dead (`SessionTerminatedError: … shell exited`) is destroyed so the NEXT
+   * call boots clean. The original error is always re-thrown — the readiness
+   * gate and the build ladder keep deciding what to do about this call.
+   */
+  override async exec(command: string, options?: ExecOptions): Promise<ExecResult> {
+    return withZombieSelfHeal(
+      this.zombieHealTarget,
+      "ProjectBuildSandbox",
+      "exec",
+      () => super.exec(command, options),
+    );
+  }
+
+  /**
+   * Heal-EXEMPT shell probe for the readiness gate.
+   *
+   * The gate's probe has to run through the session layer (that is the layer a
+   * zombie kills), but it must NOT be an `exec`: `exec` above heals on the first
+   * session death, INSIDE the DO, before the error even crosses the RPC hop back
+   * to the worker — so the gate's `SANDBOX_ZOMBIE_PROBE_THRESHOLD` counter would
+   * never see a second death, and its own `restartZombieContainer` escalation
+   * would only ever be reached once the cooldown had already suppressed it.
+   * Routing the probe here keeps the "N CONSECUTIVE session-death probes" rule
+   * the gate implements, and keeps `probe_session_death` a real telemetry
+   * trigger. Real build commands still heal on their first death.
+   */
+  async probeShell(command: string, options?: ExecOptions): Promise<ExecResult> {
+    return super.exec(command, options);
+  }
+
+  /**
+   * Worker-side entry point for the same self-heal, used by the readiness gate
+   * when N consecutive probes come back session-dead. Rate-limited by the same
+   * cooldown, so a probe-driven restart and an exec-driven one cannot
+   * double-restart the container.
+   */
+  async restartZombieContainer(
+    request: SandboxZombieRestartRequest,
+  ): Promise<SandboxZombieRestartOutcome> {
+    return healZombieSandboxContainer(this.zombieHealTarget, "ProjectBuildSandbox", request);
+  }
+
+  /**
+   * Wedged-teardown bookkeeping, per DO instance. Not persisted: it describes
+   * the SDK's in-memory `inflightDestroy`, which dies with the instance.
+   */
+  private zombieHealState = createSandboxZombieHealState();
+
+  /** `ctx` is protected, so the shared helper gets an explicit public view. */
+  private get zombieHealTarget(): ZombieHealableSandbox {
+    return createZombieHealTarget({
+      ctx: this.ctx,
+      env: this.env,
+      destroy: () => this.destroy(),
+      healState: this.zombieHealState,
+    });
+  }
 
   /**
    * Mark the org's build session active, deferring the idle reaper until the

@@ -543,6 +543,92 @@ describe("runAnalysisCode env scoping", () => {
   });
 });
 
+describe("run cleanup after a session death", () => {
+  /**
+   * The workdir/scratch tree is per-run and lives IN the container, so once the
+   * shell is dead the `rm -rf` cleans nothing — and once the zombie self-heal
+   * has destroyed the container it is an unconditional 30-120s cold boot,
+   * charged to the caller's exec budget, ahead of the session recovery that
+   * actually needs that time.
+   */
+  function deadShellSandbox() {
+    const commands: string[] = [];
+    const sandbox: AnalysisSandboxLike & { commands: string[] } = {
+      commands,
+      async mkdir() {
+        return {};
+      },
+      async writeFile() {
+        return {};
+      },
+      async readFile() {
+        return { content: "" };
+      },
+      async exec(command: string) {
+        commands.push(command);
+        throw Object.assign(
+          new Error("Session 'sandbox-ws-1' ended because its shell exited (exit code: 128)"),
+          { name: "SessionTerminatedError" },
+        );
+      },
+    };
+    return sandbox;
+  }
+
+  it("skips the workdir rm -rf when runAnalysisExec dies with the shell", async () => {
+    const sandbox = deadShellSandbox();
+
+    await expect(
+      runAnalysisExec(
+        { command: "python main.py" },
+        {
+          sandbox,
+          files: fakeFiles({ "main.py": "print(1)" }),
+          projectId: "ca-test-proj",
+          newRunId: () => "run1",
+          hasProject: true,
+          scratchId: "scratch1",
+        },
+      ),
+    ).rejects.toThrow(/SessionTerminated|shell exited/);
+
+    expect(sandbox.commands.some((command) => command.startsWith("rm -rf"))).toBe(false);
+  });
+
+  it("skips it for runAnalysisCode, whose death is reported as a value", async () => {
+    const sandbox = deadShellSandbox();
+
+    const result = await runAnalysisCode({ code: "print(1)" }, { sandbox, scratchId: "s1" });
+
+    expect(result).toMatchObject({ ok: false, sessionDeath: true });
+    expect(sandbox.commands.some((command) => command.startsWith("rm -rf"))).toBe(false);
+  });
+
+  it("still cleans up after an ordinary non-zero exit", async () => {
+    const commands: string[] = [];
+    const sandbox: AnalysisSandboxLike = {
+      async mkdir() {
+        return {};
+      },
+      async writeFile() {
+        return {};
+      },
+      async readFile() {
+        return { content: "" };
+      },
+      async exec(command: string) {
+        commands.push(command);
+        return { exitCode: 1, stdout: "", stderr: "boom" };
+      },
+    };
+
+    const result = await runAnalysisCode({ code: "print(1)" }, { sandbox, scratchId: "s1" });
+
+    expect(result.ok).toBe(false);
+    expect(commands.some((command) => command.startsWith("rm -rf"))).toBe(true);
+  });
+});
+
 describe("AnalysisService workspace uploads mount", () => {
   function analysisServiceSandbox() {
     const mounts: Array<{

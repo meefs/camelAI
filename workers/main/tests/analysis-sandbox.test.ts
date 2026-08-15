@@ -12,6 +12,10 @@ import {
   type MountRecoverTarget,
 } from '../src/analysis-sandbox.js';
 import { DbQuerySandbox } from '../src/db-query-sandbox.js';
+import {
+  createSandboxZombieHealState,
+  SandboxSessionDeathTracker,
+} from '../src/sandbox-zombie-recovery.js';
 
 describe('sandboxR2MountOptions', () => {
   const options = {
@@ -122,6 +126,7 @@ describe('mount bookkeeping across a container stop', () => {
     const sandbox = Object.create(AnalysisSandbox.prototype) as any;
     sandbox.mountedPaths = new Set(['/exports', '/uploads']);
     sandbox.mountGates = new Map([['/exports', createSingleFlight()]]);
+    sandbox.sessionDeaths = new SandboxSessionDeathTracker();
     const superOnStop = vi.fn(async () => {});
     await withStubbedSuperOnStop(AnalysisSandbox, superOnStop, () =>
       AnalysisSandbox.prototype.onStop.call(sandbox));
@@ -143,6 +148,149 @@ describe('mount bookkeeping across a container stop', () => {
     expect(sandbox.mountedPaths.size).toBe(0);
     expect(sandbox.mountGates.size).toBe(0);
     expect(superOnStop).toHaveBeenCalledTimes(1);
+  });
+});
+
+/** Swap ONE inherited SDK method for a spy while `run` executes. */
+async function withStubbedSuperMethod(
+  cls: { prototype: object },
+  name: string,
+  stub: (...args: any[]) => unknown,
+  run: () => Promise<void>,
+): Promise<void> {
+  const base = Object.getPrototypeOf(cls.prototype) as Record<string, unknown>;
+  const original = Object.getOwnPropertyDescriptor(base, name);
+  Object.defineProperty(base, name, { value: stub, configurable: true, writable: true });
+  try {
+    await run();
+  } finally {
+    if (original) Object.defineProperty(base, name, original);
+    else delete base[name];
+  }
+}
+
+const SESSION_DEATH = () =>
+  Object.assign(
+    new Error("Session 'sandbox-ws-1' ended because its shell exited (exit code: 128)"),
+    { name: 'SessionTerminatedError' },
+  );
+
+/** Bare AnalysisSandbox instance with just the DO surface the heal touches. */
+function healableSandbox() {
+  const store = new Map<string, number>();
+  const deleted: string[] = [];
+  const destroy = vi.fn(async () => {});
+  const sandbox = Object.create(AnalysisSandbox.prototype) as any;
+  sandbox.ctx = {
+    container: { running: true },
+    storage: {
+      get: async (key: string) => store.get(key),
+      put: async (key: string, value: number) => { store.set(key, value); },
+      delete: async (key: string) => { deleted.push(key); },
+    },
+  };
+  sandbox.env = {
+    CF_ACCOUNT_ID: 'cloudflare-account',
+    OBSERVABILITY_EVENTS: { writeDataPoint: vi.fn() },
+    ERROR_ANALYTICS: { writeDataPoint: vi.fn() },
+  };
+  sandbox.destroy = destroy;
+  sandbox.sessionDeaths = new SandboxSessionDeathTracker();
+  sandbox.zombieHealState = createSandboxZombieHealState();
+  sandbox.mountedPaths = new Set<string>();
+  sandbox.mountGates = new Map();
+  return { sandbox, destroy, deleted };
+}
+
+describe('AnalysisSandbox zombie self-heal', () => {
+  /**
+   * A single session death is the SDK's self-recovering class, and
+   * `AnalysisService.withSessionRecovery` already handles it by re-handshaking a
+   * session against the SAME warm container (~1s). Destroying on the first death
+   * pre-empts that with a 30-120s cold boot.
+   */
+  it('lets the first session death through and destroys only on the second', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { sandbox, destroy } = healableSandbox();
+      sandbox.mountedPaths = new Set(['/uploads']);
+
+      await withStubbedSuperMethod(AnalysisSandbox, 'exec', async () => { throw SESSION_DEATH(); }, async () => {
+        await expect(AnalysisSandbox.prototype.exec.call(sandbox, 'python main.py')).rejects.toThrow();
+        expect(destroy).not.toHaveBeenCalled();
+        // The service's retry still has a warm container (and its mounts).
+        expect(sandbox.mountedPaths.has('/uploads')).toBe(true);
+
+        await expect(AnalysisSandbox.prototype.exec.call(sandbox, 'python main.py')).rejects.toThrow();
+        expect(destroy).toHaveBeenCalledTimes(1);
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  /**
+   * `destroy()` does not synchronously run `onStop`, so without the
+   * post-destroy hook `mountedPaths` keeps claiming mounts that died with the
+   * container and the very next `ensureMounted` short-circuits — the run then
+   * reads an empty `/exports` and exits 0.
+   */
+  it('drops mount bookkeeping and the cached session when the heal destroys the container', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { sandbox, destroy, deleted } = healableSandbox();
+      sandbox.mountedPaths = new Set(['/warehouse/ws-1', '/uploads', '/outputs']);
+      sandbox.mountGates = new Map([['/uploads', createSingleFlight()]]);
+      sandbox.defaultSession = 'sandbox-ws-1';
+      sandbox.defaultSessionInit = { sessionId: 'sandbox-ws-1' };
+
+      await AnalysisSandbox.prototype.restartZombieContainer.call(sandbox, {
+        operation: 'exec',
+        trigger: 'exec_session_death',
+      });
+
+      expect(destroy).toHaveBeenCalledTimes(1);
+      expect(sandbox.mountedPaths.size).toBe(0);
+      expect(sandbox.mountGates.size).toBe(0);
+      expect(sandbox.defaultSession).toBeNull();
+      expect(deleted).toEqual(['defaultSession']);
+
+      // Proof of the consequence: the next ensureMounted really mounts again.
+      sandbox.mountBucket = vi.fn(async () => undefined);
+      sandbox.unmountBucket = vi.fn(async () => undefined);
+      sandbox.exec = vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' }));
+      await AnalysisSandbox.prototype.ensureMounted.call(
+        sandbox,
+        'R2_BUCKET',
+        'org1/workspace1/uploads',
+        '/uploads',
+        { readOnly: true },
+      );
+      expect(sandbox.mountBucket).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('ignores mount bookkeeping recorded under an older container generation', async () => {
+    const { sandbox } = healableSandbox();
+    sandbox.mountedPaths = new Set(['/uploads']);
+    sandbox.mountedContainerGeneration = 0;
+    // The SDK bumps this on every container stop.
+    sandbox.containerGeneration = 1;
+    sandbox.mountBucket = vi.fn(async () => undefined);
+    sandbox.unmountBucket = vi.fn(async () => undefined);
+    sandbox.exec = vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' }));
+
+    await AnalysisSandbox.prototype.ensureMounted.call(
+      sandbox,
+      'R2_BUCKET',
+      'org1/workspace1/uploads',
+      '/uploads',
+      { readOnly: true },
+    );
+
+    expect(sandbox.mountBucket).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -7759,16 +7759,18 @@ describe('ChatThreadDO Pi turn handling', () => {
   it('re-probes readiness when the container dies mid-build instead of retrying blind', async () => {
     vi.useFakeTimers();
     const { fake, sandbox } = createProjectToolFake({ deploy: true });
-    const files = sandbox.exists.getMockImplementation()!;
+    // The probe runs THROUGH the session layer (`exec("true")`), so a boot is
+    // simulated on exec — `exists` answers even on a zombie.
+    const build = sandbox.exec.getMockImplementation()!;
     let rebootProbes = 0;
     sandbox.mkdir.mockRejectedValueOnce(new Error('RPCTransportError: Network connection lost'));
-    sandbox.exists.mockImplementation(async (path: string) => {
+    sandbox.exec.mockImplementation(async (command: string, options?: { cwd?: string }) => {
       // The container is rebooting when the ladder's second attempt starts.
-      if (path === '/workspace' && sandbox.mkdir.mock.calls.length > 0 && rebootProbes < 2) {
+      if (command === 'true' && sandbox.mkdir.mock.calls.length > 0 && rebootProbes < 2) {
         rebootProbes += 1;
         throw new Error('RPCTransportError: WebSocket upgrade failed: 503 Service Unavailable');
       }
-      return files(path);
+      return build(command, options);
     });
     vi.stubGlobal('fetch', vi.fn(async () =>
       Response.json({ success: true, result: { id: 'version-1' } }, { status: 200 })));
@@ -7790,14 +7792,14 @@ describe('ChatThreadDO Pi turn handling', () => {
   it('says the environment was still starting when a cold-start deploy exhausts the ladder', async () => {
     vi.useFakeTimers();
     const { fake, sandbox } = createProjectToolFake({ deploy: true });
-    const files = sandbox.exists.getMockImplementation()!;
+    const build = sandbox.exec.getMockImplementation()!;
     let coldProbes = 0;
-    sandbox.exists.mockImplementation(async (path: string) => {
-      if (path === '/workspace' && coldProbes < 3) {
+    sandbox.exec.mockImplementation(async (command: string, options?: { cwd?: string }) => {
+      if (command === 'true' && coldProbes < 3) {
         coldProbes += 1;
         throw new Error('RPCTransportError: Network connection lost');
       }
-      return files(path);
+      return build(command, options);
     });
     sandbox.mkdir.mockRejectedValue(new Error('RPCTransportError: Network connection lost'));
 
@@ -7893,10 +7895,12 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(result).toMatchObject({ success: true });
     // Warm deploys carry no cold-start annotation and pay no extra wait.
     expect(result.buildEnvironment).toBeUndefined();
-    const probes = sandbox.exists.mock.calls.filter(([path]: [string]) => path === '/workspace');
+    const probes = sandbox.exec.mock.calls.filter(([command]: [string]) => command === 'true');
     expect(probes).toHaveLength(1);
+    // The probe is bounded container-side too, so a hung shell cannot sit on it.
+    expect(probes[0][1]).toMatchObject({ cwd: '/', timeout: expect.any(Number) });
     // Readiness runs before anything touches the workdir.
-    expect(sandbox.exists.mock.invocationCallOrder[0])
+    expect(sandbox.exec.mock.invocationCallOrder[0])
       .toBeLessThan(sandbox.mkdir.mock.invocationCallOrder[0]);
     expect(sandbox.noteBuildSessionActivity).toHaveBeenCalledTimes(1);
   });
@@ -7904,14 +7908,14 @@ describe('ChatThreadDO Pi turn handling', () => {
   it('waits out a cold build container instead of burning the retry ladder', async () => {
     vi.useFakeTimers();
     const { fake, sandbox } = createProjectToolFake({ deploy: true });
-    const files = sandbox.exists.getMockImplementation()!;
+    const build = sandbox.exec.getMockImplementation()!;
     let coldProbes = 0;
-    sandbox.exists.mockImplementation(async (path: string) => {
-      if (path === '/workspace' && coldProbes < 3) {
+    sandbox.exec.mockImplementation(async (command: string, options?: { cwd?: string }) => {
+      if (command === 'true' && coldProbes < 3) {
         coldProbes += 1;
         throw new Error('RPCTransportError: Network connection lost');
       }
-      return files(path);
+      return build(command, options);
     });
     vi.stubGlobal('fetch', vi.fn(async () =>
       Response.json({ success: true, result: { id: 'version-1' } }, { status: 200 })));
@@ -7935,14 +7939,14 @@ describe('ChatThreadDO Pi turn handling', () => {
   it('streams the cold-start progress text to the client instead of waiting silently', async () => {
     vi.useFakeTimers();
     const { fake, sandbox, chatThreadStub } = createProjectToolFake({ deploy: true });
-    const files = sandbox.exists.getMockImplementation()!;
+    const build = sandbox.exec.getMockImplementation()!;
     let coldProbes = 0;
-    sandbox.exists.mockImplementation(async (path: string) => {
-      if (path === '/workspace' && coldProbes < 8) {
+    sandbox.exec.mockImplementation(async (command: string, options?: { cwd?: string }) => {
+      if (command === 'true' && coldProbes < 8) {
         coldProbes += 1;
         throw new Error('RPCTransportError: Network connection lost');
       }
-      return files(path);
+      return build(command, options);
     });
     vi.stubGlobal('fetch', vi.fn(async () =>
       Response.json({ success: true, result: { id: 'version-1' } }, { status: 200 })));
@@ -7997,13 +8001,10 @@ describe('ChatThreadDO Pi turn handling', () => {
   it('returns the unavailable message without building when the container never boots', async () => {
     vi.useFakeTimers();
     const { fake, sandbox } = createProjectToolFake({ deploy: true });
-    sandbox.exists.mockImplementation(async (path: string) => {
+    sandbox.exec.mockImplementation(async () => {
       // 503 on the control-plane upgrade: the container really is booting, so
       // this is the case the cold-start budget exists for.
-      if (path === '/workspace') {
-        throw new Error('RPCTransportError: WebSocket upgrade failed: 503 Service Unavailable');
-      }
-      return { exists: false };
+      throw new Error('RPCTransportError: WebSocket upgrade failed: 503 Service Unavailable');
     });
 
     const resultPromise = CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
@@ -8018,7 +8019,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(sandbox.mkdir).not.toHaveBeenCalled();
     expect(sandbox.noteBuildSessionActivity).not.toHaveBeenCalled();
     expect(
-      sandbox.exists.mock.calls.filter(([path]: [string]) => path === '/workspace').length,
+      sandbox.exec.mock.calls.filter(([command]: [string]) => command === 'true').length,
     ).toBeGreaterThan(10);
   });
 
@@ -8026,20 +8027,17 @@ describe('ChatThreadDO Pi turn handling', () => {
     // Real timers on purpose: a permanent startup failure must not spend the
     // cold-start budget (the SDK says retrying cannot help).
     const { fake, sandbox } = createProjectToolFake({ deploy: true });
-    sandbox.exists.mockImplementation(async (path: string) => {
-      if (path === '/workspace') {
-        throw new Error(
-          'Container failed to start due to a permanent error. Check your container configuration.',
-        );
-      }
-      return { exists: false };
+    sandbox.exec.mockImplementation(async () => {
+      throw new Error(
+        'Container failed to start due to a permanent error. Check your container configuration.',
+      );
     });
 
     await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
       project: 'Demo App',
     })).rejects.toThrow('will not recover on retry');
     expect(
-      sandbox.exists.mock.calls.filter(([path]: [string]) => path === '/workspace'),
+      sandbox.exec.mock.calls.filter(([command]: [string]) => command === 'true'),
     ).toHaveLength(1);
     expect(sandbox.mkdir).not.toHaveBeenCalled();
     expect(sandbox.noteBuildSessionActivity).not.toHaveBeenCalled();
@@ -8048,13 +8046,10 @@ describe('ChatThreadDO Pi turn handling', () => {
   it('bounds a 500 control-plane upgrade to a few probes and names it a configuration failure', async () => {
     vi.useFakeTimers();
     const { fake, sandbox } = createProjectToolFake({ deploy: true });
-    sandbox.exists.mockImplementation(async (path: string) => {
+    sandbox.exec.mockImplementation(async () => {
       // Under transport:"rpc" the SDK discards the permanent-error body; the
       // 500 status is all that survives.
-      if (path === '/workspace') {
-        throw new Error('RPCTransportError: WebSocket upgrade failed: 500 Internal Server Error');
-      }
-      return { exists: false };
+      throw new Error('RPCTransportError: WebSocket upgrade failed: 500 Internal Server Error');
     });
 
     const resultPromise = CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
@@ -8064,7 +8059,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     await vi.advanceTimersByTimeAsync(30_000);
 
     await rejection;
-    const probes = sandbox.exists.mock.calls.filter(([path]: [string]) => path === '/workspace');
+    const probes = sandbox.exec.mock.calls.filter(([command]: [string]) => command === 'true');
     expect(probes.length).toBeLessThanOrEqual(4);
     expect(sandbox.mkdir).not.toHaveBeenCalled();
   });
@@ -8073,20 +8068,17 @@ describe('ChatThreadDO Pi turn handling', () => {
     // Real timers on purpose: a mount misconfiguration must fail immediately
     // rather than wait out the cold-start budget.
     const { fake, sandbox } = createProjectToolFake({ deploy: true });
-    sandbox.exists.mockImplementation(async (path: string) => {
-      if (path === '/workspace') {
-        throw new Error(
-          'Container failed to start: S3FS mount failed: fuse: device not found, try modprobe fuse first',
-        );
-      }
-      return { exists: false };
+    sandbox.exec.mockImplementation(async () => {
+      throw new Error(
+        'Container failed to start: S3FS mount failed: fuse: device not found, try modprobe fuse first',
+      );
     });
 
     await expect(CodeModeToolsBinding.prototype.callTool.call(fake, 'deploy_project', {
       project: 'Demo App',
     })).rejects.toThrow('Retrying will not help');
     expect(
-      sandbox.exists.mock.calls.filter(([path]: [string]) => path === '/workspace'),
+      sandbox.exec.mock.calls.filter(([command]: [string]) => command === 'true'),
     ).toHaveLength(1);
     expect(sandbox.mkdir).not.toHaveBeenCalled();
   });
@@ -8096,6 +8088,7 @@ describe('ChatThreadDO Pi turn handling', () => {
 
     await CodeModeToolsBinding.prototype.callTool.call(fake, 'list_commits', { project: 'Demo App' });
 
+    expect(sandbox.exec).not.toHaveBeenCalled();
     expect(sandbox.exists).not.toHaveBeenCalled();
     expect(sandbox.noteBuildSessionActivity).not.toHaveBeenCalled();
   });

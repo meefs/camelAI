@@ -7,6 +7,11 @@ import { listConnections, type ConnectionsRuntimeEnv } from "./connections-runti
 import { annotateWarehouseConnections, withWarehouseParams, type WarehouseConnection } from "./warehouse-service.js";
 import { warehouseWorkspacePrefix } from "./warehouse-export.js";
 import { recordObservabilityEvent, type ObservabilityEnv } from "./observability.js";
+import {
+  isSandboxSessionDeathError,
+  isSandboxSessionDeathResult,
+  sandboxSessionExitCode,
+} from "./sandbox-session-death.js";
 import { ProjectFilesystemClient, type WorkspaceFileStoreLike } from "./workspace-filesystem-do.js";
 
 /**
@@ -490,6 +495,35 @@ async function cleanupWorkdir(sandbox: AnalysisSandboxLike, workdir: string): Pr
   }
 }
 
+/**
+ * Per-run bookkeeping for the cleanup `finally`: did this run die with the
+ * container's shell?
+ */
+interface AnalysisRunOutcome {
+  sessionDied: boolean;
+}
+
+/**
+ * Remove a run's scratch/work dirs — unless the shell died under it.
+ *
+ * A session death means either the SDK will hand the next call a fresh session
+ * or (past the zombie threshold) the container has just been destroyed. In both
+ * cases the workdir is a per-run path that dies with the container, so the
+ * `rm -rf` cleans nothing — and against a destroyed container it is an
+ * unconditional 30-120s cold boot, paid inside the caller's exec budget, ahead
+ * of the session recovery that actually needs that time.
+ */
+async function cleanupRunDirs(
+  sandbox: AnalysisSandboxLike,
+  outcome: AnalysisRunOutcome,
+  ...workdirs: string[]
+): Promise<void> {
+  if (outcome.sessionDied) return;
+  for (const workdir of workdirs) {
+    await cleanupWorkdir(sandbox, workdir);
+  }
+}
+
 /** Execute + validate a notebook, persisting the changed set back. */
 /** Flip the dispatch marker immediately before the agent's command leaves us. */
 function markCommandDispatched(dispatch?: AnalysisCommandDispatch): void {
@@ -510,6 +544,7 @@ export async function runAnalysisNotebook(
   const runId = deps.newRunId();
   const workdir = analysisRunWorkdir(deps.projectId, runId);
   const scratchDir = analysisRunScratchDir(runId);
+  const outcome: AnalysisRunOutcome = { sessionDied: false };
   try {
     const before = await materializeProject(deps.sandbox, workdir, deps.files);
     if (!before.some((f) => f.path === notebookRel)) {
@@ -554,9 +589,11 @@ export async function runAnalysisNotebook(
       durationMs: Date.now() - startedAt,
       ...(ok ? {} : { error: notebookErrorMessage(nb, validation) }),
     };
+  } catch (error) {
+    outcome.sessionDied = isSandboxSessionDeathError(error);
+    throw error;
   } finally {
-    await cleanupWorkdir(deps.sandbox, workdir);
-    await cleanupWorkdir(deps.sandbox, scratchDir);
+    await cleanupRunDirs(deps.sandbox, outcome, workdir, scratchDir);
   }
 }
 
@@ -571,6 +608,7 @@ export async function runAnalysisExec(
   }
   const timeoutMs = clampTimeout(request.timeoutMs, DEFAULT_EXEC_TIMEOUT_MS, MAX_NOTEBOOK_TIMEOUT_MS);
 
+  const outcome: AnalysisRunOutcome = { sessionDied: false };
   if (!deps.hasProject) {
     const scratch = `${ANALYSIS_SCRATCH_ROOT}/${sanitizeSegment(deps.scratchId)}`;
     try {
@@ -581,10 +619,13 @@ export async function runAnalysisExec(
         await deps.sandbox.exec(request.command, { cwd, timeout: timeoutMs, env: { ...analysisRunEnv(), SCRATCH: scratch, ...request.env } }),
       );
       return { ok: res.exitCode === 0, stdout: res.stdout, stderr: res.stderr, exitCode: res.exitCode, changedFiles: [], removedFiles: [], skippedOversize: [], durationMs: Date.now() - startedAt, ...(res.exitCode === 0 ? {} : { error: execError(res) }) };
+    } catch (error) {
+      outcome.sessionDied = isSandboxSessionDeathError(error);
+      throw error;
     } finally {
       // Scratch is per-call; without cleanup a warm container accumulates
       // abandoned scratch trees until its disk fills.
-      await cleanupWorkdir(deps.sandbox, scratch);
+      await cleanupRunDirs(deps.sandbox, outcome, scratch);
     }
   }
 
@@ -610,9 +651,11 @@ export async function runAnalysisExec(
       durationMs: Date.now() - startedAt,
       ...(res.exitCode === 0 ? {} : { error: execError(res) }),
     };
+  } catch (error) {
+    outcome.sessionDied = isSandboxSessionDeathError(error);
+    throw error;
   } finally {
-    await cleanupWorkdir(deps.sandbox, workdir);
-    await cleanupWorkdir(deps.sandbox, scratchDir);
+    await cleanupRunDirs(deps.sandbox, outcome, workdir, scratchDir);
   }
 }
 
@@ -624,6 +667,7 @@ export async function runAnalysisAddDependency(
   const startedAt = Date.now();
   const packages = normalizeDependencySpecs(request.packages);
   const workdir = analysisRunWorkdir(deps.projectId, deps.newRunId());
+  const outcome: AnalysisRunOutcome = { sessionDied: false };
   try {
     const before = await materializeProject(deps.sandbox, workdir, deps.files);
     const hasPyproject = before.some((f) => f.path === "pyproject.toml");
@@ -657,8 +701,11 @@ export async function runAnalysisAddDependency(
       durationMs: Date.now() - startedAt,
       ...(res.exitCode === 0 ? {} : { error: execError(res) }),
     };
+  } catch (error) {
+    outcome.sessionDied = isSandboxSessionDeathError(error);
+    throw error;
   } finally {
-    await cleanupWorkdir(deps.sandbox, workdir);
+    await cleanupRunDirs(deps.sandbox, outcome, workdir);
   }
 }
 
@@ -680,6 +727,7 @@ export async function runAnalysisCode(
   }
   const scratch = `${ANALYSIS_SCRATCH_ROOT}/${sanitizeSegment(deps.scratchId)}`;
   const scriptPath = `${scratch}/main.py`;
+  const outcome: AnalysisRunOutcome = { sessionDied: false };
   try {
     await deps.sandbox.mkdir(scratch, { recursive: true });
     const code = withWarehouseParams(request.code, request.params);
@@ -696,18 +744,19 @@ export async function runAnalysisCode(
     }
     return { ok: true, stdout: res.stdout, stderr: res.stderr };
   } catch (error) {
+    outcome.sessionDied = isSandboxSessionDeathError(error);
     return {
       ok: false,
       error: error instanceof Error ? error.message : "analysis code failed",
       // Structured marker: this shape reports environment failures as a VALUE
       // (deployed apps depend on that), so recovery needs a signal it cannot
       // confuse with program output.
-      ...(isSandboxSessionDeathError(error) ? { sessionDeath: true as const } : {}),
+      ...(outcome.sessionDied ? { sessionDeath: true as const } : {}),
     };
   } finally {
     // Scratch is per-call; without cleanup a warm container accumulates
     // abandoned scratch trees until its disk fills.
-    await cleanupWorkdir(deps.sandbox, scratch);
+    await cleanupRunDirs(deps.sandbox, outcome, scratch);
   }
 }
 
@@ -1025,40 +1074,14 @@ function base64FromBytes(bytes: Uint8Array): string {
 // Session death (container OOM / restart under a running command)
 // ---------------------------------------------------------------------------
 
-/**
- * The sandbox SDK's session/process-death family. A container OOM or restart
- * kills the persistent shell backing the workspace's session, and every one of
- * these reaches the caller as a raw SDK error name — production surfaced
- * `SessionTerminatedError: Session 'sandbox-<ws>' shell exited (exit code: 128)`
- * verbatim to a user.
- *
- * Audited against the full export list of @cloudflare/sandbox 0.12.0
- * (`dist/index.d.ts`): SessionTerminatedError, ProcessExitedBeforeReadyError and
- * ProcessReadyTimeoutError are the whole family; the remaining SandboxError
- * subclasses are backup/mount/transport concerns handled elsewhere
- * (project-build-readiness.ts owns the transport/cold-boot class).
- *
- * Matched by NAME as well as by message because the error crosses a DO RPC hop
- * on the way here, where the SDK class identity does not survive.
- */
-const SANDBOX_SESSION_DEATH_NAMES = [
-  "SessionTerminatedError",
-  "ProcessExitedBeforeReadyError",
-  "ProcessReadyTimeoutError",
-] as const;
-
-/**
- * Deliberately tight: these run against RESULT payloads too (runAnalysisCode
- * turns a throw into `{ ok: false, error }`), and a loose "shell exited" would
- * misread a user command's own stderr as an environment death and retry a
- * non-idempotent command.
- */
-const SANDBOX_SESSION_DEATH_PATTERNS = [
-  /SessionTerminatedError/i,
-  /ProcessExitedBeforeReadyError/i,
-  /ProcessReadyTimeoutError/i,
-  /Session\s+["']?[^"'\n]+["']?\s+(?:ended because its shell exited|shell exited)/i,
-] as const;
+// The classifier itself lives in sandbox-session-death.ts so the readiness
+// gate and the sandbox DOs key off the SAME predicate this recovery path uses
+// (see that module's header). Re-exported here for the existing importers.
+export {
+  isSandboxSessionDeathError,
+  isSandboxSessionDeathResult,
+  sandboxSessionExitCode,
+} from "./sandbox-session-death.js";
 
 /**
  * User-facing replacement for the raw SDK error. Same tone as the other
@@ -1085,41 +1108,6 @@ function annotateSessionRecovered<T>(value: T): T {
     sessionRecovered: true,
     sessionRecoveredNote: ANALYSIS_SESSION_RECOVERED_MESSAGE,
   } as T;
-}
-
-export function isSandboxSessionDeathError(error: unknown): boolean {
-  if (error instanceof Error && (SANDBOX_SESSION_DEATH_NAMES as readonly string[]).includes(error.name)) {
-    return true;
-  }
-  const text = String(error instanceof Error ? `${error.name}: ${error.message}` : error);
-  return SANDBOX_SESSION_DEATH_PATTERNS.some((pattern) => pattern.test(text));
-}
-
-/**
- * Session death seen as a RESULT rather than a throw.
- *
- * `runAnalysisCode` converts any exception into `{ ok: false, error }`, so a
- * dead shell reaches the caller as a value — which is how the raw SDK text got
- * in front of a user in the first place. Recovery has to look at both shapes.
- *
- * Keyed on the STRUCTURED `sessionDeath` marker, which only the environment's
- * own catch block sets. Sniffing `error` text would read the user program's
- * stderr — a script printing `SessionTerminatedError` would then be silently
- * re-executed, the exact hazard this classification is supposed to avoid.
- */
-export function isSandboxSessionDeathResult(result: unknown): boolean {
-  if (!result || typeof result !== "object" || Array.isArray(result)) return false;
-  const record = result as { ok?: unknown; sessionDeath?: unknown };
-  return record.ok === false && record.sessionDeath === true;
-}
-
-/** Exit code the SDK embeds in the session-death message, when it has one. */
-export function sandboxSessionExitCode(error: unknown): number | null {
-  const text = String(error instanceof Error ? error.message : error);
-  const match = text.match(/exit code:?\s*(-?\d+)/i);
-  if (!match) return null;
-  const parsed = Number.parseInt(match[1], 10);
-  return Number.isFinite(parsed) ? parsed : null;
 }
 
 // ---------------------------------------------------------------------------
