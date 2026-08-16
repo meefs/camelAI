@@ -50,6 +50,87 @@ function fakeFiles(contents: Record<string, { content: string; encoding?: "utf8"
 }
 
 describe("project build source owner", () => {
+  it("keeps streamed source reads below the Worker connection ceiling", async () => {
+    const contents = Object.fromEntries([
+      ["/package.json", JSON.stringify({ scripts: { build: "vite build" } })],
+      ...Array.from({ length: 24 }, (_, index) => [
+        `/src/file-${index}.ts`,
+        `export const value${index} = ${index};`,
+      ]),
+    ]);
+    const files = fakeFiles(Object.fromEntries(
+      Object.entries(contents).map(([path, content]) => [path, { content }]),
+    ));
+    let activeReads = 0;
+    let maxActiveReads = 0;
+    files.readFileStream = vi.fn(async (path: string) => {
+      activeReads += 1;
+      maxActiveReads = Math.max(maxActiveReads, activeReads);
+      if (activeReads > 4) {
+        activeReads -= 1;
+        throw new Error("Network connection lost.");
+      }
+      const bytes = new TextEncoder().encode(contents[path]!);
+      return {
+        success: true,
+        stream: new ReadableStream<Uint8Array>({
+          async pull(controller) {
+            await new Promise((resolve) => setTimeout(resolve, 1));
+            controller.enqueue(bytes);
+            controller.close();
+            activeReads -= 1;
+          },
+        }),
+      };
+    });
+
+    const collected = await collectProjectSourceFiles(files);
+
+    expect(collected.entries).toHaveLength(25);
+    expect(maxActiveReads).toBe(4);
+    expect(activeReads).toBe(0);
+  });
+
+  it("drains started source streams before surfacing a read failure", async () => {
+    const contents = Object.fromEntries(Array.from({ length: 12 }, (_, index) => [
+      `/src/file-${index}.ts`,
+      `export const value${index} = ${index};`,
+    ]));
+    const files = fakeFiles(Object.fromEntries(
+      Object.entries(contents).map(([path, content]) => [path, { content }]),
+    ));
+    let activeReads = 0;
+    let startedReads = 0;
+    files.readFileStream = vi.fn(async (path: string) => {
+      activeReads += 1;
+      startedReads += 1;
+      const bytes = new TextEncoder().encode(contents[path]!);
+      const shouldFail = path === "/src/file-1.ts";
+      return {
+        success: true,
+        stream: new ReadableStream<Uint8Array>({
+          async pull(controller) {
+            await new Promise((resolve) => setTimeout(resolve, shouldFail ? 1 : 5));
+            activeReads -= 1;
+            if (shouldFail) controller.error(new Error("Network connection lost."));
+            else {
+              controller.enqueue(bytes);
+              controller.close();
+            }
+          },
+          cancel() {
+            activeReads = Math.max(0, activeReads - 1);
+          },
+        }),
+      };
+    });
+
+    await expect(collectProjectSourceFiles(files)).rejects.toThrow("Network connection lost");
+
+    expect(activeReads).toBe(0);
+    expect(startedReads).toBeLessThanOrEqual(4);
+  });
+
   it("collects, decodes, hashes, sorts, and excludes generated source trees", async () => {
     const files = fakeFiles({
       "/src/z.ts": { content: "z" },

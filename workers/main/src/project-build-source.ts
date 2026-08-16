@@ -2,11 +2,21 @@ import { mapWithConcurrency } from "../../../src/lib/map-with-concurrency";
 
 import { base64ToBytes } from "./base64-codec.js";
 import { sha256Hex } from "./sha256.js";
-import type { WorkspaceFileStoreLike } from "./workspace-filesystem-do.js";
+import type {
+  WorkspaceFileStoreLike,
+  WorkspaceListEntry,
+} from "./workspace-filesystem-do.js";
 import type { ProjectBuildSandboxLike } from "./project-worker-bundle.js";
 
 export const PROJECT_BUILD_ROOT = "/workspace";
-const SOURCE_READ_CONCURRENCY = 16;
+// A streamed WorkspaceFilesystemDO read occupies an outbound Worker connection
+// until its body is consumed. Workers allow six simultaneous connections per
+// invocation; using all of them here can strand the Sandbox RPC transport that
+// the same build call needs next. Keep two lanes in reserve for control-plane
+// traffic and drain every started read before the retry ladder can re-enter.
+const SOURCE_STREAM_READ_CONCURRENCY = 4;
+// Hashing is isolate-local and does not consume outbound connections.
+const SOURCE_HASH_CONCURRENCY = 16;
 // Keep parallel Sandbox streams below the Worker connection ceiling while
 // giving cold, data-heavy projects enough lanes to overlap transfer latency.
 const SOURCE_ARCHIVE_MAX_LANES = 3;
@@ -89,14 +99,11 @@ export async function collectProjectSourceFiles(
   });
 
   const readStartedAt = Date.now();
-  const readFiles = await mapWithConcurrency(filesToRead, SOURCE_READ_CONCURRENCY, async ({ entry, relativePath }) => {
-    const bytes = await readWorkspaceSourceBytes(files, entry.absolutePath, entry.size);
-    return { path: relativePath, bytes, modifiedAt: entry.modifiedAt };
-  });
+  const readFiles = await readProjectSourceFiles(files, filesToRead);
   const sourceReadMs = Date.now() - readStartedAt;
 
   const hashStartedAt = Date.now();
-  const hashedFiles = await mapWithConcurrency(readFiles, SOURCE_READ_CONCURRENCY, async (file) => {
+  const hashedFiles = await mapWithConcurrency(readFiles, SOURCE_HASH_CONCURRENCY, async (file) => {
     const sha256 = await sha256Hex(file.bytes);
     return {
       ...file,
@@ -148,6 +155,53 @@ export async function collectProjectSourceFiles(
   };
 }
 
+/**
+ * Read project files without exceeding the Worker's outbound-connection cap.
+ *
+ * This intentionally waits for every already-started read to settle after the
+ * first failure. `Promise.all()` rejects immediately, which previously let the
+ * deploy retry ladder start another 16 streamed reads while the abandoned
+ * batch was still holding connections; one transient disconnect could then
+ * turn into a permanently failing build session.
+ */
+async function readProjectSourceFiles(
+  files: WorkspaceFileStoreLike,
+  filesToRead: Array<{ entry: WorkspaceListEntry; relativePath: string }>,
+): Promise<Array<{ path: string; bytes: Uint8Array; modifiedAt: string }>> {
+  if (filesToRead.length === 0) return [];
+
+  const results = Array.from<{
+    path: string;
+    bytes: Uint8Array;
+    modifiedAt: string;
+  }>({ length: filesToRead.length });
+  let nextIndex = 0;
+  let failed = false;
+  let firstError: unknown;
+  const workerCount = Math.min(SOURCE_STREAM_READ_CONCURRENCY, filesToRead.length);
+
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    for (;;) {
+      if (failed) return;
+      const index = nextIndex;
+      if (index >= filesToRead.length) return;
+      nextIndex += 1;
+      const { entry, relativePath } = filesToRead[index]!;
+      try {
+        const bytes = await readWorkspaceSourceBytes(files, entry.absolutePath, entry.size);
+        results[index] = { path: relativePath, bytes, modifiedAt: entry.modifiedAt };
+      } catch (error) {
+        if (!failed) firstError = error;
+        failed = true;
+        return;
+      }
+    }
+  }));
+
+  if (failed) throw firstError;
+  return results;
+}
+
 async function readWorkspaceSourceBytes(
   files: WorkspaceFileStoreLike,
   absolutePath: string,
@@ -160,19 +214,26 @@ async function readWorkspaceSourceBytes(
     const reader = streamed.stream.getReader();
     let bytes = new Uint8Array(Math.max(0, expectedSize));
     let offset = 0;
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!value?.byteLength) continue;
-      if (offset + value.byteLength > bytes.byteLength) {
-        const grown = new Uint8Array(Math.max(offset + value.byteLength, Math.max(1, bytes.byteLength * 2)));
-        grown.set(bytes);
-        bytes = grown;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value?.byteLength) continue;
+        if (offset + value.byteLength > bytes.byteLength) {
+          const grown = new Uint8Array(Math.max(offset + value.byteLength, Math.max(1, bytes.byteLength * 2)));
+          grown.set(bytes);
+          bytes = grown;
+        }
+        bytes.set(value, offset);
+        offset += value.byteLength;
       }
-      bytes.set(value, offset);
-      offset += value.byteLength;
+      return offset === bytes.byteLength ? bytes : bytes.slice(0, offset);
+    } catch (error) {
+      await reader.cancel(error).catch(() => {});
+      throw error;
+    } finally {
+      reader.releaseLock();
     }
-    return offset === bytes.byteLength ? bytes : bytes.slice(0, offset);
   }
   const read = await files.readFile(absolutePath);
   if (!read.success || typeof read.content !== "string") {

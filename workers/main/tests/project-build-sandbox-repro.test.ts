@@ -42,6 +42,14 @@ describe("real project build sandbox repro", () => {
       }),
     )).resolves.toEqual({ success: true });
     await expect(files.writeFile("/src/index.ts", "export default {};\n")).resolves.toEqual({ success: true });
+    // Many small source files exercise the WorkspaceFilesystemDO streaming
+    // connection ceiling in addition to the large archive lanes below.
+    for (let index = 0; index < 48; index += 1) {
+      await expect(files.writeFile(
+        `/src/generated/file-${index}.ts`,
+        `export const value${index} = ${index};\n`,
+      )).resolves.toEqual({ success: true });
+    }
     await expect(files.writeFile("/public/data.json", "a".repeat(11 * 1024 * 1024))).resolves.toEqual({ success: true });
     await expect(files.writeFile("/public/skus/0.json", "b".repeat(5 * 1024 * 1024))).resolves.toEqual({ success: true });
     await expect(files.writeFile("/public/skus/1.json", "c".repeat(4 * 1024 * 1024))).resolves.toEqual({ success: true });
@@ -50,7 +58,7 @@ describe("real project build sandbox repro", () => {
 
     expect(build, build.stderr || build.stdout).toMatchObject({
       success: true,
-      fileCount: 5,
+      fileCount: 53,
       sourceBytes: expect.any(Number),
     });
     expect(build.sourceBytes).toBeGreaterThanOrEqual(20 * 1024 * 1024);
