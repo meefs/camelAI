@@ -13,6 +13,7 @@
 		"check:pi-bedrock-build": "node scripts/check-pi-bedrock-build.mjs",
 		"start": "node scripts/wrangler-dev.mjs",
 		"selfhost:init": "node scripts/selfhost-init.mjs",
+		"selfhost:migrate-secrets": "node scripts/selfhost-migrate-secrets.mjs",
 		"selfhost:configure": "node scripts/selfhost-configure.mjs",
 		"selfhost:doctor": "node scripts/selfhost-doctor.mjs",
 		"selfhost:up": "node scripts/selfhost-up.mjs",

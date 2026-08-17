@@ -56,8 +56,15 @@ await check("env file", async () => {
     "TOKEN_SIGNING_SECRET",
     "INTEGRATION_SECRET_KEY",
     "LOCAL_ARTIFACTS_SECRET",
+    "ADMIN_API_KEY",
   ]) {
-    if (!env[key]) fail(`missing ${key}`);
+    if (!env[key]) {
+      fail(
+        key === "ADMIN_API_KEY"
+          ? "missing ADMIN_API_KEY; run `bun run selfhost:migrate-secrets`"
+          : `missing ${key}`,
+      );
+    }
     if (env[key].includes("change-me")) fail(`${key} still uses a development default`);
   }
 });

@@ -78,6 +78,21 @@ export function piEventStreamToSSE(
     );
   };
 
+  const emitUsageOnly = (
+    controller: ReadableStreamDefaultController<Uint8Array>,
+    message: AssistantMessage,
+  ) => {
+    const chunk = {
+      id,
+      object: "chat.completion.chunk",
+      created,
+      model: message.responseModel ?? lastResponseModel ?? modelId,
+      choices: [],
+      usage: piUsageToOpenAi(message.usage),
+    };
+    controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+  };
+
   return new ReadableStream<Uint8Array>({
     async start(controller) {
       try {
@@ -138,6 +153,14 @@ export function piEventStreamToSSE(
               break;
             }
             case "error":
+              if (
+                (event.error.usage.input ?? 0) > 0 ||
+                (event.error.usage.output ?? 0) > 0 ||
+                (event.error.usage.cacheRead ?? 0) > 0 ||
+                (event.error.usage.cacheWrite ?? 0) > 0
+              ) {
+                emitUsageOnly(controller, event.error);
+              }
               throw new Error(
                 event.error.errorMessage || "Bedrock stream errored",
               );
@@ -176,6 +199,9 @@ function piStopReasonToFinishReason(
 function piUsageToOpenAi(
   usage: AssistantMessage["usage"],
 ): Record<string, unknown> {
+  const promptTokens =
+    (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
+  const completionTokens = usage.output ?? 0;
   const details: Record<string, number> = {};
   if (usage.cacheRead) details.cached_tokens = usage.cacheRead;
   if (usage.cacheWrite) {
@@ -183,10 +209,12 @@ function piUsageToOpenAi(
     details.cache_creation_input_tokens = usage.cacheWrite;
   }
   return {
-    prompt_tokens: usage.input ?? 0,
-    completion_tokens: usage.output ?? 0,
-    total_tokens:
-      usage.totalTokens ?? (usage.input ?? 0) + (usage.output ?? 0),
+    // OpenAI-compatible token details are subsets of prompt_tokens. Pi keeps
+    // uncached input/cache-read/cache-write as exclusive counters, so rebuild
+    // the inclusive wire total here for round-trip-compatible accounting.
+    prompt_tokens: promptTokens,
+    completion_tokens: completionTokens,
+    total_tokens: promptTokens + completionTokens,
     ...(Object.keys(details).length > 0
       ? { prompt_tokens_details: details }
       : {}),

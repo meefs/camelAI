@@ -1,5 +1,6 @@
 /** OpenAI chat/completions compatibility surface for Bedrock Mantle via pi-ai. */
 import { streamSimple } from "@earendil-works/pi-ai/api/anthropic-messages";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 
 import type { PiBedrockCall } from "./bedrock-pi-contracts.js";
 import { buildBedrockPiModel } from "./bedrock-pi-model.js";
@@ -7,6 +8,16 @@ import {
   piEventStreamToSSE,
   piMessageToChatCompletion,
 } from "./bedrock-pi-output.js";
+
+export class BedrockPiCompletionError extends Error {
+  constructor(
+    message: string,
+    readonly completion: AssistantMessage,
+  ) {
+    super(message);
+    this.name = "BedrockPiCompletionError";
+  }
+}
 
 export type { PiBedrockCall } from "./bedrock-pi-contracts.js";
 export { chatCompletionToPiCall } from "./bedrock-pi-input.js";
@@ -33,5 +44,15 @@ export async function runBedrockViaPi(args: {
     },
   );
   if (args.call.stream) return piEventStreamToSSE(eventStream, args.modelId);
-  return piMessageToChatCompletion(await eventStream.result(), args.modelId);
+  const completion = await eventStream.result();
+  if (completion.stopReason === "error" || completion.stopReason === "aborted") {
+    throw new BedrockPiCompletionError(
+      completion.errorMessage ||
+        (completion.stopReason === "error"
+          ? "Bedrock request failed"
+          : "Bedrock request was aborted"),
+      completion,
+    );
+  }
+  return piMessageToChatCompletion(completion, args.modelId);
 }

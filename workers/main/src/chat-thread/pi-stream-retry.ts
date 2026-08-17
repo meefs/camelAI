@@ -88,6 +88,72 @@ export type PiProviderStreamTerminalStatus =
   | "non_transient"
   | "aborted";
 
+type PiAssistantUsage = AssistantMessage["usage"];
+
+function mergeAssistantUsage(
+  accumulated: PiAssistantUsage | null,
+  current: PiAssistantUsage,
+): PiAssistantUsage {
+  if (!accumulated) return current;
+  const sum = (key: "input" | "output" | "cacheRead" | "cacheWrite" | "totalTokens") =>
+    Math.max(0, Number(accumulated[key]) || 0) +
+    Math.max(0, Number(current[key]) || 0);
+  const costKeys = ["input", "output", "cacheRead", "cacheWrite", "total"] as const;
+  const cost = Object.fromEntries(costKeys.map((key) => [
+    key,
+    Math.max(0, Number(accumulated.cost?.[key]) || 0) +
+      Math.max(0, Number(current.cost?.[key]) || 0),
+  ])) as PiAssistantUsage["cost"];
+  return {
+    input: sum("input"),
+    output: sum("output"),
+    cacheRead: sum("cacheRead"),
+    cacheWrite: sum("cacheWrite"),
+    totalTokens: sum("totalTokens"),
+    cost,
+  };
+}
+
+function usageWithNonzeroBilling(usage: PiAssistantUsage): PiAssistantUsage | null {
+  return usage.input > 0 || usage.output > 0 || usage.cacheRead > 0 ||
+    usage.cacheWrite > 0 || usage.cost.total > 0
+    ? usage
+    : null;
+}
+
+function mergeHiddenUsageIntoEvent(
+  event: AssistantMessageEvent,
+  hiddenUsage: PiAssistantUsage | null,
+): AssistantMessageEvent {
+  if (!hiddenUsage) return event;
+  if (event.type === "done") {
+    return {
+      ...event,
+      message: {
+        ...event.message,
+        usage: mergeAssistantUsage(hiddenUsage, event.message.usage),
+      },
+    };
+  }
+  if (event.type === "error") {
+    return {
+      ...event,
+      error: {
+        ...event.error,
+        usage: mergeAssistantUsage(hiddenUsage, event.error.usage),
+      },
+    };
+  }
+  return event;
+}
+
+function usageFromEvent(event: AssistantMessageEvent): PiAssistantUsage | null {
+  if (event.type === "done") return event.message.usage;
+  if (event.type === "error") return event.error.usage;
+  if ("partial" in event) return event.partial.usage;
+  return null;
+}
+
 /**
  * Sleep that rejects with "Request was aborted" if the signal fires (or has
  * already fired). Shared by the provider ladder here and ChatThreadDO's
@@ -130,6 +196,7 @@ export function streamPiModelWithTransientRetry(
   } = {},
 ): AssistantMessageEventStream {
   const outer = createAssistantMessageEventStream();
+  let hiddenRetryUsage: PiAssistantUsage | null = null;
   const maxRetryAttempts = retryOptions.maxRetryAttempts ??
     PI_PROVIDER_TRANSIENT_RETRY_ATTEMPTS;
   const isRetryableError = (message: string) =>
@@ -142,21 +209,28 @@ export function streamPiModelWithTransientRetry(
       let forwardedEvent = false;
       let pendingStartEvent: AssistantMessageEvent | null = null;
       let retryErrorMessage = "";
+      let latestAttemptUsage: PiAssistantUsage | null = null;
       try {
         const inner = createStream();
         for await (const event of inner) {
+          latestAttemptUsage = usageFromEvent(event) ?? latestAttemptUsage;
           if (event.type === "start") {
             pendingStartEvent = event;
             continue;
           }
           const errorMessage = piProviderStreamErrorMessage(event);
           if (
+            event.type === "error" &&
             errorMessage &&
             !forwardedEvent &&
             !options?.signal?.aborted &&
             attempt < maxRetryAttempts &&
             isRetryableError(errorMessage)
           ) {
+            const retryUsage = usageWithNonzeroBilling(event.error.usage);
+            if (retryUsage) {
+              hiddenRetryUsage = mergeAssistantUsage(hiddenRetryUsage, retryUsage);
+            }
             retryErrorMessage = errorMessage;
             break;
           }
@@ -179,10 +253,20 @@ export function streamPiModelWithTransientRetry(
             pendingStartEvent = null;
             forwardedEvent = true;
           }
-          outer.push(event);
+          const forwarded = mergeHiddenUsageIntoEvent(event, hiddenRetryUsage);
+          if (forwarded.type === "done" || forwarded.type === "error") {
+            hiddenRetryUsage = null;
+          }
+          outer.push(forwarded);
           forwardedEvent = true;
         }
       } catch (error) {
+        const billableAttemptUsage = latestAttemptUsage
+          ? usageWithNonzeroBilling(latestAttemptUsage)
+          : null;
+        if (billableAttemptUsage) {
+          hiddenRetryUsage = mergeAssistantUsage(hiddenRetryUsage, billableAttemptUsage);
+        }
         const errorMessage = error instanceof Error ? error.message : String(error);
         if (
           !forwardedEvent &&
@@ -204,7 +288,7 @@ export function streamPiModelWithTransientRetry(
             attempt + 1,
             forwardedEvent,
           );
-          outer.push({
+          const terminalEvent = mergeHiddenUsageIntoEvent({
             type: "error",
             reason: options?.signal?.aborted ? "aborted" : "error",
             error: createPiProviderStreamErrorMessage(
@@ -212,7 +296,9 @@ export function streamPiModelWithTransientRetry(
               errorMessage,
               options?.signal?.aborted ? "aborted" : "error",
             ),
-          });
+          }, hiddenRetryUsage);
+          hiddenRetryUsage = null;
+          outer.push(terminalEvent);
           outer.end();
           return;
         }
@@ -228,7 +314,7 @@ export function streamPiModelWithTransientRetry(
       await abortableSleep(PI_PROVIDER_TRANSIENT_RETRY_DELAY_MS, options?.signal);
     }
   })().catch((error) => {
-    outer.push({
+    const terminalEvent = mergeHiddenUsageIntoEvent({
       type: "error",
       reason: options?.signal?.aborted ? "aborted" : "error",
       error: createPiProviderStreamErrorMessage(
@@ -236,7 +322,9 @@ export function streamPiModelWithTransientRetry(
         error instanceof Error ? error.message : String(error),
         options?.signal?.aborted ? "aborted" : "error",
       ),
-    });
+    }, hiddenRetryUsage);
+    hiddenRetryUsage = null;
+    outer.push(terminalEvent);
     outer.end();
   });
 

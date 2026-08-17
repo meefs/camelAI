@@ -137,6 +137,7 @@ bun install --frozen-lockfile
 if [ ! -f .env.selfhost ]; then
   bun run selfhost:init
 fi
+bun run selfhost:migrate-secrets
 
 SELFHOST_AI_API_KEY="$(aws secretsmanager get-secret-value \
   --secret-id "$${SELFHOST_AI_API_KEY_SECRET_ARN}" \
@@ -319,9 +320,11 @@ Requires=docker.service
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=/srv/camelai/repo
+ExecStartPre=/usr/local/bin/bun run selfhost:migrate-secrets
 ExecStartPre=/usr/local/bin/bun run selfhost:configure
 ExecStartPre=/usr/local/sbin/camelai-selfhost-compose pull
 ExecStart=/usr/local/sbin/camelai-selfhost-compose up --detach --remove-orphans --wait --wait-timeout 900
+ExecReload=/usr/local/bin/bun run selfhost:migrate-secrets
 ExecReload=/usr/local/bin/bun run selfhost:configure
 ExecReload=/usr/local/sbin/camelai-selfhost-compose pull
 ExecReload=/usr/local/sbin/camelai-selfhost-compose up --detach --remove-orphans --wait --wait-timeout 900

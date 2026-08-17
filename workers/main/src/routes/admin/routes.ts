@@ -99,11 +99,20 @@ import {
   DashboardRetentionQuerySchema,
   DashboardRetentionResponseSchema,
   SetOrgLimitsBodySchema,
+  SetUserLlmLimitsBodySchema,
+  UserLlmLimitsResponseSchema,
+  SetLlmPricingBodySchema,
+  LlmPricingResponseSchema,
+  UserLlmUsageReportSchema,
   EmailDomainBlocklistSchema,
   AddEmailDomainBodySchema,
   paginatedList,
   dataList,
 } from "./schemas.js";
+import {
+  UsageControlsValidationError,
+  validateUserLlmUsageCursor,
+} from "../../identity/org/usage-controls.js";
 import {
   fetchOrgUsageAnalytics,
   fetchSpamOrgIds,
@@ -215,6 +224,7 @@ type AdminOrgDirectoryLookup = {
     limit: number;
   }>;
   getUsersByOrgIds(orgIds: string[]): Promise<AdminUserSummaryRow[]>;
+  getUsersByIds(userIds: string[]): Promise<AdminUserSummaryRow[]>;
   getThreadsByOrgIds(orgIds: string[]): Promise<AdminThreadListRow[]>;
   getAppsByOrgIds(orgIds: string[]): Promise<AdminAppListRow[]>;
 };
@@ -2730,6 +2740,156 @@ routes.put(
 );
 
 // ---------------------------------------------------------------------------
+// Per-user LLM usage, rolling limits, and strict pricing
+// ---------------------------------------------------------------------------
+
+routes.get(
+  "/orgs/:id/usage/users",
+  openApi({
+    summary: "Per-user LLM usage grouped by provider and model",
+    description: "Rolling limits are stop-new-pull soft caps: an accepted pull may cross a limit and concurrently in-flight pulls may settle afterward.",
+    request: {
+      query: z.object({
+        from: z.coerce.number().int().min(0),
+        to: z.coerce.number().int().min(0),
+        limit: z.coerce.number().int().min(1).max(1000).optional().default(100),
+        cursor: z.string().optional(),
+        user_id: z.string().trim().min(1).optional(),
+      }),
+    },
+    responses: { 200: UserLlmUsageReportSchema, 400: ErrorSchema, 404: ErrorSchema, 502: ErrorSchema },
+  }),
+  async (c) => {
+    const orgId = c.req.param("id");
+    const query = c.req.valid("query");
+    if (query.to <= query.from) return c.json({ error: "to must be greater than from" }, 400);
+    if (query.cursor) {
+      try {
+        validateUserLlmUsageCursor(query.cursor);
+      } catch (error) {
+        return c.json({ error: error instanceof Error ? error.message : "cursor is malformed" }, 400);
+      }
+    }
+    try {
+      const orgStub = getOrgStub(c.env, orgId);
+      if (!(await orgStub.getInfo())) return c.json({ error: "Organization not found" }, 404);
+      const report = await orgStub.getUserLlmUsageReport(query);
+      let directory = new Map<string, { name: string | null; email: string | null }>();
+      try {
+        const adminIndex = getAdminIndexStub(c.env) as unknown as AdminOrgDirectoryLookup;
+        const users = await adminIndex.getUsersByIds(
+          report.users.flatMap((user) => user.user_id ? [user.user_id] : []),
+        );
+        directory = new Map(users.map((user) => [user.id, {
+          name: typeof user.name === "string" ? user.name : null,
+          email: typeof user.email === "string" ? user.email : null,
+        }]));
+      } catch {
+        // Directory enrichment is best effort; accounting remains authoritative.
+      }
+      return c.json({
+        ...report,
+        users: report.users.map((user) => ({
+          ...user,
+          name: user.user_id ? directory.get(user.user_id)?.name ?? null : null,
+          email: user.user_id ? directory.get(user.user_id)?.email ?? null : null,
+        })),
+      });
+    } catch (error) {
+      if (error instanceof UsageControlsValidationError) return c.json({ error: error.message }, 400);
+      return c.json({ error: error instanceof Error ? error.message : "Usage service unavailable" }, 502);
+    }
+  },
+);
+
+routes.get(
+  "/orgs/:id/usage/users/:userId/limits",
+  openApi({
+    summary: "Get one member's rolling LLM spend limits and current status",
+    responses: { 200: UserLlmLimitsResponseSchema, 404: ErrorSchema, 502: ErrorSchema },
+  }),
+  async (c) => {
+    try {
+      const orgStub = getOrgStub(c.env, c.req.param("id"));
+      const userId = c.req.param("userId");
+      if (!(await orgStub.getInfo()) || !(await orgStub.isMember(userId))) {
+        return c.json({ error: "Organization or current member not found" }, 404);
+      }
+      return c.json(await orgStub.getUserLlmUsageLimits(userId));
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : "Usage service unavailable" }, 502);
+    }
+  },
+);
+
+routes.put(
+  "/orgs/:id/usage/users/:userId/limits",
+  openApi({
+    summary: "Atomically replace one member's rolling LLM spend limits",
+    description: "An empty limits array clears the policy. Limits stop later pulls after settled spend reaches the cap; they do not reserve an in-flight pull's unknown final cost.",
+    request: { json: SetUserLlmLimitsBodySchema },
+    responses: { 200: UserLlmLimitsResponseSchema, 400: ErrorSchema, 404: ErrorSchema, 502: ErrorSchema },
+  }),
+  async (c) => {
+    try {
+      const orgStub = getOrgStub(c.env, c.req.param("id"));
+      const userId = c.req.param("userId");
+      if (!(await orgStub.getInfo()) || !(await orgStub.isMember(userId))) {
+        return c.json({ error: "Organization or current member not found" }, 404);
+      }
+      return c.json(await orgStub.setUserLlmUsageLimits(
+        userId,
+        c.req.valid("json").limits,
+        c.req.header("x-admin-mcp-user-id")?.trim() || "admin_api_key",
+      ));
+    } catch (error) {
+      if (error instanceof UsageControlsValidationError) return c.json({ error: error.message }, 400);
+      return c.json({ error: error instanceof Error ? error.message : "Usage service unavailable" }, 502);
+    }
+  },
+);
+
+routes.get(
+  "/orgs/:id/usage/pricing",
+  openApi({
+    summary: "Get strict LLM pricing overrides and recently unpriced models",
+    responses: { 200: LlmPricingResponseSchema, 404: ErrorSchema, 502: ErrorSchema },
+  }),
+  async (c) => {
+    try {
+      const orgStub = getOrgStub(c.env, c.req.param("id"));
+      if (!(await orgStub.getInfo())) return c.json({ error: "Organization not found" }, 404);
+      return c.json(await orgStub.getLlmUsagePricing());
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : "Usage service unavailable" }, 502);
+    }
+  },
+);
+
+routes.put(
+  "/orgs/:id/usage/pricing",
+  openApi({
+    summary: "Atomically replace exact provider/model LLM pricing overrides",
+    description: "Pricing changes affect future usage rows only. Limited users fail closed when a requested model or an active-window row is unpriced.",
+    request: { json: SetLlmPricingBodySchema },
+    responses: { 200: LlmPricingResponseSchema, 400: ErrorSchema, 404: ErrorSchema, 502: ErrorSchema },
+  }),
+  async (c) => {
+    try {
+      const orgStub = getOrgStub(c.env, c.req.param("id"));
+      if (!(await orgStub.getInfo())) return c.json({ error: "Organization not found" }, 404);
+      return c.json(await orgStub.setLlmUsagePricing(
+        c.req.valid("json").prices,
+        c.req.header("x-admin-mcp-user-id")?.trim() || "admin_api_key",
+      ));
+    } catch (error) {
+      if (error instanceof UsageControlsValidationError) return c.json({ error: error.message }, 400);
+      return c.json({ error: error instanceof Error ? error.message : "Usage service unavailable" }, 502);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
 // GET /orgs/:id/usage/log
 // ---------------------------------------------------------------------------
 
@@ -2740,7 +2900,10 @@ routes.get(
     request: {
       query: z.object({
         limit: z.coerce.number().int().min(1).max(1000).optional(),
-        cursor: z.string().optional(),
+        cursor: z.string()
+          .regex(/^[1-9]\d*$/, "cursor must be a positive integer")
+          .refine((value) => Number.isSafeInteger(Number(value)), "cursor must be a safe integer")
+          .optional(),
         from: z.coerce
           .number()
           .int()
@@ -2753,19 +2916,36 @@ routes.get(
           .min(0)
           .optional()
           .describe("End timestamp (ms since epoch, exclusive)"),
+        user_id: z.string().optional(),
+        provider: z.string().optional(),
+        model: z.string().optional(),
+        usage_kind: z.enum(["llm", "image", "audio", "capability", "unknown"]).optional(),
+        usage_surface: z.enum(["agent", "subagent", "compaction", "virtual_ai", "auxiliary", "capability", "unknown"]).optional(),
       }),
     },
     responses: {
       200: OrgUsageLogSchema,
+      400: ErrorSchema,
+      404: ErrorSchema,
       502: ErrorSchema,
     },
   }),
   async (c) => {
     const orgId = c.req.param("id");
-    const { limit, cursor, from, to } = c.req.valid("query");
-    return c.json(
-      await getOrgStub(c.env, orgId).getUsageLog({ limit, cursor, from, to }),
-    );
+    const { limit, cursor, from, to, user_id, provider, model, usage_kind, usage_surface } = c.req.valid("query");
+    if (from !== undefined && to !== undefined && to <= from) {
+      return c.json({ error: "to must be greater than from" }, 400);
+    }
+    try {
+      const orgStub = getOrgStub(c.env, orgId);
+      if (!(await orgStub.getInfo())) return c.json({ error: "Organization not found" }, 404);
+      return c.json(await orgStub.getUsageLog({
+        limit, cursor, from, to, user_id, provider, model, usage_kind, usage_surface,
+      }));
+    } catch (error) {
+      if (error instanceof UsageControlsValidationError) return c.json({ error: error.message }, 400);
+      return c.json({ error: error instanceof Error ? error.message : "Usage service unavailable" }, 502);
+    }
   },
 );
 
@@ -2800,23 +2980,39 @@ routes.get(
             }
             return value;
           }, z.boolean().optional()),
+        user_id: z.string().optional(),
+        provider: z.string().optional(),
+        model: z.string().optional(),
+        usage_kind: z.enum(["llm", "image", "audio", "capability", "unknown"]).optional(),
+        usage_surface: z.enum(["agent", "subagent", "compaction", "virtual_ai", "auxiliary", "capability", "unknown"]).optional(),
       }),
     },
     responses: {
       200: OrgUsageLogSumSchema,
+      400: ErrorSchema,
+      404: ErrorSchema,
       502: ErrorSchema,
     },
   }),
   async (c) => {
     const orgId = c.req.param("id");
-    const { from, to, chargeable_only } = c.req.valid("query");
-    return c.json(
-      await getOrgStub(c.env, orgId).getUsageLogSum(
-        from,
-        to,
-        chargeable_only === true,
-      ),
-    );
+    const { from, to, chargeable_only, user_id, provider, model, usage_kind, usage_surface } = c.req.valid("query");
+    if (to <= from) return c.json({ error: "to must be greater than from" }, 400);
+    try {
+      const orgStub = getOrgStub(c.env, orgId);
+      if (!(await orgStub.getInfo())) return c.json({ error: "Organization not found" }, 404);
+      return c.json({
+        ...await orgStub.getUsageLogAggregate({
+          from, to, chargeable_only: chargeable_only === true,
+          user_id, provider, model, usage_kind, usage_surface,
+        }),
+        from_ms: from,
+        to_ms: to,
+      });
+    } catch (error) {
+      if (error instanceof UsageControlsValidationError) return c.json({ error: error.message }, 400);
+      return c.json({ error: error instanceof Error ? error.message : "Usage service unavailable" }, 502);
+    }
   },
 );
 

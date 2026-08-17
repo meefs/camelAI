@@ -363,6 +363,7 @@ export function normalizePricingModel(model: string): string {
       "camelai-openrouter/",
       "openrouter/",
       "openai/",
+      "openai.",
     ]) {
       if (normalized.startsWith(prefix)) {
         normalized = normalized.slice(prefix.length);
@@ -373,6 +374,15 @@ export function normalizePricingModel(model: string): string {
 }
 
 export function lookupPricing(model: string): ModelPricing {
+  return lookupPricingOrNull(model) ?? modelPricingTable[SONNET_FALLBACK_MODEL];
+}
+
+/**
+ * Resolve pricing only when the model is explicitly known. Unlike
+ * `lookupPricing`, this helper never applies the compatibility Sonnet fallback
+ * and is therefore safe to use as an accounting authority for hard limits.
+ */
+export function lookupPricingOrNull(model: string): ModelPricing | null {
   if (modelPricingTable[model]) return modelPricingTable[model];
   const normalized = normalizePricingModel(model);
   if (modelPricingTable[normalized]) return modelPricingTable[normalized];
@@ -441,7 +451,10 @@ export function lookupPricing(model: string): ModelPricing {
   if (normalized.includes("deepseek-v4-flash")) {
     return modelPricingTable["deepseek/deepseek-v4-flash"];
   }
-  if (normalized.includes("claude-haiku-4.5")) {
+  if (
+    normalized.includes("claude-haiku-4.5") ||
+    normalized.includes("claude-haiku-4-5")
+  ) {
     return modelPricingTable["anthropic/claude-haiku-4.5"];
   }
   if (normalized.includes("gemini-3.5-flash")) {
@@ -453,7 +466,7 @@ export function lookupPricing(model: string): ModelPricing {
   if (normalized.includes("gemini-3-flash-preview")) {
     return modelPricingTable["google/gemini-3-flash-preview"];
   }
-  return modelPricingTable[SONNET_FALLBACK_MODEL];
+  return null;
 }
 
 export function calculateUsageCostUsd(usage: UsageTokens): number {
@@ -477,23 +490,19 @@ export function calculateUsageCostUsd(usage: UsageTokens): number {
 }
 
 export function calculateEffectiveUsageCostUsd(usage: UsageTokens): number {
-  let reportedCost = 0;
   if (
     usage.reportedCostUsd !== null &&
     usage.reportedCostUsd !== undefined &&
     usage.reportedCostUsd > 0
   ) {
-    reportedCost += usage.reportedCostUsd;
+    return usage.reportedCostUsd;
   }
   if (
     usage.upstreamInferenceCostUsd !== null &&
     usage.upstreamInferenceCostUsd !== undefined &&
     usage.upstreamInferenceCostUsd > 0
   ) {
-    reportedCost += usage.upstreamInferenceCostUsd;
-  }
-  if (reportedCost > 0) {
-    return reportedCost;
+    return usage.upstreamInferenceCostUsd;
   }
   return calculateUsageCostUsd(usage);
 }

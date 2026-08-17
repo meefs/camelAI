@@ -3,10 +3,11 @@ import {
   calculateEffectiveUsageCostUsd,
   calculateUsageCostUsd,
   lookupPricing,
+  lookupPricingOrNull,
 } from "@/lib/usage-pricing";
 
 describe("calculateEffectiveUsageCostUsd", () => {
-  it("adds reported and upstream inference costs", () => {
+  it("uses total reported cost instead of adding its upstream component", () => {
     expect(
       calculateEffectiveUsageCostUsd({
         model: "anthropic/claude-4.6-sonnet-20260217",
@@ -17,7 +18,7 @@ describe("calculateEffectiveUsageCostUsd", () => {
         reportedCostUsd: 0.0012,
         upstreamInferenceCostUsd: 0.0048,
       }),
-    ).toBeCloseTo(0.006);
+    ).toBeCloseTo(0.0012);
   });
 
   it("falls back to table pricing when reported cost is zero", () => {
@@ -35,6 +36,16 @@ describe("calculateEffectiveUsageCostUsd", () => {
 });
 
 describe("calculateUsageCostUsd", () => {
+  it("keeps strict lookup separate from the legacy Sonnet fallback", () => {
+    expect(lookupPricingOrNull("camel/anthropic/claude-sonnet-5:nitro")).toEqual(
+      lookupPricing("claude-sonnet-5"),
+    );
+    expect(lookupPricingOrNull("operator/private-model-v9")).toBeNull();
+    expect(lookupPricing("operator/private-model-v9")).toBe(
+      lookupPricing("claude-sonnet-5"),
+    );
+  });
+
   it("prices GPT-5.6 aliases and long prompts", () => {
     expect(lookupPricing("openai/gpt-5.6-terra")).toMatchObject({
       inputPerToken: 0.000002,
@@ -49,6 +60,12 @@ describe("calculateUsageCostUsd", () => {
       lookupPricing("gpt-5.6-luna"),
     );
     expect(lookupPricing("gpt-5.6")).toBe(lookupPricing("gpt-5.6-sol"));
+    expect(lookupPricingOrNull("openai.gpt-5.6-sol")).toBe(
+      lookupPricing("gpt-5.6-sol"),
+    );
+    expect(lookupPricingOrNull("openai.gpt-5.6-terra")).toBe(
+      lookupPricing("gpt-5.6-terra"),
+    );
     expect(
       calculateUsageCostUsd({
         model: "gpt-5.6-sol",

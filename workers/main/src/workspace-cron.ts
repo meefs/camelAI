@@ -1120,7 +1120,7 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
     const created = (await orgStub.createThread(
       workspace.id,
       `Scheduled: ${prompt.name}`,
-      "system",
+      prompt.created_by || "system",
       prompt.prompt.slice(0, 500),
       model,
       { source: "scheduled" },
@@ -1180,6 +1180,7 @@ export class WorkspaceCronDO extends DurableObject<WorkspaceCronEnv> {
         threadId,
         workspaceId: workspace.id,
         orgId: workspace.org_id,
+        userId: prompt.created_by,
         userName: "Scheduler",
         messageSource: "scheduled prompt",
         message: this.buildScheduledMessage(prompt, scheduledForMs),

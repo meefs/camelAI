@@ -620,6 +620,7 @@ export async function summarizePiMessages(
   completeSimple: typeof import("@earendil-works/pi-ai/compat").completeSimple,
   signal?: AbortSignal,
   previousSummary?: string,
+  hooks?: PiCompactionPullHooks,
 ): Promise<string> {
   const summaryMaxTokens = piSummaryMaxTokens(model);
   const inputTokenBudget = piSummaryInputTokenBudget(model, summaryMaxTokens);
@@ -630,6 +631,7 @@ export async function summarizePiMessages(
 
   let summary: string | undefined = previousSummary;
   for (const chunk of chunks) {
+    const pullId = crypto.randomUUID();
     summary = await summarizePiMessageChunk(
       chunk,
       model,
@@ -639,9 +641,20 @@ export async function summarizePiMessages(
       inputTokenBudget,
       signal,
       summary,
+      hooks,
+      pullId,
     );
   }
   return summary ?? "";
+}
+
+export interface PiCompactionPullHooks {
+  beforePull(pullId: string): Promise<void>;
+  afterPull(
+    response: AgentMessage,
+    pullId: string,
+    durationMs: number,
+  ): Promise<void>;
 }
 
 export function piSummaryMaxTokens(model: Model<any>): number {
@@ -692,6 +705,8 @@ export async function summarizePiMessageChunk(
   inputTokenBudget: number,
   signal?: AbortSignal,
   previousSummary?: string,
+  hooks?: PiCompactionPullHooks,
+  pullId = crypto.randomUUID(),
 ): Promise<string> {
   const serialized = messages
     .map((message) => serializePiMessageForSummary(message))
@@ -718,11 +733,14 @@ export async function summarizePiMessageChunk(
     maxTokens: summaryMaxTokens,
     ...(model.reasoning ? { reasoning: "high" as const } : {}),
   } as Parameters<typeof completeSimple>[2];
+  await hooks?.beforePull(pullId);
+  const startedAt = Date.now();
   const response = await completeSimple(
     model,
     summaryContext,
     summaryOptions,
   );
+  await hooks?.afterPull(response, pullId, Math.max(0, Date.now() - startedAt));
   if ((response as { stopReason?: unknown }).stopReason === "error") {
     const errorMessage = typeof (response as { errorMessage?: unknown }).errorMessage === "string"
       ? (response as { errorMessage: string }).errorMessage

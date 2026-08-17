@@ -681,6 +681,7 @@ Resources:
                 git checkout --detach "$REPOSITORY_REF"
                 bun install --frozen-lockfile
                 [ -f .env.selfhost ] || bun run selfhost:init
+                bun run selfhost:migrate-secrets
 
                 SELFHOST_AI_API_KEY=$(aws secretsmanager get-secret-value --secret-id "$SELFHOST_AI_API_KEY_SECRET_ARN" --query SecretString --output text)
                 [ -n "$SELFHOST_AI_API_KEY" ] && [ "$SELFHOST_AI_API_KEY" != None ]
@@ -800,6 +801,7 @@ Resources:
                 Type=oneshot
                 RemainAfterExit=yes
                 WorkingDirectory=/srv/camelai/repo
+                ExecStartPre=/usr/local/bin/bun run selfhost:migrate-secrets
                 ExecStartPre=/usr/local/bin/bun run selfhost:configure
                 ExecStartPre=/usr/local/sbin/camelai-selfhost-compose pull
                 ExecStart=/usr/local/sbin/camelai-selfhost-compose up --detach --remove-orphans --wait --wait-timeout 900

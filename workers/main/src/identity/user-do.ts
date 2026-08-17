@@ -246,99 +246,15 @@ export interface ProxyUsageInput {
   cache_read_input_tokens?: number;
 }
 
-export interface UsageRecordInput {
-  workspace_id?: string | null;
-  user_id?: string | null;
-  thread_id?: string | null;
-  model: string;
-  provider: string;
-  billing_source?: string | null;
-  credit_chargeable?: boolean | number | null;
-  input_tokens?: number | null;
-  output_tokens?: number | null;
-  cache_creation_input_tokens?: number | null;
-  cache_read_input_tokens?: number | null;
-  cost_usd?: number | null;
-  reported_cost_usd?: number | null;
-  upstream_inference_cost_usd?: number | null;
-  duration_ms?: number | null;
-  created_at_ms?: number | null;
-  source?: string | null;
-  source_id?: string | null;
-}
-
-export interface UsageLogQuery {
-  limit?: number | null;
-  cursor?: string | null;
-  from?: number | null;
-  to?: number | null;
-  chargeable_only?: boolean | number | null;
-}
-
-export interface UsageLogEntry {
-  [key: string]: SqlStorageValue;
-  id: number;
-  workspace_id: string;
-  user_id: string;
-  thread_id: string;
-  model: string;
-  provider: string;
-  billing_source: string;
-  credit_chargeable: number;
-  input_tokens: number;
-  output_tokens: number;
-  cache_creation_input_tokens: number;
-  cache_read_input_tokens: number;
-  cost_usd: number;
-  duration_ms: number;
-  created_at_ms: number;
-  source: string;
-  source_id: string;
-}
-
-export interface UsageLogPage {
-  org_id: string;
-  entries: UsageLogEntry[];
-  count: number;
-  has_more: boolean;
-  next_cursor: string | null;
-}
-
-export interface UsageLogSum {
-  org_id: string;
-  total_cost_usd: number;
-  total_requests: number;
-  total_input_tokens: number;
-  total_output_tokens: number;
-  total_cache_creation_input_tokens: number;
-  total_cache_read_input_tokens: number;
-}
-
-export interface OrgUsageSpend {
-  org_id: string;
-  total_cost_usd: number;
-  total_requests: number;
-  total_input_tokens: number;
-  total_output_tokens: number;
-  total_cache_creation_input_tokens: number;
-  total_cache_read_input_tokens: number;
-  windows: Array<{
-    label: string;
-    window_ms: number;
-    limit_usd: number;
-    spent_usd: number;
-    exceeded: boolean;
-  }>;
-}
-
-export interface OrgUsageLimits {
-  org_id: string;
-  limits: Array<{
-    window_hours: number;
-    limit_usd: number;
-    label?: string;
-  }>;
-}
+export type {
+  UsageRecordInput,
+  UsageLogQuery,
+  UsageLogEntry,
+  UsageLogPage,
+  UsageLogSum,
+  OrgUsageSpend,
+  OrgUsageLimits,
+} from "./org-do";
 
 export interface OrgBillingStateUpdate {
   billing_status?: BillingStatus;

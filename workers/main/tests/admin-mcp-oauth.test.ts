@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { env, SELF } from "cloudflare:test";
+import { env, runInDurableObject, SELF } from "cloudflare:test";
 import { AdminMcpOAuthProvider } from "../src/admin-mcp-oauth";
 import { getAppIndexDatabase } from "../src/app-index-db";
 import { handleAdminMcp } from "../src/routes/admin-mcp";
@@ -424,6 +424,9 @@ describe("admin MCP OAuth resource", () => {
           expect.objectContaining({ name: "list_bans" }),
           expect.objectContaining({ name: "grant_org_credits" }),
           expect.objectContaining({ name: "set_user_credits" }),
+          expect.objectContaining({ name: "get_user_llm_limits" }),
+          expect.objectContaining({ name: "set_user_llm_limits" }),
+          expect.objectContaining({ name: "set_llm_usage_pricing" }),
           expect.objectContaining({ name: "admin_js_exec" }),
         ]),
       },
@@ -434,6 +437,83 @@ describe("admin MCP OAuth resource", () => {
     expect(setCreditsTool.description).toContain(
       "without creating a grant ledger row",
     );
+    const usageTool = rpc.result.tools.find(
+      (tool: { name: string }) => tool.name === "get_org_usage",
+    );
+    const usageVariants = usageTool.inputSchema.oneOf as Array<{
+      properties: { view: { const: string } };
+      required: string[];
+    }>;
+    expect(usageVariants.find((variant) => variant.properties.view.const === "users")?.required)
+      .toEqual(expect.arrayContaining(["org_id", "view", "from", "to"]));
+    expect(usageVariants.find((variant) => variant.properties.view.const === "log_sum")?.required)
+      .toEqual(expect.arrayContaining(["org_id", "view", "from", "to"]));
+  });
+
+  it("delegates first-class LLM usage policy tools through the admin REST routes", async () => {
+    const { userId } = await createUser(
+      testEnv,
+      `admin-mcp-usage-${crypto.randomUUID()}@example.com`,
+      "password123",
+      "Usage Policy Admin",
+    );
+    const { org } = await createOrg(testEnv, "MCP Usage Policy Org", userId);
+    await updateUserProfile(testEnv, userId, { is_superuser: true });
+    const token = await issueAdminMcpToken(userId);
+    const call = async (name: string, args: Record<string, unknown>) => {
+      const response = await handleAdminMcp({
+        req: mcpRequest({
+          jsonrpc: "2.0",
+          id: crypto.randomUUID(),
+          method: "tools/call",
+          params: { name, arguments: args },
+        }, token),
+        env: testEnv,
+        ctx: {} as ExecutionContext,
+        url: new URL("https://example.com/api/admin/mcp"),
+        match: [] as unknown as RegExpMatchArray,
+      });
+      expect(response?.status).toBe(200);
+      return parseToolText(await response?.json());
+    };
+
+    await expect(call("set_llm_usage_pricing", {
+      org_id: org.id,
+      prices: [{
+        provider: "custom",
+        model: "mcp-model",
+        input_usd_per_million: 1,
+        output_usd_per_million: 2,
+      }],
+    })).resolves.toMatchObject({
+      status: 200,
+      body_json: { prices: [{ provider: "custom", model: "mcp-model" }] },
+    });
+    await expect(call("set_user_llm_limits", {
+      org_id: org.id,
+      user_id: userId,
+      limits: [{ window_hours: 24, limit_usd: 5, label: "daily" }],
+    })).resolves.toMatchObject({
+      status: 200,
+      body_json: { limits: [{ window_hours: 24, limit_usd: 5, label: "daily" }] },
+    });
+    await expect(call("get_user_llm_limits", {
+      org_id: org.id,
+      user_id: userId,
+    })).resolves.toMatchObject({
+      status: 200,
+      body_json: { status: { reason: "within_limits" } },
+    });
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+    await runInDurableObject(orgStub, (_instance, state) => {
+      expect(state.storage.sql.exec<{ updated_by: string }>(
+        "SELECT updated_by FROM llm_model_pricing_overrides WHERE provider = 'custom' AND model = 'mcp-model'",
+      ).one().updated_by).toBe(userId);
+      expect(state.storage.sql.exec<{ updated_by: string }>(
+        "SELECT updated_by FROM user_llm_usage_limits WHERE user_id = ?",
+        userId,
+      ).one().updated_by).toBe(userId);
+    });
   });
 
   it("lets superusers query chat errors through the dedicated MCP tool", async () => {

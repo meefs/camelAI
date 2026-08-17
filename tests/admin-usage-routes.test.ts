@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   OrgUsageLogSchema,
   OrgUsageLogSumSchema,
+  SetUserLlmLimitsBodySchema,
 } from '../workers/main/src/routes/admin/schemas.js';
 import { z } from 'zod';
 
@@ -26,6 +27,15 @@ const UsageLogSumQuerySchema = z.object({
 // ---------------------------------------------------------------------------
 
 describe('usage log query validation', () => {
+  it('rejects duplicate rolling limit windows', () => {
+    expect(SetUserLlmLimitsBodySchema.safeParse({
+      limits: [
+        { window_hours: 24, limit_usd: 1 },
+        { window_hours: 24, limit_usd: 2 },
+      ],
+    }).success).toBe(false);
+  });
+
   it('accepts limit up to 1000', () => {
     const result = UsageLogQuerySchema.safeParse({ limit: '1000' });
     expect(result.success).toBe(true);
@@ -160,6 +170,10 @@ describe('OrgUsageLogSchema', () => {
           cache_creation_input_tokens: 100,
           cache_read_input_tokens: 50,
           cost_usd: 0.015,
+          metered_cost_usd: 0.015,
+          cost_source: 'builtin_pricing',
+          usage_kind: 'llm',
+          usage_surface: 'agent',
           duration_ms: 3200,
           created_at_ms: 1710000000000,
         },

@@ -278,6 +278,10 @@ import {
   primaryPiThinkingLevel,
 } from "./chat-thread/pi-model-config";
 import { FREE_VLLM_PRIORITY } from "./hosted-vllm-priority";
+import {
+  assertUserLlmUsageAccess,
+  UserLlmUsageLimitError,
+} from "./user-llm-usage-policy";
 
 // Provider-level transient-retry ladder for Pi model streams.
 import {
@@ -1097,6 +1101,9 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   private cachedChatMemoryStatsAt = 0;
   private titleGenerationInFlight: boolean = false;
   private activeTurnUserId: string | null = null;
+  private llmUsageSettlementChain: Promise<void> = Promise.resolve();
+  private pendingLlmUsageSettlements: Array<() => Promise<void>> = [];
+  private pendingPiPostTurnCompactionUserId: string | null = null;
   private workspaceStatusStubs = new Map<string, DurableObjectStub<WorkspaceDO>>();
   // Trailing-debounce state for coalescing WorkspaceDO.recordThreadStreaming
   // running-activity updates. This is a per-thread DO, so a single pending entry
@@ -1157,6 +1164,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   private piCurrentBillingSource: PiBillingSource = "hosted";
   private piCurrentCreditChargeable: boolean = false;
   private piCurrentUsageProvider: string | null = null;
+  private piCurrentUsageModel: string | null = null;
   private piTurnLastProgressAtMs: number = 0;
   // In-process transient-retry state (see PI_TURN_TRANSIENT_RETRY_ATTEMPTS).
   // agent_end defers terminal surfacing of a retryable provider error by
@@ -5961,16 +5969,16 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     // single canonical timestamp shared by the message we persist below and the
     // one sendRunnerCommand prompts Pi with, so both carry the same
     // piCoreMessageKey and the turn-end commit dedups instead of double-storing.
+    const joinsExistingTurn = this.isThreadStreaming();
     const startsNewTurn =
-      options.persistUserMessageImmediately === true &&
-      (this.piSession
-        ? !this.piSession.state.isStreaming
-        : this.readPiActiveTurn() === null);
+      options.persistUserMessageImmediately === true && !joinsExistingTurn;
     const turnTimestamp = Date.now();
 
     let sent = false;
     try {
-      this.setActiveTurnUserId(context.userId);
+      // Steering is authored by the new sender but remains part of the
+      // initiator's provider turn for billing attribution.
+      if (!joinsExistingTurn) this.setActiveTurnUserId(context.userId);
       // Turn-start bookkeeping runs from agent_start once the run begins; the
       // spinner turns on via the derived sync after the fiber row is created (below).
       this.publishRunningUserMessageActivity(rawContent);
@@ -6001,7 +6009,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       });
     } catch (error) {
       this.finishTurn();
-      this.setActiveTurnUserId(null);
+      if (!joinsExistingTurn) this.setActiveTurnUserId(null);
       throw error;
     }
     if (!sent) {
@@ -6011,7 +6019,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         clear: true,
       });
       this.finishTurn();
-      this.setActiveTurnUserId(null);
+      if (!joinsExistingTurn) this.setActiveTurnUserId(null);
       return { status: "error", error: "Failed to send message" };
     }
 
@@ -7457,10 +7465,13 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
             current.apiKey,
             completeSimple,
             signal,
+            { context, modelConfig: current, userId: this.getActiveTurnUserId() },
           );
         }),
       getApiKey: async () => {
+        const requestUserId = this.getActiveTurnUserId();
         const current = await resolveCurrentModel();
+        await this.assertPiUserLlmUsageAccess(context, current, requestUserId);
         if (this.piSession) {
           this.piSession.state.model = capPiMainRequestOutput(current.model);
           this.refreshPiSessionCapabilitySurface(context, envVars);
@@ -7543,6 +7554,11 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     apiKey: string,
     completeSimple: typeof import("@earendil-works/pi-ai/compat").completeSimple,
     signal?: AbortSignal,
+    metering?: {
+      context: ChatContextState;
+      modelConfig: PiResolvedModelConfig;
+      userId: string | null;
+    },
   ): Promise<AgentMessage[]> {
     const degraded = this.piDegradedResumeAttempt;
     // The ONE estimate of this request. It used to be computed three times
@@ -7557,6 +7573,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       contextTokens: footprint.tokens,
       contextBytes: footprint.bytes,
       outcome,
+      metering,
     };
     const compacted = await this.compactPiContext(
       messages,
@@ -7653,6 +7670,11 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       byteCeiling?: number;
       /** Written by this method so the caller can report what the request did. */
       outcome?: PiCompactionOutcome;
+      metering?: {
+        context: ChatContextState;
+        modelConfig: PiResolvedModelConfig;
+        userId: string | null;
+      };
     } = {},
   ): Promise<AgentMessage[]> {
     const force = options.force === true;
@@ -7797,6 +7819,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       }
     };
     try {
+      const metering = options.metering;
       const summary = await summarizePiMessages(
         messagesToSummarize,
         model,
@@ -7804,6 +7827,30 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         completeSimple,
         signal,
         previousSummary,
+        metering
+          ? {
+              beforePull: () => this.assertPiUserLlmUsageAccess(
+                metering.context,
+                metering.modelConfig,
+                metering.userId,
+              ),
+              afterPull: (response, pullId, durationMs) =>
+                this.recordPiAssistantUsage(
+                  response,
+                  durationMs,
+                  metering.modelConfig.billingSource,
+                  metering.modelConfig.creditChargeable,
+                  metering.modelConfig.usageProvider,
+                  {
+                    userId: metering.userId,
+                    model: metering.modelConfig.model.id,
+                    usageSurface: "compaction",
+                    sourceScope: `${metering.context.threadId}:compaction:${pullId}`,
+                    source: "pi_compaction",
+                  },
+                ),
+            }
+          : undefined,
       );
       recordCut(summary);
       return finish(
@@ -7811,6 +7858,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         "summarized",
       );
     } catch (error) {
+      if (error instanceof UserLlmUsageLimitError) throw error;
       console.error("[ChatThreadDO] Pi context compaction failed", error);
       const fallbackSummary = createFallbackPiCompactionSummary(
         messagesToSummarize,
@@ -7872,6 +7920,8 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       return;
     }
 
+    const initiatingUserId = this.getActiveTurnUserId();
+    this.pendingPiPostTurnCompactionUserId = initiatingUserId;
     this.ctx.waitUntil(
       this.compactPiContextAfterTurn(latestAssistant).catch((error) => {
         console.error("[ChatThreadDO] Pi post-turn compaction failed", error);
@@ -7879,9 +7929,13 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     );
   }
 
-  private async compactPiContextAfterTurn(triggerMessage: AgentMessage): Promise<void> {
+  private async compactPiContextAfterTurn(
+    triggerMessage: AgentMessage,
+  ): Promise<void> {
     const resolver = this.piModelResolver;
     const session = this.piSession;
+    const initiatingUserId = this.pendingPiPostTurnCompactionUserId;
+    this.pendingPiPostTurnCompactionUserId = null;
     if (!resolver || !session) return;
 
     // `agent_end` fires from inside the Pi run, and `isStreaming` is only
@@ -7913,6 +7967,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     }
 
     const before = session.state.messages;
+    const context = this.chatContext;
     const compacted = await this.compactPiContext(
       before,
       current.model,
@@ -7921,7 +7976,12 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       undefined,
       // Already threshold-gated by shouldCompactPiAfterAssistantUsage above, so no
       // extra floor; the session is idle here, so every index is committed.
-      { force: true },
+      {
+        force: true,
+        ...(context
+          ? { metering: { context, modelConfig: current, userId: initiatingUserId } }
+          : {}),
+      },
     );
     if (compacted === before || session.state.isStreaming || session.state.messages !== before) {
       return;
@@ -7971,7 +8031,10 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       context,
       envVars,
       getModelFn,
-    );
+    ).then((modelConfig) => {
+      if (!sponsoredCapability) this.piCurrentUsageModel = modelConfig.model.id;
+      return modelConfig;
+    });
   }
 
   private resolvePiRequestConfig(
@@ -8117,6 +8180,47 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     return value;
   }
 
+  private async assertPiUserLlmUsageAccess(
+    context: ChatContextState,
+    modelConfig: PiResolvedModelConfig,
+    userId: string | null = this.getActiveTurnUserId(),
+  ): Promise<void> {
+    if (!userId) return;
+    try {
+      await this.awaitPiUsageSettlements();
+    } catch {
+      recordObservabilityEvent(this.env, {
+        event: "user_llm_usage_limit_denied",
+        severity: "error",
+        component: "chat_thread",
+        operation: "await_usage_settlement",
+        status: "usage_policy_unavailable",
+        orgId: context.orgId,
+        workspaceId: context.workspaceId,
+        threadId: context.threadId,
+        userId,
+        provider: modelConfig.usageProvider,
+        model: modelConfig.model.id,
+      });
+      throw new UserLlmUsageLimitError(
+        "usage_policy_unavailable",
+        null,
+        modelConfig.usageProvider,
+        modelConfig.model.id,
+      );
+    }
+    const orgStub = this.env.ORG.get(this.env.ORG.idFromName(context.orgId));
+    await assertUserLlmUsageAccess(orgStub, {
+      env: this.env,
+      orgId: context.orgId,
+      workspaceId: context.workspaceId,
+      threadId: context.threadId,
+      userId,
+      provider: modelConfig.usageProvider || modelConfig.model.provider,
+      model: modelConfig.model.id,
+    });
+  }
+
   private resolveCurrentByokCredentials(
     context: ChatContextState,
     options: { includeOpenAiSubscription: boolean },
@@ -8231,14 +8335,17 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       consumeCapabilityAllowance: (context, capability, idempotencyKey) =>
         this.consumeCapabilityAllowance(context, capability, idempotencyKey),
       piModelResolver: () => this.piModelResolver,
+      activeTurnUserId: () => this.getActiveTurnUserId(),
+      assertUserLlmUsageAccess: (context, modelConfig, userId) =>
+        this.assertPiUserLlmUsageAccess(context, modelConfig, userId),
       afterPiToolCall: (toolContext, signal, options) =>
         this.afterPiToolCall(toolContext, signal, options),
       beforePiToolCall: (toolContext, signal) =>
         this.beforePiToolCall(toolContext, signal),
       streamPiModel: (model, llmContext, options, streamSimple) =>
         this.streamPiModel(model, llmContext, options, streamSimple),
-      recordPiAssistantUsage: (message, durationMs, billingSource, creditChargeable, usageProvider) =>
-        this.recordPiAssistantUsage(message, durationMs, billingSource, creditChargeable, usageProvider),
+      recordPiAssistantUsage: (message, durationMs, billingSource, creditChargeable, usageProvider, attribution) =>
+        this.recordPiAssistantUsage(message, durationMs, billingSource, creditChargeable, usageProvider, attribution),
       waitUntil: (promise) => this.ctx.waitUntil(promise),
       createPiToolDefinitions: (context, options) =>
         this.createPiToolDefinitions(context, options),
@@ -8411,6 +8518,38 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     }
 
     if (event.type === "turn_end") {
+      // Failed and user-aborted responses can still contain provider-reported
+      // usage (for example, a stream that fails after emitting billable
+      // tokens). Meter before the transcript-specific early returns so every
+      // completed provider pull with usage reaches the settlement queue.
+      const durationMs = this.piTurnStartedAtMs
+        ? Date.now() - this.piTurnStartedAtMs
+        : 0;
+      const billingSource = this.piCurrentBillingSource;
+      const creditChargeable = this.piCurrentCreditChargeable;
+      const usageProvider = this.piCurrentUsageProvider;
+      const usageUserId = this.getActiveTurnUserId();
+      this.ctx.waitUntil(
+        this.recordPiAssistantUsage(
+          event.message,
+          durationMs,
+          billingSource,
+          creditChargeable,
+          usageProvider,
+          {
+            userId: usageUserId,
+            model:
+              (event.message as AgentMessage & { model?: string }).model ||
+              this.piCurrentUsageModel ||
+              undefined,
+            usageSurface: "agent",
+            sourceScope: this.piRuntimeThreadId(),
+          },
+        ).catch((error) => {
+          console.error("[ChatThreadDO] failed to record Pi usage", error);
+        }),
+      );
+
       if (
         this.piUserStopRequestedAtMs > 0 &&
         isAbortedPiAssistantMessage(event.message)
@@ -8439,12 +8578,6 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       // This turn is committed to pi_core_messages; drop its journaled tail (the
       // agent run may still have more turns, which will re-journal their tail).
       this.clearPiTurnJournal();
-      const durationMs = this.piTurnStartedAtMs
-        ? Date.now() - this.piTurnStartedAtMs
-        : 0;
-      const billingSource = this.piCurrentBillingSource;
-      const creditChargeable = this.piCurrentCreditChargeable;
-      const usageProvider = this.piCurrentUsageProvider;
       this.piLastTurnUsage = piRuntimeUsageSummary(event.message);
       this.piSdkTurnUsageTotal = addPiRuntimeUsageSummaries(
         this.piSdkTurnUsageTotal,
@@ -8458,17 +8591,6 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         ...(usageProvider ? { provider: usageProvider } : {}),
         ...(this.piLastTurnUsage ? { usage: this.piLastTurnUsage } : {}),
       });
-      this.ctx.waitUntil(
-        this.recordPiAssistantUsage(
-          event.message,
-          durationMs,
-          billingSource,
-          creditChargeable,
-          usageProvider,
-        ).catch((error) => {
-          console.error("[ChatThreadDO] failed to record Pi usage", error);
-        }),
-      );
     }
 
     if (event.type === "message_update") {
@@ -8819,8 +8941,86 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     billingSource: PiBillingSource,
     creditChargeable: boolean,
     usageProvider?: string | null,
+    attribution: {
+      userId: string | null;
+      model?: string;
+      usageSurface: "agent" | "subagent" | "compaction";
+      sourceScope?: string;
+      source?: "pi_assistant" | "pi_compaction";
+    } = {
+      userId: this.getActiveTurnUserId(),
+      usageSurface: "agent",
+    },
   ): Promise<void> {
-    if (message.role !== "assistant" || !this.chatContext) return;
+    const context = this.chatContext;
+    if (message.role !== "assistant" || !context) return;
+    const immutableContext = { ...context };
+    const createdAtMs = Date.now();
+    const job = () => this.recordPiAssistantUsageSettled(
+      message,
+      durationMs,
+      billingSource,
+      creditChargeable,
+      usageProvider,
+      attribution,
+      immutableContext,
+      createdAtMs,
+    );
+    const queue = (this.pendingLlmUsageSettlements ??= []);
+    queue.push(job);
+    const settlement = (this.llmUsageSettlementChain ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(() => this.drainPiUsageSettlements());
+    this.llmUsageSettlementChain = settlement;
+    return settlement;
+  }
+
+  private async awaitPiUsageSettlements(): Promise<void> {
+    try {
+      await (this.llmUsageSettlementChain ?? Promise.resolve());
+      return;
+    } catch (error) {
+      if (!(this.pendingLlmUsageSettlements?.length > 0)) throw error;
+    }
+
+    // A failed job remains at the head of the in-memory queue with the same
+    // deterministic source/source_id inputs. Retry it before policy evaluation
+    // so recovery cannot bypass spend that should have settled. Isolate
+    // eviction remains the recovery boundary; provider-response journaling is
+    // intentionally a separate durability project.
+    const retry = (this.llmUsageSettlementChain ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(() => this.drainPiUsageSettlements());
+    this.llmUsageSettlementChain = retry;
+    await retry;
+  }
+
+  private async drainPiUsageSettlements(): Promise<void> {
+    const queue = (this.pendingLlmUsageSettlements ??= []);
+    while (queue.length > 0) {
+      const job = queue[0];
+      await job();
+      queue.shift();
+    }
+  }
+
+  private async recordPiAssistantUsageSettled(
+    message: AgentMessage,
+    durationMs: number,
+    billingSource: PiBillingSource,
+    creditChargeable: boolean,
+    usageProvider: string | null | undefined,
+    attribution: {
+      userId: string | null;
+      model?: string;
+      usageSurface: "agent" | "subagent" | "compaction";
+      sourceScope?: string;
+      source?: "pi_assistant" | "pi_compaction";
+    },
+    context: ChatContextState,
+    createdAtMs: number,
+  ): Promise<void> {
+    if (message.role !== "assistant") return;
 
     const assistant = message as AgentMessage & {
       provider?: string;
@@ -8854,10 +9054,12 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       return;
     }
 
-    const context = this.chatContext;
+    const immutableAssistant = Number.isFinite(Number(assistant.timestamp))
+      ? assistant
+      : { ...assistant, timestamp: createdAtMs };
     const usageSourceId = piUsageSourceId(
-      context.threadId,
-      assistant,
+      attribution.sourceScope || context.threadId,
+      immutableAssistant,
       inputTokens,
       outputTokens,
       cacheReadTokens,
@@ -8870,23 +9072,25 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       () =>
         getOrgStub().recordUsage({
           workspace_id: context.workspaceId,
-          user_id: context.userId ?? "",
+          user_id: attribution.userId ?? "",
           thread_id: context.threadId,
-          model: assistant.responseModel || assistant.model || "unknown",
+          model: attribution.model || assistant.model || "unknown",
           provider: usageProvider || assistant.provider || "unknown",
           billing_source: billingSource,
           credit_chargeable: billingSource === "hosted" && creditChargeable,
+          usage_kind: "llm",
+          usage_surface: attribution.usageSurface,
           input_tokens: inputTokens,
           output_tokens: outputTokens,
           cache_creation_input_tokens: cacheWriteTokens,
           cache_read_input_tokens: cacheReadTokens,
-          cost_usd:
+          estimated_cost_usd:
             typeof usage.cost?.total === "number" && usage.cost.total > 0
               ? usage.cost.total
               : undefined,
           duration_ms: durationMs,
-          created_at_ms: Date.now(),
-          source: "pi_assistant",
+          created_at_ms: createdAtMs,
+          source: attribution.source ?? "pi_assistant",
           source_id: usageSourceId,
         }),
       { attempts: 4, initialDelayMs: 150 },

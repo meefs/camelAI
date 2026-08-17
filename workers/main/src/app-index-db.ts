@@ -1875,6 +1875,19 @@ export class AppIndexDatabase {
     return rows.map((u) => ({ ...u, avatar: { color: u.avatar_color || '#666', content: u.avatar_content || 'U' }, is_superuser: u.is_superuser === 1, is_orphaned: u.is_orphaned === 1, signup_ip: u.signup_ip ?? null }));
   }
 
+  async getUsersByIds(userIds: string[]): Promise<AdminUserSummaryRow[]> {
+    const normalizedUserIds = Array.from(
+      new Set(userIds.map((userId) => userId.trim()).filter((userId) => userId.length > 0)),
+    );
+    if (normalizedUserIds.length === 0) return [];
+    const rows = await this.all<any>(`
+      SELECT u.*
+      FROM users u
+      WHERE u.id IN (SELECT value FROM json_each(?))
+    `, JSON.stringify(normalizedUserIds));
+    return rows.map((u) => ({ ...u, avatar: { color: u.avatar_color || '#666', content: u.avatar_content || 'U' }, is_superuser: u.is_superuser === 1, is_orphaned: u.is_orphaned === 1, signup_ip: u.signup_ip ?? null }));
+  }
+
   async getThreadsByOrgIds(orgIds: string[]): Promise<AdminThreadListRow[]> {
     const normalizedOrgIds = Array.from(
       new Set(orgIds.map((orgId) => orgId.trim()).filter((orgId) => orgId.length > 0)),

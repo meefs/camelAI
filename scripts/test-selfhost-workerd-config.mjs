@@ -19,6 +19,15 @@ function includesAll(actual, expected, label) {
 }
 
 async function main() {
+  const generatorSource = await fs.readFile(
+    path.join(repoRoot, 'scripts/selfhost-workerd-config.mjs'),
+    'utf8',
+  );
+  assert(
+    generatorSource.includes("ADMIN_API_KEY: ''") &&
+      !generatorSource.includes('selfhost-admin-api-key-change-me'),
+    'workerd config must fail closed when ADMIN_API_KEY is absent',
+  );
   const wranglerPath = path.join(repoRoot, 'build/server/wrangler.json');
   await fs.access(wranglerPath).catch(() => {
     throw new Error('Missing build/server/wrangler.json. Run `bun run build:cf` first.');
@@ -66,6 +75,7 @@ description: Follow ACME runbooks. Use when shipping internal tools.
       LOCAL_AUTH_USER_NAME: 'Self-host Operator',
       TURNSTILE_SITE_KEY: 'process-turnstile-site',
       TURNSTILE_SECRET_KEY: 'process-turnstile-secret',
+      ADMIN_API_KEY: 'process-admin-api-key-test-only',
     },
     encoding: 'utf8',
   });
@@ -92,6 +102,7 @@ description: Follow ACME runbooks. Use when shipping internal tools.
     'LOCAL_AUTH_USER_NAME',
     'TURNSTILE_SITE_KEY',
     'TURNSTILE_SECRET_KEY',
+    'ADMIN_API_KEY',
   ], 'vars');
   assert(!bindings.vars.includes('PROJECT_REPO_PROVIDER'), 'PROJECT_REPO_PROVIDER must not be a self-host var');
   assert(!bindings.vars.includes('R2_PARENT_ACCESS_KEY_ID'), 'Cloudflare dev R2 credentials must not leak into self-host vars');
@@ -158,6 +169,7 @@ description: Follow ACME runbooks. Use when shipping internal tools.
     ['LOCAL_AUTH_USER_NAME', 'Self-host Operator'],
     ['TURNSTILE_SITE_KEY', 'process-turnstile-site'],
     ['TURNSTILE_SECRET_KEY', 'process-turnstile-secret'],
+    ['ADMIN_API_KEY', 'process-admin-api-key-test-only'],
   ]) {
     assert(
       config.includes(`(name = "${name}", text = "${value}")`),

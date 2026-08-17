@@ -70,6 +70,95 @@ sidecars, which are unreachable through a nested Compose bridge. The app still
 listens on `SELFHOST_BIND_ADDRESS` (default `127.0.0.1`), so keep that loopback
 default and put the deployment behind the documented reverse proxy.
 
+## Per-user LLM usage limits
+
+`selfhost:init` generates a distinct `ADMIN_API_KEY` in `.env.selfhost`. The
+operator API accepts it as a bearer token; keep it on the host and never pass it
+to project containers, sandbox code, or deployed apps. The CloudFormation and
+Terraform single-node installers also run `selfhost:init`, so they generate and
+retain the same separate secret in the installation's `0600` environment file.
+Upgrades preserve that file. Backups intentionally exclude it along with the
+other operator-owned secrets, so retain the environment file in your normal
+secret backup system.
+
+For an existing source-mode installation created before this key existed, run
+`bun run selfhost:migrate-secrets` once. `selfhost:up` also performs that
+idempotent migration automatically.
+
+Run the following commands on the installation host. They read only the two
+needed values with the self-host dotenv parser (without sourcing or exporting
+the rest of the environment) and use the loopback app URL, which bypasses the
+interactive Pomerium login protecting the public URL:
+
+```bash
+ADMIN_API_KEY="$(bun -e 'const {readSelfhostEnv}=await import("./scripts/selfhost-common.mjs"); process.stdout.write((await readSelfhostEnv(true)).ADMIN_API_KEY || "")')"
+BASE_URL="$(bun -e 'const {readSelfhostEnv}=await import("./scripts/selfhost-common.mjs"); process.stdout.write((await readSelfhostEnv(true)).SELFHOST_INTERNAL_APP_URL || "http://127.0.0.1:3001")')"
+curl -fsS -H "Authorization: Bearer ${ADMIN_API_KEY}" \
+  "${BASE_URL}/api/admin/orgs?limit=100"
+curl -fsS -H "Authorization: Bearer ${ADMIN_API_KEY}" \
+  "${BASE_URL}/api/admin/users?limit=100"
+```
+
+Inspect one rolling report and its exact provider/model pricing discovery. The
+report range is inclusive at `from` and exclusive at `to`:
+
+```bash
+NOW_MS=$(date +%s000)
+FROM_MS=$((NOW_MS - 30 * 24 * 60 * 60 * 1000))
+curl -fsS -H "Authorization: Bearer ${ADMIN_API_KEY}" \
+  "${BASE_URL}/api/admin/orgs/${ORG_ID}/usage/users?from=${FROM_MS}&to=${NOW_MS}"
+curl -fsS -H "Authorization: Bearer ${ADMIN_API_KEY}" \
+  "${BASE_URL}/api/admin/orgs/${ORG_ID}/usage/pricing"
+```
+
+Custom model IDs must have exact pricing before a limited member can use them.
+An all-zero override is valid for an operator-owned model that is genuinely
+free. Pricing `PUT` is a full replacement, not an upsert: first `GET` the
+current list, merge the change, and send the complete desired `prices` array.
+The following is safe only when this is the complete desired list:
+
+```bash
+curl -fsS -X PUT -H "Authorization: Bearer ${ADMIN_API_KEY}" \
+  -H 'Content-Type: application/json' \
+  --data '{"prices":[{"provider":"custom","model":"acme-code-70b","input_usd_per_million":0.8,"output_usd_per_million":2.4,"cache_creation_usd_per_million":1,"cache_read_usd_per_million":0.08}]}' \
+  "${BASE_URL}/api/admin/orgs/${ORG_ID}/usage/pricing"
+```
+
+Set simultaneous rolling limits, or clear them with an empty list:
+
+```bash
+curl -fsS -X PUT -H "Authorization: Bearer ${ADMIN_API_KEY}" \
+  -H 'Content-Type: application/json' \
+  --data '{"limits":[{"window_hours":24,"limit_usd":5,"label":"daily"},{"window_hours":720,"limit_usd":50,"label":"30-day"}]}' \
+  "${BASE_URL}/api/admin/orgs/${ORG_ID}/usage/users/${USER_ID}/limits"
+
+curl -fsS -X PUT -H "Authorization: Bearer ${ADMIN_API_KEY}" \
+  -H 'Content-Type: application/json' --data '{"limits":[]}' \
+  "${BASE_URL}/api/admin/orgs/${ORG_ID}/usage/users/${USER_ID}/limits"
+```
+
+Limits are rolling stop-new-pull soft caps. A pull already accepted can cross a
+cap, and concurrent pulls can settle afterward; the next pull is denied. With
+an active limit, an unknown requested model or any unpriced LLM row still in an
+active window fails closed. Adding an override makes future pulls for that exact
+provider/model eligible, but historical rows are never repriced: an existing
+unpriced row continues to block until it ages out of every configured window or
+the operator clears the affected user's policy. Main/child agents, context
+compaction, and attributable virtual-AI calls count. Auxiliary title,
+completion-summary, and chat-group icon generation is not covered in this
+version.
+
+When finished, remove the key from the shell:
+
+```bash
+unset ADMIN_API_KEY BASE_URL
+```
+
+Within a live chat-thread isolate, a failed accounting write is retained and
+retried with the same idempotency key before another model pull. That pending
+retry queue is currently isolate-local; eviction during an accounting outage is
+the remaining recovery boundary.
+
 ## Capability contract
 
 `GET /api/selfhost/health` is both the readiness endpoint and the
