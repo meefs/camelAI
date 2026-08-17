@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   deriveUiMessagesFromParsedPiCore,
+  deriveUiMessagesWithRowAnchors,
   overlayLiveUiMessages,
   type PiParsedRenderMessage,
 } from "@/lib/derive-ui-messages-from-pi-core";
@@ -264,5 +265,101 @@ describe("overlayLiveUiMessages", () => {
         (message) => message.id,
       ),
     ).toEqual(["pi_user_1000_0", "resp-old", "pi_user_2000_2", "resp-new"]);
+  });
+});
+
+describe("deriveUiMessagesWithRowAnchors", () => {
+  it("reports a fold's first and last input row so a window cannot split it", () => {
+    const parsed: PiParsedRenderMessage[] = [
+      user({ id: "pi_user_1_0", created_at: 1, content: "q" }),
+      assistant({
+        id: "resp-a",
+        created_at: 2,
+        content: [{ type: "text", text: "part 1" }],
+        renderMessageId: "turn-1",
+      }),
+      user({
+        id: "pi_user_3_2",
+        created_at: 3,
+        content: "steer",
+        renderMessageId: "client-steer",
+      }),
+      assistant({
+        id: "resp-b",
+        created_at: 4,
+        content: [{ type: "text", text: "part 2" }],
+        renderMessageId: "turn-1",
+      }),
+    ];
+
+    const derived = deriveUiMessagesWithRowAnchors(parsed);
+    expect(derived.messages.map((message) => message.id)).toEqual([
+      "pi_user_1_0",
+      "turn-1",
+      "client-steer",
+    ]);
+    expect(derived.anchorIndexes).toEqual([0, 1, 2]);
+    // The fold's span reaches row 3, PAST the steer bubble that sorts after it.
+    expect(derived.endIndexes).toEqual([0, 3, 2]);
+    expect(deriveUiMessagesFromParsedPiCore(parsed)).toEqual(derived.messages);
+  });
+
+  it("reports anchors in input space when compaction summaries are filtered", () => {
+    const parsed: PiParsedRenderMessage[] = [
+      user({
+        id: "summary",
+        created_at: 1,
+        content: "summary",
+        isCompactSummary: true,
+      }),
+      user({ id: "pi_user_2_1", created_at: 2, content: "q" }),
+    ];
+    const derived = deriveUiMessagesWithRowAnchors(parsed);
+    expect(derived.messages.map((message) => message.id)).toEqual(["pi_user_2_1"]);
+    expect(derived.anchorIndexes).toEqual([1]);
+    expect(derived.endIndexes).toEqual([1]);
+  });
+});
+
+describe("overlayLiveUiMessages append bounds", () => {
+  const settled = [
+    {
+      id: "settled-new",
+      role: "user",
+      parts: [{ type: "text", text: "newest settled", state: "done" }],
+      metadata: { pi: { createdAtMs: 5_000 } },
+    },
+  ] as UIMessage[];
+  const live = [
+    {
+      id: "older-archive-row",
+      role: "assistant",
+      parts: [{ type: "text", text: "an older page's row", state: "done" }],
+      metadata: { pi: { createdAtMs: 1_000 } },
+    },
+    {
+      id: "in-flight",
+      role: "assistant",
+      parts: [{ type: "text", text: "streaming", state: "streaming" }],
+      metadata: { pi: { createdAtMs: 6_000 } },
+    },
+  ] as UIMessage[];
+
+  it("appends only rows at or after the window's newest settled message", () => {
+    expect(
+      overlayLiveUiMessages(settled, live, {
+        activeTurnId: null,
+        appendLiveOnlyNewerThanMs: 5_000,
+      }).map((message) => message.id),
+    ).toEqual(["settled-new", "in-flight"]);
+  });
+
+  it("appends nothing for an older page", () => {
+    expect(
+      overlayLiveUiMessages(settled, live, {
+        activeTurnId: null,
+        appendLiveOnly: false,
+      }).map((message) => message.id),
+    ).toEqual(["settled-new"]);
   });
 });

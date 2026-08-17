@@ -29,6 +29,21 @@ export interface PiParsedRenderMessage {
 }
 
 /**
+ * A derive pass plus the row provenance of every message it produced.
+ *
+ * `anchorIndexes[i]` / `endIndexes[i]` are indexes into the INPUT `parsed` array:
+ * the first and last row folded into message `i` (equal for an unfolded row).
+ * A windowed reader needs them to answer the only two questions pagination asks
+ * of the fold — "which pi_core row does this message start at" (the cursor it
+ * publishes) and "where does its turn end" (the boundary a window may not cut).
+ */
+export interface DerivedUiMessagesWithRowAnchors {
+  messages: UIMessage[];
+  anchorIndexes: number[];
+  endIndexes: number[];
+}
+
+/**
  * Derive settled UIMessages from parsed pi_core rows.
  *
  * Pure transform: fold multi-SDK-turn assistants sharing a renderMessageId,
@@ -39,10 +54,32 @@ export interface PiParsedRenderMessage {
 export function deriveUiMessagesFromParsedPiCore(
   parsed: readonly PiParsedRenderMessage[],
 ): UIMessage[] {
+  return deriveUiMessagesWithRowAnchors(parsed).messages;
+}
+
+/**
+ * {@link deriveUiMessagesFromParsedPiCore} with row provenance. The two share
+ * ONE implementation on purpose: the storage-boundary pager pages by turn, so a
+ * second copy of the grouping rules is the corruption risk (a window that cuts
+ * a fold emits a partial message under an id another page also emits).
+ */
+export function deriveUiMessagesWithRowAnchors(
+  parsed: readonly PiParsedRenderMessage[],
+): DerivedUiMessagesWithRowAnchors {
   // Drop compaction summaries before indexing so steer fold positions stay
-  // aligned with the visible transcript.
-  const visible = parsed.filter((row) => row.isCompactSummary !== true);
-  if (visible.length === 0) return [];
+  // aligned with the visible transcript. `visibleToParsed` carries the input
+  // index of every surviving row so anchors are reported in INPUT space.
+  const visible: PiParsedRenderMessage[] = [];
+  const visibleToParsed: number[] = [];
+  for (let index = 0; index < parsed.length; index += 1) {
+    const row = parsed[index];
+    if (row.isCompactSummary === true) continue;
+    visible.push(row);
+    visibleToParsed.push(index);
+  }
+  if (visible.length === 0) {
+    return { messages: [], anchorIndexes: [], endIndexes: [] };
+  }
 
   const convertedByIndex = new Map<number, UIMessage>();
   const convertAt = (index: number): UIMessage => {
@@ -86,6 +123,7 @@ export function deriveUiMessagesFromParsedPiCore(
 
   const stampedAssistantIndexes = new Set<number>();
   const foldedAssistantByFirstIndex = new Map<number, UIMessage>();
+  const foldedLastIndexByFirstIndex = new Map<number, number>();
   for (const [renderMessageId, indexes] of assistantIndexesByStamp) {
     for (const index of indexes) stampedAssistantIndexes.add(index);
 
@@ -142,19 +180,34 @@ export function deriveUiMessagesFromParsedPiCore(
       parts,
       metadata: { pi },
     } as UIMessage);
+    // The fold's span INCLUDES rows interposed between its assistant commits
+    // (steer user rows, whose markers are folded in above): a window that ends
+    // inside that span would split the turn.
+    foldedLastIndexByFirstIndex.set(
+      firstIndex,
+      indexes[indexes.length - 1],
+    );
   }
 
   const uiMessages: UIMessage[] = [];
+  const anchorIndexes: number[] = [];
+  const endIndexes: number[] = [];
   for (let index = 0; index < visible.length; index += 1) {
     if (stampedAssistantIndexes.has(index)) {
       const folded = foldedAssistantByFirstIndex.get(index);
       if (!folded) continue;
       uiMessages.push(folded);
+      anchorIndexes.push(visibleToParsed[index]);
+      endIndexes.push(
+        visibleToParsed[foldedLastIndexByFirstIndex.get(index) ?? index],
+      );
       continue;
     }
     uiMessages.push(convertAt(index));
+    anchorIndexes.push(visibleToParsed[index]);
+    endIndexes.push(visibleToParsed[index]);
   }
-  return uiMessages;
+  return { messages: uiMessages, anchorIndexes, endIndexes };
 }
 
 /**
@@ -169,11 +222,28 @@ export function deriveUiMessagesFromParsedPiCore(
  *   live-minted turn ids).
  * - Remaining live-only rows (just-sent user, in-flight assistant not yet in
  *   pi_core) append at the end — skipped when role+createdAtMs already settled.
+ *
+ * `appendLiveOnly: false` keeps ONLY the replacements. An OLDER page is a window
+ * in the middle of the transcript: live-only rows belong at the transcript's
+ * newest end (where the full-array overlay always put them), so appending them
+ * to an older page would show them twice.
+ *
+ * `appendLiveOnlyNewerThanMs` bounds the append for a WINDOWED `settled`. Over a
+ * full transcript, "unmatched" meant "genuinely live"; over a window it also
+ * catches every resident row belonging to an OLDER part of the transcript (a
+ * pre-compaction archive row, the mirror of a message on an older page) — which
+ * would then be appended as if it were the newest thing in the thread. A live-only
+ * row is appended only when it carries no pi timestamp (a fresh skeleton) or one
+ * at/after the window's newest settled message.
  */
 export function overlayLiveUiMessages(
   settled: UIMessage[],
   live: readonly UIMessage[],
-  options: { activeTurnId: string | null },
+  options: {
+    activeTurnId: string | null;
+    appendLiveOnly?: boolean;
+    appendLiveOnlyNewerThanMs?: number;
+  },
 ): UIMessage[] {
   if (live.length === 0) return settled;
 
@@ -250,6 +320,9 @@ export function overlayLiveUiMessages(
     return message;
   });
 
+  if (options.appendLiveOnly === false) return result;
+
+  const appendFloorMs = options.appendLiveOnlyNewerThanMs;
   const settledIds = new Set(result.map((message) => message.id));
   const settledDedupeKeys = new Set(
     result.map((message) => renderOverlayDedupeKey(message)),
@@ -261,6 +334,10 @@ export function overlayLiveUiMessages(
     const dedupeKey = renderOverlayDedupeKey(message);
     if (settledDedupeKeys.has(dedupeKey)) {
       continue;
+    }
+    if (appendFloorMs !== undefined) {
+      const createdAt = uiMessageCreatedAtMs(message);
+      if (createdAt !== undefined && createdAt < appendFloorMs) continue;
     }
     settledIds.add(message.id);
     settledDedupeKeys.add(dedupeKey);

@@ -206,15 +206,15 @@ export function piAssistantContentToChatContent(message: Record<string, unknown>
   return blocks;
 }
 
-export function attachPiToolResultToParsedMessages(
-  messages: Array<{
-    id: string;
-    thread_id: string;
-    role: "user" | "assistant";
-    content: unknown;
-    created_at: number;
-    forkEntryId: string;
-  }>,
+/**
+ * Generic over the row shape (only `role`/`content` are read and rewritten) so
+ * both the full-thread export rows and the windowed derive's parsed render rows
+ * fold tool answers through this ONE implementation.
+ */
+export function attachPiToolResultToParsedMessages<
+  TMessage extends { role: "user" | "assistant"; content: unknown },
+>(
+  messages: TMessage[],
   toolResult: Record<string, unknown>,
 ): void {
   const toolCallId =
@@ -266,7 +266,7 @@ export function attachPiToolResultToParsedMessages(
       messages[index] = {
         ...message,
         content: nextContent,
-      };
+      } as TMessage;
       return;
     }
   }
@@ -277,7 +277,7 @@ export function attachPiToolResultToParsedMessages(
     messages[fallbackAssistantIndex] = {
       ...message,
       content: [...content, block],
-    };
+    } as TMessage;
   }
 }
 

@@ -1779,8 +1779,20 @@ export default function Chat({
           scrollTop: container.scrollTop,
         };
       }
+      // A page can come back carrying a message that is neither archived nor
+      // resident — a legacy `d:` cursor rewinds the server to the NEWEST page,
+      // and another session's turn can land in it. Prepending that to the head
+      // of the archived array would render a brand-new message at the OLDEST end
+      // of the transcript, so drop anything already resident (the resident copy
+      // is authoritative and renders in its own place).
+      const residentIds = new Set(
+        residentUiMessagesRef.current.map((message) => message.id),
+      );
+      const olderOnly = page.messages.filter(
+        (message) => !residentIds.has(message.id),
+      );
       setArchivedUiMessages((current) =>
-        prependOlderRenderMessages(current, page.messages),
+        prependOlderRenderMessages(current, olderOnly),
       );
       setOlderMessagesCursor(
         page.hasMore &&

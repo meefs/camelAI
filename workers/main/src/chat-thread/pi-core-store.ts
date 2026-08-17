@@ -553,6 +553,90 @@ export class PiCoreMessageStore {
   }
 
   /**
+   * The visible pi_core row range, plus the index shift the legacy full load
+   * applies. {@link loadPiCoreMessages} returns rows `idx >= firstKeptIndex` in
+   * idx order, prefixed by the compaction summary when one is cut — and the
+   * parsed render id of a row (`pi_user_<ts>_<index>`) is derived from its
+   * position in THAT array. A windowed reader has to reproduce the same position
+   * or it renames history, so it needs both numbers.
+   */
+  piCoreVisibleWindow(): {
+    firstKeptIndex: number;
+    summaryOffset: number;
+    endIdx: number;
+  } {
+    this.ensurePiCoreTables();
+    const compaction = this.loadPiCoreCompaction();
+    const firstKeptIndex = compaction?.firstKeptIndex ?? 0;
+    return {
+      firstKeptIndex,
+      summaryOffset: compaction && firstKeptIndex > 0 ? 1 : 0,
+      endIdx: this.piCoreRowCount(),
+    };
+  }
+
+  /**
+   * Newest-first row metadata for a bounded idx range: no payload is selected,
+   * so a pager can decide how many rows it can afford BEFORE materializing any
+   * of them (the same metadata-then-body discipline ai-chat's render window uses).
+   */
+  listPiCoreRowMeta(options: {
+    minIdx: number;
+    beforeIdx: number;
+    limit: number;
+  }): Array<{ idx: number; chars: number }> {
+    this.ensurePiCoreTables();
+    const limit = Math.max(1, Math.floor(options.limit));
+    const minIdx = Math.max(0, Math.floor(options.minIdx));
+    const beforeIdx = Math.floor(options.beforeIdx);
+    if (beforeIdx <= minIdx) return [];
+    return this.deps.sql()
+      .exec<{ idx: number; chars: number }>(
+        `SELECT idx, length(payload) AS chars
+           FROM pi_core_messages
+          WHERE idx >= ? AND idx < ?
+          ORDER BY idx DESC
+          LIMIT ?`,
+        minIdx,
+        beforeIdx,
+        limit,
+      )
+      .toArray()
+      .map((row) => ({
+        idx: Math.max(0, Math.floor(Number(row.idx) || 0)),
+        chars: Math.max(0, Math.floor(Number(row.chars) || 0)),
+      }));
+  }
+
+  /**
+   * One row, materialized exactly as `loadPiCoreMessages({ includeUiMetadata:
+   * true, imagePolicy: "render" })` would materialize it — the render read path's
+   * policy. Returns null for a missing or corrupt row, which is precisely what
+   * the full load does with it (skip, keep the thread readable).
+   */
+  loadPiCoreRenderMessageAt(idx: number): AgentMessage | null {
+    const row = this.deps.sql()
+      .exec<{ payload: string }>(
+        "SELECT payload FROM pi_core_messages WHERE idx = ? LIMIT 1",
+        Math.max(0, Math.floor(idx)),
+      )
+      .toArray()[0];
+    if (!row || typeof row.payload !== "string") return null;
+    try {
+      this.deps.recordReadOperation?.("payload_row_parsed");
+      const parsed = JSON.parse(row.payload) as AgentMessage;
+      if (!parsed || typeof parsed !== "object" || !("role" in parsed)) {
+        return null;
+      }
+      return sanitizePiProviderMessage(
+        this.renderPiStoredImageReferences(parsed) as AgentMessage,
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Stamp a toolResult row with the wall-clock duration measured live between
    * its tool_execution_start/end pair. Pi persists no start timestamp, and an
    * assistant row's `timestamp` marks when the model request opened, so a

@@ -58,13 +58,19 @@ import {
   CHAT_RENDER_WINDOW_MAX_BYTES,
   CHAT_RENDER_WINDOW_MAX_MESSAGES,
   formatAiChatCreatedAt,
-  pageDerivedUiMessages,
+  parseDerivedPiRenderCursor,
+  parseDerivedRenderHistoryCursor,
   type ChatRenderHistoryPage,
 } from '../../../src/lib/chat-render-history';
+import { deriveUiMessagesFromParsedPiCore } from '../../../src/lib/derive-ui-messages-from-pi-core';
 import {
-  deriveUiMessagesFromParsedPiCore,
-  overlayLiveUiMessages,
-} from '../../../src/lib/derive-ui-messages-from-pi-core';
+  buildDerivedRenderPage,
+  deriveRenderWindowFromPiCore,
+  type PiDeriveRowRead,
+  type PiDeriveRowSource,
+  type PiDerivedRenderWindow,
+  type PiDerivedWindowStats,
+} from './chat-thread/derived-render-page';
 import {
   PiChunkEncoder,
   PI_ERROR_PART_ID,
@@ -794,6 +800,17 @@ const SSE_MAX_CONNECTIONS_PER_USER = 16;
 // a writer (e.g. saveMessages skipped) cannot grow memory without bound.
 const PI_STREAM_PRE_ATTACH_CHUNK_CAP = 5000;
 
+// Derive-on-read page memo (see derivedRenderWindowCache). Small and byte-capped
+// on purpose: the memo exists to spare a second derive within one wake (loader
+// RPC then connect reconcile), NOT to hold history. A window whose rows exceed
+// the cap is exactly the window that must not stay resident, so it is served and
+// dropped.
+const DERIVED_RENDER_WINDOW_CACHE_MAX_ENTRIES = 3;
+const DERIVED_RENDER_WINDOW_CACHE_MAX_CHARS = 1_000_000;
+// Rows scanned forward from the compaction watermark to find the oldest visible
+// derived message (the archive seam). One or two rows in practice.
+const OLDEST_DERIVED_ROW_SCAN_MAX_ROWS = 32;
+
 // ---------------------------------------------------------------------------
 // Wake-OOM containment for the resumable-stream replay buffer. A whale turn's
 // buffer used to be unbounded in total size, and EVERY read of it materializes
@@ -1062,11 +1079,20 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   private automationRunInstance?: ChatThreadAutomationRun;
   private uiMirrorInstance?: ChatThreadUiMirror;
   private legacyUiMessageHealingPromise: Promise<void> | null = null;
-  /** Revision-keyed cache of derive-on-read settled UIMessages (+ compaction archive). */
-  private derivedUiMessagesCache: {
+  /**
+   * Revision-keyed LRU of derived render WINDOWS — one page each, never the whole
+   * settled transcript (that cache is what made a 5,232-row thread fatal to load).
+   * The live overlay is applied AFTER a cache hit, so an open turn is never served
+   * stale, and oversized windows are not cached at all: on a whale thread the
+   * cheap thing is re-deriving one bounded page, not holding several.
+   */
+  private derivedRenderWindowCache: {
     token: string;
-    messages: UIMessage[];
+    entries: Map<string, PiDerivedRenderWindow>;
   } | null = null;
+  private piDeriveRowSourceInstance?: PiDeriveRowSource;
+  /** Allocation accounting for the last derived page (telemetry + tests). */
+  private lastDerivedRenderPageStats: PiDerivedWindowStats | null = null;
   private piTurnJournalInstance?: PiTurnJournal;
   private chatAccessInstance?: ChatThreadAccess;
   private channelToolsInstance?: ChannelTools;
@@ -4816,7 +4842,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     }
     this.piCoreStore.markPiCoreChanged(payloads.length);
     // Invalidate derive-on-read cache; markPiCoreChanged already bumped generation.
-    this.derivedUiMessagesCache = null;
+    this.derivedRenderWindowCache = null;
     if (options.uiRender === "rebuild") {
       // Admin/fork rewrites: refresh the live/archive render table too so
       // compaction-archive hybrid and any residual mirror consumers converge.
@@ -10628,116 +10654,268 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   }
 
   /**
-   * Build the newest (or older) page of settled UI history from pi_core, plus
-   * pre-compaction archive rows still held in the ai-chat table, with the live
-   * stream's open-turn row overlaid.
+   * Build the newest (or older) page of settled UI history AT THE STORAGE
+   * BOUNDARY: pi_core rows are paged newest-first by idx, derived incrementally,
+   * and the walk stops once the page is covered — so peak memory is O(page), not
+   * O(thread). The live resident window is overlaid on the newest page, and the
+   * pre-compaction archive still held in the ai-chat table is consulted only when
+   * a page reaches back past the derived tail.
+   *
+   * `maxMessages`/`maxBytes` exist for tests; every caller uses the constants.
    */
   private async getDerivedUiMessagePage(options?: {
     beforeCursor?: string | null;
+    maxMessages?: number;
+    maxBytes?: number;
   }): Promise<ChatRenderHistoryPage> {
-    const settled = await this.getSettledUiMessagesFromPiCore();
-    if (settled.length === 0) {
-      // No pi_core-derived history yet: serve the ai-chat table with its native
-      // chronology cursor (live-only / render-table tests / brand-new threads).
-      return this.getRenderHistoryPage(
-        options?.beforeCursor ? { beforeCursor: options.beforeCursor } : {},
-      );
-    }
-    const activeTurnId =
-      this.activePiStreamTurnId ?? this.readPiActiveTurn()?.turnId ?? null;
-    const overlaid = overlayLiveUiMessages(
-      settled,
-      this.messages as UIMessage[],
-      { activeTurnId },
+    const maxMessages = Math.max(
+      1,
+      Math.floor(options?.maxMessages ?? CHAT_RENDER_WINDOW_MAX_MESSAGES),
     );
-    return pageDerivedUiMessages(overlaid, {
-      beforeCursor: options?.beforeCursor,
-      maxMessages: CHAT_RENDER_WINDOW_MAX_MESSAGES,
-      maxBytes: CHAT_RENDER_WINDOW_MAX_BYTES,
+    const maxBytes = Math.max(
+      1,
+      Math.floor(options?.maxBytes ?? CHAT_RENDER_WINDOW_MAX_BYTES),
+    );
+    const requested =
+      typeof options?.beforeCursor === "string" && options.beforeCursor.length > 0
+        ? options.beforeCursor
+        : null;
+    const cursor = requested ? parseDerivedPiRenderCursor(requested) : null;
+    let passthroughCursor: string | null = null;
+    if (requested && !cursor) {
+      if (parseDerivedRenderHistoryCursor(requested) !== null) {
+        // A LEGACY `d:<index>` cursor names a position in the fully materialized
+        // settled array this path no longer builds. Serve the newest page (whose
+        // nextCursor is in the new space) instead of failing the client's scroll.
+        //
+        // Be precise about what that costs: this REWINDS the client to the top
+        // of history. Nothing is lost or duplicated (the client prepends by id
+        // and its projection filters resident ids), but a session that had
+        // already paged N screens back must click "load older" N more times
+        // before the transcript advances. Exposure is limited to SPA sessions
+        // that span this deploy — `d:` cursors live only in React state, are
+        // minted only by the deprecated full-array pager, and a reload clears
+        // them; a DO restart cannot produce one.
+        this.recordChatThreadObservabilityEvent("render_page_cursor_legacy", {
+          operation: "derive_render_page",
+          status: "restarted",
+          severity: "warn",
+          sampleKey: this.chatContext?.threadId,
+        });
+      } else {
+        // ai-chat's own chronology cursor (handed out while the derive was empty).
+        passthroughCursor = requested;
+      }
+    }
+
+    const page = buildDerivedRenderPage(
+      {
+        deriveWindow: (beforeIdx) =>
+          this.deriveRenderWindow(beforeIdx, { maxMessages, maxBytes }),
+        liveMessages: () => this.messages as UIMessage[],
+        activeTurnId: () =>
+          this.activePiStreamTurnId ?? this.readPiActiveTurn()?.turnId ?? null,
+        renderHistoryPage: (args) =>
+          this.getRenderHistoryPage({
+            beforeCursor: args.beforeCursor,
+            maxMessages: args.maxMessages,
+            maxBytes: args.maxBytes,
+          }),
+        oldestDerivedCreatedAtMs: () => this.oldestDerivedPiCreatedAtMs(),
+      },
+      { cursor, maxMessages, maxBytes, passthroughCursor },
+    );
+
+    this.lastDerivedRenderPageStats = page.stats ?? null;
+    // Emitted for EVERY page (an archive-phase page carries no derive stats and
+    // reports zeroes): `size`/`extraCounts[0]` are the payload bytes and pi_core
+    // rows this page materialized, which is the number that says whether the
+    // derive is still bounded on a given thread.
+    this.recordChatThreadObservabilityEvent("render_derive_page", {
+      operation: "derive_render_page",
+      status: page.source,
+      count: page.messages.length,
+      size: page.stats?.payloadChars ?? 0,
+      // `warn` means "a FOLD may have been cut", the one outcome that makes two
+      // pages emit one id. An orphaned tool answer is not that and must not
+      // poison the signal: it is counted separately in extraCounts[4].
+      severity: page.stats?.foldCuts ? "warn" : "info",
+      extraCounts: [
+        page.stats?.rowsRead ?? 0,
+        page.stats?.boundaryExtraRows ?? 0,
+        page.stats?.droppedToolResults ?? 0,
+        page.stats?.boundaryUnresolved ? 1 : 0,
+        page.stats?.orphanedToolResults ?? 0,
+        page.stats?.foldCuts ?? 0,
+      ],
+      sampleKey: this.chatContext?.threadId,
     });
-  }
-
-  private async getSettledUiMessagesFromPiCore(): Promise<UIMessage[]> {
-    const revision = this.piCoreStore.getPiCoreRevision();
-    const token = `${revision.generation}:${revision.count}`;
-    if (this.derivedUiMessagesCache?.token === token) {
-      return this.derivedUiMessagesCache.messages;
-    }
-
-    const parsed = await this.getPiCoreParsedMessages(
-      this.chatContext?.threadId ?? "",
-    );
-    const derived = deriveUiMessagesFromParsedPiCore(parsed);
-    const archived = await this.collectCompactionRenderArchive(derived);
-    const settled =
-      archived.length === 0 ? derived : [...archived, ...derived];
-    this.derivedUiMessagesCache = { token, messages: settled };
-    return settled;
+    return {
+      messages: page.messages,
+      nextCursor: page.nextCursor,
+      hasMore: page.hasMore,
+    };
   }
 
   /**
-   * Post-compaction `uiRender: "preserve"` keeps pre-compaction visible rows in
-   * cf_ai_chat_agent_messages after pi_core is rewritten to summary+tail. Pure
-   * derive only sees the tail (plus a model-only summary); prepend archive rows
-   * that are not already represented in the derive. Match by id OR by
-   * role+createdAtMs so index-based `pi_user_*` ids that renumber across
-   * compaction do not duplicate the kept tail.
+   * One bounded derived window, memoized per pi_core revision + cursor. The
+   * memo holds WINDOWS (a page each) and refuses oversized ones, so a whale
+   * thread cannot park its transcript in this DO's heap.
    */
-  private async collectCompactionRenderArchive(
-    derived: UIMessage[],
-  ): Promise<UIMessage[]> {
-    if (derived.length === 0) return [];
+  private deriveRenderWindow(
+    beforeIdx: number | null,
+    limits: { maxMessages: number; maxBytes: number },
+  ): PiDerivedRenderWindow {
+    const revision = this.piCoreStore.getPiCoreRevision();
+    const token = `${revision.generation}:${revision.count}:${limits.maxMessages}:${limits.maxBytes}`;
+    const key = beforeIdx === null ? "newest" : `p:${beforeIdx}`;
+    const cache =
+      this.derivedRenderWindowCache?.token === token
+        ? this.derivedRenderWindowCache
+        : null;
+    const cached = cache?.entries.get(key);
+    if (cached) return cached;
 
-    const derivedIds = new Set(derived.map((message) => message.id));
-    const derivedKeys = new Set(
-      derived.map((message) => this.renderMessageDedupeKey(message)),
-    );
-    const firstDerivedAt = uiMessageCreatedAtMs(derived[0]) ?? 0;
-    const archived: UIMessage[] = [];
-    const seenIds = new Set<string>();
-    const seenCursors = new Set<string>();
-    let beforeCursor: string | null = null;
-
-    for (;;) {
-      const page = this.getRenderHistoryPage(
-        beforeCursor ? { beforeCursor } : {},
-      );
-      for (const message of page.messages) {
-        if (!message?.id || derivedIds.has(message.id) || seenIds.has(message.id)) {
-          continue;
-        }
-        // Live skeletons without a pi timestamp are not pre-compaction archive.
-        const createdAt = uiMessageCreatedAtMs(message);
-        if (createdAt === undefined) {
-          continue;
-        }
-        if (derivedKeys.has(this.renderMessageDedupeKey(message))) {
-          continue;
-        }
-        // Same-era / newer rows arrive via derive or live overlay.
-        if (createdAt >= firstDerivedAt) {
-          continue;
-        }
-        seenIds.add(message.id);
-        archived.push(message);
+    const window = deriveRenderWindowFromPiCore(this.piDeriveRowSource, {
+      beforeIdx,
+      maxMessages: limits.maxMessages,
+      maxBytes: limits.maxBytes,
+    });
+    const entries = cache?.entries ?? new Map<string, PiDerivedRenderWindow>();
+    if (window.stats.payloadChars <= DERIVED_RENDER_WINDOW_CACHE_MAX_CHARS) {
+      entries.delete(key);
+      entries.set(key, window);
+      while (entries.size > DERIVED_RENDER_WINDOW_CACHE_MAX_ENTRIES) {
+        const oldest = entries.keys().next().value;
+        if (oldest === undefined) break;
+        entries.delete(oldest);
       }
-      if (!page.hasMore || !page.nextCursor) break;
-      if (seenCursors.has(page.nextCursor)) break;
-      seenCursors.add(page.nextCursor);
-      beforeCursor = page.nextCursor;
     }
-
-    archived.sort(
-      (left, right) =>
-        (uiMessageCreatedAtMs(left) ?? 0) - (uiMessageCreatedAtMs(right) ?? 0),
-    );
-    return archived;
+    this.derivedRenderWindowCache = { token, entries };
+    return window;
   }
 
-  private renderMessageDedupeKey(message: UIMessage): string {
-    const createdAt = uiMessageCreatedAtMs(message);
-    if (createdAt !== undefined) return `${message.role}:${createdAt}`;
-    return `${message.role}:${message.id}`;
+  /** pi_core row reader for the storage-boundary derive. */
+  private get piDeriveRowSource(): PiDeriveRowSource {
+    return (this.piDeriveRowSourceInstance ??= {
+      visibleWindow: () => this.piCoreStore.piCoreVisibleWindow(),
+      listRowMeta: (args) => this.piCoreStore.listPiCoreRowMeta(args),
+      readRow: (idx, parsedIndex) => this.readPiDeriveRow(idx, parsedIndex),
+    });
+  }
+
+  /**
+   * One pi_core row as the derive needs it. Mirrors the row handling in
+   * {@link getPiCoreParsedMessages} exactly — same render image policy, same
+   * `piCoreMessageToParsedChatMessage`, same toolResult folding — so a windowed
+   * read produces byte-identical messages to the full-thread read.
+   *
+   * `parsedIndex` must be the row's position in the legacy full load, because an
+   * unstamped user row's derived id embeds it (`pi_user_<timestamp>_<index>`). It
+   * is reconstructed from `idx` and the compaction watermark, which counts rows
+   * the full load would SKIP as corrupt; a thread carrying an unparseable row
+   * below the window can therefore number its unstamped legacy user ids
+   * differently than before this change (stamped rows, responseId assistants and
+   * the role+timestamp mirror keys are unaffected).
+   */
+  private readPiDeriveRow(
+    idx: number,
+    parsedIndex: number,
+  ): PiDeriveRowRead | null {
+    const message = this.piCoreStore.loadPiCoreRenderMessageAt(idx);
+    if (!message) return null;
+    const record = message as unknown as Record<string, unknown>;
+    if (record.role === "toolResult") {
+      const toolCallId =
+        typeof record.toolCallId === "string" ? record.toolCallId.trim() : "";
+      return {
+        parsed: [],
+        toolResult: record,
+        stamp: null,
+        toolUseIds: [],
+        toolCallId: toolCallId || null,
+      };
+    }
+    const parsed = piCoreMessageToParsedChatMessage(
+      message,
+      parsedIndex,
+      this.chatContext?.threadId ?? "",
+    );
+    // Only ASSISTANT stamps are fold keys (the derive groups assistant rows by
+    // renderMessageId); a user row's stamp is its own skeleton id.
+    const stamp =
+      record.role === "assistant"
+        ? (normalizePiUiMetadata(record.uiMetadata)?.renderMessageId ?? null)
+        : null;
+    const toolUseIds: string[] = [];
+    for (const entry of parsed) {
+      if (!Array.isArray(entry.content)) continue;
+      for (const block of entry.content) {
+        if (!block || typeof block !== "object") continue;
+        const candidate = block as Record<string, unknown>;
+        if (
+          candidate.type === "tool_use" &&
+          typeof candidate.id === "string" &&
+          candidate.id
+        ) {
+          toolUseIds.push(candidate.id);
+        }
+      }
+    }
+    return { parsed, stamp: stamp || null, toolUseIds, toolCallId: null };
+  }
+
+  /**
+   * pi timestamp of the OLDEST derived message, which places the archive seam
+   * (pre-compaction rows are exactly the render rows older than it). Reads
+   * forward from the compaction watermark until one row yields a visible
+   * message — a couple of rows in practice, hard-bounded regardless.
+   *
+   * COMPACTION SUMMARIES ARE SKIPPED, and the scan takes the MINIMUM rather than
+   * the first hit. `compactPiContext` rewrites pi_core as
+   * `[createPiSummaryMessage(summary), ...keptTail]` and then clears the
+   * compaction row, so row 0 of the visible window is a synthetic "[Context
+   * Summary]" user row stamped with the compaction WALL CLOCK — newer than every
+   * row it summarizes and newer than the whole kept tail. Anchoring the seam
+   * there admits the entire render table (kept-tail mirrors included) as
+   * "archive", which duplicated the tail on every compacted thread's first page.
+   */
+  private oldestDerivedPiCreatedAtMs(): number | undefined {
+    const { firstKeptIndex, summaryOffset, endIdx } =
+      this.piCoreStore.piCoreVisibleWindow();
+    const limit = Math.min(
+      endIdx,
+      firstKeptIndex + OLDEST_DERIVED_ROW_SCAN_MAX_ROWS,
+    );
+    let oldest: number | undefined;
+    let oldestIncludingSummaries: number | undefined;
+    for (let idx = firstKeptIndex; idx < limit; idx += 1) {
+      const message = this.piCoreStore.loadPiCoreRenderMessageAt(idx);
+      if (!message) continue;
+      const read = this.readPiDeriveRow(
+        idx,
+        idx - firstKeptIndex + summaryOffset,
+      );
+      const createdAt = read?.parsed[0]?.created_at;
+      if (typeof createdAt !== "number" || !(createdAt > 0)) continue;
+      if (
+        oldestIncludingSummaries === undefined ||
+        createdAt < oldestIncludingSummaries
+      ) {
+        oldestIncludingSummaries = createdAt;
+      }
+      if (
+        isPiSummaryMessage(message) ||
+        read?.parsed[0]?.isCompactSummary === true
+      ) {
+        continue;
+      }
+      if (oldest === undefined || createdAt < oldest) oldest = createdAt;
+      // The tail is chronological, so the first non-summary row is already the
+      // minimum; keep scanning only while summaries are all we have seen.
+      break;
+    }
+    return oldest ?? oldestIncludingSummaries;
   }
 
   /** @deprecated Kept for focused legacy-heal unit tests; not on the read path. */
@@ -10760,7 +10938,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     ok: true;
     messageCount: number;
   }> {
-    this.derivedUiMessagesCache = null;
+    this.derivedRenderWindowCache = null;
     await this.rebuildUiMessagesFromPiCore();
     const row = this.ctx.storage.sql
       .exec<{ count: number }>(

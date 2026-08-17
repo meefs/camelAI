@@ -9,7 +9,13 @@ import {
   isCurrentRenderHistoryGeneration,
   pageDerivedUiMessages,
   parseDerivedRenderHistoryCursor,
+  parseDerivedPiRenderCursor,
+  encodeDerivedPiRowCursor,
+  encodeDerivedArchiveCursor,
+  selectNewestUiMessageWindow,
+  markRenderFoldPartial,
   prependOlderRenderMessages,
+  RENDER_FOLD_PARTIAL_METADATA_KEY,
   shouldHydrateRenderHistoryCursor,
 } from "@/lib/chat-render-history";
 
@@ -152,5 +158,129 @@ describe("pageDerivedUiMessages", () => {
         beforeCursor: "i:not-derived",
       }),
     ).toThrow(/derived render-history cursor/);
+  });
+});
+
+describe("storage-boundary derive cursors", () => {
+  it("round-trips pi-row and archive-phase cursors", () => {
+    expect(parseDerivedPiRenderCursor(encodeDerivedPiRowCursor(4200))).toEqual({
+      kind: "pi",
+      beforeIdx: 4200,
+    });
+    // The ai-chat chronology cursor carries its own prefix and colons verbatim.
+    const archive = encodeDerivedArchiveCursor("e:2026-08-17 12:00:00.500");
+    expect(parseDerivedPiRenderCursor(archive)).toEqual({
+      kind: "archive",
+      beforeCursor: "e:2026-08-17 12:00:00.500",
+    });
+    expect(parseDerivedPiRenderCursor(encodeDerivedArchiveCursor(null))).toEqual({
+      kind: "archive",
+      beforeCursor: null,
+    });
+  });
+
+  it("does not accept legacy or foreign cursors as pi cursors", () => {
+    expect(parseDerivedPiRenderCursor("d:12")).toBeNull();
+    expect(parseDerivedPiRenderCursor("i:2026-08-17 12:00:00")).toBeNull();
+    expect(parseDerivedPiRenderCursor("dp:p:-1")).toBeNull();
+    expect(parseDerivedPiRenderCursor("dp:x:1")).toBeNull();
+  });
+
+  it("reports the budget a selected window consumed", () => {
+    const messages = Array.from({ length: 4 }, (_, index) =>
+      uiMessage(`m${index}`),
+    );
+    const window = selectNewestUiMessageWindow(messages, { maxMessages: 2 });
+    expect(window.messages.map((message) => message.id)).toEqual(["m2", "m3"]);
+    expect(window.bytes).toBeGreaterThan(0);
+    expect(window.bytes).toBe(
+      window.messages.reduce(
+        (total, message) => total + JSON.stringify(message).length,
+        0,
+      ),
+    );
+  });
+});
+
+describe("prependOlderRenderMessages — split folds", () => {
+  function partial(id: string, text: string): UIMessage {
+    return markRenderFoldPartial(uiMessage(id, text));
+  }
+
+  it("merges the earlier half of a turn the server served partial", () => {
+    // The derive's window closed inside `turn-1`'s fold: the newest page carries
+    // the closing text, the older page re-emits the same id with the tool trace.
+    const resident: UIMessage[] = [
+      partial("turn-1", "closing answer"),
+      uiMessage("turn-2"),
+    ];
+    const older: UIMessage[] = [
+      uiMessage("turn-0"),
+      {
+        id: "turn-1",
+        role: "assistant",
+        parts: [
+          { type: "text", text: "opening thought" },
+          {
+            type: "tool-read_file",
+            toolCallId: "call-1",
+            state: "output-available",
+          },
+        ],
+      } as unknown as UIMessage,
+    ];
+
+    const result = prependOlderRenderMessages(resident, older);
+    expect(result.map((message) => message.id)).toEqual([
+      "turn-0",
+      "turn-1",
+      "turn-2",
+    ]);
+    const merged = result[1];
+    expect(
+      (merged.parts as Array<Record<string, unknown>>).map((part) =>
+        part.type === "text" ? part.text : part.toolCallId,
+      ),
+    ).toEqual(["opening thought", "call-1", "closing answer"]);
+    // The flag is consumed once the halves are reunited.
+    expect(
+      (merged.metadata as Record<string, unknown> | undefined)?.[
+        RENDER_FOLD_PARTIAL_METADATA_KEY
+      ],
+    ).toBeUndefined();
+  });
+
+  it("keeps the flag while the turn is still cut further back", () => {
+    const resident = [partial("turn-1", "third slice")];
+    const result = prependOlderRenderMessages(resident, [
+      partial("turn-1", "second slice"),
+    ]);
+    expect(result).toHaveLength(1);
+    expect(
+      (result[0].parts as Array<Record<string, unknown>>).map(
+        (part) => part.text,
+      ),
+    ).toEqual(["second slice", "third slice"]);
+    expect(
+      (result[0].metadata as Record<string, unknown>)[
+        RENDER_FOLD_PARTIAL_METADATA_KEY
+      ],
+    ).toBe(true);
+  });
+
+  it("still keeps the held copy for an ordinary duplicate id", () => {
+    const resident = [uiMessage("m3", "resident-m3")];
+    const result = prependOlderRenderMessages(resident, [
+      uiMessage("m3", "stale-m3"),
+    ]);
+    expect(result).toBe(resident);
+  });
+
+  it("does not re-add parts the held copy already carries", () => {
+    const resident = [partial("turn-1", "same text")];
+    const result = prependOlderRenderMessages(resident, [
+      uiMessage("turn-1", "same text"),
+    ]);
+    expect(result[0].parts).toHaveLength(1);
   });
 });
