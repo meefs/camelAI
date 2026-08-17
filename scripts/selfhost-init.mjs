@@ -109,6 +109,7 @@ const values = {
   TOKEN_SIGNING_SECRET: secret(),
   INTEGRATION_SECRET_KEY: secret(),
   LOCAL_ARTIFACTS_SECRET: secret(),
+  ADMIN_API_KEY: secret(),
   // Deployed apps get a CONNECTIONS service binding that can list/invoke
   // workspace connections. Set to false for on-prem installs that must keep
   // connection-backed data out of published apps. Chat/agent connections stay

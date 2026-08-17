@@ -5419,6 +5419,8 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       provider,
       billing_source: "hosted_capability",
       credit_chargeable: false,
+      usage_kind: "capability",
+      usage_surface: "capability",
       cost_usd: Number.isFinite(costUsd) && costUsd > 0 ? costUsd : 0,
       duration_ms: Number.isFinite(durationMs) && durationMs > 0 ? durationMs : undefined,
       created_at_ms: Date.now(),

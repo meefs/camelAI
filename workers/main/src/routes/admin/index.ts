@@ -28,6 +28,9 @@
  *   POST  /api/admin/orgs/:id/credits      — Grant org credits manually
  *   POST  /api/admin/orgs/:id/custom-domain/refresh — Refresh org custom domain hostnames
  *   POST  /api/admin/orgs/:id/members      — Add member to org
+ *   GET   /api/admin/orgs/:id/usage/users  — Per-user/model LLM usage
+ *   GET/PUT /api/admin/orgs/:id/usage/users/:userId/limits — Rolling user limits
+ *   GET/PUT /api/admin/orgs/:id/usage/pricing — Exact model pricing overrides
  *   PUT   /api/admin/signup-blocked-ips/:ip — Block signup attempts from an IP
  *   DELETE /api/admin/signup-blocked-ips/:ip — Remove an IP from the signup blocklist
  *   PATCH /api/admin/threads/:id           — Update thread
@@ -108,8 +111,11 @@ export async function handleAdminApi({ req, env }: RouteContext): Promise<Respon
     });
   }
 
-  // Auth passed → delegate to Hono
-  return app.fetch(req, env);
+  // This header is reserved for the already-authorized OAuth MCP bridge. A
+  // bearer-key caller must not be able to forge the audit principal.
+  const headers = new Headers(req.headers);
+  headers.delete('x-admin-mcp-user-id');
+  return app.fetch(new Request(req, { headers }), env);
 }
 
 /**

@@ -9,8 +9,14 @@ import {
   DEFAULT_CLOUDFLARE_AI_GATEWAY_ORIGIN,
   resolveCloudflareGatewayOrigin,
 } from "../../../src/lib/cloudflare-ai-gateway";
-import { chatCompletionToPiCall, runBedrockViaPi } from "./bedrock-pi-adapter";
+import {
+  BedrockPiCompletionError,
+  chatCompletionToPiCall,
+  runBedrockViaPi,
+} from "./bedrock-pi-adapter";
 import { getHostedVllmPriority } from "./hosted-vllm-priority";
+import { assertUserLlmUsageAccess } from "./user-llm-usage-policy";
+import { recordObservabilityEvent } from "./observability";
 
 export interface AIVirtualBindingEnv {
   ORG: DurableObjectNamespace<OrgDO>;
@@ -23,6 +29,7 @@ export interface AIVirtualBindingEnv {
   AI_GATEWAY_AUTH_TOKEN?: string;
   TEST_LLM_REPLAY_URL?: string;
   INTEGRATION_SECRET_KEY?: string;
+  OBSERVABILITY_EVENTS?: AnalyticsEngineDataset;
 }
 
 export interface AIVirtualBindingProps {
@@ -35,6 +42,7 @@ export interface VirtualAiRunScope {
   env: AIVirtualBindingEnv;
   props: AIVirtualBindingProps;
   waitUntil: (promise: Promise<unknown>) => void;
+  runBedrock?: typeof runBedrockViaPi;
 }
 
 export type TierName = "cheap" | "fast" | "auto" | "smart";
@@ -324,15 +332,58 @@ export async function executeVirtualAiRun(
         isCreditFreeHostedModel(requestedModel),
       );
   const billingSource: "byok" | "hosted" = usesByok ? "byok" : "hosted";
+  const usageProvider = routing.usageProvider ?? routing.provider;
+  const requestId = crypto.randomUUID();
+  if (scope.props.userId) {
+    const orgStub = scope.env.ORG.get(scope.env.ORG.idFromName(scope.props.orgId));
+    await assertUserLlmUsageAccess(orgStub, {
+      env: scope.env,
+      orgId: scope.props.orgId,
+      workspaceId: scope.props.workspaceId,
+      threadId: "virtual-ai",
+      userId: scope.props.userId,
+      provider: usageProvider,
+      model: routing.model,
+    });
+  } else if (requestId.charCodeAt(0) % 16 === 0) {
+    recordObservabilityEvent(scope.env, {
+      event: "virtual_ai_usage_unattributed",
+      severity: "warn",
+      component: "ai_virtual_binding",
+      operation: "execute_virtual_ai_run",
+      status: "allowed_unattributed",
+      orgId: scope.props.orgId,
+      workspaceId: scope.props.workspaceId,
+      provider: usageProvider,
+      model: routing.model,
+      sampleIndex: scope.props.workspaceId,
+    });
+  }
 
   const settings = routing.provider === "bedrock"
     ? undefined
     : requireGatewaySettings(scope.env);
 
   const startedAt = Date.now();
-  const result =
-    routing.provider === "bedrock"
-      ? await runBedrockViaPi({
+  const fallbackModel = routing.model;
+  const record = (usage: ExtractedUsage) =>
+    recordVirtualAiUsage(
+      scope.env,
+      scope.props,
+      usage,
+      usageProvider,
+      routing.model,
+      Date.now() - startedAt,
+      access.creditChargeable,
+      billingSource,
+      requestId,
+    ).catch((error) => {
+      console.error("[AIVirtualBinding] failed to record usage", error);
+    });
+  let result: unknown;
+  try {
+    result = routing.provider === "bedrock"
+      ? await (scope.runBedrock ?? runBedrockViaPi)({
           call: chatCompletionToPiCall(sanitizedInput),
           modelId: routing.model,
           // Bedrock BYOK is the only path here — if we got bedrock routing
@@ -353,26 +404,21 @@ export async function executeVirtualAiRun(
             ? access.vllmPriority
             : undefined,
         );
-
-  const fallbackModel = routing.model;
-  const record = (usage: ExtractedUsage) =>
-    recordVirtualAiUsage(
-      scope.env,
-      scope.props,
-      usage,
-      routing.usageProvider ?? routing.provider,
-      Date.now() - startedAt,
-      access.creditChargeable,
-      billingSource,
-    ).catch((error) => {
-      console.error("[AIVirtualBinding] failed to record usage", error);
-    });
+  } catch (error) {
+    if (error instanceof BedrockPiCompletionError) {
+      const usage = extractPiAssistantUsage(error.completion, fallbackModel);
+      if (usage) await record(usage);
+    }
+    throw error;
+  }
   if (result instanceof ReadableStream) {
     const [clientStream, usageStream] = result.tee();
     scope.waitUntil(
-      extractStreamingUsage(usageStream, fallbackModel).then((usage) =>
-        usage ? record(usage) : undefined,
-      ),
+      extractStreamingUsage(usageStream, fallbackModel)
+        .then((usage) => usage ? record(usage) : undefined)
+        .catch((error) => {
+          console.error("[AIVirtualBinding] failed to extract streaming usage", error);
+        }),
     );
     return clientStream;
   }
@@ -390,6 +436,7 @@ async function runLegacyAutoImage(
 ): Promise<unknown> {
   const access = await checkHostedModelAccess(scope.env, scope.props);
   const startedAt = Date.now();
+  const requestId = crypto.randomUUID();
   const result = await runViaGatewayHTTP(
     settings,
     scope.props,
@@ -405,18 +452,24 @@ async function runLegacyAutoImage(
       scope.props,
       usage,
       "openrouter",
+      fallbackModel,
       Date.now() - startedAt,
       access.creditChargeable,
       "hosted",
+      requestId,
+      "image",
+      "auxiliary",
     ).catch((error) => {
       console.error("[AIVirtualBinding] failed to record usage", error);
     });
   if (result instanceof ReadableStream) {
     const [clientStream, usageStream] = result.tee();
     scope.waitUntil(
-      extractStreamingUsage(usageStream, fallbackModel).then((usage) =>
-        usage ? record(usage) : undefined,
-      ),
+      extractStreamingUsage(usageStream, fallbackModel)
+        .then((usage) => usage ? record(usage) : undefined)
+        .catch((error) => {
+          console.error("[AIVirtualBinding] failed to extract streaming usage", error);
+        }),
     );
     return clientStream;
   }
@@ -478,19 +531,25 @@ async function recordVirtualAiUsage(
   props: AIVirtualBindingProps,
   usage: ExtractedUsage,
   provider: string,
+  requestedModel: string,
   durationMs: number,
   creditChargeable: boolean,
   billingSource: "byok" | "hosted",
+  sourceId: string,
+  usageKind: "llm" | "image" = "llm",
+  usageSurface: "virtual_ai" | "auxiliary" = "virtual_ai",
 ): Promise<void> {
   const orgStub = env.ORG.get(env.ORG.idFromName(props.orgId));
   await orgStub.recordUsage({
     workspace_id: props.workspaceId,
     user_id: props.userId ?? "",
     thread_id: "virtual-ai",
-    model: usage.model,
+    model: requestedModel,
     provider,
     billing_source: billingSource,
     credit_chargeable: creditChargeable,
+    usage_kind: usageKind,
+    usage_surface: usageSurface,
     input_tokens: usage.inputTokens,
     output_tokens: usage.outputTokens,
     cache_creation_input_tokens: usage.cacheCreationInputTokens,
@@ -499,6 +558,8 @@ async function recordVirtualAiUsage(
     upstream_inference_cost_usd: usage.upstreamInferenceCostUsd,
     duration_ms: durationMs,
     created_at_ms: Date.now(),
+    source: "virtual_ai",
+    source_id: sourceId,
   });
 }
 
@@ -738,6 +799,39 @@ interface ExtractedUsage {
   upstreamInferenceCostUsd: number | null;
 }
 
+function extractPiAssistantUsage(
+  message: BedrockPiCompletionError["completion"],
+  fallbackModel: string,
+): ExtractedUsage | null {
+  const inputTokens = Math.max(0, Math.floor(Number(message.usage.input ?? 0)));
+  const outputTokens = Math.max(0, Math.floor(Number(message.usage.output ?? 0)));
+  const cacheCreationInputTokens = Math.max(
+    0,
+    Math.floor(Number(message.usage.cacheWrite ?? 0)),
+  );
+  const cacheReadInputTokens = Math.max(
+    0,
+    Math.floor(Number(message.usage.cacheRead ?? 0)),
+  );
+  if (
+    inputTokens === 0 &&
+    outputTokens === 0 &&
+    cacheCreationInputTokens === 0 &&
+    cacheReadInputTokens === 0
+  ) {
+    return null;
+  }
+  return {
+    model: message.responseModel ?? message.model ?? fallbackModel,
+    inputTokens,
+    outputTokens,
+    cacheCreationInputTokens,
+    cacheReadInputTokens,
+    reportedCostUsd: null,
+    upstreamInferenceCostUsd: null,
+  };
+}
+
 function extractJsonUsage(payload: unknown, fallbackModel: string): ExtractedUsage | null {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     return null;
@@ -778,6 +872,11 @@ async function extractStreamingUsage(
         if (usage) lastUsage = usage;
       }
     }
+  } catch (error) {
+    // Preserve usage that was already observed before a provider truncated the
+    // stream. Without this, the billable terminal frame is silently discarded.
+    if (!lastUsage) throw error;
+    console.warn("[AIVirtualBinding] usage stream ended after terminal usage", error);
   } finally {
     reader.releaseLock();
   }
@@ -794,7 +893,7 @@ function extractUsageFromObject(
   const costDetails = asRecord(usageObj.cost_details);
   const inputDetails = asRecord(usageObj.input_tokens_details);
   const promptDetails = asRecord(usageObj.prompt_tokens_details);
-  const inputTokens = usageNumber(
+  const promptTokens = usageNumber(
     usageObj.input_tokens ?? usageObj.prompt_tokens,
   );
   const outputTokens = usageNumber(
@@ -807,6 +906,13 @@ function extractUsageFromObject(
     inputDetails?.cache_write_tokens ??
       inputDetails?.cache_creation_input_tokens ??
       promptDetails?.cache_write_tokens,
+  );
+  // OpenAI-compatible prompt/input token totals include cache-read and
+  // cache-write detail counts. Store the mutually exclusive token classes
+  // used by camelAI pricing instead of charging the cached subset twice.
+  const inputTokens = Math.max(
+    0,
+    promptTokens - cacheReadInputTokens - cacheCreationInputTokens,
   );
   const reportedCostUsd = usageCostNumber(usageObj.cost);
   const upstreamInferenceCostUsd = usageCostNumber(
@@ -856,11 +962,17 @@ function toGatewayPayload(
   input: unknown,
   model: string,
 ): Record<string, unknown> {
-  if (input && typeof input === "object" && !Array.isArray(input)) {
-    const asObject = input as Record<string, unknown>;
-    return { ...asObject, model };
+  const payload = input && typeof input === "object" && !Array.isArray(input)
+    ? { ...(input as Record<string, unknown>), model }
+    : { model };
+  if (payload.stream === true) {
+    const streamOptions = asRecord(payload.stream_options) ?? {};
+    return {
+      ...payload,
+      stream_options: { ...streamOptions, include_usage: true },
+    };
   }
-  return { model };
+  return payload;
 }
 
 function shouldPassthroughStream(

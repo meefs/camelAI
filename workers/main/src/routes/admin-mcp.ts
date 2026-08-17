@@ -69,6 +69,9 @@ const TOOL_GET_BAN = "get_ban";
 const TOOL_BLOCK_SIGNUP_IP = "block_signup_ip";
 const TOOL_UNBLOCK_SIGNUP_IP = "unblock_signup_ip";
 const TOOL_GET_ORG_USAGE = "get_org_usage";
+const TOOL_GET_USER_LLM_LIMITS = "get_user_llm_limits";
+const TOOL_SET_USER_LLM_LIMITS = "set_user_llm_limits";
+const TOOL_SET_LLM_USAGE_PRICING = "set_llm_usage_pricing";
 const TOOL_GRANT_ORG_CREDITS = "grant_org_credits";
 const TOOL_SET_USER_CREDITS = "set_user_credits";
 const TOOL_ADMIN_JS_EXEC = "admin_js_exec";
@@ -512,18 +515,132 @@ function adminTools() {
     },
     {
       name: TOOL_GET_ORG_USAGE,
-      description: "Get org usage data: spend, limits, recent log entries, or a summed date range.",
+      description: "Get org usage data: spend, legacy limits, per-pull logs, filtered sums, per-user/model totals, or strict pricing.",
+      inputSchema: {
+        type: "object",
+        oneOf: [
+          ...["spend", "limits", "pricing"].map((view) => ({
+            type: "object",
+            properties: {
+              org_id: { type: "string" },
+              view: { type: "string", const: view },
+            },
+            required: ["org_id", "view"],
+            additionalProperties: false,
+          })),
+          {
+            type: "object",
+            properties: {
+              org_id: { type: "string" },
+              view: { type: "string", const: "log" },
+              limit: { type: "integer", minimum: 1, maximum: 1000 },
+              cursor: { type: "string" },
+              from: { type: "integer", minimum: 0, description: "Optional start timestamp in milliseconds (inclusive)." },
+              to: { type: "integer", minimum: 0, description: "Optional end timestamp in milliseconds (exclusive)." },
+              user_id: { type: "string" },
+              provider: { type: "string" },
+              model: { type: "string" },
+              usage_kind: { type: "string", enum: ["llm", "image", "audio", "capability", "unknown"] },
+              usage_surface: { type: "string", enum: ["agent", "subagent", "compaction", "virtual_ai", "auxiliary", "capability", "unknown"] },
+            },
+            required: ["org_id", "view"],
+            additionalProperties: false,
+          },
+          {
+            type: "object",
+            properties: {
+              org_id: { type: "string" },
+              view: { type: "string", const: "log_sum" },
+              from: { type: "integer", minimum: 0, description: "Start timestamp in milliseconds (inclusive)." },
+              to: { type: "integer", minimum: 0, description: "End timestamp in milliseconds (exclusive)." },
+              chargeable_only: { type: "boolean" },
+              user_id: { type: "string" },
+              provider: { type: "string" },
+              model: { type: "string" },
+              usage_kind: { type: "string", enum: ["llm", "image", "audio", "capability", "unknown"] },
+              usage_surface: { type: "string", enum: ["agent", "subagent", "compaction", "virtual_ai", "auxiliary", "capability", "unknown"] },
+            },
+            required: ["org_id", "view", "from", "to"],
+            additionalProperties: false,
+          },
+          {
+            type: "object",
+            properties: {
+              org_id: { type: "string" },
+              view: { type: "string", const: "users" },
+              from: { type: "integer", minimum: 0, description: "Start timestamp in milliseconds (inclusive)." },
+              to: { type: "integer", minimum: 0, description: "End timestamp in milliseconds (exclusive)." },
+              limit: { type: "integer", minimum: 1, maximum: 1000 },
+              cursor: { type: "string" },
+              user_id: { type: "string" },
+            },
+            required: ["org_id", "view", "from", "to"],
+            additionalProperties: false,
+          },
+        ],
+      },
+    },
+    {
+      name: TOOL_GET_USER_LLM_LIMITS,
+      description: "Get one current organization member's rolling LLM spend limits and live status.",
+      inputSchema: {
+        type: "object",
+        properties: { org_id: { type: "string" }, user_id: { type: "string" } },
+        required: ["org_id", "user_id"],
+        additionalProperties: false,
+      },
+    },
+    {
+      name: TOOL_SET_USER_LLM_LIMITS,
+      description: "Replace one current member's rolling LLM spend limits. Pass an empty limits array to clear them.",
       inputSchema: {
         type: "object",
         properties: {
           org_id: { type: "string" },
-          view: { type: "string", enum: ["spend", "limits", "log", "log_sum"] },
-          limit: { type: "number", minimum: 1, maximum: 1000 },
-          cursor: { type: "string" },
-          from: { type: "number", description: "Start timestamp in milliseconds." },
-          to: { type: "number", description: "End timestamp in milliseconds." },
+          user_id: { type: "string" },
+          limits: {
+            type: "array", maxItems: 10,
+            items: {
+              type: "object",
+              properties: {
+                window_hours: { type: "number", minimum: 1 / 60, maximum: 5 * 365 * 24 },
+                limit_usd: { type: "number", minimum: 0, maximum: 1_000_000_000 },
+                label: { type: ["string", "null"] },
+              },
+              required: ["window_hours", "limit_usd"],
+              additionalProperties: false,
+            },
+          },
         },
-        required: ["org_id", "view"],
+        required: ["org_id", "user_id", "limits"],
+        additionalProperties: false,
+      },
+    },
+    {
+      name: TOOL_SET_LLM_USAGE_PRICING,
+      description: "Replace all exact provider/model pricing overrides used by per-user LLM limits.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          org_id: { type: "string" },
+          prices: {
+            type: "array", maxItems: 500,
+            items: {
+              type: "object",
+              properties: {
+                provider: { type: "string", maxLength: 200 },
+                model: { type: "string", maxLength: 200 },
+                input_usd_per_million: { type: "number", minimum: 0, maximum: 1_000_000 },
+                output_usd_per_million: { type: "number", minimum: 0, maximum: 1_000_000 },
+                cache_creation_usd_per_million: { type: "number", minimum: 0, maximum: 1_000_000 },
+                cache_read_usd_per_million: { type: "number", minimum: 0, maximum: 1_000_000 },
+              },
+              required: ["provider", "model", "input_usd_per_million", "output_usd_per_million"],
+              additionalProperties: false,
+            },
+          },
+        },
+        required: ["org_id", "prices"],
         additionalProperties: false,
       },
     },
@@ -2454,17 +2571,50 @@ async function callTool(
       return fetchAdminApiTool(req, env, grant, {
         method: "GET",
         path: `/api/admin/orgs/${encodedOrgId}/usage/log`,
-        query: pickQuery(input, ["limit", "cursor", "from", "to"]),
+        query: pickQuery(input, ["limit", "cursor", "from", "to", "user_id", "provider", "model", "usage_kind", "usage_surface"]),
       });
     }
     if (view === "log_sum") {
       return fetchAdminApiTool(req, env, grant, {
         method: "GET",
         path: `/api/admin/orgs/${encodedOrgId}/usage/log/sum`,
-        query: pickQuery(input, ["from", "to"]),
+        query: pickQuery(input, ["from", "to", "chargeable_only", "user_id", "provider", "model", "usage_kind", "usage_surface"]),
       });
     }
-    return toolText({ error: "view must be one of spend, limits, log, or log_sum" }, true);
+    if (view === "users") {
+      return fetchAdminApiTool(req, env, grant, {
+        method: "GET",
+        path: `/api/admin/orgs/${encodedOrgId}/usage/users`,
+        query: pickQuery(input, ["from", "to", "limit", "cursor", "user_id"]),
+      });
+    }
+    if (view === "pricing") {
+      return fetchAdminApiTool(req, env, grant, {
+        method: "GET",
+        path: `/api/admin/orgs/${encodedOrgId}/usage/pricing`,
+      });
+    }
+    return toolText({ error: "view must be one of spend, limits, log, log_sum, users, or pricing" }, true);
+  }
+  if (name === TOOL_GET_USER_LLM_LIMITS || name === TOOL_SET_USER_LLM_LIMITS) {
+    const orgId = requiredStringArg(input, "org_id");
+    if (typeof orgId !== "string") return toolText(orgId, true);
+    const userId = requiredStringArg(input, "user_id");
+    if (typeof userId !== "string") return toolText(userId, true);
+    return fetchAdminApiTool(req, env, grant, {
+      method: name === TOOL_GET_USER_LLM_LIMITS ? "GET" : "PUT",
+      path: `/api/admin/orgs/${encodeURIComponent(orgId)}/usage/users/${encodeURIComponent(userId)}/limits`,
+      ...(name === TOOL_SET_USER_LLM_LIMITS ? { body: pickBody(input, ["limits"]) } : {}),
+    });
+  }
+  if (name === TOOL_SET_LLM_USAGE_PRICING) {
+    const orgId = requiredStringArg(input, "org_id");
+    if (typeof orgId !== "string") return toolText(orgId, true);
+    return fetchAdminApiTool(req, env, grant, {
+      method: "PUT",
+      path: `/api/admin/orgs/${encodeURIComponent(orgId)}/usage/pricing`,
+      body: pickBody(input, ["prices"]),
+    });
   }
   if (name === TOOL_GRANT_ORG_CREDITS) {
     return grantOrgCreditsTool(env, grant, input);

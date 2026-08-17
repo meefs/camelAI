@@ -15,6 +15,7 @@ import {
   runViaGatewayHTTP,
 } from "../src/ai-virtual-binding.js";
 import {
+  BedrockPiCompletionError,
   buildBedrockPiModel,
   chatCompletionToPiCall,
   piMessageToChatCompletion,
@@ -354,14 +355,101 @@ describe("resolveRouting", () => {
     expect(routing.model).toBe("anthropic.claude-opus-5");
     expect(routing.awsRegion).toBe("us-east-1");
   });
+
+  it("routes Bedrock BYOK cheap tier to the priced Haiku family id", async () => {
+    const encrypted = await encryptCredentials({ bearer_token: "bedrock-token" }, "secret");
+    const routing = await resolveRouting(
+      {
+        env: {
+          INTEGRATION_SECRET_KEY: "secret",
+          ORG: {
+            idFromName: vi.fn((id: string) => id),
+            get: vi.fn(() => ({
+              getLlmProviderConfig: vi.fn(async () => ({
+                provider: "bedrock",
+                config: JSON.stringify({ aws_region: "us-east-1" }),
+                credentials_encrypted: encrypted,
+              })),
+            })),
+          } as never,
+        },
+        props: { orgId: "org1", workspaceId: "ws1" },
+        waitUntil: vi.fn(),
+      },
+      "cheap",
+    );
+
+    expect(routing.provider).toBe("bedrock");
+    expect(routing.model).toBe("anthropic.claude-haiku-4-5");
+  });
 });
 
 describe("executeVirtualAiRun", () => {
+  it("fails closed before the upstream provider when a user's rolling limit denies the pull", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    const checkUserLlmUsageAccess = vi.fn(async () => ({
+      allowed: false,
+      reason: "limit_exceeded" as const,
+      evaluated_at_ms: Date.now(),
+      blocking_limit: {
+        window_hours: 24,
+        label: "daily",
+        limit_usd: 1,
+        spent_usd: 1,
+        remaining_usd: 0,
+        unpriced_requests: 0,
+        exceeded: true,
+        retry_at_ms: Date.now() + 60_000,
+      },
+      limits: [],
+    }));
+    try {
+      await expect(executeVirtualAiRun(
+        {
+          env: {
+            CF_ACCOUNT_ID: "acct_1",
+            CF_GATEWAY_NAME: "gw_1",
+            CF_GATEWAY_TOKEN: "tok_1",
+            ORG: {
+              idFromName: vi.fn((id: string) => id),
+              get: vi.fn(() => ({
+                getLlmProviderConfig: vi.fn(async () => null),
+                getInfo: vi.fn(async () => ({
+                  billing_status: "active",
+                  billing_plan: "payg",
+                  billing_credit_purchase_total_cents: 0,
+                  billing_credit_grant_total_cents: 0,
+                })),
+                checkUserLlmUsageAccess,
+              })),
+            } as never,
+          },
+          props: { orgId: "org1", workspaceId: "ws1", userId: "user1" },
+          waitUntil: vi.fn(),
+        },
+        "deepseek-v4-auto",
+        { messages: [{ role: "user", content: "hello" }] },
+      )).rejects.toMatchObject({ code: "limit_exceeded" });
+      expect(checkUserLlmUsageAccess).toHaveBeenCalledOnce();
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
   it("posts hosted DeepSeek V4 Auto to the compat dynamic route", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({
         id: "chatcmpl_deepseek_auto",
-        usage: { prompt_tokens: 2, completion_tokens: 3 },
+        model: "provider/canonical-response-model",
+        usage: {
+          prompt_tokens: 1_000,
+          completion_tokens: 3,
+          prompt_tokens_details: {
+            cached_tokens: 800,
+            cache_write_tokens: 50,
+          },
+        },
       }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
@@ -369,6 +457,13 @@ describe("executeVirtualAiRun", () => {
     );
     const getUsageLogSum = vi.fn(async () => ({ total_cost_usd: 0 }));
     const recordUsage = vi.fn(async () => undefined);
+    const checkUserLlmUsageAccess = vi.fn(async () => ({
+      allowed: true,
+      reason: "no_limits" as const,
+      evaluated_at_ms: Date.now(),
+      blocking_limit: null,
+      limits: [],
+    }));
     const backgroundTasks: Promise<unknown>[] = [];
 
     try {
@@ -389,11 +484,12 @@ describe("executeVirtualAiRun", () => {
                   billing_credit_grant_total_cents: 0,
                 })),
                 getUsageLogSum,
+                checkUserLlmUsageAccess,
                 recordUsage,
               })),
             } as never,
           },
-          props: { orgId: "org1", workspaceId: "ws1" },
+          props: { orgId: "org1", workspaceId: "ws1", userId: "user1" },
           waitUntil: (task) => backgroundTasks.push(task),
         },
         "deepseek-v4-auto",
@@ -411,17 +507,161 @@ describe("executeVirtualAiRun", () => {
       const body = JSON.parse(String(init.body)) as { model: string };
       expect(body.model).toBe("openai/gpt-5.6-luna");
       expect(getUsageLogSum).not.toHaveBeenCalled();
+      expect(checkUserLlmUsageAccess).toHaveBeenCalledOnce();
       await Promise.all(backgroundTasks);
       expect(recordUsage).toHaveBeenCalledWith(
         expect.objectContaining({
           credit_chargeable: false,
-          input_tokens: 2,
+          user_id: "user1",
+          model: "openai/gpt-5.6-luna",
+          usage_kind: "llm",
+          usage_surface: "virtual_ai",
+          input_tokens: 150,
           output_tokens: 3,
+          cache_read_input_tokens: 800,
+          cache_creation_input_tokens: 50,
+          source: "virtual_ai",
+          source_id: expect.stringMatching(/^[0-9a-f-]{36}$/),
         }),
       );
     } finally {
       fetchMock.mockRestore();
     }
+  });
+
+  it("records one attributable streaming usage row with its request id", async () => {
+    const streamBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(
+          'data: {"model":"openai/gpt-5.6-luna","usage":{"prompt_tokens":1000,"completion_tokens":4,"prompt_tokens_details":{"cached_tokens":800,"cache_write_tokens":50}}}\n\n',
+        ));
+        controller.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
+        controller.close();
+      },
+    });
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(streamBody, { status: 200, headers: { "Content-Type": "text/event-stream" } }),
+    );
+    const recordUsage = vi.fn(async () => undefined);
+    const checkUserLlmUsageAccess = vi.fn(async () => ({
+      allowed: true,
+      reason: "within_limits" as const,
+      evaluated_at_ms: Date.now(),
+      blocking_limit: null,
+      limits: [],
+    }));
+    const backgroundTasks: Promise<unknown>[] = [];
+
+    try {
+      const result = await executeVirtualAiRun({
+        env: {
+          CF_ACCOUNT_ID: "acct_1",
+          CF_GATEWAY_NAME: "gw_1",
+          CF_GATEWAY_TOKEN: "tok_1",
+          ORG: {
+            idFromName: vi.fn((id: string) => id),
+            get: vi.fn(() => ({
+              getLlmProviderConfig: vi.fn(async () => null),
+              getInfo: vi.fn(async () => ({
+                billing_status: "active",
+                billing_plan: "payg",
+                billing_credit_purchase_total_cents: 0,
+                billing_credit_grant_total_cents: 0,
+              })),
+              checkUserLlmUsageAccess,
+              recordUsage,
+            })),
+          } as never,
+        },
+        props: { orgId: "org1", workspaceId: "ws1", userId: "user1" },
+        waitUntil: (task) => backgroundTasks.push(task),
+      }, "deepseek-v4-auto", {
+        stream: true,
+        messages: [{ role: "user", content: "hello" }],
+      });
+      expect(result).toBeInstanceOf(ReadableStream);
+      const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(JSON.parse(String(init.body))).toMatchObject({
+        stream: true,
+        stream_options: { include_usage: true },
+      });
+      await new Response(result as ReadableStream).text();
+      await Promise.all(backgroundTasks);
+
+      expect(checkUserLlmUsageAccess).toHaveBeenCalledOnce();
+      expect(recordUsage).toHaveBeenCalledOnce();
+      expect(recordUsage).toHaveBeenCalledWith(expect.objectContaining({
+        user_id: "user1",
+        input_tokens: 150,
+        output_tokens: 4,
+        cache_read_input_tokens: 800,
+        cache_creation_input_tokens: 50,
+        source: "virtual_ai",
+        source_id: expect.stringMatching(/^[0-9a-f-]{36}$/),
+      }));
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it("records a terminal streaming usage frame even when the stream then errors", async () => {
+    let pull = 0;
+    const streamBody = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (pull++ === 0) {
+          controller.enqueue(new TextEncoder().encode(
+            'data: {"model":"provider/response-alias","usage":{"prompt_tokens":12,"completion_tokens":3}}\n\n',
+          ));
+          return;
+        }
+        controller.error(new Error("provider stream truncated"));
+      },
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(streamBody, { status: 200, headers: { "Content-Type": "text/event-stream" } }),
+    );
+    const recordUsage = vi.fn(async () => undefined);
+    const backgroundTasks: Promise<unknown>[] = [];
+    const result = await executeVirtualAiRun({
+      env: {
+        CF_ACCOUNT_ID: "acct_1",
+        CF_GATEWAY_NAME: "gw_1",
+        CF_GATEWAY_TOKEN: "tok_1",
+        ORG: {
+          idFromName: vi.fn((id: string) => id),
+          get: vi.fn(() => ({
+            getLlmProviderConfig: vi.fn(async () => null),
+            getInfo: vi.fn(async () => ({
+              billing_status: "active",
+              billing_plan: "payg",
+              billing_credit_purchase_total_cents: 0,
+              billing_credit_grant_total_cents: 0,
+            })),
+            checkUserLlmUsageAccess: vi.fn(async () => ({
+              allowed: true,
+              reason: "within_limits" as const,
+              evaluated_at_ms: Date.now(),
+              blocking_limit: null,
+              limits: [],
+            })),
+            recordUsage,
+          })),
+        } as never,
+      },
+      props: { orgId: "org1", workspaceId: "ws1", userId: "user1" },
+      waitUntil: (task) => backgroundTasks.push(task),
+    }, "deepseek-v4-auto", {
+      stream: true,
+      messages: [{ role: "user", content: "hello" }],
+    });
+
+    await expect(new Response(result as ReadableStream).text()).rejects.toThrow("truncated");
+    await expect(Promise.all(backgroundTasks)).resolves.toBeDefined();
+    expect(recordUsage).toHaveBeenCalledWith(expect.objectContaining({
+      model: "openai/gpt-5.6-luna",
+      input_tokens: 12,
+      output_tokens: 3,
+    }));
   });
 
   it("does not require AI Gateway settings before Bedrock BYOK routing", async () => {
@@ -458,6 +698,74 @@ describe("executeVirtualAiRun", () => {
     } finally {
       fetchMock.mockRestore();
     }
+  });
+
+  it("records nonzero Bedrock usage before propagating a failed completion", async () => {
+    const encrypted = await encryptCredentials({ bearer_token: "bedrock-token" }, "secret");
+    const recordUsage = vi.fn(async () => undefined);
+    const completion = {
+      role: "assistant",
+      content: [],
+      api: "anthropic-messages",
+      provider: "custom",
+      model: "anthropic.claude-haiku-4-5",
+      usage: {
+        input: 100,
+        output: 5,
+        cacheRead: 80,
+        cacheWrite: 12,
+        totalTokens: 197,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "error",
+      errorMessage: "bedrock failed after usage",
+      timestamp: Date.now(),
+    } as AssistantMessage;
+    const runBedrock = vi.fn(async () => {
+      throw new BedrockPiCompletionError("bedrock failed after usage", completion);
+    });
+
+    await expect(executeVirtualAiRun({
+      env: {
+        INTEGRATION_SECRET_KEY: "secret",
+        ORG: {
+          idFromName: vi.fn((id: string) => id),
+          get: vi.fn(() => ({
+            getLlmProviderConfig: vi.fn(async () => ({
+              provider: "bedrock",
+              config: JSON.stringify({ aws_region: "us-east-1" }),
+              credentials_encrypted: encrypted,
+            })),
+            checkUserLlmUsageAccess: vi.fn(async () => ({
+              allowed: true,
+              reason: "within_limits" as const,
+              evaluated_at_ms: Date.now(),
+              blocking_limit: null,
+              limits: [],
+            })),
+            recordUsage,
+          })),
+        } as never,
+      },
+      props: { orgId: "org1", workspaceId: "ws1", userId: "user1" },
+      waitUntil: vi.fn(),
+      runBedrock,
+    }, "cheap", {
+      messages: [{ role: "user", content: "hello" }],
+    })).rejects.toThrow("bedrock failed after usage");
+
+    expect(runBedrock).toHaveBeenCalledOnce();
+    expect(recordUsage).toHaveBeenCalledWith(expect.objectContaining({
+      user_id: "user1",
+      provider: "bedrock",
+      model: "anthropic.claude-haiku-4-5",
+      usage_kind: "llm",
+      usage_surface: "virtual_ai",
+      input_tokens: 100,
+      output_tokens: 5,
+      cache_read_input_tokens: 80,
+      cache_creation_input_tokens: 12,
+    }));
   });
 });
 
@@ -959,6 +1267,11 @@ describe("piMessageToChatCompletion (Bedrock adapter — output)", () => {
       "model",
     ) as Record<string, unknown>;
     const usage = completion.usage as Record<string, unknown>;
+    expect(usage).toMatchObject({
+      prompt_tokens: 192,
+      completion_tokens: 5,
+      total_tokens: 197,
+    });
     expect(usage.prompt_tokens_details).toEqual({
       cached_tokens: 80,
       cache_write_tokens: 12,

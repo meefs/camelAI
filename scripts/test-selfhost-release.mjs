@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import {
   caddyComposeFile,
@@ -11,6 +12,7 @@ import {
   volumeNamesForEnv,
 } from "./selfhost-common.mjs";
 import { selfhostTlsMode } from "./selfhost-tls-mode.mjs";
+import { ensureSelfhostAdminApiKey } from "./selfhost-secret-migrations.mjs";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 
@@ -48,6 +50,7 @@ const [
   backupScript,
   restoreScript,
   doctorScript,
+  initScript,
   cloudFormation,
   terraformMain,
   terraformCloudInit,
@@ -72,6 +75,7 @@ const [
   read("scripts/selfhost-backup.mjs"),
   read("scripts/selfhost-restore.mjs"),
   read("scripts/selfhost-doctor.mjs"),
+  read("scripts/selfhost-init.mjs"),
   read("infra/selfhost/cloudformation/aws-single-node.yaml"),
   read("infra/selfhost/terraform/main.tf"),
   read("infra/selfhost/terraform/cloud-init.sh.tpl"),
@@ -80,6 +84,7 @@ const [
 includesAll(
   compose,
   [
+    "ADMIN_API_KEY: ${ADMIN_API_KEY:?Run bun run selfhost:migrate-secrets}",
     "SELFHOST_APP_IMAGE",
     "SELFHOST_LOCAL_ARTIFACTS_IMAGE",
     "SELFHOST_PROJECT_BUILD_IMAGE",
@@ -265,7 +270,7 @@ includesAll(
 );
 includesAll(
   upScript,
-  ["loadCaddyConfig", "{ build: sourceMode }"],
+  ["ensureSelfhostAdminApiKey(envFile)", "loadCaddyConfig", "{ build: sourceMode }"],
   "self-host startup Caddy configuration reload",
 );
 for (const [name, env, expectedFiles] of [
@@ -427,6 +432,7 @@ includesAll(
 includesAll(
   upgradeScript,
   [
+    "ensureSelfhostAdminApiKey(envFile)",
     "downloadLatestReleaseManifest",
     "--latest",
     "--refresh",
@@ -446,6 +452,53 @@ includesAll(
   ],
   "self-host release upgrade helper",
 );
+
+const secretMigrationDir = await fs.mkdtemp(path.join(os.tmpdir(), "camelai-secret-migration-"));
+const legacyEnvPath = path.join(secretMigrationDir, ".env.selfhost");
+const legacyEnv = [
+  "TOKEN_SIGNING_SECRET=existing-token-secret",
+  "INTEGRATION_SECRET_KEY=existing-integration-secret",
+  "LOCAL_ARTIFACTS_SECRET=existing-artifact-secret",
+  "SELFHOST_DEPLOYMENT_MODE=release",
+  "",
+].join("\n");
+await fs.writeFile(legacyEnvPath, legacyEnv, { mode: 0o644 });
+const firstSecretMigration = await ensureSelfhostAdminApiKey(legacyEnvPath);
+const firstMigratedEnv = await fs.readFile(legacyEnvPath, "utf8");
+const generatedAdminKey = firstMigratedEnv.match(/^ADMIN_API_KEY=(.+)$/m)?.[1] ?? "";
+assert(firstSecretMigration.created, "legacy self-host env must receive ADMIN_API_KEY");
+assert(/^[A-Za-z0-9_-]{43}$/.test(generatedAdminKey), "migrated ADMIN_API_KEY must be a 32-byte base64url secret");
+assert(firstMigratedEnv.includes("TOKEN_SIGNING_SECRET=existing-token-secret"), "secret migration must preserve token signing secret");
+assert(firstMigratedEnv.includes("INTEGRATION_SECRET_KEY=existing-integration-secret"), "secret migration must preserve integration secret");
+assert(firstMigratedEnv.includes("LOCAL_ARTIFACTS_SECRET=existing-artifact-secret"), "secret migration must preserve artifact secret");
+assert((await fs.stat(legacyEnvPath)).mode % 0o1000 === 0o600, "migrated env file must be mode 0600");
+const secondSecretMigration = await ensureSelfhostAdminApiKey(legacyEnvPath);
+const secondMigratedEnv = await fs.readFile(legacyEnvPath, "utf8");
+assert(!secondSecretMigration.created, "repeat secret migration must be idempotent");
+assert(secondMigratedEnv === firstMigratedEnv, "repeat secret migration must not rotate or rewrite ADMIN_API_KEY");
+
+const whitespaceEnvPath = path.join(secretMigrationDir, ".env.selfhost-whitespace");
+const whitespaceAdminKey = "preserve-this-existing-admin-key";
+const whitespaceEnv = `TOKEN_SIGNING_SECRET=existing\n  ADMIN_API_KEY = '${whitespaceAdminKey}'\n`;
+await fs.writeFile(whitespaceEnvPath, whitespaceEnv, { mode: 0o644 });
+const whitespaceMigration = await ensureSelfhostAdminApiKey(whitespaceEnvPath);
+assert(!whitespaceMigration.created, "migration must recognize whitespace and quoted dotenv definitions");
+assert(
+  (await fs.readFile(whitespaceEnvPath, "utf8")) === whitespaceEnv,
+  "migration must preserve an existing effective ADMIN_API_KEY without rewriting it",
+);
+assert((await fs.stat(whitespaceEnvPath)).mode % 0o1000 === 0o600, "preserved env file must be mode 0600");
+
+const duplicateEnvPath = path.join(secretMigrationDir, ".env.selfhost-duplicate");
+await fs.writeFile(duplicateEnvPath, "ADMIN_API_KEY=stale\n ADMIN_API_KEY = \"\"\n", { mode: 0o644 });
+const duplicateMigration = await ensureSelfhostAdminApiKey(duplicateEnvPath);
+const duplicateMigratedEnv = await fs.readFile(duplicateEnvPath, "utf8");
+assert(duplicateMigration.created, "an empty final dotenv definition must be migrated");
+assert(
+  duplicateMigratedEnv.match(/^ADMIN_API_KEY=/gm)?.length === 1,
+  "migration must normalize duplicate ADMIN_API_KEY definitions",
+);
+await fs.rm(secretMigrationDir, { recursive: true, force: true });
 includesAll(
   latestReleaseScript,
   [
@@ -464,6 +517,11 @@ includesAll(
     "@sha256:",
   ],
   "latest self-host release resolver",
+);
+assert(
+  packageJson.scripts?.["selfhost:migrate-secrets"] ===
+    "node scripts/selfhost-migrate-secrets.mjs",
+  "selfhost:migrate-secrets must expose the idempotent existing-install migration",
 );
 assert(
   packageJson.scripts?.["selfhost:upgrade"] ===
@@ -511,6 +569,7 @@ includesAll(
 includesAll(
   doctorScript,
   [
+    '"ADMIN_API_KEY"',
     'await check("network binding"',
     "SELFHOST_BIND_ADDRESS must remain loopback",
     'await check("TLS front door"',
@@ -522,11 +581,28 @@ includesAll(
   ],
   "self-host network and TLS validation",
 );
+includesAll(
+  initScript,
+  ["TOKEN_SIGNING_SECRET: secret()", "INTEGRATION_SECRET_KEY: secret()", "ADMIN_API_KEY: secret()"],
+  "self-host secret initialization",
+);
 
 for (const [name, template] of [
   ["CloudFormation", cloudFormation],
   ["Terraform cloud-init", terraformCloudInit],
 ]) {
+  assert(
+    template.includes("bun run selfhost:init"),
+    `${name} must generate the self-host admin API secret through selfhost:init`,
+  );
+  assert(
+    template.includes("bun run selfhost:migrate-secrets"),
+    `${name} must migrate secrets in persistent environments`,
+  );
+  assert(
+    template.includes("ExecStartPre=/usr/local/bin/bun run selfhost:migrate-secrets"),
+    `${name} systemd startup must migrate secrets before Compose validation`,
+  );
   assert(
     !template.includes("project-runtime") &&
       !template.includes("PROJECT_RUNTIME_"),
@@ -576,6 +652,7 @@ includesAll(
     "docker-compose.selfhost.caddy.yml",
     "docker-compose.selfhost.pomerium.yml",
     "docker-compose.selfhost.pomerium-loopback.yml",
+    "ExecReload=/usr/local/bin/bun run selfhost:migrate-secrets",
   ],
   "Terraform bundled Pomerium bootstrap",
 );

@@ -43,4 +43,17 @@ export type {
 export type {
   OrgAuthContextBootstrap,
   OrgChatWebSocketAccessResult,
+  CheckUserLlmUsageAccessInput,
+  LlmModelPricingInput,
+  LlmPricingResponse,
+  UsageAggregateQuery,
+  UsageAggregateResult,
+  UsageCostSource,
+  UsageKind,
+  UsageSurface,
+  UserLlmUsageAccessResult,
+  UserLlmUsageLimit,
+  UserLlmUsageLimitInput,
+  UserLlmUsageReport,
+  UserLlmUsageReportQuery,
 } from "./org-do";

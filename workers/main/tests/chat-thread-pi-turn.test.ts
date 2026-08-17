@@ -1203,6 +1203,23 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(fake.appendPiCoreMessagesIfMissing).toHaveBeenCalledTimes(1);
   });
 
+  it('preserves the initiating user when another member steers an active turn', async () => {
+    const fake = makeNewTurnEnqueueFake([]);
+    fake.chatContext = { ...fake.chatContext, userId: 'steering-user' };
+    fake.piSession = { state: { isStreaming: true } };
+    fake.sendRunnerCommand = vi.fn(() => true);
+
+    await expect(ChatThreadDO.prototype['enqueueRunnerUserMessage'].call(
+      fake,
+      { type: 'message', content: 'steer this' },
+    )).resolves.toEqual({ status: 'accepted' });
+
+    expect(fake.setActiveTurnUserId).not.toHaveBeenCalled();
+    expect(fake.sendRunnerCommand).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'steering-user' }),
+    );
+  });
+
   it('does NOT persist the initial user message when the send is rejected (no orphaned first message)', async () => {
     const order: string[] = [];
     const fake = makeNewTurnEnqueueFake(order);
@@ -1666,6 +1683,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       userEmail: 'miguel@example.com',
     };
     fake.chatIsStreaming = true;
+    fake.isThreadStreaming = vi.fn(() => true);
     fake.ctx = {
       storage: { kv: { put: vi.fn(), delete: vi.fn() } },
       waitUntil: vi.fn(),

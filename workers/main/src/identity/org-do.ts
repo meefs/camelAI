@@ -101,9 +101,42 @@ import {
   type CustomDomain,
   type CustomDomainStatus,
 } from "./org/custom-domains";
+import {
+  OrgUsageControls,
+  UsageControlsValidationError,
+  normalizeUsageKind,
+  normalizeUsageSurface,
+  type CheckUserLlmUsageAccessInput,
+  type LlmModelPricingInput,
+  type LlmPricingResponse,
+  type UsageAggregateQuery,
+  type UsageAggregateResult,
+  type UsageCostSource,
+  type UsageKind,
+  type UsageSurface,
+  type UserLlmUsageAccessResult,
+  type UserLlmUsageLimitInput,
+  type UserLlmUsageReport,
+  type UserLlmUsageReportQuery,
+} from "./org/usage-controls";
 
 // Re-export for consumers that import from this module
 export type { OrgRole, BillingStatus } from "../../../../src/types";
+export type {
+  CheckUserLlmUsageAccessInput,
+  LlmModelPricingInput,
+  LlmPricingResponse,
+  UsageAggregateQuery,
+  UsageAggregateResult,
+  UsageCostSource,
+  UsageKind,
+  UsageSurface,
+  UserLlmUsageAccessResult,
+  UserLlmUsageLimit,
+  UserLlmUsageLimitInput,
+  UserLlmUsageReport,
+  UserLlmUsageReportQuery,
+} from "./org/usage-controls";
 
 const ORG_MODEL_PICKER_CONFIG_KEY = "model_picker_config";
 const ORG_INDEX_PREFIX = "org_index:";
@@ -603,8 +636,11 @@ export interface UsageRecordInput {
   cache_creation_input_tokens?: number | null;
   cache_read_input_tokens?: number | null;
   cost_usd?: number | null;
+  estimated_cost_usd?: number | null;
   reported_cost_usd?: number | null;
   upstream_inference_cost_usd?: number | null;
+  usage_kind?: UsageKind;
+  usage_surface?: UsageSurface;
   duration_ms?: number | null;
   created_at_ms?: number | null;
   source?: string | null;
@@ -633,6 +669,11 @@ export interface UsageLogQuery {
   from?: number | null;
   to?: number | null;
   chargeable_only?: boolean | number | null;
+  user_id?: string | null;
+  provider?: string | null;
+  model?: string | null;
+  usage_kind?: UsageKind | null;
+  usage_surface?: UsageSurface | null;
 }
 
 export interface UsageLogEntry {
@@ -650,6 +691,11 @@ export interface UsageLogEntry {
   cache_creation_input_tokens: number;
   cache_read_input_tokens: number;
   cost_usd: number;
+  metered_cost_microusd: number | null;
+  metered_cost_usd: number | null;
+  cost_source: UsageCostSource;
+  usage_kind: UsageKind;
+  usage_surface: UsageSurface;
   duration_ms: number;
   created_at_ms: number;
   source: string;
@@ -808,6 +854,7 @@ export interface OrgSsoIdentityRecord {
 // User Durable Object - one per user
 export class OrgDO extends DurableObject<DOEnv> {
   private sql: SqlStorage;
+  private usageControlsInstance?: OrgUsageControls;
   private workerScriptsHasPreviewColumns = true;
   private static readonly LEGACY_HOST_USAGE_BACKFILL_STATUS_KEY =
     "legacyHostUsageBackfillStatus";
@@ -834,6 +881,16 @@ export class OrgDO extends DurableObject<DOEnv> {
         await this.enforceSelfhostPrivateAppAccess();
       }
     });
+  }
+
+  private get usageControls(): OrgUsageControls {
+    return (this.usageControlsInstance ??= new OrgUsageControls({
+      sql: this.sql,
+      orgId: () => this.getInfoSync()?.id ?? "",
+      isCurrentMember: (userId) =>
+        this.sql.exec("SELECT 1 FROM members WHERE user_id = ?", userId).toArray().length > 0,
+      transactionSync: (callback) => this.ctx.storage.transactionSync(callback),
+    }));
   }
 
   private async enforceSelfhostPrivateAppAccess(): Promise<void> {
@@ -2057,7 +2114,114 @@ export class OrgDO extends DurableObject<DOEnv> {
       );
     }
 
-    const CURRENT_SCHEMA_VERSION = 51;
+    const usageLogColumns = new Set(
+      this.sql.exec<{ name: string }>("PRAGMA table_info(usage_log)").toArray()
+        .map((column) => column.name),
+    );
+    const usageControlTables = new Set(
+      this.sql.exec<{ name: string }>(
+        `SELECT name FROM sqlite_master
+          WHERE type = 'table' AND name IN ('user_llm_usage_limits', 'llm_model_pricing_overrides')`,
+      ).toArray().map((row) => row.name),
+    );
+    const usageControlsSchemaIncomplete =
+      !usageLogColumns.has("usage_kind") ||
+      !usageLogColumns.has("usage_surface") ||
+      !usageLogColumns.has("metered_cost_microusd") ||
+      !usageLogColumns.has("cost_source") ||
+      !usageControlTables.has("user_llm_usage_limits") ||
+      !usageControlTables.has("llm_model_pricing_overrides");
+    if (version < 52 || usageControlsSchemaIncomplete) {
+      this.ensureColumn(
+        "usage_log",
+        "usage_kind",
+        "TEXT NOT NULL DEFAULT 'unknown'",
+      );
+      this.ensureColumn(
+        "usage_log",
+        "usage_surface",
+        "TEXT NOT NULL DEFAULT 'unknown'",
+      );
+      this.ensureColumn("usage_log", "metered_cost_microusd", "INTEGER");
+      this.ensureColumn(
+        "usage_log",
+        "cost_source",
+        "TEXT NOT NULL DEFAULT 'legacy_estimate'",
+      );
+      this.sql.exec(
+        `UPDATE usage_log
+            SET metered_cost_microusd = ROUND(cost_usd * 1000000),
+                cost_source = 'legacy_estimate'
+          WHERE metered_cost_microusd IS NULL`,
+      );
+      this.sql.exec(
+        `UPDATE usage_log SET usage_kind = 'capability', usage_surface = 'capability'
+          WHERE usage_kind = 'unknown' AND (
+            billing_source = 'hosted_capability' OR
+            source IN ('web_search', 'web_fetch')
+          )`,
+      );
+      this.sql.exec(
+        `UPDATE usage_log SET usage_kind = 'image', usage_surface = 'auxiliary'
+          WHERE usage_kind = 'unknown' AND (
+            source IN ('image_generation', 'generate_image') OR
+            (thread_id = 'virtual-ai' AND model IN ('auto_image', 'dynamic/auto_image'))
+          )`,
+      );
+      this.sql.exec(
+        `UPDATE usage_log SET usage_kind = 'audio'
+          WHERE usage_kind = 'unknown' AND source IN ('audio_transcription', 'transcribe_audio')`,
+      );
+      this.sql.exec(
+        `UPDATE usage_log SET usage_kind = 'llm', usage_surface = 'agent'
+          WHERE usage_kind = 'unknown' AND source = 'pi_assistant'`,
+      );
+      // Historical Virtual AI rows stored the provider response model, so an
+      // auto-image call can be indistinguishable from a text completion. Keep
+      // ambiguous rows out of LLM spend while still exposing their true surface
+      // to operators; only the known image route names above are classified.
+      this.sql.exec(
+        `UPDATE usage_log SET usage_surface = 'virtual_ai'
+          WHERE usage_surface = 'unknown' AND thread_id = 'virtual-ai'`,
+      );
+      this.sql.exec(
+        "CREATE INDEX IF NOT EXISTS idx_usage_log_user_created_at ON usage_log(user_id, created_at_ms)",
+      );
+      this.sql.exec(
+        "CREATE INDEX IF NOT EXISTS idx_usage_log_user_model_created_at ON usage_log(user_id, provider, model, created_at_ms)",
+      );
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS user_llm_usage_limits (
+          user_id TEXT NOT NULL,
+          window_ms INTEGER NOT NULL,
+          limit_microusd INTEGER NOT NULL,
+          label TEXT,
+          created_at_ms INTEGER NOT NULL,
+          updated_at_ms INTEGER NOT NULL,
+          updated_by TEXT NOT NULL,
+          PRIMARY KEY (user_id, window_ms)
+        )
+      `);
+      this.sql.exec(
+        "CREATE INDEX IF NOT EXISTS idx_user_llm_usage_limits_user ON user_llm_usage_limits(user_id)",
+      );
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS llm_model_pricing_overrides (
+          provider TEXT NOT NULL,
+          model TEXT NOT NULL,
+          input_microusd_per_million INTEGER NOT NULL,
+          output_microusd_per_million INTEGER NOT NULL,
+          cache_creation_microusd_per_million INTEGER NOT NULL DEFAULT 0,
+          cache_read_microusd_per_million INTEGER NOT NULL DEFAULT 0,
+          created_at_ms INTEGER NOT NULL,
+          updated_at_ms INTEGER NOT NULL,
+          updated_by TEXT NOT NULL,
+          PRIMARY KEY (provider, model)
+        )
+      `);
+    }
+
+    const CURRENT_SCHEMA_VERSION = 52;
     if (version < CURRENT_SCHEMA_VERSION) {
       this.ctx.storage.kv.put("schemaVersion", CURRENT_SCHEMA_VERSION);
     }
@@ -4228,6 +4392,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     this.ctx.storage.transactionSync(() => {
       this.sql.exec("DELETE FROM members WHERE user_id = ?", userId);
       this.sql.exec("DELETE FROM workspace_memberships WHERE user_id = ?", userId);
+      this.sql.exec("DELETE FROM user_llm_usage_limits WHERE user_id = ?", userId);
       this.sql.exec(
         "UPDATE enterprise_sso_identities SET membership_revoked = 1 WHERE user_id = ?",
         userId,
@@ -9181,19 +9346,44 @@ export class OrgDO extends DurableObject<DOEnv> {
     const durationMs = usageInteger(usage.duration_ms);
     const createdAtMs = usageInteger(usage.created_at_ms) || now;
     const providedCost = usageCost(usage.cost_usd);
+    const estimatedCost = usageCost(usage.estimated_cost_usd);
+    const reportedCost = usageCost(usage.reported_cost_usd);
+    const upstreamInferenceCost = usageCost(usage.upstream_inference_cost_usd);
+    const effectiveReportedCost = reportedCost !== null && reportedCost > 0
+      ? reportedCost
+      : upstreamInferenceCost !== null && upstreamInferenceCost > 0
+        ? upstreamInferenceCost
+        : null;
     const source = usageText(usage.source);
     const sourceId = usageText(usage.source_id);
+    const usageKind = normalizeUsageKind(usage.usage_kind);
+    const usageSurface = normalizeUsageSurface(usage.usage_surface);
     const costUsd =
       providedCost ??
-      calculateEffectiveUsageCostUsd({
-        model,
-        inputTokens,
-        outputTokens,
-        cacheCreationInputTokens: cacheCreationTokens,
-        cacheReadInputTokens: cacheReadTokens,
-        reportedCostUsd: usage.reported_cost_usd,
-        upstreamInferenceCostUsd: usage.upstream_inference_cost_usd,
-      });
+      (effectiveReportedCost !== null
+        ? effectiveReportedCost
+        : estimatedCost ?? calculateEffectiveUsageCostUsd({
+            model,
+            inputTokens,
+            outputTokens,
+            cacheCreationInputTokens: cacheCreationTokens,
+            cacheReadInputTokens: cacheReadTokens,
+          }));
+    const strictCost = usageKind === "llm"
+      ? this.usageControls.resolveStrictCost({
+          provider,
+          model,
+          input_tokens: inputTokens,
+          output_tokens: outputTokens,
+          cache_creation_input_tokens: cacheCreationTokens,
+          cache_read_input_tokens: cacheReadTokens,
+          reported_cost_usd: usage.reported_cost_usd,
+          upstream_inference_cost_usd: usage.upstream_inference_cost_usd,
+        })
+      : {
+          meteredCostMicrousd: Math.round(costUsd * 1_000_000),
+          costSource: "legacy_estimate" as const,
+        };
 
     const result = this.ctx.storage.transactionSync(() => {
       if (source && sourceId) {
@@ -9230,8 +9420,12 @@ export class OrgDO extends DurableObject<DOEnv> {
           duration_ms,
           created_at_ms,
           source,
-          source_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          source_id,
+          usage_kind,
+          usage_surface,
+          metered_cost_microusd,
+          cost_source
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
         workspaceId,
         userId,
@@ -9249,6 +9443,10 @@ export class OrgDO extends DurableObject<DOEnv> {
         createdAtMs,
         source,
         sourceId,
+        usageKind,
+        usageSurface,
+        strictCost.meteredCostMicrousd,
+        strictCost.costSource,
       );
       this.sql.exec(
         `
@@ -9331,9 +9529,22 @@ export class OrgDO extends DurableObject<DOEnv> {
 
   getUsageLog(query: UsageLogQuery = {}): UsageLogPage {
     const limit = Math.min(1000, Math.max(1, usageInteger(query.limit) || 50));
-    const cursor = usageInteger(query.cursor);
-    const from = usageInteger(query.from);
-    const to = usageInteger(query.to);
+    const rawCursor = query.cursor;
+    let cursor = 0;
+    if (rawCursor !== undefined && rawCursor !== null) {
+      const normalizedCursor = String(rawCursor);
+      if (!/^[1-9]\d*$/.test(normalizedCursor) || !Number.isSafeInteger(Number(normalizedCursor))) {
+        throw new UsageControlsValidationError("cursor must be a positive safe integer");
+      }
+      cursor = Number(normalizedCursor);
+    }
+    const hasFrom = query.from !== undefined && query.from !== null;
+    const hasTo = query.to !== undefined && query.to !== null;
+    const from = hasFrom ? usageInteger(query.from) : null;
+    const to = hasTo ? usageInteger(query.to) : null;
+    if (from !== null && to !== null && to <= from) {
+      throw new UsageControlsValidationError("to must be greater than from");
+    }
     const chargeableOnly =
       query.chargeable_only === true || query.chargeable_only === 1;
     const where: string[] = [];
@@ -9342,16 +9553,28 @@ export class OrgDO extends DurableObject<DOEnv> {
       where.push("id < ?");
       params.push(cursor);
     }
-    if (from > 0) {
+    if (from !== null) {
       where.push("created_at_ms >= ?");
       params.push(from);
     }
-    if (to > 0) {
+    if (to !== null) {
       where.push("created_at_ms < ?");
       params.push(to);
     }
     if (chargeableOnly) {
       where.push("credit_chargeable = 1");
+    }
+    for (const [column, value] of [
+      ["user_id", query.user_id],
+      ["provider", query.provider],
+      ["model", query.model],
+      ["usage_kind", query.usage_kind],
+      ["usage_surface", query.usage_surface],
+    ] as const) {
+      if (typeof value === "string") {
+        where.push(`${column} = ?`);
+        params.push(value.trim());
+      }
     }
     const whereSql = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
     const rows = this.sql
@@ -9371,6 +9594,10 @@ export class OrgDO extends DurableObject<DOEnv> {
           cache_creation_input_tokens,
           cache_read_input_tokens,
           cost_usd,
+          metered_cost_microusd,
+          cost_source,
+          usage_kind,
+          usage_surface,
           duration_ms,
           created_at_ms,
           source,
@@ -9393,6 +9620,20 @@ export class OrgDO extends DurableObject<DOEnv> {
       cache_creation_input_tokens: Number(row.cache_creation_input_tokens),
       cache_read_input_tokens: Number(row.cache_read_input_tokens),
       cost_usd: Number(row.cost_usd),
+      metered_cost_microusd:
+        row.metered_cost_microusd === null
+          ? null
+          : Number(row.metered_cost_microusd),
+      metered_cost_usd:
+        row.metered_cost_microusd === null
+          ? null
+          : Number((Number(row.metered_cost_microusd) / 1_000_000).toFixed(6)),
+      cost_source:
+        typeof row.cost_source === "string"
+          ? row.cost_source as UsageCostSource
+          : "legacy_estimate",
+      usage_kind: normalizeUsageKind(row.usage_kind),
+      usage_surface: normalizeUsageSurface(row.usage_surface),
       duration_ms: Number(row.duration_ms),
       created_at_ms: Number(row.created_at_ms),
       source: typeof row.source === "string" ? row.source : "",
@@ -9459,6 +9700,68 @@ export class OrgDO extends DurableObject<DOEnv> {
         row?.total_cache_read_input_tokens ?? 0,
       ),
     };
+  }
+
+  getUsageLogAggregate(query: UsageAggregateQuery = {}): UsageAggregateResult {
+    return this.usageControls.getAggregate(query);
+  }
+
+  checkUserLlmUsageAccess(
+    input: CheckUserLlmUsageAccessInput,
+  ): UserLlmUsageAccessResult {
+    return this.usageControls.checkAccess(input);
+  }
+
+  getUserLlmUsageReport(query: UserLlmUsageReportQuery): UserLlmUsageReport {
+    return this.usageControls.getUserReport(query);
+  }
+
+  getUserLlmUsageLimits(userId: string, nowMs = Date.now()) {
+    return {
+      org_id: this.getInfoSync()?.id ?? "",
+      user_id: usageText(userId),
+      limits: this.usageControls.getUserLimits(userId),
+      status: this.usageControls.getLimitStatus(userId, nowMs),
+    };
+  }
+
+  setUserLlmUsageLimits(
+    userId: string,
+    limits: UserLlmUsageLimitInput[],
+    updatedBy = "admin_api_key",
+  ) {
+    this.usageControls.replaceUserLimits(userId, limits, updatedBy);
+    const response = this.getUserLlmUsageLimits(userId);
+    recordObservabilityEvent(this.env, {
+      event: "user_llm_usage_limit_updated",
+      component: "org_do",
+      operation: "replace_user_llm_usage_limits",
+      status: "success",
+      orgId: response.org_id,
+      userId: response.user_id,
+      count: response.limits.length,
+    });
+    return response;
+  }
+
+  getLlmUsagePricing(): LlmPricingResponse {
+    return this.usageControls.getPricing();
+  }
+
+  setLlmUsagePricing(
+    prices: LlmModelPricingInput[],
+    updatedBy = "admin_api_key",
+  ): LlmPricingResponse {
+    const response = this.usageControls.replacePricing(prices, updatedBy);
+    recordObservabilityEvent(this.env, {
+      event: "llm_usage_pricing_updated",
+      component: "org_do",
+      operation: "replace_llm_usage_pricing",
+      status: "success",
+      orgId: response.org_id,
+      count: response.prices.length,
+    });
+    return response;
   }
 
   getUsageLimits(): OrgUsageLimits {

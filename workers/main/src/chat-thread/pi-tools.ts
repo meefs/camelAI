@@ -334,6 +334,12 @@ export interface PiToolSurfaceDeps {
   }>;
   /** Reads the DO's current `piModelResolver` field (null when no main turn set one). */
   piModelResolver(): (() => Promise<PiResolvedModelConfig>) | null;
+  activeTurnUserId(): string | null;
+  assertUserLlmUsageAccess(
+    context: ChatContextState,
+    modelConfig: PiResolvedModelConfig,
+    userId: string | null,
+  ): Promise<void>;
   afterPiToolCall(
     context: AfterToolCallContext,
     signal?: AbortSignal,
@@ -355,6 +361,12 @@ export interface PiToolSurfaceDeps {
     billingSource: PiBillingSource,
     creditChargeable: boolean,
     usageProvider?: string | null,
+    attribution?: {
+      userId: string | null;
+      model?: string;
+      usageSurface: "agent" | "subagent" | "compaction";
+      sourceScope?: string;
+    },
   ): Promise<void>;
   waitUntil(promise: Promise<unknown>): void;
   // Sibling routing back through the owning DO's same-named delegates, so a
@@ -642,6 +654,8 @@ export async function runPiSubagentTool(
   const resolveCurrentModel =
     deps.piModelResolver() ?? (() => deps.resolvePiModel(context, {}, getModel));
   let modelConfig = await resolveCurrentModel();
+  const usageUserId = deps.activeTurnUserId();
+  const childSessionId = `${context.threadId}:${toolName}:${crypto.randomUUID()}`;
   const child = new Agent({
     initialState: {
       systemPrompt: await deps.createPiSubagentSystemPrompt(context, isExplore),
@@ -658,6 +672,7 @@ export async function runPiSubagentTool(
       const current = await resolveCurrentModel();
       modelConfig = current;
       child.state.model = capPiMainRequestOutput(current.model);
+      await deps.assertUserLlmUsageAccess(context, current, usageUserId);
       return current.apiKey;
     },
     beforeToolCall: (toolContext, signal) =>
@@ -666,7 +681,7 @@ export async function runPiSubagentTool(
       deps.afterPiToolCall(toolContext, signal),
     streamFn: (model, llmContext, options) =>
       deps.streamPiModel(model, llmContext, options, streamSimple),
-    sessionId: `${context.threadId}:${toolName}:${crypto.randomUUID()}`,
+    sessionId: childSessionId,
     toolExecution: "parallel",
   });
 
@@ -719,6 +734,12 @@ export async function runPiSubagentTool(
             modelConfig.billingSource,
             modelConfig.creditChargeable,
             modelConfig.usageProvider,
+            {
+              userId: usageUserId,
+              model: modelConfig.model.id,
+              usageSurface: "subagent",
+              sourceScope: childSessionId,
+            },
           ).catch((error) => {
             console.error("[ChatThreadDO] failed to record Pi subagent usage", error);
           }),
@@ -846,6 +867,8 @@ export async function runPiCapabilityAgentTool(
         }))
     : childToolDefinitions;
   const systemPrompt = capabilityAgentSystemPrompt(toolName);
+  const usageUserId = deps.activeTurnUserId();
+  const childSessionId = `${context.threadId}:${toolName}:${crypto.randomUUID()}`;
 
   const child = new Agent({
     initialState: {
@@ -863,6 +886,7 @@ export async function runPiCapabilityAgentTool(
       );
       modelConfig = current;
       child.state.model = capOutputTokens(current.model);
+      await deps.assertUserLlmUsageAccess(context, current, usageUserId);
       return current.apiKey;
     },
     beforeToolCall: (toolContext, childSignal) =>
@@ -877,7 +901,7 @@ export async function runPiCapabilityAgentTool(
       }),
     streamFn: (model, llmContext, options) =>
       deps.streamPiModel(model, llmContext, options, streamSimple),
-    sessionId: `${context.threadId}:${toolName}:${crypto.randomUUID()}`,
+    sessionId: childSessionId,
     toolExecution: "sequential",
   });
 
@@ -932,6 +956,12 @@ export async function runPiCapabilityAgentTool(
             modelConfig.billingSource,
             modelConfig.creditChargeable,
             modelConfig.usageProvider,
+            {
+              userId: usageUserId,
+              model: modelConfig.model.id,
+              usageSurface: "subagent",
+              sourceScope: childSessionId,
+            },
           ).catch((error) => {
             console.error(`[ChatThreadDO] failed to record Pi ${capability} usage`, error);
           }),

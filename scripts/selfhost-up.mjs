@@ -4,6 +4,7 @@ import {
 } from "./selfhost-agent-pack.mjs";
 import {
   composeArgs,
+  envFile,
   loadCaddyConfig,
   readSelfhostEnv,
   repoRoot,
@@ -12,7 +13,10 @@ import {
 } from "./selfhost-common.mjs";
 import { writeCaddyConfig } from "./selfhost-caddy-config.mjs";
 import { writePomeriumConfig } from "./selfhost-pomerium-config.mjs";
+import { ensureSelfhostAdminApiKey } from "./selfhost-secret-migrations.mjs";
 
+await readSelfhostEnv(true);
+await ensureSelfhostAdminApiKey(envFile);
 const env = await readSelfhostEnv(true);
 await writePomeriumConfig(env);
 await writeCaddyConfig(env);

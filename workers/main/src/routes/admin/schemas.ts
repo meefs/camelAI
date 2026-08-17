@@ -874,9 +874,9 @@ export const DashboardRetentionResponseSchema = z.object({
 });
 
 const SpendLimitSchema = z.object({
-  window: z.number(),
+  window_hours: z.number(),
   limit_usd: z.number(),
-  label: z.string(),
+  label: z.string().nullable().optional(),
 });
 
 export const OrgUsageLimitsSchema = z.object({
@@ -894,6 +894,127 @@ export const SetOrgLimitsBodySchema = z.object({
   ),
 });
 
+function isApproximatelyInteger(value: number): boolean {
+  const rounded = Math.round(value);
+  const tolerance = Math.max(1e-6, Math.abs(value) * Number.EPSILON * 2);
+  return Number.isSafeInteger(rounded) && Math.abs(value - rounded) <= tolerance;
+}
+
+const SixDecimalUsdSchema = z.number().finite().nonnegative().refine(
+  (value) => isApproximatelyInteger(value * 1_000_000),
+  "must have at most six decimal places",
+);
+
+export const UserLlmLimitInputSchema = z.object({
+  window_hours: z.number().finite().min(1 / 60).max(5 * 365 * 24).refine(
+    (value) => {
+      const rawMilliseconds = value * 60 * 60 * 1000;
+      return isApproximatelyInteger(rawMilliseconds);
+    },
+    "must resolve to a whole number of milliseconds",
+  ),
+  limit_usd: SixDecimalUsdSchema.max(1_000_000_000),
+  label: z.string().trim().max(200).nullable().optional(),
+});
+
+export const SetUserLlmLimitsBodySchema = z.object({
+  limits: z.array(UserLlmLimitInputSchema).max(10).superRefine((limits, ctx) => {
+    const seen = new Set<number>();
+    limits.forEach((limit, index) => {
+      const windowMs = Math.round(limit.window_hours * 60 * 60 * 1000);
+      if (seen.has(windowMs)) {
+        ctx.addIssue({ code: "custom", message: "duplicate window_hours", path: [index, "window_hours"] });
+      }
+      seen.add(windowMs);
+    });
+  }),
+});
+
+export const UserLlmLimitStatusSchema = UserLlmLimitInputSchema.extend({
+  label: z.string().nullable(),
+  spent_usd: z.number(),
+  remaining_usd: z.number(),
+  unpriced_requests: z.number().int(),
+  exceeded: z.boolean(),
+  retry_at_ms: z.number().int().nullable(),
+});
+
+const UserLlmAccessStatusSchema = z.object({
+  allowed: z.boolean(),
+  reason: z.enum(["no_limits", "within_limits", "limit_exceeded", "pricing_unavailable"]),
+  evaluated_at_ms: z.number().int().optional(),
+  blocking_limit: UserLlmLimitStatusSchema.nullable().optional(),
+  limits: z.array(UserLlmLimitStatusSchema),
+});
+
+export const UserLlmLimitsResponseSchema = z.object({
+  org_id: z.string(),
+  user_id: z.string(),
+  limits: z.array(UserLlmLimitInputSchema.extend({ label: z.string().nullable() })),
+  status: UserLlmAccessStatusSchema,
+});
+
+export const LlmPricingInputSchema = z.object({
+  provider: z.string().trim().min(1).max(200),
+  model: z.string().trim().min(1).max(200),
+  input_usd_per_million: SixDecimalUsdSchema.max(1_000_000),
+  output_usd_per_million: SixDecimalUsdSchema.max(1_000_000),
+  cache_creation_usd_per_million: SixDecimalUsdSchema.max(1_000_000).optional().default(0),
+  cache_read_usd_per_million: SixDecimalUsdSchema.max(1_000_000).optional().default(0),
+});
+
+export const SetLlmPricingBodySchema = z.object({
+  prices: z.array(LlmPricingInputSchema).max(500).superRefine((prices, ctx) => {
+    const seen = new Set<string>();
+    prices.forEach((price, index) => {
+      const key = `${price.provider.trim()}\0${price.model.trim()}`;
+      if (seen.has(key)) {
+        ctx.addIssue({ code: "custom", message: "duplicate provider/model", path: [index] });
+      }
+      seen.add(key);
+    });
+  }),
+});
+
+export const LlmPricingResponseSchema = z.object({
+  org_id: z.string(),
+  prices: z.array(LlmPricingInputSchema),
+  unpriced_models: z.array(z.object({
+    provider: z.string(),
+    model: z.string(),
+    last_seen_at_ms: z.number().int(),
+  })),
+});
+
+const UserLlmTotalsSchema = z.object({
+  requests: z.number().int(),
+  spend_usd: z.number(),
+  unpriced_requests: z.number().int(),
+  input_tokens: z.number().int(),
+  output_tokens: z.number().int(),
+  cache_creation_input_tokens: z.number().int(),
+  cache_read_input_tokens: z.number().int(),
+});
+
+export const UserLlmUsageReportSchema = z.object({
+  org_id: z.string(),
+  from_ms: z.number().int(),
+  to_ms: z.number().int(),
+  evaluated_at_ms: z.number().int(),
+  users: z.array(z.object({
+    user_id: z.string().nullable(),
+    name: z.string().nullable().optional(),
+    email: z.string().nullable().optional(),
+    membership_status: z.enum(["current", "former", "unattributed"]),
+    totals: UserLlmTotalsSchema,
+    models: z.array(UserLlmTotalsSchema.extend({ provider: z.string(), model: z.string() })),
+    limit_status: UserLlmAccessStatusSchema.omit({ evaluated_at_ms: true }),
+  })),
+  count: z.number().int(),
+  has_more: z.boolean(),
+  next_cursor: z.string().nullable(),
+});
+
 const UsageLogEntrySchema = z.object({
   id: z.number().int(),
   workspace_id: z.string(),
@@ -908,6 +1029,10 @@ const UsageLogEntrySchema = z.object({
   cache_creation_input_tokens: z.number().int(),
   cache_read_input_tokens: z.number().int(),
   cost_usd: z.number(),
+  metered_cost_usd: z.number().nullable(),
+  cost_source: z.enum(["provider_reported", "org_override", "builtin_pricing", "legacy_estimate", "unpriced"]),
+  usage_kind: z.enum(["llm", "image", "audio", "capability", "unknown"]),
+  usage_surface: z.enum(["agent", "subagent", "compaction", "virtual_ai", "auxiliary", "capability", "unknown"]),
   duration_ms: z.number().int(),
   created_at_ms: z.number().int(),
   source: z.string().optional(),
@@ -925,6 +1050,8 @@ export const OrgUsageLogSchema = z.object({
 export const OrgUsageLogSumSchema = z.object({
   org_id: z.string(),
   total_cost_usd: z.number(),
+  metered_cost_usd: z.number().optional(),
+  unpriced_requests: z.number().int().optional(),
   total_requests: z.number().int(),
   total_input_tokens: z.number().int(),
   total_output_tokens: z.number().int(),
