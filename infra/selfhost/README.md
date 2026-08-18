@@ -351,6 +351,17 @@ SELFHOST_AI_PROVIDER=openrouter
 SELFHOST_AI_API_KEY=...
 ```
 
+As an alternative to a direct provider key, Compose/source installs can use an
+existing authenticated Cloudflare AI Gateway configuration. (The AWS templates
+continue to require their direct-provider inputs.) The token must be able to run
+both the configured chat routes and Workers AI auxiliary requests:
+
+```dotenv
+CF_ACCOUNT_ID=...
+CF_GATEWAY_NAME=...
+AI_GATEWAY_AUTH_TOKEN=...
+```
+
 A custom compatible endpoint additionally uses:
 
 ```dotenv

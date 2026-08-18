@@ -575,6 +575,8 @@ includesAll(
     'await check("TLS front door"',
     "SELFHOST_CADDY_IMAGE",
     "SELFHOST_TLS_DNS_PROVIDER",
+    "AI_GATEWAY_AUTH_TOKEN",
+    "Cloudflare AI Gateway",
     '"caddy",',
     '"validate",',
     "Caddy configuration validated with the configured image",
