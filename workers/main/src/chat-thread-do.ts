@@ -62,7 +62,8 @@ import {
   parseDerivedRenderHistoryCursor,
   type ChatRenderHistoryPage,
 } from '../../../src/lib/chat-render-history';
-import { deriveUiMessagesFromParsedPiCore } from '../../../src/lib/derive-ui-messages-from-pi-core';
+import { materializeBoundedRenderArchive } from './chat-thread/render-archive-preserve';
+import type { PreserveArchiveResult } from './chat-thread/render-archive-preserve';
 import {
   buildDerivedRenderPage,
   deriveRenderWindowFromPiCore,
@@ -228,6 +229,7 @@ import {
   extractLatestPiAssistantText,
   latestPiAssistantMessage,
   isPiSummaryMessage,
+  piSummaryMessageText,
   piRuntimeToolItem,
   piEventArgs,
   piToolResultText,
@@ -308,8 +310,10 @@ import {
 // pi_core message persistence (PiCoreMessageStore).
 import {
   PiCoreMessageStore,
+  PI_SESSION_LOAD_MAX_CHARS,
   type PiCoreImagePolicy,
   type PiImageHydrationBudget,
+  type PiSessionLoadWindow,
 } from "./chat-thread/pi-core-store";
 
 // pi_core → ai-chat render-mirror machinery (ChatThreadUiMirror): the top-up
@@ -811,6 +815,26 @@ const DERIVED_RENDER_WINDOW_CACHE_MAX_CHARS = 1_000_000;
 // derived message (the archive seam). One or two rows in practice.
 const OLDEST_DERIVED_ROW_SCAN_MAX_ROWS = 32;
 
+// Bounded forward reader behind the render mirror's top-up (readParsedPiCoreRowRange).
+/** Rows per metadata probe. Payloads are still materialized one at a time. */
+const PI_TOPUP_ROW_BATCH_SIZE = 64;
+/**
+ * Rows the reader may take PAST its budget before it gives up going FORWARD to
+ * find a turn boundary and retreats to the newest one behind it instead.
+ *
+ * A range that ends between an assistant row and its tool answers drops those
+ * answers from the mirror (they attach to the previous parsed assistant, which is
+ * in the earlier range); one that ends inside a stamped fold upserts the same
+ * render id twice, second write winning. Both are corruption, not slowness, so
+ * the budget yields.
+ *
+ * What this constant is NOT is a licence to stop wherever the count runs out —
+ * that was the original reading and it ended ranges on toolResult rows, which is
+ * exactly the first failure above. It only chooses between the two SAFE ways to
+ * end: extend forward to the next boundary, or rewind to the last one.
+ */
+const PI_TOPUP_BOUNDARY_MAX_EXTRA_ROWS = 256;
+
 // ---------------------------------------------------------------------------
 // Wake-OOM containment for the resumable-stream replay buffer. A whale turn's
 // buffer used to be unbounded in total size, and EVERY read of it materializes
@@ -1158,6 +1182,26 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   private piSession: PiCoreAgent | null = null;
   private piCoreStoreInstance?: PiCoreMessageStore;
   private piMainBaselineIndex = 0;
+  /**
+   * The pi_core index space the live session's message list lives in — set by
+   * every session build, reset by every wholesale pi_core rewrite, and null when
+   * no session has been built (direct-call tests, cold facades).
+   *
+   * `piMainBaselineIndex` says how much of the list is committed; this says
+   * WHERE it is committed. They answer different halves of the same question and
+   * a compaction cut needs both: `committedBound` decides whether a cut may be
+   * persisted at all, and this decides which `pi_core_messages.idx` it names
+   * (see {@link PiSessionLoadWindow}). Before the bounded load there was only
+   * one shape that shifted the mapping — a durable compaction summary at index 0
+   * — so `compactPiContext` could infer it from the compaction row. A capped
+   * load makes the offset independent of the row, so it has to be carried.
+   */
+  private piSessionLoadWindow: {
+    firstRowIdx: number;
+    summaryOffset: 0 | 1;
+    /** The list is SHORT of the thread: rows below `firstRowIdx` were skipped. */
+    capped: boolean;
+  } | null = null;
   private piModelResolver: (() => Promise<PiResolvedModelConfig>) | null = null;
   private piUnsubscribe: (() => void) | null = null;
   /**
@@ -3884,13 +3928,24 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     this.syncAgentState({ currentTodos: completedTodos });
   }
 
-  async getPiCoreParsedMessages(threadId: string): Promise<AgentEvalParsedMessage[]> {
+  /**
+   * The whole visible transcript as parsed render messages. UNBOUNDED by
+   * construction — every visible row is read, parsed, and kept resident — so it
+   * is named for what it costs and its callers are audited
+   * (scripts/check-unbounded-pi-core-callers.mjs). The bounded readers are
+   * {@link deriveRenderWindow} (render pages), {@link readParsedPiCoreRowRange}
+   * (mirror top-up / archive preserve) and
+   * {@link loadBoundedPiCoreSessionWindow} (session build).
+   */
+  private async loadFullPiCoreParsedTranscriptUnbounded(
+    threadId: string,
+  ): Promise<AgentEvalParsedMessage[]> {
     const normalizedThreadId = threadId.trim() || this.chatContext?.threadId || "";
     const parsed: AgentEvalParsedMessage[] = [];
 
     // The browser rebuilds live assistant/tool content from the replay buffer,
     // so only canonical persisted history is returned here.
-    const storedMessages = await this.loadPiCoreMessages({
+    const storedMessages = await this.loadFullPiCoreTranscriptUnbounded({
       includeUiMetadata: true,
       imagePolicy: "render",
     });
@@ -3903,6 +3958,216 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       parsed.push(...piCoreMessageToParsedChatMessage(message, index, normalizedThreadId));
     });
     return parsed;
+  }
+
+  /**
+   * Public transcript RPC (admin explorer, agent evals, group-chat seeding,
+   * legacy author heal). Thin wrapper over the unbounded parsed load: it is the
+   * export surface, so it genuinely needs the whole thread — no request path may
+   * call it (see the allowlist check).
+   */
+  async getPiCoreParsedMessages(threadId: string): Promise<AgentEvalParsedMessage[]> {
+    return this.loadFullPiCoreParsedTranscriptUnbounded(threadId);
+  }
+
+  /**
+   * The bounded, RESUMABLE twin of the parsed transcript load: parsed render
+   * messages for one budgeted forward range of pi_core rows.
+   *
+   * Same policy as {@link loadFullPiCoreParsedTranscriptUnbounded} row for row
+   * (render image policy, `piCoreMessageToParsedChatMessage`, toolResult
+   * folding), and the same PARSED POSITIONS — an unstamped user row's id embeds
+   * its index in the full load, so the range reconstructs absolute positions
+   * from `idx` and the compaction watermark exactly as the derive pager does.
+   *
+   * The range ends at a turn boundary, never mid-turn: a batch that stopped on
+   * its budget keeps taking rows while they are toolResults (an answer whose
+   * call is above it) or continue a stamped assistant fold already in the batch.
+   * A boundary in either of those places would drop a tool answer from the
+   * mirror or split one turn across two upserts of the same render id.
+   *
+   * That is an invariant, not a preference, so `maxBoundaryExtraRows` is a
+   * RETREAT trigger rather than a place the walk may stop: on hitting it the
+   * range rewinds to the newest legal boundary it already passed (the rows after
+   * it are simply re-read next call, and the cursor still moves forward). Only
+   * when the range contains no legal boundary at all — one turn longer than the
+   * whole budget — does the walk keep going, because at that point splitting the
+   * turn corrupts the mirror and stopping inside it loses a tool answer, while
+   * extending merely costs one turn's rows and is reported.
+   */
+  private readParsedPiCoreRowRange(options: {
+    fromIdx: number;
+    maxRows: number;
+    maxChars: number;
+    maxBoundaryExtraRows?: number;
+  }): {
+    parsed: AgentEvalParsedMessage[];
+    /** Absolute position of `parsed[0]` in the full parsed transcript. */
+    parsedStartIndex: number;
+    /** First pi_core idx NOT covered — where the next call resumes. */
+    nextIdx: number;
+    reachedEnd: boolean;
+    rowsRead: number;
+    payloadChars: number;
+  } {
+    const { firstKeptIndex, summaryOffset, endIdx } =
+      this.piCoreStore.piCoreVisibleWindow();
+    const maxRows = Math.max(1, Math.floor(options.maxRows));
+    const maxChars = Math.max(1, Math.floor(options.maxChars));
+    const maxBoundaryExtraRows = Math.max(
+      0,
+      Math.floor(options.maxBoundaryExtraRows ?? PI_TOPUP_BOUNDARY_MAX_EXTRA_ROWS),
+    );
+    // A cursor left behind by a wholesale rewrite can name a row that no longer
+    // exists; clamp it into the current visible window rather than going silent.
+    const fromIdx = Math.min(
+      Math.max(Math.floor(options.fromIdx), firstKeptIndex),
+      Math.max(firstKeptIndex, endIdx),
+    );
+    const threadId = this.chatContext?.threadId ?? "";
+    const parsed: AgentEvalParsedMessage[] = [];
+
+    // The synthetic compaction summary occupies parsed index 0 of the full load,
+    // so a range that starts at the watermark has to carry it or every id below
+    // it shifts by one.
+    let parsedStartIndex = fromIdx - firstKeptIndex + summaryOffset;
+    if (summaryOffset === 1 && fromIdx === firstKeptIndex) {
+      const compaction = this.loadPiCoreCompaction();
+      if (compaction) {
+        parsed.push(
+          ...piCoreMessageToParsedChatMessage(
+            createPiSummaryMessage(compaction.summary, compaction.updatedAt),
+            0,
+            threadId,
+          ),
+        );
+        parsedStartIndex = 0;
+      }
+    }
+
+    let idx = fromIdx;
+    let rowsRead = 0;
+    let payloadChars = 0;
+    let boundaryExtraRows = 0;
+    let reachedEnd = false;
+    let stopped = false;
+    /** Newest idx > `fromIdx` this range could legally have ended on, if any. */
+    let lastLegalStopIdx: number | null = null;
+    let lastLegalStopParsedLength = 0;
+    /** Rows taken past the hard cap because no legal boundary existed to stop at. */
+    let overExtendedRows = 0;
+    const stamps = new Set<string>();
+
+    while (!stopped) {
+      const batch = this.piCoreStore.listPiCoreRowMetaAscending({
+        fromIdx: idx,
+        limit: PI_TOPUP_ROW_BATCH_SIZE,
+      });
+      if (batch.length === 0) {
+        reachedEnd = true;
+        break;
+      }
+      for (const meta of batch) {
+        const budgetSpent = rowsRead >= maxRows || payloadChars >= maxChars;
+        const message = this.piCoreStore.loadPiCoreRenderMessageAt(meta.idx);
+        const record = message as unknown as Record<string, unknown> | null;
+        const isToolResult = record?.role === "toolResult";
+        const stamp =
+          record?.role === "assistant"
+            ? (normalizePiUiMetadata(record.uiMetadata)?.renderMessageId ?? "")
+            : "";
+        // The derive pager's boundary rule, in the forward direction: only an
+        // assistant COMMIT proves a clean break. A tool answer belongs to the
+        // call above it, and a user row proves nothing at all — a steered turn
+        // is `assistant(T) … steer-user … assistant(T)`, so stopping at the
+        // steer would split one fold across two batches, and the second half
+        // would then be skipped entirely by the same-id dedup. An assistant
+        // row carrying a stamp this batch has not seen (or no stamp, which is
+        // a legacy row that folds with nothing) is a new turn: stop there.
+        const foreignCommit =
+          record?.role === "assistant" && (!stamp || !stamps.has(stamp));
+        // The newest row this range could legally have ended on. Recorded on
+        // every pass, budget or not, because the hard cap below needs somewhere
+        // safe to retreat to and `fromIdx` itself is not one (retreating there
+        // would not advance the cursor).
+        if (foreignCommit && meta.idx > fromIdx) {
+          lastLegalStopIdx = meta.idx;
+          lastLegalStopParsedLength = parsed.length;
+        }
+        if (budgetSpent) {
+          if (foreignCommit) {
+            idx = meta.idx;
+            stopped = true;
+            break;
+          }
+          boundaryExtraRows += 1;
+          if (boundaryExtraRows > maxBoundaryExtraRows) {
+            // HARD CAP. It used to break right here with `idx = meta.idx` and no
+            // look at what `meta` was — so a cap that landed on a toolResult
+            // ended the range between an assistant and its answer. The next call
+            // then started with an empty `parsed`, `attachPiToolResultToParsed
+            // Messages` found no assistant to attach to and returned having
+            // mutated nothing, and the row was consumed anyway: that tool output
+            // was silently and permanently missing from the durable mirror.
+            //
+            // A cap may only ever fire at a legal boundary. When one was passed
+            // inside this range, retreat to it — the rows after it are re-read by
+            // the next call, and the cursor still advances. When there was none,
+            // the range is a single turn longer than the budget, and there is
+            // nothing to retreat to: keep taking rows until the turn ends, since
+            // splitting it corrupts the mirror and truncating it loses history.
+            // That extension is bounded by one turn's committed rows.
+            if (lastLegalStopIdx !== null) {
+              parsed.length = lastLegalStopParsedLength;
+              idx = lastLegalStopIdx;
+              stopped = true;
+              break;
+            }
+            overExtendedRows += 1;
+          }
+        }
+        rowsRead += 1;
+        payloadChars += meta.chars;
+        idx = meta.idx + 1;
+        if (!message || !record) continue;
+        if (stamp) stamps.add(stamp);
+        if (isToolResult) {
+          attachPiToolResultToParsedMessages(parsed, record);
+          continue;
+        }
+        parsed.push(
+          ...piCoreMessageToParsedChatMessage(
+            message,
+            meta.idx - firstKeptIndex + summaryOffset,
+            threadId,
+          ),
+        );
+      }
+    }
+
+    if (overExtendedRows > 0) {
+      // One turn is longer than a whole top-up budget. Not corruption — the
+      // range still ends on a boundary — but it means a single turn is pinning
+      // more than the pass was sized for, which is worth seeing before it is
+      // worth guessing about.
+      this.recordChatThreadObservabilityEvent("pi_topup_range_over_extended", {
+        operation: "topup_read_range",
+        status: "over_extended",
+        severity: "warn",
+        count: overExtendedRows,
+        size: payloadChars,
+        extraCounts: [rowsRead, fromIdx, idx],
+        sampleKey: this.chatContext?.threadId,
+      });
+    }
+    return {
+      parsed,
+      parsedStartIndex,
+      nextIdx: idx,
+      reachedEnd,
+      rowsRead,
+      payloadChars,
+    };
   }
 
   async getGroupNewChatRecentSource(threadId: string): Promise<{
@@ -3918,7 +4183,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   async getAdminExplorerSummary(input: {
     userMessageCap?: number;
   } = {}): Promise<AdminExplorerThreadSummary> {
-    const messages = await this.loadPiCoreMessages({
+    const messages = await this.loadFullPiCoreTranscriptUnbounded({
       includeUiMetadata: true,
       imagePolicy: "render",
     });
@@ -4089,7 +4354,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     forkEntryId: string;
     renderedMessageId?: string;
   }): Promise<ChatThreadPiCoreForkResult> {
-    const messages = await this.loadPiCoreMessages({ imagePolicy: "reference" });
+    const messages = await this.loadFullPiCoreTranscriptUnbounded({ imagePolicy: "reference" });
     if (messages.length === 0) {
       return {
         success: false,
@@ -4455,6 +4720,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     }
     this.piSession = null;
     this.piMainBaselineIndex = 0;
+    this.piSessionLoadWindow = null;
     this.piSessionPromise = null;
     this.piEventHandlerChain = Promise.resolve();
     this.piActiveItemId = null;
@@ -4480,7 +4746,36 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       r2: () => this.env.R2_BUCKET,
       chatContext: () => this.chatContext,
       takeToolDurationMs: (toolCallId) => this.takePiToolDurationMs(toolCallId),
+      // Wired in PRODUCTION, not just in focused tests. Two of these operations
+      // are silent history/context degradation — an image dropped from the
+      // provider context, and a session-trimmed image that could not be put back
+      // before its row was rewritten — and without a counter a thread that lost
+      // its visual history is indistinguishable from one that never had images.
+      recordReadOperation: (operation) => {
+        const counters = (this.piCoreReadOps ??= {});
+        counters[operation] = (counters[operation] ?? 0) + 1;
+      },
     }));
+  }
+
+  /**
+   * Per-wake counters from the pi_core store's read/write policies. Flushed onto
+   * the per-request `pi_context_budget` event rather than emitted per occurrence:
+   * `transformContext` runs ~25 times a turn and an event per omitted image would
+   * be noise, while a per-request count is exactly the resolution the question
+   * ("is this thread losing images?") needs.
+   */
+  private piCoreReadOps: Record<string, number> = {};
+
+  private takePiCoreReadOpCount(operation: string): number {
+    // Tolerates a facade built with `Object.create(ChatThreadDO.prototype)`,
+    // which never runs field initializers: a diagnostic counter may not be the
+    // reason a unit-level caller of a real method blows up.
+    const counters = this.piCoreReadOps;
+    if (!counters) return 0;
+    const value = counters[operation] ?? 0;
+    counters[operation] = 0;
+    return value;
   }
 
   private ensurePiCoreTables(): void {
@@ -4788,14 +5083,58 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     } as unknown as AgentMessage;
   }
 
-  private loadPiCoreMessages(options: {
+  private loadFullPiCoreTranscriptUnbounded(options: {
     includeUiMetadata?: boolean;
     imagePolicy?: PiCoreImagePolicy;
     imageHydrationBudget?: PiImageHydrationBudget;
   } = {}): Promise<AgentMessage[]> {
     return this.withChatMemoryPhase("pi_read", () =>
-      this.piCoreStore.loadPiCoreMessages(options),
+      this.piCoreStore.loadFullPiCoreTranscriptUnbounded(options),
     );
+  }
+
+  /**
+   * The session-build read. Named apart from {@link loadFullPiCoreTranscriptUnbounded} because
+   * it is the one caller that is allowed to return LESS than the visible window
+   * — everything else (fork, dedup, export, admin) needs the whole thing and
+   * must keep calling the unbounded load.
+   */
+  private loadBoundedPiCoreSessionWindow(): Promise<{
+    messages: AgentMessage[];
+    window: PiSessionLoadWindow;
+  }> {
+    return this.piCoreStore.loadBoundedPiCoreSessionWindow({
+      maxChars: PI_SESSION_LOAD_MAX_CHARS,
+    });
+  }
+
+  /**
+   * Adopt a session load's index space, and say so when the char cap bound.
+   *
+   * A capped load is not an error and not a degraded rung — it is the only way a
+   * thread this size gets a turn at all — but it means the model is answering
+   * without part of its own history, so it must never be silent. The event is
+   * what proves the follow-through too: a thread should appear here at most
+   * ONCE, because the first completed turn's compaction persists a real
+   * watermark and every later load is an ordinary summary+tail load.
+   */
+  private recordPiSessionLoadWindow(window: PiSessionLoadWindow): void {
+    this.piSessionLoadWindow = {
+      firstRowIdx: window.firstRowIdx,
+      summaryOffset: window.summaryOffset,
+      capped: window.capped,
+    };
+    if (!window.capped) return;
+    this.recordChatThreadObservabilityEvent("pi_session_load_capped", {
+      operation: "pi_session_load",
+      status: "capped",
+      severity: "warn",
+      // count = rows skipped, size = chars actually materialized. The totals ride
+      // along so the ratio (what the load would have been) is visible.
+      count: Math.max(0, window.totalRows - window.loadedRows),
+      size: window.loadedChars,
+      extraCounts: [window.totalChars, window.totalRows, window.firstRowIdx],
+    });
   }
 
   /**
@@ -4815,12 +5154,35 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   private async replacePiCoreMessages(
     messages: AgentMessage[],
     options: { uiRender: "preserve" | "rebuild" },
-  ): Promise<void> {
+  ): Promise<{ status: "rewritten" | "skipped_archive_truncated" }> {
     this.ensurePiCoreTables();
     // Before pi_core shrinks, snapshot the current visible derive into the
     // ai-chat table so post-compaction reads can prepend those rows as archive.
     if (options.uiRender === "preserve") {
-      await this.materializeSettledRenderArchiveFromPiCore();
+      // The rewrite keeps `messages` and nothing else, so the rows it destroys
+      // are exactly the visible ones below the kept tail. Everything newer is
+      // still served by the post-compaction derive and needs no archive copy.
+      const archive = await this.materializeSettledRenderArchiveFromPiCore({
+        keptTailRows: messages.length - (isPiSummaryMessage(messages[0]) ? 1 : 0),
+      });
+      if (archive?.truncated) {
+        // A ceiling stopped the archive walk, so the rows below
+        // `lowestRowIdx` have NO copy anywhere. Deleting them here would be
+        // permanent history loss to save one compaction; refuse instead. The
+        // caller's `pi_core_compaction` watermark is already durable, so the
+        // model context stays bounded — the same trade the capped-session
+        // branch makes, and the next pass can try again.
+        this.recordChatThreadObservabilityEvent("pi_core_rewrite_skipped", {
+          operation: "replace_pi_core",
+          status: "archive_truncated",
+          severity: "warn",
+          count: archive.messagesPersisted,
+          size: archive.payloadChars,
+          extraCounts: [archive.rowsRead, archive.batches, archive.lowestRowIdx],
+          sampleKey: this.chatContext?.threadId,
+        });
+        return { status: "skipped_archive_truncated" };
+      }
     }
     // Serialize first (this can await R2/image work); swap the table contents
     // with no await between DELETE and the INSERTs so an eviction or a
@@ -4829,6 +5191,21 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     for (const message of messages) {
       const serialized = await this.serializePiMessageForSqlStorageDetailed(message);
       payloads.push(serialized.payload);
+    }
+    // A session-trimmed image the serializer could not put back is written as a
+    // reference, and render then shows a marker for it forever. It should never
+    // happen (the object is content-addressed and was proven present before the
+    // reference was minted), which is exactly why it must be loud when it does.
+    const restoreFailures = this.takePiCoreReadOpCount("session_image_restore_failed");
+    if (restoreFailures > 0) {
+      this.recordChatThreadObservabilityEvent("pi_session_image_restore_failed", {
+        operation: "replace_pi_core",
+        status: "degraded",
+        severity: "warn",
+        count: restoreFailures,
+        size: messages.length,
+        sampleKey: this.chatContext?.threadId,
+      });
     }
     const now = Date.now();
     this.ctx.storage.sql.exec("DELETE FROM pi_core_messages");
@@ -4841,6 +5218,12 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       );
     }
     this.piCoreStore.markPiCoreChanged(payloads.length);
+    // pi_core is renumbered from 0 and `messages` IS the new row list, so the
+    // session's index space is now the identity mapping. Callers that keep the
+    // session alive (post-turn compaction) assign `session.state.messages =
+    // messages` right after; callers that do not have already disposed it. Either
+    // way a stale offset here would name the wrong rows on the next cut.
+    this.piSessionLoadWindow = { firstRowIdx: 0, summaryOffset: 0, capped: false };
     // Invalidate derive-on-read cache; markPiCoreChanged already bumped generation.
     this.derivedRenderWindowCache = null;
     if (options.uiRender === "rebuild") {
@@ -4851,29 +5234,75 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     // uiRender: "preserve" keeps cf_ai_chat_agent_messages as the pre-compaction
     // visible archive; settled reads derive from the new pi_core and prepend
     // archive rows whose ids are absent from the derive.
+    return { status: "rewritten" };
   }
 
   /**
-   * Write the current pi_core-derived settled transcript into the ai-chat table
-   * (with pi timestamps as chronology) so a following compaction preserve can
-   * keep pre-compaction rows visible via the archive hybrid.
+   * Write the pi_core rows a preserve-compaction is about to delete into the
+   * ai-chat table (with pi timestamps as chronology) so post-compaction reads can
+   * keep showing them via the archive hybrid.
+   *
+   * Bounded by construction (stage 2a): scoped to the rows the post-compaction
+   * derive can no longer see, and walked one bounded derived window at a time
+   * instead of materializing the whole transcript. See
+   * ./chat-thread/render-archive-preserve.
+   *
+   * Returns the walk's result so the caller can honour its contract: a
+   * `truncated` pass leaves rows unarchived, and the rewrite must then be
+   * abandoned rather than delete them.
    */
-  private async materializeSettledRenderArchiveFromPiCore(): Promise<void> {
-    const parsed = await this.getPiCoreParsedMessages(
-      this.chatContext?.threadId ?? "",
+  private async materializeSettledRenderArchiveFromPiCore(
+    options: { keptTailRows: number },
+  ): Promise<PreserveArchiveResult> {
+    const startedAt = Date.now();
+    const result = await materializeBoundedRenderArchive(
+      {
+        visibleWindow: () => this.piCoreStore.piCoreVisibleWindow(),
+        // Deliberately NOT `deriveRenderWindow`: that memo is the read path's
+        // page cache, and a preserve pass would evict every entry in it with
+        // windows nobody is going to request.
+        deriveWindow: (beforeIdx, limits) =>
+          deriveRenderWindowFromPiCore(this.piDeriveRowSource, {
+            beforeIdx,
+            maxMessages: limits.maxMessages,
+            maxBytes: limits.maxBytes,
+          }),
+        persistBatch: (messages) => this.persistMessages(messages),
+        stampChronology: (message) => {
+          const createdAtMs = uiMessageCreatedAtMs(message);
+          if (createdAtMs === undefined) return;
+          this._setRenderHistoryChronology(
+            message.id,
+            formatAiChatCreatedAt(createdAtMs),
+          );
+        },
+      },
+      { keptTailRows: options.keptTailRows },
     );
-    const derived = deriveUiMessagesFromParsedPiCore(parsed);
-    if (derived.length === 0) return;
-    await this.persistMessages(derived);
-    for (const message of derived) {
-      const createdAtMs = uiMessageCreatedAtMs(message);
-      if (createdAtMs === undefined) continue;
-      this._setRenderHistoryChronology(
-        message.id,
-        formatAiChatCreatedAt(createdAtMs),
-      );
-    }
+    if (result.messagesPersisted === 0 && !result.truncated) return result;
+    // `warn` only on truncation, which is the one outcome that costs something:
+    // the rows below `lowestRowIdx` have no archive copy, so the caller has to
+    // abandon its rewrite. Everything else is routine bookkeeping.
+    // `peakRetainedMessages` rides along because no storage counter can see it —
+    // it is the only evidence the walk's residency bound still holds.
+    this.recordChatThreadObservabilityEvent("pi_render_archive_preserved", {
+      operation: "preserve_render_archive",
+      status: result.truncated ? "truncated" : "preserved",
+      severity: result.truncated ? "warn" : "info",
+      count: result.messagesPersisted,
+      size: result.payloadChars,
+      durationMs: Date.now() - startedAt,
+      extraCounts: [
+        result.rowsRead,
+        result.batches,
+        result.lowestRowIdx,
+        result.peakRetainedMessages,
+        result.duplicateIdsSkipped,
+      ],
+      sampleKey: this.chatContext?.threadId,
+    });
     this.messages = this.getRenderHistoryPage().messages;
+    return result;
   }
 
   private get uiMirror(): ChatThreadUiMirror {
@@ -4899,6 +5328,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       activePiStreamTurnId: () => this.activePiStreamTurnId,
       getPiCoreRevision: () => this.piCoreStore.getPiCoreRevision(),
       getPiCoreParsedMessages: (threadId) => this.getPiCoreParsedMessages(threadId),
+      readParsedPiCoreRowRange: (options) => this.readParsedPiCoreRowRange(options),
       setRenderHistoryChronology: (id, createdAt) =>
         this._setRenderHistoryChronology(id, createdAt),
       reloadAiChatMessagesOrdered: () => this.reloadAiChatMessagesOrdered(),
@@ -6382,6 +6812,14 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
         footprint.imageChars,
         footprint.messageCount,
         outcome.resultBytes ?? footprint.bytes,
+        // Images the store replaced with a marker since the last emitted budget
+        // event, and images it hydrated back out of R2 to produce this request.
+        // `imageCount` alone cannot distinguish a thread whose screenshots are
+        // being dropped from one that never had any. Taken (and zeroed) only
+        // when the event is actually emitted, so a sampled-out request carries
+        // its counts forward instead of losing them.
+        this.takePiCoreReadOpCount("provider_image_omitted"),
+        this.takePiCoreReadOpCount("r2_image_hydrated"),
       ],
       sampleKey: this.chatContext?.threadId,
     });
@@ -7425,9 +7863,15 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     const resolveCurrentModel = () => this.resolvePiModel(context, envVars, getModel);
     const modelConfig = await resolveCurrentModel();
     this.piModelResolver = resolveCurrentModel;
-    const persistedMessages = await this.withChatMemoryPhase("pi_session_load", () =>
-      this.loadPiCoreMessages({ imagePolicy: "reference" }),
+    // Bounded by construction: a thread whose visible window exceeds
+    // PI_SESSION_LOAD_MAX_CHARS loads its newest turn-aligned tail plus a
+    // placeholder summary instead of the whole transcript. Under the cap this is
+    // the same load it always was, row for row.
+    const loaded = await this.withChatMemoryPhase("pi_session_load", () =>
+      this.loadBoundedPiCoreSessionWindow(),
     );
+    const persistedMessages = loaded.messages;
+    this.recordPiSessionLoadWindow(loaded.window);
     let initialMessages = [...persistedMessages];
     this.piMainBaselineIndex = persistedMessages.length;
     // Resume an interrupted turn: fold the journaled in-flight tail back in and
@@ -7574,6 +8018,40 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
    * pending steer messages above it exist nowhere durable yet), and a persisted
    * `first_kept_index` is read back as a pi_core `idx` predicate.
    */
+  /**
+   * True when this turn's session load was capped and the durable row that is
+   * supposed to end that state has not been written yet.
+   *
+   * A capped load leaves storage untouched and hands the model a placeholder;
+   * the ONE thing that turns it into an ordinary summary+tail thread is the
+   * `pi_core_compaction` row `compactPiContext`'s `recordCut` persists. But
+   * that row is only ever written when a compaction actually runs, and the two
+   * triggers are a token threshold and {@link PI_CONTEXT_MAX_WORKING_SET_BYTES}
+   * — both of which a capped load is deliberately sized to sit UNDER
+   * ({@link PI_SESSION_LOAD_MAX_CHARS} is the smaller number, on purpose). For a
+   * text-heavy thread the token estimate trips anyway and the gap never shows.
+   * For an image-dominated one it does not: images are charged a flat
+   * `PI_IMAGE_CONTEXT_TOKENS` each, so ~24 screenshots is well under any
+   * threshold while the load itself is 12 MB. Nothing else consults `capped`
+   * before the fact, and the post-turn path is usage-gated too, so such a thread
+   * re-enters the capped branch on every wake forever: the placeholder becomes
+   * permanent, `pi_session_load_capped` fires on every turn (the event documents
+   * that a thread appears there at most once), and every wake re-materializes
+   * 12 MB and re-runs the session image externalization pass.
+   *
+   * So the follow-through is forced instead of inferred. On the first provider
+   * request of the turn the whole loaded tail is below `piMainBaselineIndex`,
+   * so `recordCut`'s committed-bound check passes and the row lands in pi_core
+   * idx space through the usual `storedFirstKeptIndex` mapping; from the second
+   * request on, the `row_hit` branch serves it and this returns false.
+   */
+  private piCappedLoadNeedsWatermark(): boolean {
+    const window = this.piSessionLoadWindow;
+    if (!window?.capped) return false;
+    const existing = this.loadPiCoreCompaction();
+    return !existing || existing.firstKeptIndex < window.firstRowIdx;
+  }
+
   private async transformPiProviderContext(
     messages: AgentMessage[],
     model: Model<any>,
@@ -7615,7 +8093,16 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
             forceFloorFraction: PI_DEGRADED_COMPACTION_FLOOR_FRACTION,
             byteCeiling: PI_DEGRADED_COMPACTION_MAX_WORKING_SET_BYTES,
           }
-        : compactionOptions,
+        : this.piCappedLoadNeedsWatermark()
+          ? {
+              ...compactionOptions,
+              // A capped load's follow-through, forced rather than hoped for.
+              // See piCappedLoadNeedsWatermark.
+              force: true,
+              forceFloorFraction: 0,
+              persist: true,
+            }
+          : compactionOptions,
     );
     this.recordPiContextBudget(footprint, model, outcome);
     const hydrated = (await this.hydratePiStoredImages(
@@ -7788,37 +8275,82 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     }
 
     const existing = this.loadPiCoreCompaction();
-    const startsWithExistingSummary =
-      Boolean(existing) && isPiSummaryMessage(messages[0]);
-    if (existing && startsWithExistingSummary) {
-      if (tokens < threshold && bytes < byteCeiling) {
+    const hasSummaryHead = isPiSummaryMessage(messages[0]);
+    const startsWithExistingSummary = Boolean(existing) && hasSummaryHead;
+    // Where this message list sits in pi_core's idx space. The session load
+    // records it ({@link piSessionLoadWindow}); when it has not run — a direct
+    // call, a cold facade, a unit test — fall back to the only shape that used to
+    // shift the mapping, a durable compaction summary at index 0. A recorded
+    // window claiming a summary head that is not there is stale and is ignored,
+    // so a wrong offset can never outlive the list it described.
+    const recorded = this.piSessionLoadWindow;
+    const indexSpace =
+      recorded && (recorded.summaryOffset === 0 || hasSummaryHead)
+        ? recorded
+        : {
+            firstRowIdx:
+              existing && startsWithExistingSummary ? existing.firstKeptIndex : 0,
+            summaryOffset: (startsWithExistingSummary ? 1 : 0) as 0 | 1,
+          };
+    /** Session index of a pi_core `first_kept_index`. Inverse of the write below. */
+    const sessionIndexOfRow = (rowIdx: number): number =>
+      rowIdx - indexSpace.firstRowIdx + indexSpace.summaryOffset;
+
+    if (existing) {
+      if (startsWithExistingSummary && tokens < threshold && bytes < byteCeiling) {
         return finish(messages, "row_hit");
       }
-    } else if (existing && existing.firstKeptIndex > 0 && existing.firstKeptIndex < messages.length) {
-      const view = [
-        createPiSummaryMessage(existing.summary),
-        ...messages.slice(existing.firstKeptIndex),
-      ];
-      const viewBytes = withinBudget(view);
-      if (viewBytes !== null) {
-        return finish(view, "row_hit", viewBytes);
+      // Rebuild the durable cut's view in SESSION space. `sessionCut >
+      // summaryOffset` is the "this actually shrinks something" test: on a warm
+      // load whose head IS the row's summary it evaluates to 1 > 1 and skips,
+      // which is the pre-existing behaviour and keeps the hot path free of a
+      // pointless view. It fires when the row names rows newer than the session's
+      // own head — including the case that matters here, a capped load whose
+      // first turn already persisted a real watermark, which without this branch
+      // would re-summarize on every one of the turn's ~25 provider requests.
+      const sessionCut = sessionIndexOfRow(existing.firstKeptIndex);
+      if (sessionCut > indexSpace.summaryOffset && sessionCut < messages.length) {
+        const view = [
+          createPiSummaryMessage(existing.summary),
+          ...messages.slice(sessionCut),
+        ];
+        const viewBytes = withinBudget(view);
+        if (viewBytes !== null) {
+          return finish(view, "row_hit", viewBytes);
+        }
       }
     }
 
     const firstKeptIndex = findPiCompactionCutIndex(messages, keepRecentTokens);
-    if (firstKeptIndex <= 0 || firstKeptIndex >= messages.length) {
+    // A summary head is not conversation and must not be summarized again: it is
+    // handed to the summarizer as `previousSummary` (its own dedicated slot) and
+    // excluded from the chunked conversation. Without this the head was BOTH the
+    // previous-summary block and the first thing in the transcript being
+    // summarized, so every compaction of an already-compacted thread folded its
+    // own summary in a second time — and a capped load, whose head is a
+    // placeholder saying "history was omitted", would have had that notice
+    // laundered into the durable summary as if it were something the user said.
+    const summarizeFrom = hasSummaryHead ? 1 : 0;
+    if (
+      firstKeptIndex <= 0 ||
+      firstKeptIndex >= messages.length ||
+      summarizeFrom >= firstKeptIndex
+    ) {
       // Over budget with nothing to cut. Distinct from `unchanged` on purpose:
       // this is the case where the full, oversized context ships to the provider
-      // anyway, and it must not be invisible in telemetry.
+      // anyway, and it must not be invisible in telemetry. `summarizeFrom >=
+      // firstKeptIndex` is the same statement for a summary-headed list: the cut
+      // keeps everything but the head, so there is no conversation to compact.
       return finish(messages, "no_cut");
     }
 
-    const previousSummary = existing?.summary;
-    const messagesToSummarize = messages.slice(0, firstKeptIndex);
+    const previousSummary = hasSummaryHead
+      ? piSummaryMessageText(messages[0]) || existing?.summary
+      : existing?.summary;
+    const messagesToSummarize = messages.slice(summarizeFrom, firstKeptIndex);
     const storedFirstKeptIndex =
-      existing && startsWithExistingSummary
-        ? existing.firstKeptIndex + Math.max(0, firstKeptIndex - 1)
-        : firstKeptIndex;
+      indexSpace.firstRowIdx +
+      Math.max(0, firstKeptIndex - indexSpace.summaryOffset);
     const recordCut = (summary: string): void => {
       // A cut inside the uncommitted tail has no pi_core `idx` to name; applying
       // it to this request is fine, persisting it is not (see the INDEX SPACE note).
@@ -7886,9 +8418,14 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     } catch (error) {
       if (error instanceof UserLlmUsageLimitError) throw error;
       console.error("[ChatThreadDO] Pi context compaction failed", error);
+      // `previousSummary` is threaded in on purpose: this branch persists through
+      // the SAME `recordCut` as the success branch, so without it a single
+      // transient summarizer failure replaces the whole accumulated durable
+      // summary with an error banner while still advancing the watermark.
       const fallbackSummary = createFallbackPiCompactionSummary(
         messagesToSummarize,
         error,
+        previousSummary,
       );
       recordCut(fallbackSummary);
       return finish(
@@ -8014,10 +8551,55 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     }
 
     session.state.messages = compacted;
+    /**
+     * Keep the rows, keep the durable watermark, re-point the session's index
+     * space at it. Shared by the two cases that must NOT rewrite pi_core, both
+     * for the same reason: the rewrite would delete rows that have no copy
+     * anywhere else. `compactPiContext` above already persisted a real
+     * `pi_core_compaction` row, so the thread is bounded either way — the
+     * rewrite is only a compaction of storage, never the bound itself.
+     */
+    const keepRowsBehindWatermark = (): void => {
+      const persisted = this.loadPiCoreCompaction();
+      if (persisted) {
+        this.piSessionLoadWindow = {
+          firstRowIdx: persisted.firstKeptIndex,
+          summaryOffset: 1,
+          capped: this.piSessionLoadWindow?.capped ?? false,
+        };
+      }
+      this.piMainBaselineIndex = compacted.length;
+    };
+    if (this.piSessionLoadWindow?.capped) {
+      // A CAPPED session does not hold the whole thread, so it may not rewrite
+      // pi_core: `replacePiCoreMessages` deletes every row not in the list it is
+      // handed, and the rows this session deliberately never loaded are exactly
+      // the ones that would be destroyed. (Its archive snapshot is also the
+      // full-thread derive — the O(thread) allocator this whole change exists to
+      // avoid, pointed at the biggest thread there is.)
+      //
+      // The durable bound is already in place: `compactPiContext` above persisted
+      // a real `pi_core_compaction` row, which is what every later load reads. So
+      // keep the row, keep the rows, and re-point the session's index space at the
+      // watermark that was just written — the view the session now holds is
+      // `[summary, ...rows >= first_kept_index]`, still short of the thread.
+      keepRowsBehindWatermark();
+      return;
+    }
     // Compaction only summarizes away rows the render mirror already shows;
     // "preserve" keeps the visible history and re-pins the top-up mark to the
     // rewritten (shorter) parsed count.
-    await this.replacePiCoreMessages(compacted, { uiRender: "preserve" });
+    const rewrite = await this.replacePiCoreMessages(compacted, {
+      uiRender: "preserve",
+    });
+    if (rewrite.status === "skipped_archive_truncated") {
+      // The archive walk could not cover the whole prefix, so the rewrite was
+      // refused rather than delete unarchived rows. Same landing as the capped
+      // branch: the durable watermark is what bounds the thread, and the next
+      // post-turn pass gets to try again from a shorter range.
+      keepRowsBehindWatermark();
+      return;
+    }
     this.clearPiCoreCompaction();
     this.piMainBaselineIndex = compacted.length;
   }

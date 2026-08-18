@@ -777,7 +777,27 @@ export function serializePiMessageForSummary(message: AgentMessage): string {
   return "";
 }
 
-export function createFallbackPiCompactionSummary(messages: AgentMessage[], error: unknown): string {
+/**
+ * The summary a compaction persists when the summarizer call fails.
+ *
+ * `previousSummary` is not optional decoration. `recordCut` advances the
+ * watermark on this branch exactly as it does on the success branch, so
+ * whatever this returns BECOMES the thread's entire durable summary — and on an
+ * already-compacted thread the previous summary is the only representation of
+ * everything below the old cut. Dropping it means one transient summarizer
+ * failure silently discards every earlier compaction's work while still moving
+ * the cut forward, which is unrecoverable. It is carried verbatim rather than
+ * re-summarized: this path exists precisely because the model is unavailable.
+ *
+ * On a capped load the previous summary is the capped-load placeholder, so
+ * carrying it also keeps the "an earlier portion was never loaded" notice alive,
+ * which is the only record that the unsummarized prefix exists at all.
+ */
+export function createFallbackPiCompactionSummary(
+  messages: AgentMessage[],
+  error: unknown,
+  previousSummary?: string,
+): string {
   const details = piAgentLoopErrorDetails(error);
   const roleCounts = messages.reduce<Record<string, number>>((counts, message) => {
     const role = String((message as unknown as Record<string, unknown>).role || "unknown");
@@ -790,13 +810,23 @@ export function createFallbackPiCompactionSummary(messages: AgentMessage[], erro
     .slice(-8)
     .map((line) => line.length > 1000 ? `${line.slice(0, 1000)}\n[...truncated...]` : line)
     .join("\n\n");
-  return [
+  const carried = typeof previousSummary === "string" ? previousSummary.trim() : "";
+  const fallback = [
     "Automatic fallback summary created because model-generated compaction failed.",
     `Compaction error: ${details.name}: ${details.message}`,
     `Compacted message count: ${messages.length}`,
     `Role counts: ${JSON.stringify(roleCounts)}`,
     snippets ? `Recent compacted excerpts:\n${snippets}` : "",
-  ].filter(Boolean).join("\n\n").slice(0, 80_000);
+  ].filter(Boolean).join("\n\n");
+  // The carried summary is trimmed LAST and from its own head, so a fallback that
+  // has to fit the cap never costs the newest excerpts; if the total still does
+  // not fit, the excerpts are what give way, never the carried history.
+  const remaining = Math.max(0, 80_000 - fallback.length - 2);
+  if (!carried || remaining === 0) return fallback.slice(0, 80_000);
+  const kept = carried.length <= remaining
+    ? carried
+    : `[...earlier summary truncated...]\n${carried.slice(carried.length - remaining)}`;
+  return `${kept}\n\n${fallback}`.slice(0, 80_000);
 }
 
 export function createPiSummaryMessage(summary: string, timestamp = Date.now()): AgentMessage {

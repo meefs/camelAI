@@ -39,6 +39,47 @@ export const UI_MESSAGES_PI_CORE_HIGH_WATER_KEY = "uiMessagesPiCoreHighWaterIdx"
 // Raw pi_core generation/count paired with the parsed high-water mark. Unlike
 // the parsed count this can be read without selecting or parsing payload rows.
 export const UI_MESSAGES_PI_CORE_REVISION_KEY = "uiMessagesPiCoreRevisionV1";
+/**
+ * ROW-space companion to the parsed high-water mark: the next `pi_core_messages.idx`
+ * the top-up should read.
+ *
+ * The parsed mark alone cannot bound a top-up. Its unit is parsed render
+ * messages, and the only way to turn a parsed count into a row position is to
+ * parse every row up to it — which is precisely the O(thread) read the mark was
+ * supposed to avoid, so the pre-change top-up materialized the entire visible
+ * transcript on every invocation just to slice off its tail. With a row cursor
+ * the read is a forward range and the pass is resumable: each call converts one
+ * budgeted batch and leaves the cursor where the next call continues.
+ *
+ * Absent on threads mirrored before this shipped. Those restart the walk at the
+ * visible window's first row and skip anything already below the parsed mark —
+ * bounded per call, idempotent (deterministic ids), and self-limiting: once the
+ * cursor passes the mark it never looks back again.
+ */
+export const UI_MESSAGES_PI_CORE_ROW_CURSOR_KEY = "uiMessagesPiCoreRowCursorV1";
+
+/**
+ * Rows and stored payload chars ONE top-up invocation may materialize.
+ *
+ * Sized as a large render page rather than a transcript: 512 rows / 4 MB is
+ * roughly one long turn's worth of commits, so an ordinary new-turn top-up
+ * finishes in a single pass while a whale's first mirror is spread over as many
+ * passes as it takes. Nothing durable depends on a pass completing — the cursor
+ * and the mark advance together, and the revision token (which is what makes the
+ * next call a no-op) is only written once the walk reaches the end.
+ */
+export const UI_TOPUP_MAX_ROWS_PER_CALL = 512;
+export const UI_TOPUP_MAX_CHARS_PER_CALL = 4_000_000;
+/**
+ * Batches one FORCED pass (admin resync, fork seeding, rebuild) may run before
+ * it gives up and leaves the rest to ordinary top-ups.
+ *
+ * A rebuild wiped the table, so it has to repopulate it in one call to be worth
+ * anything — but it still may not do so in one allocation. Looping bounded
+ * batches keeps peak residency at one batch while letting the pass finish; this
+ * ceiling only stops a pathological thread from pinning the isolate.
+ */
+export const UI_TOPUP_FORCED_MAX_BATCHES = 64;
 // Last explicit created_at (ms) written by the backfill, persisted so successive
 // top-ups keep strictly increasing timestamps even across DO wakes.
 const UI_MESSAGES_PI_CORE_LAST_CREATED_AT_KEY = "uiMessagesPiCoreLastCreatedAtMs";
@@ -84,7 +125,24 @@ export interface ChatThreadUiMirrorDeps {
   readPiActiveTurn(): PiActiveTurnMarker | null;
   activePiStreamTurnId(): string | null;
   getPiCoreRevision(): PiCoreRevision;
+  /**
+   * UNBOUNDED full parsed transcript. Only the legacy author heal still uses it
+   * (see the allowlist check); the top-up reads ranges.
+   */
   getPiCoreParsedMessages(threadId: string): Promise<AgentEvalParsedMessage[]>;
+  /** One budgeted, turn-aligned forward range of parsed pi_core rows. */
+  readParsedPiCoreRowRange(options: {
+    fromIdx: number;
+    maxRows: number;
+    maxChars: number;
+  }): {
+    parsed: AgentEvalParsedMessage[];
+    parsedStartIndex: number;
+    nextIdx: number;
+    reachedEnd: boolean;
+    rowsRead: number;
+    payloadChars: number;
+  };
   setRenderHistoryChronology(id: string, createdAt: string): void;
   reloadAiChatMessagesOrdered(): void;
   topUpUiMessagesFromPiCore(options?: { force?: boolean }): Promise<void>;
@@ -365,6 +423,7 @@ export class ChatThreadUiMirror {
     this.deps.sql().exec("DELETE FROM cf_ai_chat_agent_messages");
     this.deps.kv().delete(UI_MESSAGES_PI_CORE_HIGH_WATER_KEY);
     this.deps.kv().delete(UI_MESSAGES_PI_CORE_REVISION_KEY);
+    this.deps.kv().delete(UI_MESSAGES_PI_CORE_ROW_CURSOR_KEY);
     this.deps.kv().delete(UI_MESSAGES_PI_CORE_LAST_CREATED_AT_KEY);
     this.deps.setRenderMessages([]);
     // ai-chat's persistMessages skips upserts whose serialized form matches its
@@ -383,6 +442,16 @@ export class ChatThreadUiMirror {
    * idempotent, and explicit monotonic created_at keeps ai-chat's `order by
    * created_at` load stable (its default per-row timestamp is 1s-resolution insert
    * time, so a burst of backfilled rows would otherwise tie and shuffle).
+   *
+   * BOUNDED PER INVOCATION (stage 2b). The pre-change version read the whole
+   * visible transcript on every call and threw away everything below the mark —
+   * O(thread) allocation to convert one turn. It now reads one budgeted,
+   * turn-aligned forward range from the durable row cursor
+   * ({@link UI_MESSAGES_PI_CORE_ROW_CURSOR_KEY}) and stops. A pass that did not
+   * reach the end deliberately leaves the revision token unwritten, so the very
+   * next top-up continues instead of short-circuiting; a FORCED pass (rebuild,
+   * resync, fork seeding) loops batches to completion because it has just wiped
+   * the table it is repopulating, but still only one batch is ever resident.
    */
   async topUpUiMessagesFromPiCore(
     options: { force?: boolean } = {},
@@ -416,28 +485,67 @@ export class ChatThreadUiMirror {
       },
     );
     if (!preflight) return;
-    const parsed = await this.deps.withMemoryPhase("pi_topup_read", () =>
-      this.deps.getPiCoreParsedMessages(preflight.threadId),
-    );
-    await this.deps.withMemoryPhase("pi_topup_convert", () =>
-      this.convertPiCoreTopUp(parsed, preflight.revisionToken, startedAt),
-    );
+    const maxBatches = options.force ? UI_TOPUP_FORCED_MAX_BATCHES : 1;
+    for (let batch = 0; batch < maxBatches; batch += 1) {
+      const range = await this.deps.withMemoryPhase("pi_topup_read", async () =>
+        this.deps.readParsedPiCoreRowRange({
+          fromIdx: this.deps.kv().get<number>(UI_MESSAGES_PI_CORE_ROW_CURSOR_KEY) ?? 0,
+          maxRows: UI_TOPUP_MAX_ROWS_PER_CALL,
+          maxChars: UI_TOPUP_MAX_CHARS_PER_CALL,
+        }),
+      );
+      const converted = await this.deps.withMemoryPhase("pi_topup_convert", () =>
+        this.convertPiCoreTopUp(range, preflight.revisionToken, startedAt),
+      );
+      // `false` means the pass bailed without advancing anything (a turn started
+      // under the archive walk). Retrying inside this loop would spin.
+      if (!converted || range.reachedEnd) return;
+    }
   }
 
   private async convertPiCoreTopUp(
-    parsed: AgentEvalParsedMessage[],
+    range: {
+      parsed: AgentEvalParsedMessage[];
+      parsedStartIndex: number;
+      nextIdx: number;
+      reachedEnd: boolean;
+    },
     revisionToken: string,
     startedAt: number,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const mark = this.deps.kv().get<number>(
       UI_MESSAGES_PI_CORE_HIGH_WATER_KEY,
     ) ?? 0;
-    if (parsed.length <= mark) {
-      this.deps.kv().put(UI_MESSAGES_PI_CORE_REVISION_KEY, revisionToken);
-      return;
+    const parsedEndIndex = range.parsedStartIndex + range.parsed.length;
+    /**
+     * Rows already mirrored under the OLD parsed-only mark. Only a thread whose
+     * cursor was bootstrapped mid-history sees this; the walk still advances the
+     * cursor past them, so the skip is paid once and never again.
+     */
+    const alreadyMirrored = Math.max(0, Math.min(
+      range.parsed.length,
+      mark - range.parsedStartIndex,
+    ));
+    /** Advance both marks together; neither may ever move backwards. */
+    const commitMarks = (): void => {
+      this.deps.kv().put(
+        UI_MESSAGES_PI_CORE_HIGH_WATER_KEY,
+        Math.max(mark, parsedEndIndex),
+      );
+      this.deps.kv().put(UI_MESSAGES_PI_CORE_ROW_CURSOR_KEY, range.nextIdx);
+      // The token says "this pi_core revision is fully mirrored", so it may only
+      // be written by the pass that actually reached the end. Writing it early
+      // would make every following top-up a no-op with rows still unconverted.
+      if (range.reachedEnd) {
+        this.deps.kv().put(UI_MESSAGES_PI_CORE_REVISION_KEY, revisionToken);
+      }
+    };
+    if (range.parsed.length <= alreadyMirrored) {
+      commitMarks();
+      return true;
     }
 
-    const newParsed = parsed.slice(mark);
+    const newParsed = range.parsed.slice(alreadyMirrored);
     let lastCreatedAtMs =
       this.deps.kv().get<number>(
         UI_MESSAGES_PI_CORE_LAST_CREATED_AT_KEY,
@@ -581,7 +689,7 @@ export class ChatThreadUiMirror {
       );
       // A turn began while the bounded archive walk yielded. Leave the
       // high-water mark untouched so the next quiet reconciliation retries.
-      if (!archiveIndexed) return;
+      if (!archiveIndexed) return false;
     }
     const durableIdPresence = new Map<string, boolean>();
     const hasDurableRenderId = (id: string): boolean => {
@@ -779,13 +887,13 @@ export class ChatThreadUiMirror {
       );
       this.deps.recordChatThreadObservabilityEvent("pi_ui_messages_backfilled", {
         operation: "topup_ui_messages",
-        status: "converted",
+        status: range.reachedEnd ? "converted" : "converted_partial",
         count: uiMessages.length,
         durationMs: Date.now() - startedAt,
       });
     }
-    this.deps.kv().put(UI_MESSAGES_PI_CORE_HIGH_WATER_KEY, parsed.length);
-    this.deps.kv().put(UI_MESSAGES_PI_CORE_REVISION_KEY, revisionToken);
+    commitMarks();
+    return true;
   }
 
   /**

@@ -4084,7 +4084,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     };
     fake.loadPiCompleteSimple = vi.fn(async () => vi.fn());
     fake.compactPiContext = vi.fn(async () => compactedMessages);
-    fake.replacePiCoreMessages = vi.fn();
+    fake.replacePiCoreMessages = vi.fn(async () => ({ status: 'rewritten' }));
     fake.clearPiCoreCompaction = vi.fn();
     fake.recordChatThreadObservabilityEvent = vi.fn();
     fake.piMainBaselineIndex = beforeMessages.length;
@@ -4239,7 +4239,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       }));
       fake.loadPiCompleteSimple = vi.fn(async () => vi.fn());
       fake.compactPiContext = vi.fn(async () => compactedMessages);
-      fake.replacePiCoreMessages = vi.fn();
+      fake.replacePiCoreMessages = vi.fn(async () => ({ status: 'rewritten' }));
       fake.clearPiCoreCompaction = vi.fn();
       fake.recordChatThreadObservabilityEvent = vi.fn();
       fake.piMainBaselineIndex = beforeMessages.length;
@@ -10877,7 +10877,7 @@ describe('ChatThreadDO Pi turn handling', () => {
 
   it('renders persisted Pi tool result messages with their assistant tool calls', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.loadPiCoreMessages = vi.fn(() => [
+    fake.loadFullPiCoreTranscriptUnbounded = vi.fn(() => [
       { role: 'user', content: 'run it', timestamp: 100 },
       {
         role: 'assistant',
@@ -10938,7 +10938,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     // before the tool result and the turn view would fold it into the collapsed
     // tool trace instead of showing it as the turn's final output.
     const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.loadPiCoreMessages = vi.fn(() => [
+    fake.loadFullPiCoreTranscriptUnbounded = vi.fn(() => [
       { role: 'user', content: 'run it', timestamp: 100 },
       {
         role: 'assistant',
@@ -10996,7 +10996,7 @@ describe('ChatThreadDO Pi turn handling', () => {
 
   it('marks persisted Pi stopped-by-user messages for muted UI rendering', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.loadPiCoreMessages = vi.fn(() => [
+    fake.loadFullPiCoreTranscriptUnbounded = vi.fn(() => [
       { role: 'user', content: 'stop test', timestamp: 100 },
       {
         role: 'assistant',
@@ -11027,7 +11027,7 @@ describe('ChatThreadDO Pi turn handling', () => {
 
   it('does not mark literal persisted Pi text as stopped-by-user without metadata', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.loadPiCoreMessages = vi.fn(() => [
+    fake.loadFullPiCoreTranscriptUnbounded = vi.fn(() => [
       { role: 'user', content: 'echo the phrase', timestamp: 100 },
       {
         role: 'assistant',
@@ -13081,7 +13081,7 @@ describe('ChatThreadDO Pi turn handling', () => {
   it('omits hidden internal messages from the parsed chat view', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.chatContext = { threadId: 'thread1' };
-    fake.loadPiCoreMessages = vi.fn(() => [
+    fake.loadFullPiCoreTranscriptUnbounded = vi.fn(() => [
       { role: 'user', content: 'first turn', timestamp: 100 },
       {
         role: 'user',
@@ -13152,7 +13152,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       },
     };
 
-    const messages = await ChatThreadDO.prototype['loadPiCoreMessages'].call(fake);
+    const messages = await ChatThreadDO.prototype['loadFullPiCoreTranscriptUnbounded'].call(fake);
 
     expect(messages).toHaveLength(1);
     expect(messages[0].content).toEqual([
@@ -13216,7 +13216,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     });
     fake.ctx = { storage: { sql: { exec } } };
 
-    const messages = await ChatThreadDO.prototype['loadPiCoreMessages'].call(fake);
+    const messages = await ChatThreadDO.prototype['loadFullPiCoreTranscriptUnbounded'].call(fake);
 
     expect(messages).toHaveLength(3);
     expect(messages[0]).toMatchObject({
@@ -13395,11 +13395,11 @@ describe('ChatThreadDO Pi turn handling', () => {
       },
     };
 
-    const references = await ChatThreadDO.prototype['loadPiCoreMessages'].call(fake);
+    const references = await ChatThreadDO.prototype['loadFullPiCoreTranscriptUnbounded'].call(fake);
     expect((references[0].content as any[])[0].data).toBe('');
     expect(get).not.toHaveBeenCalled();
 
-    const messages = await ChatThreadDO.prototype['loadPiCoreMessages'].call(fake, {
+    const messages = await ChatThreadDO.prototype['loadFullPiCoreTranscriptUnbounded'].call(fake, {
       imagePolicy: 'provider',
     });
     expect(messages).toHaveLength(1);
@@ -14299,7 +14299,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       { role: 'user', content: 'Too far', timestamp: 300 },
     ];
     const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.loadPiCoreMessages = vi.fn(() => sourceMessages);
+    fake.loadFullPiCoreTranscriptUnbounded = vi.fn(() => sourceMessages);
 
     const result = await ChatThreadDO.prototype.getPiCoreForkMessages.call(fake, {
       forkEntryId: 'resp1',
@@ -14319,7 +14319,7 @@ describe('ChatThreadDO Pi turn handling', () => {
 
   it('reports a missing Durable Object Pi fork target without falling back', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.loadPiCoreMessages = vi.fn(() => [
+    fake.loadFullPiCoreTranscriptUnbounded = vi.fn(() => [
       { role: 'user', content: 'Build it', timestamp: 100 },
     ]);
 
@@ -15379,7 +15379,7 @@ describe('ChatThreadDO Pi turn handling', () => {
         r2: unusedDependency,
         chatContext: () => null,
       });
-      vi.spyOn(store, 'loadPiCoreMessages').mockResolvedValue([existingUser] as any[]);
+      vi.spyOn(store, 'loadFullPiCoreTranscriptUnbounded').mockResolvedValue([existingUser] as any[]);
       vi.spyOn(store, 'appendPiCoreMessages').mockImplementation(async (msgs: any[]) => {
         appended.push(...msgs);
       });
@@ -15421,7 +15421,7 @@ describe('ChatThreadDO Pi turn handling', () => {
         r2: unusedDependency,
         chatContext: () => null,
       });
-      vi.spyOn(store, 'loadPiCoreMessages').mockResolvedValue([existingAssistant] as any[]);
+      vi.spyOn(store, 'loadFullPiCoreTranscriptUnbounded').mockResolvedValue([existingAssistant] as any[]);
       vi.spyOn(store, 'appendPiCoreMessages').mockImplementation(async (msgs: any[]) => {
         appended.push(...msgs);
       });
@@ -16090,8 +16090,12 @@ describe('Pi image context charge and per-request context estimation', () => {
         count: footprint.tokens,
         size: footprint.bytes,
         model: 'whale-model',
-        // imageCount, imageChars, messageCount, post-compaction bytes — double6 onward.
-        extraCounts: [3, 3 * 500_000, messages.length, footprint.bytes],
+        // imageCount, imageChars, messageCount, post-compaction bytes, then the
+        // store's per-request image counters (omitted from provider context /
+        // hydrated from R2) — double6 onward. The last two are what tell a
+        // thread that is LOSING its screenshots from one that never had any;
+        // `imageCount` alone reads the same either way.
+        extraCounts: [3, 3 * 500_000, messages.length, footprint.bytes, 0, 0],
         sampleKey: 'thread-whale',
       }),
     );

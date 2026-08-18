@@ -102,7 +102,7 @@ export function piCoreRowToLakeRecord(
     parsed = JSON.parse(row.payload) as Record<string, unknown>;
   } catch {
     // A corrupt row must not wedge the mark behind it forever; skipping matches
-    // how loadPiCoreMessages tolerates unparseable history.
+    // how loadFullPiCoreTranscriptUnbounded tolerates unparseable history.
     return null;
   }
   const role = typeof parsed.role === "string" ? parsed.role : "";

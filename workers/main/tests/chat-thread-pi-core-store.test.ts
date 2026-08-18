@@ -59,7 +59,7 @@ describe('PiCoreMessageStore image hydration policy', () => {
       JSON.stringify(externalImageMessage(privateKey)),
     ]);
 
-    const messages = await harness.store.loadPiCoreMessages({
+    const messages = await harness.store.loadFullPiCoreTranscriptUnbounded({
       includeUiMetadata: true,
       imagePolicy: 'render',
     });
@@ -82,7 +82,7 @@ describe('PiCoreMessageStore image hydration policy', () => {
       JSON.stringify(externalImageMessage()),
     ]);
 
-    const messages = await harness.store.loadPiCoreMessages({ imagePolicy: 'provider' });
+    const messages = await harness.store.loadFullPiCoreTranscriptUnbounded({ imagePolicy: 'provider' });
 
     expect(harness.operations).toEqual({
       payloadRowsParsed: 1,
@@ -98,7 +98,7 @@ describe('PiCoreMessageStore image hydration policy', () => {
     const privateKey = 'private/reference/image.base64';
     const harness = createReadHarness([JSON.stringify(externalImageMessage(privateKey))]);
 
-    const messages = await harness.store.loadPiCoreMessages({ includeUiMetadata: true });
+    const messages = await harness.store.loadFullPiCoreTranscriptUnbounded({ includeUiMetadata: true });
 
     expect(harness.get).not.toHaveBeenCalled();
     expect(harness.operations.r2ImagesHydrated).toBe(0);
@@ -216,7 +216,7 @@ describe('PiCoreMessageStore compaction watermark', () => {
     });
 
     expect(harness.store.loadPiCoreCompaction()).toMatchObject({ firstKeptIndex: 0 });
-    const messages = await harness.store.loadPiCoreMessages();
+    const messages = await harness.store.loadFullPiCoreTranscriptUnbounded();
 
     expect(messages.map((message) => (message as { content: unknown }).content)).toEqual([
       'row 0',
@@ -231,7 +231,7 @@ describe('PiCoreMessageStore compaction watermark', () => {
       compaction: { summary: 'earlier work', first_kept_index: 2, updated_at: 5 },
     });
 
-    const messages = await harness.store.loadPiCoreMessages();
+    const messages = await harness.store.loadFullPiCoreTranscriptUnbounded();
 
     expect(messages).toHaveLength(2);
     expect((messages[0] as { content: string }).content).toContain('earlier work');

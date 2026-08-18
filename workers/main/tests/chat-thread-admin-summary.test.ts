@@ -81,14 +81,14 @@ describe("summarizeAdminExplorerThread", () => {
       { role: "user", content: "second", timestamp: 2 },
     ] as unknown as AgentMessage[];
     const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.loadPiCoreMessages = vi.fn(async () => messages);
+    fake.loadFullPiCoreTranscriptUnbounded = vi.fn(async () => messages);
     fake.piSession = { state: { model: { id: "live-model" } } };
 
     const summary = await ChatThreadDO.prototype.getAdminExplorerSummary.call(fake, {
       userMessageCap: 1,
     });
 
-    expect(fake.loadPiCoreMessages).toHaveBeenCalledWith({
+    expect(fake.loadFullPiCoreTranscriptUnbounded).toHaveBeenCalledWith({
       includeUiMetadata: true,
       imagePolicy: "render",
     });

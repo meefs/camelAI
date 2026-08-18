@@ -14,6 +14,7 @@ import {
   PI_TOOL_RESULT_MAX_LINES,
   PI_TOOL_RESULT_MAX_BYTES,
   PI_PROVIDER_SUPPORTED_IMAGE_MIME_TYPES,
+  PI_R2_IMAGE_REF_METADATA_KEY,
   normalizePiImageMimeType,
   piUnsupportedImageText,
   preparePiMessageForSqlStorage,
@@ -127,14 +128,29 @@ export function getLatestPiAssistantErrorMessage(messages: AgentMessage[]): stri
   return "";
 }
 
+const PI_SUMMARY_MESSAGE_PREFIX = "[Context Summary]\n\n";
+
 export function isPiSummaryMessage(message: AgentMessage | undefined): boolean {
   return (
     (message as unknown as Record<string, unknown> | undefined)?.role === "user" &&
     typeof (message as unknown as Record<string, unknown> | undefined)?.content === "string" &&
     ((message as unknown as Record<string, unknown>).content as string).startsWith(
-      "[Context Summary]\n\n",
+      PI_SUMMARY_MESSAGE_PREFIX,
     )
   );
+}
+
+/**
+ * The summary BODY of a summary message — the inverse of
+ * `createPiSummaryMessage`. Compaction needs it to hand an existing summary
+ * (durable or a capped-load placeholder) back to the summarizer through
+ * `previousSummary`, which is the slot that keeps it from being summarized a
+ * second time as if it were conversation.
+ */
+export function piSummaryMessageText(message: AgentMessage | undefined): string {
+  if (!isPiSummaryMessage(message)) return "";
+  const content = (message as unknown as Record<string, unknown>).content as string;
+  return content.slice(PI_SUMMARY_MESSAGE_PREFIX.length);
 }
 
 export function extractLatestPiAssistantText(messages: AgentMessage[]): string {
@@ -588,11 +604,71 @@ export function piCoreMessageKey(message: AgentMessage): string {
   ].join(":");
 }
 
+/**
+ * Image identity for a dedup key: `(mimeType, base64 length)`, never the bytes.
+ *
+ * The SAME image legitimately appears in three shapes, and all three must key
+ * identically or `appendPiCoreMessagesIfMissing` re-appends a row it already has:
+ *
+ *  1. INLINE, as the live session/journal message carries it;
+ *  2. EXTERNALIZED AT WRITE TIME — `externalizePiImagesForSqlStorage` stores
+ *     `data: ""` plus an R2 ref for anything over
+ *     `PI_MAX_PERSISTED_IMAGE_DATA_CHARS`, so the stored row never matched its
+ *     own live counterpart (a latent duplicate-append this normalization fixes);
+ *  3. EXTERNALIZED AT LOAD TIME — the session working-set trim
+ *     (`PI_SESSION_INLINE_IMAGE_MAX_CHARS`) hands the session a ref instead of
+ *     the base64 without touching the stored row at all.
+ *
+ * `ref.size` is recorded as `data.length` at externalization in both cases, so
+ * `max(inline, declared)` is exactly invariant across the three. Nothing cheaper
+ * is: the sha256 exists only on the ref side, and hashing on the inline side
+ * would cost a full scan of every image on every dedup.
+ *
+ * The identity this gives up is "two different images of byte-identical length
+ * and the same MIME type". Every key that can carry an image also carries a
+ * toolCallId, or a role plus a millisecond timestamp, so a collision needs two
+ * messages of the same role in the same millisecond carrying different images
+ * that encode to exactly the same number of base64 characters. In exchange the
+ * 20k truncation below stops being consumed by base64 — an image-bearing
+ * message's key now discriminates on its TEXT, which it previously could not.
+ */
+function normalizePiKeyContentImages(content: unknown): unknown {
+  if (!Array.isArray(content)) return content;
+  let changed = false;
+  const normalized = content.map((part) => {
+    if (!part || typeof part !== "object") return part;
+    const record = part as Record<string, unknown>;
+    if (record.type !== "image") return part;
+    const inlineChars = typeof record.data === "string" ? record.data.length : 0;
+    const metadata = record.metadata && typeof record.metadata === "object"
+      ? record.metadata as Record<string, unknown>
+      : undefined;
+    const ref = metadata?.[PI_R2_IMAGE_REF_METADATA_KEY];
+    const declaredChars = ref && typeof ref === "object"
+      ? Math.max(0, Math.floor(Number((ref as Record<string, unknown>).size) || 0))
+      : 0;
+    changed = true;
+    const mimeType = typeof record.mimeType === "string"
+      ? normalizePiImageMimeType(record.mimeType)
+      : "";
+    // A TEXT part, not a stripped image part: `preparePiMessageForSqlStorage`
+    // runs `sanitizePiProviderContent` over this, which rewrites any image
+    // carrying neither inline data nor an R2 ref into a fixed "unsupported MIME
+    // type" marker — collapsing every image of a given type to one string and
+    // throwing away the length that does the discriminating.
+    return {
+      type: "text",
+      text: `[image:${mimeType}:${Math.max(inlineChars, declaredChars)}]`,
+    };
+  });
+  return changed ? normalized : content;
+}
+
 export function piCoreMessageKeyContent(content: unknown): string {
   try {
     const serialized = JSON.stringify(preparePiMessageForSqlStorage({
       role: "user",
-      content,
+      content: normalizePiKeyContentImages(content),
       timestamp: 0,
     } as unknown as AgentMessage));
     return serialized.length > 20_000

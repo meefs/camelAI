@@ -34,6 +34,24 @@ function createHarness(options: {
   });
   let piRevision = { generation: 1, count: options.piMessages?.length ?? 0 };
   const getPiCoreParsedMessages = vi.fn(async () => options.piMessages ?? []);
+  // The bounded forward reader the top-up now uses. This stand-in serves the
+  // whole fixture as ONE range (these fixtures are a handful of rows) and then
+  // reports the walk finished, which is exactly what the real reader does when
+  // a thread fits inside one budget.
+  const readParsedPiCoreRowRange = vi.fn(
+    ({ fromIdx }: { fromIdx: number }) => {
+      const parsed = options.piMessages ?? [];
+      const consumed = fromIdx > 0;
+      return {
+        parsed: consumed ? [] : parsed,
+        parsedStartIndex: consumed ? parsed.length : 0,
+        nextIdx: parsed.length,
+        reachedEnd: true,
+        rowsRead: consumed ? 0 : parsed.length,
+        payloadChars: 0,
+      };
+    },
+  );
   const recordChatThreadObservabilityEvent = vi.fn();
   const memoryPhases: string[] = [];
   const durableIds = new Set(options.durableIds ?? []);
@@ -77,6 +95,7 @@ function createHarness(options: {
     activePiStreamTurnId: () => (activeStream ? 'turn-1' : null),
     getPiCoreRevision: () => piRevision,
     getPiCoreParsedMessages,
+    readParsedPiCoreRowRange,
     setRenderHistoryChronology: vi.fn(),
     reloadAiChatMessagesOrdered: vi.fn(),
     topUpUiMessagesFromPiCore: vi.fn(async () => {}),
@@ -95,6 +114,7 @@ function createHarness(options: {
     },
     persistRenderMessages,
     getPiCoreParsedMessages,
+    readParsedPiCoreRowRange,
     memoryPhases,
     recordChatThreadObservabilityEvent,
     setActiveTurn(value: boolean) {

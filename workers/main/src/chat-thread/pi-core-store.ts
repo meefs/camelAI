@@ -36,9 +36,21 @@ import type { ChatContextState } from "./types";
 export type PiCoreImagePolicy = "reference" | "render" | "provider";
 
 /**
- * How many images this request will pull back out of R2. A count, because the
- * cost being bounded is I/O plus a freshly materialized base64 string per
- * object; inline images are already resident and are not charged against it.
+ * How many DURABLY externalized images this request will pull back out of R2. A
+ * count, because the cost being bounded is I/O plus a freshly materialized
+ * base64 string per object; inline images are already resident and are not
+ * charged against it.
+ *
+ * A `origin: "session"` reference is NOT charged against this. It stands for an
+ * image whose row still holds its bytes and which was inline in the provider
+ * context before the working-set trim existed, so counting it here would let a
+ * residency optimization silently delete history from the model's view: the
+ * third and later historical screenshots of a thread would come back as
+ * "(image omitted from provider context)" purely because the session was
+ * loaded rather than produced in-turn. Session references are charged against
+ * {@link PI_PROVIDER_IMAGE_HYDRATION_MAX_DECLARED_CHARS} instead — exactly what
+ * they cost when they were inline — which also bounds the R2 GETs one request
+ * can make at `maxDeclaredChars / PI_SESSION_INLINE_IMAGE_MAX_CHARS`.
  */
 export const PI_PROVIDER_IMAGE_HYDRATION_MAX_COUNT = 2;
 /**
@@ -54,6 +66,82 @@ export const PI_PROVIDER_IMAGE_HYDRATION_MAX_COUNT = 2;
  * instead of a cap on R2 images only.
  */
 export const PI_PROVIDER_IMAGE_HYDRATION_MAX_DECLARED_CHARS = 6_000_000;
+
+/**
+ * Inline base64 a SESSION copy of a message may keep resident, independent of
+ * what the ROW keeps.
+ *
+ * `PI_MAX_PERSISTED_IMAGE_DATA_CHARS` (512_000) is a STORAGE rule and must not
+ * move: `renderPiStoredImageReferences` replaces every externalized image with a
+ * fixed text marker, so lowering the storage threshold retroactively deletes
+ * images from users' visible history (WHALE-WORKINGSET-PROPOSAL §4). That leaves
+ * every screenshot under 512 KB of base64 inline in its payload forever — twenty
+ * of them is 6 MB of base64 resident for the life of the isolate, before any
+ * per-request copy of the transcript.
+ *
+ * This is the working-set half of the same question, and it is free to be much
+ * lower ONLY because it changes nothing durable — a property that has to be
+ * enforced on both sides of the session copy, not just asserted here:
+ *
+ *  - WRITE. `serializePiMessageForSqlStorageDetailed` re-inlines every
+ *    `origin: "session"` reference before a row is written
+ *    ({@link PiCoreMessageStore.restoreSessionExternalizedImages}). Without
+ *    that, any rewrite of a LOADED list — post-turn preserve compaction, fork
+ *    seeding — persists `data: ""` and `renderPiStoredImageReferences` then
+ *    replaces the image with a text marker forever, which is precisely the
+ *    retroactive history deletion this comment's own §4 reference forbids.
+ *  - READ (provider). `hydratePiStoredImages` charges a session reference
+ *    against the DECLARED-CHAR budget only, never against
+ *    {@link PI_PROVIDER_IMAGE_HYDRATION_MAX_COUNT}, so the model sees the same
+ *    images it saw when they were inline.
+ *
+ * 128 KB of base64 ≈ 96 KB of image, which is a small screenshot or a large
+ * icon: below this the round trip costs more than the residency.
+ */
+export const PI_SESSION_INLINE_IMAGE_MAX_CHARS = 128_000;
+
+/**
+ * Per-ROW bound on re-inlining session-trimmed images on the write path.
+ *
+ * `restoreSessionExternalizedImages` runs inside the serializer, once per
+ * message, so the bound is naturally per row: a single pi_core row holds one
+ * tool answer, i.e. a handful of screenshots at most. A row over either limit
+ * keeps its references rather than stalling a rewrite on unbounded R2 I/O — the
+ * bytes are still in R2 and the model still gets them, only that row's render
+ * degrades, and the store reports it so the loss is never silent.
+ */
+export const PI_SESSION_IMAGE_RESTORE_MAX_COUNT = 8;
+export const PI_SESSION_IMAGE_RESTORE_MAX_CHARS = 4_000_000;
+
+/**
+ * Stored payload chars one session load may materialize.
+ *
+ * `loadFullPiCoreTranscriptUnbounded` is O(thread): it reads and parses every visible row
+ * before any bound applies. A thread with a durable compaction row is already
+ * bounded by the `idx >= first_kept_index` predicate, but a thread that never
+ * compacted — the observed whale — has no watermark at all, so the load is the
+ * whole transcript and the isolate dies before the turn starts. Past this cap
+ * {@link PiCoreMessageStore.loadBoundedPiCoreSessionWindow} loads the newest
+ * turn-aligned tail that fits and hands the model a placeholder summary for the
+ * prefix, which the first completed turn turns into a real compaction row.
+ *
+ * 12 MB, i.e. under `PI_CONTEXT_MAX_WORKING_SET_BYTES` (16 MB) so a capped load
+ * lands inside the byte trigger rather than tripping it on arrival, and far
+ * enough above an ordinary thread that nothing normal ever sees it.
+ *
+ * That ordering used to be the whole follow-through argument, and it was wrong:
+ * landing UNDER both triggers means an image-dominated capped load runs a turn
+ * without compacting at all, so the durable row that ends the capped state is
+ * never written and the thread is capped forever. The follow-through is now
+ * forced explicitly by `ChatThreadDO#piCappedLoadNeedsWatermark`, which is where
+ * that invariant lives; this constant is once again just a residency cap and no
+ * longer carries the correctness argument on the relationship between the two
+ * numbers.
+ */
+export const PI_SESSION_LOAD_MAX_CHARS = 12_000_000;
+
+/** Rows per metadata probe while choosing the capped window's cut. */
+const PI_SESSION_LOAD_ROW_BATCH_SIZE = 256;
 
 export interface PiImageHydrationBudget {
   /** Maximum images hydrated from R2. Inline images do not consume it. */
@@ -72,12 +160,102 @@ export interface PiCoreRevision {
   count: number;
 }
 
+/**
+ * What a session load actually loaded, and the index space the loaded list
+ * lives in.
+ *
+ * `firstRowIdx` is the `pi_core_messages.idx` of the list's first REAL message,
+ * and `summaryOffset` is 1 when a summary message (durable or placeholder) sits
+ * ahead of it. Together they are the only way to translate a cut computed over
+ * the session list into the `idx >= ?` predicate a `pi_core_compaction` row is
+ * read back as:
+ *
+ *     storedFirstKeptIndex = firstRowIdx + max(0, sessionCut - summaryOffset)
+ *
+ * Getting this wrong is not a degraded experience, it is data loss: a watermark
+ * written too low silently keeps the whole prefix (the bound this exists to
+ * enforce never applies again), and one written too high blanks the thread's
+ * model context.
+ */
+export interface PiSessionLoadWindow {
+  /** pi_core idx of the first real (non-summary) message loaded. */
+  firstRowIdx: number;
+  /** 1 when the loaded list starts with a summary message, else 0. */
+  summaryOffset: 0 | 1;
+  /** The char cap bound: rows below `firstRowIdx` were deliberately skipped. */
+  capped: boolean;
+  totalChars: number;
+  loadedChars: number;
+  totalRows: number;
+  loadedRows: number;
+}
+
+/**
+ * Where a context window may open. `findPiCompactionCutIndex` uses exactly this
+ * rule to move a cut forward off a toolResult, and a capped load has the same
+ * problem for the same reason: an answer whose call is not in the context.
+ */
+function isPiTurnBoundaryRole(role: unknown): boolean {
+  return role === "user" || role === "assistant";
+}
+
+/**
+ * The model-visible stand-in for history a capped load left in storage.
+ *
+ * Written to be summarizer-safe as well as model-safe: `compactPiContext` hands
+ * it back as `previousSummary` (never as conversation to be summarized), so it
+ * has to read as a statement ABOUT the conversation rather than as part of it.
+ * It is also deliberately explicit that the omitted content is unavailable — a
+ * model told only "the conversation continues below" will confabulate the
+ * missing prefix, which on a thread this size is exactly the failure that makes
+ * the capped turn useless.
+ *
+ * DURABLE-SAFE WORDING. Because it is handed back as `previousSummary`, the
+ * summarizer carries this notice into the persisted `pi_core_compaction` row —
+ * and it SHOULD: the rows a capped load skipped fall permanently behind the
+ * watermark the first turn writes, are never summarized, and this notice is the
+ * only surviving record that the hole exists. So every sentence has to stay
+ * true once it is sitting in a durable summary in front of a different tail.
+ * That rules out two things the first version had: exact `rowsSkipped` /
+ * `charsSkipped` counts, which are a snapshot that drifts into an undercount as
+ * the watermark advances, and any claim that what follows is "the most recent
+ * part of the conversation", which stops being true the moment the summary is
+ * reused. The counts survive only in the `pi_session_load_capped` event, which
+ * is timestamped and therefore cannot go stale.
+ */
+export function piCappedSessionLoadPlaceholder(args: {
+  durableSummary?: string;
+}): string {
+  const notice = [
+    "Earlier messages in this conversation were NOT loaded into your context.",
+    "Those messages remain in the thread's storage but are not available to you here, and they are not covered by any summary above.",
+    "Do not guess at or invent the omitted content: if you need something from earlier, say so and ask the user.",
+  ].join(" ");
+  return args.durableSummary
+    ? `${args.durableSummary}\n\n${notice}`
+    : notice;
+}
+
 export interface PiCoreMessageStoreDeps {
   sql(): SqlStorage;
   r2(): R2Bucket;
   chatContext(): ChatContextState | null;
   /** Privacy-safe allocation counters used by focused tests and diagnostics. */
-  recordReadOperation?(operation: "payload_row_parsed" | "r2_image_hydrated"): void;
+  recordReadOperation?(
+    operation:
+      | "payload_row_parsed"
+      | "r2_image_hydrated"
+      | "session_image_externalized"
+      /** A session-trimmed image was re-inlined before its row was rewritten. */
+      | "session_image_restored"
+      /**
+       * A session-trimmed image could NOT be re-inlined and its row was written
+       * carrying the reference — that row's render is degraded until repaired.
+       */
+      | "session_image_restore_failed"
+      /** An image was replaced by a marker in the provider context. */
+      | "provider_image_omitted",
+  ): void;
   /**
    * Wall-clock duration measured for a settled tool call, consumed once as its
    * toolResult row is committed. Optional so tests and non-agent callers can
@@ -88,6 +266,15 @@ export interface PiCoreMessageStoreDeps {
 
 export class PiCoreMessageStore {
   constructor(private readonly deps: PiCoreMessageStoreDeps) {}
+
+  /**
+   * Content-addressed keys this store has already proven present in R2, so the
+   * second and later loads of the same thread in one isolate externalize with
+   * zero R2 calls at all. Correctness never depends on it (the key is a sha256
+   * of the bytes, so a repeat `put` is a no-op rewrite of identical content);
+   * it exists only to keep a warm reload cheap.
+   */
+  private readonly sessionExternalizedImageKeys = new Set<string>();
 
   ensurePiCoreTables(): void {
     this.deps.sql().exec(
@@ -229,6 +416,10 @@ export class PiCoreMessageStore {
       sha256,
       size: Math.max(0, Math.floor(Number(record.size) || 0)),
       storedAt: Math.max(0, Math.floor(Number(record.storedAt) || 0)),
+      // Absent (every row written before the discriminator existed) is durable
+      // storage externalization, which is the conservative reading: a stored
+      // reference is never re-inlined and is never exempt from the count budget.
+      origin: record.origin === "session" ? "session" : "storage",
     };
   }
 
@@ -274,6 +465,8 @@ export class PiCoreMessageStore {
               size: data.length,
               sha256,
               storedAt: Date.now(),
+              // Durable: this row genuinely has no bytes from here on.
+              origin: "storage",
             } satisfies PiR2ImageReference;
             return {
               ...record,
@@ -294,6 +487,224 @@ export class PiCoreMessageStore {
       next[key] = await this.externalizePiImagesForSqlStorage(nested, stats);
     }
     return next;
+  }
+
+  /**
+   * Trim a LOADED message's resident base64 without touching the row it came
+   * from: an inline image over {@link PI_SESSION_INLINE_IMAGE_MAX_CHARS} is put
+   * to the same content-addressed R2 location the storage path uses and the
+   * in-memory part is swapped for the reference shape.
+   *
+   * Three properties this relies on, all load-bearing:
+   *
+   *  - NO STORED-ROW REWRITE. The payload keeps its bytes, so the render path
+   *    (`renderPiStoredImageReferences`) still shows the image and the mirror's
+   *    idempotent upsert still sees the same row content. This is the whole
+   *    reason the working set can be trimmed at 128 KB when storage cannot.
+   *    It is NOT enough to leave the row alone here, because the loaded list is
+   *    itself an input to two rewrites (preserve compaction, fork seeding): the
+   *    reference is tagged `origin: "session"` and
+   *    {@link restoreSessionExternalizedImages} puts the bytes back before any
+   *    of it can be serialized into a row.
+   *  - STABLE IDENTITY. `piCoreMessageKey` weighs an image as
+   *    `(mimeType, base64 length)`, and the ref records `size = data.length`, so
+   *    a trimmed message keys identically to the inline one the live turn holds.
+   *    Without that, every dedup (`appendPiCoreMessagesIfMissing`, the resume
+   *    fold) would re-append rows it already has.
+   *  - IDEMPOTENCE. The key is `sha256(data)`, so the same image resolves to the
+   *    same object on every load, in every isolate. A `head` proves presence
+   *    before any `put`, and the per-store key set skips even that on repeats.
+   *
+   * A failure anywhere here returns the message unchanged: keeping the base64
+   * resident is strictly better than losing the image.
+   */
+  private async externalizeOversizedInlineSessionImages(value: unknown): Promise<unknown> {
+    if (value === null || value === undefined || typeof value !== "object") return value;
+    if (Array.isArray(value)) {
+      const next = Array.from<unknown>({ length: value.length });
+      let changed = false;
+      for (let index = 0; index < value.length; index += 1) {
+        next[index] = await this.externalizeOversizedInlineSessionImages(value[index]);
+        if (next[index] !== value[index]) changed = true;
+      }
+      // Identity when nothing below changed, exactly like hydration: the common
+      // thread has no oversized inline image and must not pay for a clone of its
+      // message graph on every load.
+      return changed ? next : value;
+    }
+    const record = value as Record<string, unknown>;
+    if (record.type === "image" && typeof record.data === "string") {
+      const data = record.data;
+      const mimeType = typeof record.mimeType === "string"
+        ? normalizePiImageMimeType(record.mimeType)
+        : "";
+      if (
+        data.length > PI_SESSION_INLINE_IMAGE_MAX_CHARS &&
+        mimeType &&
+        PI_PROVIDER_SUPPORTED_IMAGE_MIME_TYPES.has(mimeType)
+      ) {
+        const reference = await this.putSessionImageReference(data, mimeType);
+        if (reference) {
+          this.deps.recordReadOperation?.("session_image_externalized");
+          const metadata = record.metadata && typeof record.metadata === "object"
+            ? { ...(record.metadata as Record<string, unknown>) }
+            : {};
+          metadata[PI_R2_IMAGE_REF_METADATA_KEY] = reference;
+          return { ...record, mimeType, data: "", metadata };
+        }
+      }
+      return value;
+    }
+    const next: Record<string, unknown> = {};
+    let changed = false;
+    for (const [key, nested] of Object.entries(record)) {
+      next[key] = await this.externalizeOversizedInlineSessionImages(nested);
+      if (next[key] !== nested) changed = true;
+    }
+    return changed ? next : value;
+  }
+
+  private async putSessionImageReference(
+    data: string,
+    mimeType: string,
+  ): Promise<PiR2ImageReference | null> {
+    const sha256 = await this.sha256Hex(data);
+    const key = this.piStoredImageR2Key(sha256);
+    if (!key) return null;
+    const reference: PiR2ImageReference = {
+      key,
+      mimeType,
+      size: data.length,
+      sha256,
+      storedAt: Date.now(),
+      // Ephemeral. The row this came from still holds `data`; see
+      // PiR2ImageReferenceOrigin for everything that hangs off this field.
+      origin: "session",
+    };
+    if (this.sessionExternalizedImageKeys.has(key)) return reference;
+    try {
+      const existing = await this.deps.r2().head(key);
+      if (!existing) {
+        await this.deps.r2().put(key, data, {
+          httpMetadata: { contentType: "text/plain; charset=utf-8" },
+          customMetadata: {
+            type: "pi-message-image-base64",
+            mimeType,
+            sessionId: this.deps.chatContext()?.threadId ?? "",
+            threadId: this.deps.chatContext()?.threadId ?? "",
+            workspaceId: this.deps.chatContext()?.workspaceId ?? "",
+            orgId: this.deps.chatContext()?.orgId ?? "",
+            sha256,
+          },
+        });
+      }
+    } catch (error) {
+      console.warn("[pi-core] failed to externalize session image", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      // The bytes are not provably in R2, so keep them inline rather than hand
+      // the session a reference that would hydrate to nothing.
+      return null;
+    }
+    this.sessionExternalizedImageKeys.add(key);
+    return reference;
+  }
+
+  /**
+   * Undo {@link externalizeOversizedInlineSessionImages} on the WRITE path.
+   *
+   * The session trim is a residency optimization over an in-memory copy, but
+   * that copy is an input to two wholesale rewrites — post-turn preserve
+   * compaction (`replacePiCoreMessages(compacted, { uiRender: "preserve" })`)
+   * and fork seeding — and nothing downstream would strip the reference:
+   * `sanitizePiProviderContent` deliberately PRESERVES a zero-data image part
+   * that carries R2 metadata, and `externalizePiImagesForSqlStorage` no-ops on
+   * `"".length`. The row would therefore be stored with `data: ""` and
+   * `renderPiStoredImageReferences` would replace the image with a fixed text
+   * marker in the user's visible history, permanently, for every image between
+   * {@link PI_SESSION_INLINE_IMAGE_MAX_CHARS} and
+   * `PI_MAX_PERSISTED_IMAGE_DATA_CHARS`.
+   *
+   * So the bytes go back first. They are recoverable by construction: the key
+   * is `sha256(data)` and `putSessionImageReference` proves the object present
+   * (head, then put) before it mints a reference. What is written from here is
+   * the pre-trim shape, so `externalizePiImagesForSqlStorage` immediately after
+   * makes the ordinary storage decision on the ordinary storage threshold.
+   *
+   * Durable (`origin: "storage"`) references are untouched: their rows really
+   * do have no bytes, and re-inlining one would undo storage externalization.
+   */
+  private async restoreSessionExternalizedImages(
+    value: unknown,
+    state: PiImageHydrationState = { count: 0, declaredChars: 0 },
+  ): Promise<unknown> {
+    if (value === null || value === undefined || typeof value !== "object") return value;
+    if (Array.isArray(value)) {
+      const next = Array.from<unknown>({ length: value.length });
+      let changed = false;
+      for (let index = 0; index < value.length; index += 1) {
+        next[index] = await this.restoreSessionExternalizedImages(value[index], state);
+        if (next[index] !== value[index]) changed = true;
+      }
+      return changed ? next : value;
+    }
+    const record = value as Record<string, unknown>;
+    if (record.type === "image" && typeof record.data === "string" && record.data.length === 0) {
+      const ref = this.readPiR2ImageReference(record);
+      if (ref && ref.origin === "session") {
+        const overBudget =
+          state.count >= PI_SESSION_IMAGE_RESTORE_MAX_COUNT ||
+          state.declaredChars + ref.size > PI_SESSION_IMAGE_RESTORE_MAX_CHARS;
+        // Charge admission before the I/O, exactly like hydration, so one row's
+        // maximum work is deterministic whatever R2 does.
+        if (!overBudget) {
+          state.count += 1;
+          state.declaredChars += ref.size;
+        }
+        let data = "";
+        if (!overBudget) {
+          try {
+            const object = await this.deps.r2().get(ref.key);
+            data = object ? await object.text() : "";
+          } catch (error) {
+            console.warn("[pi-core] failed to restore session image for storage", {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+        if (data) {
+          this.deps.recordReadOperation?.("session_image_restored");
+          const metadata = record.metadata && typeof record.metadata === "object"
+            ? { ...(record.metadata as Record<string, unknown>) }
+            : null;
+          if (metadata) delete metadata[PI_R2_IMAGE_REF_METADATA_KEY];
+          const restored: Record<string, unknown> = { ...record, data };
+          if (metadata && Object.keys(metadata).length > 0) {
+            restored.metadata = metadata;
+          } else {
+            delete restored.metadata;
+          }
+          return restored;
+        }
+        // Keeping the reference is strictly better than writing a part with no
+        // bytes AND no way back, but it does degrade that row's render until a
+        // repair pass runs, so it must never be silent.
+        this.deps.recordReadOperation?.("session_image_restore_failed");
+        console.warn("[pi-core] session image could not be re-inlined before rewrite", {
+          sha256: ref.sha256,
+          size: ref.size,
+          overBudget,
+        });
+      }
+      return value;
+    }
+    const next: Record<string, unknown> = {};
+    let changed = false;
+    for (const [key, nested] of Object.entries(record)) {
+      next[key] = await this.restoreSessionExternalizedImages(nested, state);
+      if (next[key] !== nested) changed = true;
+    }
+    return changed ? next : value;
   }
 
   private renderSafeExternalImageMarker(ref: PiR2ImageReference): Record<string, string> {
@@ -378,6 +789,7 @@ export class PiCoreMessageStore {
         const availableChars = Math.max(0, budget.maxDeclaredChars - state.declaredChars);
         if (inlineChars > availableChars) {
           const mimeType = typeof record.mimeType === "string" ? record.mimeType : "image/unknown";
+          this.deps.recordReadOperation?.("provider_image_omitted");
           return {
             type: "text",
             text: `(image omitted from provider context: hydration budget exceeded; ${mimeType}, ${inlineChars} base64 chars)`,
@@ -388,7 +800,15 @@ export class PiCoreMessageStore {
       }
       if (ref && inlineChars === 0) {
         const availableChars = Math.max(0, budget.maxDeclaredChars - state.declaredChars);
-        if (state.count >= budget.maxCount || ref.size > availableChars) {
+        // A session-trimmed reference stands for bytes the ROW still holds and
+        // that were inline in this very context before stage 1b existed. It is
+        // charged exactly what it was charged then — declared chars — and never
+        // against `maxCount`, or a residency optimization would silently cap a
+        // thread's visual history at `maxCount` historical screenshots. See
+        // PI_PROVIDER_IMAGE_HYDRATION_MAX_COUNT.
+        const chargesCount = ref.origin !== "session";
+        if ((chargesCount && state.count >= budget.maxCount) || ref.size > availableChars) {
+          this.deps.recordReadOperation?.("provider_image_omitted");
           return {
             type: "text",
             text: `(image omitted from provider context: hydration budget exceeded; ${ref.mimeType}, ${ref.size} base64 chars)`,
@@ -397,7 +817,7 @@ export class PiCoreMessageStore {
 
         // Charge admission before I/O. A missing/corrupt object remains charged,
         // keeping the request's maximum work deterministic.
-        state.count += 1;
+        if (chargesCount) state.count += 1;
         state.declaredChars += ref.size;
         let data = "";
         try {
@@ -407,6 +827,7 @@ export class PiCoreMessageStore {
             : 0;
           if (object && (objectSize > ref.size || objectSize > availableChars)) {
             object.body?.cancel().catch(() => undefined);
+            this.deps.recordReadOperation?.("provider_image_omitted");
             return {
               type: "text",
               text: `(image omitted from provider context: stored object exceeds hydration budget; ${ref.mimeType}, ${objectSize} base64 chars)`,
@@ -428,6 +849,7 @@ export class PiCoreMessageStore {
             mimeType: ref.mimeType,
           };
         }
+        this.deps.recordReadOperation?.("provider_image_omitted");
         return {
           type: "text",
           text: `(image data unavailable from persisted transcript: ${ref.mimeType}, ${ref.size} base64 chars)`,
@@ -446,7 +868,11 @@ export class PiCoreMessageStore {
   async serializePiMessageForSqlStorageDetailed(message: AgentMessage): Promise<PiSqlStorageSerialization> {
     const stats = emptyPiSqlStorageStats();
     const providerSanitized = sanitizePiProviderMessage(message);
-    const externalized = await this.externalizePiImagesForSqlStorage(providerSanitized, stats);
+    // Put back anything the LOAD trimmed before the storage rules get a say —
+    // otherwise a rewrite of a loaded list persists the working-set shape and
+    // deletes the image from render forever (see restoreSessionExternalizedImages).
+    const restored = await this.restoreSessionExternalizedImages(providerSanitized);
+    const externalized = await this.externalizePiImagesForSqlStorage(restored, stats);
     let prepared = preparePiMessageForSqlStorage(externalized as AgentMessage, stats);
     let serialized = JSON.stringify(prepared);
     // Never stringify the unprojected source solely for diagnostics.
@@ -500,7 +926,7 @@ export class PiCoreMessageStore {
     );
   }
 
-  async loadPiCoreMessages(options: {
+  async loadFullPiCoreTranscriptUnbounded(options: {
     includeUiMetadata?: boolean;
     imagePolicy?: PiCoreImagePolicy;
     imageHydrationBudget?: PiImageHydrationBudget;
@@ -523,27 +949,8 @@ export class PiCoreMessageStore {
     const messages: AgentMessage[] = [];
     const hydrationState: PiImageHydrationState = { count: 0, declaredChars: 0 };
     for (const row of rows) {
-      try {
-        this.deps.recordReadOperation?.("payload_row_parsed");
-        const parsed = JSON.parse(row.payload) as AgentMessage;
-        if (parsed && typeof parsed === "object" && "role" in parsed) {
-          const imagePolicy = options.imagePolicy ?? "reference";
-          const resolved = imagePolicy === "render"
-            ? this.renderPiStoredImageReferences(parsed)
-            : imagePolicy === "provider"
-              ? await this.hydratePiStoredImages(
-                  parsed,
-                  options.imageHydrationBudget,
-                  hydrationState,
-                )
-              : parsed;
-          messages.push(options.includeUiMetadata
-            ? sanitizePiProviderMessage(resolved as AgentMessage)
-            : sanitizePiModelMessage(resolved as AgentMessage));
-        }
-      } catch {
-        // Skip corrupt rows rather than failing the whole thread.
-      }
+      const message = await this.materializePiCoreRow(row.payload, options, hydrationState);
+      if (message) messages.push(message);
     }
     if (!compaction || firstKeptIndex <= 0) return messages;
     return [
@@ -553,8 +960,238 @@ export class PiCoreMessageStore {
   }
 
   /**
+   * One stored payload through the read policy: parse, resolve images per
+   * `imagePolicy`, sanitize. Returns null for a corrupt row — the whole-thread
+   * load has always skipped those rather than failing the thread, and the
+   * bounded window keeps the same rule.
+   */
+  private async materializePiCoreRow(
+    payload: string,
+    options: {
+      includeUiMetadata?: boolean;
+      imagePolicy?: PiCoreImagePolicy;
+      imageHydrationBudget?: PiImageHydrationBudget;
+    },
+    hydrationState: PiImageHydrationState,
+  ): Promise<AgentMessage | null> {
+    try {
+      this.deps.recordReadOperation?.("payload_row_parsed");
+      const parsed = JSON.parse(payload) as AgentMessage;
+      if (!parsed || typeof parsed !== "object" || !("role" in parsed)) return null;
+      const imagePolicy = options.imagePolicy ?? "reference";
+      const resolved = imagePolicy === "render"
+        ? this.renderPiStoredImageReferences(parsed)
+        : imagePolicy === "provider"
+          ? await this.hydratePiStoredImages(
+              parsed,
+              options.imageHydrationBudget,
+              hydrationState,
+            )
+          // The working-set policy: the session keeps references, never
+          // multi-hundred-KB inline base64 (see
+          // {@link PI_SESSION_INLINE_IMAGE_MAX_CHARS}). The row is untouched.
+          : await this.externalizeOversizedInlineSessionImages(parsed);
+      return options.includeUiMetadata
+        ? sanitizePiProviderMessage(resolved as AgentMessage)
+        : sanitizePiModelMessage(resolved as AgentMessage);
+    } catch {
+      // Skip corrupt rows rather than failing the whole thread.
+      return null;
+    }
+  }
+
+  /**
+   * Row count and total stored payload chars of the visible window, with NO
+   * payload selected. The same metadata-then-body discipline the render pager
+   * uses: a load has to be able to decide it cannot afford the thread before it
+   * materializes any of it.
+   */
+  piCoreVisibleWindowTotals(firstKeptIndex: number): {
+    rows: number;
+    chars: number;
+  } {
+    const row = this.deps.sql()
+      .exec<{ visible_rows: number; visible_chars: number }>(
+        `SELECT COUNT(*) AS visible_rows,
+                COALESCE(SUM(length(payload)), 0) AS visible_chars
+           FROM pi_core_messages
+          WHERE idx >= ?`,
+        Math.max(0, Math.floor(firstKeptIndex)),
+      )
+      .toArray()[0];
+    return {
+      rows: Math.max(0, Math.floor(Number(row?.visible_rows) || 0)),
+      chars: Math.max(0, Math.floor(Number(row?.visible_chars) || 0)),
+    };
+  }
+
+  /**
+   * The model-side session load, bounded by construction.
+   *
+   * Under {@link PI_SESSION_LOAD_MAX_CHARS} this is byte-for-byte the legacy
+   * `loadFullPiCoreTranscriptUnbounded({ imagePolicy: "reference" })` — same rows, same order,
+   * same summary prefix. Over it, the window is the newest turn-aligned tail
+   * that fits, and the skipped prefix becomes a `[Context Summary]` PLACEHOLDER
+   * so the model is told plainly what it cannot see instead of silently
+   * believing the tail is the whole conversation.
+   *
+   * The placeholder is deliberately the same SHAPE a durable compaction summary
+   * has, because that is what makes the next step work: `compactPiContext` reads
+   * the returned {@link PiSessionLoadWindow} as the session's index space, cuts
+   * within the loaded tail, summarizes the tail's older half (never the
+   * placeholder — it is passed as `previousSummary`, so nothing is summarized
+   * twice), and persists a REAL `pi_core_compaction` row at
+   * `firstRowIdx + cut - summaryOffset`. From the next load on, the thread is an
+   * ordinary summary+tail thread and never reaches this path again.
+   *
+   * What this does NOT do: touch a stored row, touch the render path (the
+   * derive has its own bounded reader), or persist anything itself. A capped
+   * load leaves storage exactly as it found it.
+   */
+  async loadBoundedPiCoreSessionWindow(options: {
+    maxChars: number;
+    includeUiMetadata?: boolean;
+  }): Promise<{ messages: AgentMessage[]; window: PiSessionLoadWindow }> {
+    this.ensurePiCoreTables();
+    const maxChars = Math.max(1, Math.floor(options.maxChars));
+    const compaction = this.loadPiCoreCompaction();
+    const firstKeptIndex = compaction?.firstKeptIndex ?? 0;
+    const summaryOffset = compaction && firstKeptIndex > 0 ? 1 : 0;
+    const totals = this.piCoreVisibleWindowTotals(firstKeptIndex);
+
+    if (totals.chars <= maxChars) {
+      const messages = await this.loadFullPiCoreTranscriptUnbounded({
+        imagePolicy: "reference",
+        includeUiMetadata: options.includeUiMetadata,
+      });
+      return {
+        messages,
+        window: {
+          firstRowIdx: firstKeptIndex,
+          summaryOffset,
+          capped: false,
+          totalChars: totals.chars,
+          loadedChars: totals.chars,
+          totalRows: totals.rows,
+          loadedRows: totals.rows,
+        },
+      };
+    }
+
+    // Choose the cut from metadata alone, newest-first, never starting a row we
+    // cannot afford — the fill rule `deriveRenderWindowFromPiCore` uses. The
+    // newest row is always accepted so one oversized turn still loads.
+    const endIdx = this.piCoreRowCount();
+    let cutIdx = endIdx;
+    let loadedChars = 0;
+    let stopped = false;
+    while (!stopped) {
+      const batch = this.listPiCoreRowMeta({
+        minIdx: firstKeptIndex,
+        beforeIdx: cutIdx,
+        limit: PI_SESSION_LOAD_ROW_BATCH_SIZE,
+      });
+      if (batch.length === 0) break;
+      for (const meta of batch) {
+        if (loadedChars > 0 && loadedChars + meta.chars > maxChars) {
+          stopped = true;
+          break;
+        }
+        loadedChars += meta.chars;
+        cutIdx = meta.idx;
+      }
+    }
+
+    const rows = this.deps.sql()
+      .exec<{ idx: number; payload: string }>(
+        "SELECT idx, payload FROM pi_core_messages WHERE idx >= ? ORDER BY idx ASC",
+        cutIdx,
+      )
+      .toArray();
+    const hydrationState: PiImageHydrationState = { count: 0, declaredChars: 0 };
+    const loadOptions = {
+      imagePolicy: "reference" as const,
+      includeUiMetadata: options.includeUiMetadata,
+    };
+    const tail: AgentMessage[] = [];
+    const tailRowIdx: number[] = [];
+    for (const row of rows) {
+      const message = await this.materializePiCoreRow(
+        row.payload,
+        loadOptions,
+        hydrationState,
+      );
+      if (!message) continue;
+      tail.push(message);
+      tailRowIdx.push(Math.max(0, Math.floor(Number(row.idx) || 0)));
+    }
+
+    // Turn alignment, the same forward scan `findPiCompactionCutIndex` uses: a
+    // window that opens on a toolResult hands the provider an answer to a call
+    // it cannot see. Dropping those rows also moves `firstRowIdx`, which is what
+    // the compaction row will be written against.
+    let headOffset = 0;
+    while (
+      headOffset < tail.length &&
+      !isPiTurnBoundaryRole((tail[headOffset] as { role?: unknown }).role)
+    ) {
+      headOffset += 1;
+    }
+    // Every row a toolResult: keep them rather than hand the model nothing.
+    const alignedTail = headOffset < tail.length ? tail.slice(headOffset) : tail;
+    const alignedFrom = headOffset < tail.length ? headOffset : 0;
+    const firstRowIdx = tailRowIdx[alignedFrom] ?? cutIdx;
+
+    const keptTotals = this.piCoreVisibleWindowTotals(firstRowIdx);
+    const rowsSkipped = Math.max(0, totals.rows - keptTotals.rows);
+
+    if (rowsSkipped === 0) {
+      // The whole visible window is one row larger than the cap, which the fill
+      // rule admits on purpose. Nothing was skipped, so a placeholder announcing
+      // omitted history would be a lie and the index space is unshifted.
+      return {
+        messages: summaryOffset === 1 && compaction
+          ? [
+              createPiSummaryMessage(compaction.summary, compaction.updatedAt),
+              ...alignedTail,
+            ]
+          : alignedTail,
+        window: {
+          firstRowIdx: firstKeptIndex,
+          summaryOffset,
+          capped: false,
+          totalChars: totals.chars,
+          loadedChars: keptTotals.chars,
+          totalRows: totals.rows,
+          loadedRows: keptTotals.rows,
+        },
+      };
+    }
+
+    return {
+      messages: [
+        createPiSummaryMessage(
+          piCappedSessionLoadPlaceholder({
+            durableSummary: compaction?.summary,
+          }),
+        ),
+        ...alignedTail,
+      ],
+      window: {
+        firstRowIdx,
+        summaryOffset: 1,
+        capped: true,
+        totalChars: totals.chars,
+        loadedChars: keptTotals.chars,
+        totalRows: totals.rows,
+        loadedRows: keptTotals.rows,
+      },
+    };
+  }
+
+  /**
    * The visible pi_core row range, plus the index shift the legacy full load
-   * applies. {@link loadPiCoreMessages} returns rows `idx >= firstKeptIndex` in
+   * applies. {@link loadFullPiCoreTranscriptUnbounded} returns rows `idx >= firstKeptIndex` in
    * idx order, prefixed by the compaction summary when one is cut — and the
    * parsed render id of a row (`pi_user_<ts>_<index>`) is derived from its
    * position in THAT array. A windowed reader has to reproduce the same position
@@ -609,7 +1246,37 @@ export class PiCoreMessageStore {
   }
 
   /**
-   * One row, materialized exactly as `loadPiCoreMessages({ includeUiMetadata:
+   * Oldest-first row metadata from `fromIdx` up, payload never selected. The
+   * ascending twin of {@link listPiCoreRowMeta}: the render pager walks history
+   * backwards, but the render MIRROR walks it forwards from its high-water mark,
+   * and both need to size a batch before materializing it.
+   */
+  listPiCoreRowMetaAscending(options: {
+    fromIdx: number;
+    limit: number;
+  }): Array<{ idx: number; chars: number }> {
+    this.ensurePiCoreTables();
+    const limit = Math.max(1, Math.floor(options.limit));
+    const fromIdx = Math.max(0, Math.floor(options.fromIdx));
+    return this.deps.sql()
+      .exec<{ idx: number; chars: number }>(
+        `SELECT idx, length(payload) AS chars
+           FROM pi_core_messages
+          WHERE idx >= ?
+          ORDER BY idx ASC
+          LIMIT ?`,
+        fromIdx,
+        limit,
+      )
+      .toArray()
+      .map((row) => ({
+        idx: Math.max(0, Math.floor(Number(row.idx) || 0)),
+        chars: Math.max(0, Math.floor(Number(row.chars) || 0)),
+      }));
+  }
+
+  /**
+   * One row, materialized exactly as `loadFullPiCoreTranscriptUnbounded({ includeUiMetadata:
    * true, imagePolicy: "render" })` would materialize it — the render read path's
    * policy. Returns null for a missing or corrupt row, which is precisely what
    * the full load does with it (skip, keep the thread readable).
@@ -692,7 +1359,7 @@ export class PiCoreMessageStore {
     if (messages.length === 0) return;
     // Identity does not depend on provider image bytes. Keep compact external
     // references so dedup never downloads an entire historical image set.
-    const existingMessages = await this.loadPiCoreMessages({ imagePolicy: "reference" });
+    const existingMessages = await this.loadFullPiCoreTranscriptUnbounded({ imagePolicy: "reference" });
     const existingKeys = new Set(
       existingMessages.map((message) => piCoreMessageKey(message)),
     );

@@ -78,7 +78,19 @@ describe("ChatThreadDO user LLM usage gate", () => {
     fake.noLlmLimitsCachedUserId = null;
     fake.resolvePiModel = vi.fn(async () => mainModelConfig);
     fake.withChatMemoryPhase = vi.fn(async (_phase: string, task: () => unknown) => task());
-    fake.loadPiCoreMessages = vi.fn(async () => []);
+    fake.loadFullPiCoreTranscriptUnbounded = vi.fn(async () => []);
+    fake.loadBoundedPiCoreSessionWindow = vi.fn(async () => ({
+      messages: [],
+      window: {
+        firstRowIdx: 0,
+        summaryOffset: 0,
+        capped: false,
+        totalChars: 0,
+        loadedChars: 0,
+        totalRows: 0,
+        loadedRows: 0,
+      },
+    }));
     fake.readPiActiveTurn = vi.fn(() => null);
     fake.createPiSystemPrompt = vi.fn(() => "system");
     fake.createPiToolDefinitions = vi.fn(() => []);

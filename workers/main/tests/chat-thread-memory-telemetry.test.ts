@@ -269,9 +269,12 @@ describe('privacy-safe chat memory aggregates', () => {
       count: 1_000,
       size: 2_000,
       model: 'model-x',
-      // The last extra count is the size of the view that actually shipped; with
-      // nothing compacted it is the size that went in.
-      extraCounts: [1, 500, 3, 2_000],
+      // The fourth extra count is the size of the view that actually shipped;
+      // with nothing compacted it is the size that went in. The last two are the
+      // store's per-request image counters — provider-context omissions and R2
+      // hydrations — which are what separate a thread losing its screenshots
+      // from one that never had any.
+      extraCounts: [1, 500, 3, 2_000, 0, 0],
     });
 
     stats.totalBytes = 1024 * 1024;
@@ -285,7 +288,7 @@ describe('privacy-safe chat memory aggregates', () => {
     expect(events[3]).toMatchObject({
       status: 'summarized',
       size: 2_000,
-      extraCounts: [1, 500, 3, 600],
+      extraCounts: [1, 500, 3, 600, 0, 0],
     });
     record({ status: 'no_cut' });
     expect(events[4]).toMatchObject({ status: 'no_cut', severity: 'warn' });

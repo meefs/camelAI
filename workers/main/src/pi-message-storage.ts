@@ -63,12 +63,33 @@ export const PI_TOOL_DETAILS_MAX_DEPTH = 6;
 // gone; kept as an extension point for future streaming/log-style tools.
 export const PI_TAIL_TRUNCATED_TOOL_NAMES = new Set<string>();
 
+/**
+ * Where an image reference came from, and therefore what it is allowed to do.
+ *
+ * `"storage"` (the default, and what an absent field means on every row written
+ * before this discriminator existed) is DURABLE: the row itself has no bytes,
+ * because the image was over `PI_MAX_PERSISTED_IMAGE_DATA_CHARS` when it was
+ * committed. Render shows a marker for it and always has.
+ *
+ * `"session"` is EPHEMERAL: the row still holds its base64 and only the loaded
+ * in-memory copy was trimmed (see `PI_SESSION_INLINE_IMAGE_MAX_CHARS`). It is a
+ * working-set optimization and must never reach a stored row — a rewrite that
+ * persisted one would delete the image from the user's visible history, which
+ * is exactly what the session trim is documented as not doing. The write path
+ * re-inlines it (`restoreSessionExternalizedImages`); the provider path charges
+ * it against the declared-char budget only, because inline is what it would
+ * have been without the trim.
+ */
+export type PiR2ImageReferenceOrigin = "storage" | "session";
+
 export interface PiR2ImageReference {
   key: string;
   mimeType: string;
   size: number;
   sha256: string;
   storedAt: number;
+  /** Absent means `"storage"` — see {@link PiR2ImageReferenceOrigin}. */
+  origin?: PiR2ImageReferenceOrigin;
 }
 
 export interface PiR2ToolResultReference {
