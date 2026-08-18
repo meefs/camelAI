@@ -987,7 +987,6 @@ describe('post-turn compaction under a capped session', () => {
     };
     fake.piSession = session;
     fake.piModelResolver = vi.fn(async () => ({ model: {}, apiKey: 'k' }));
-    fake.pendingPiPostTurnCompactionUserId = null;
     fake.chatContext = null;
     fake.compactPiContext = vi.fn(async () => compacted);
     fake.replacePiCoreMessages = vi.fn(async () => ({ status: 'rewritten' }));

@@ -110,6 +110,163 @@ export function shouldCompactPiAfterAssistantUsage(
   return contextTokens >= contextWindow - piCompactionReserveTokens(model);
 }
 
+export type PiTranscriptCompactionReason = "tokens" | "bytes" | "stored_chars";
+
+export interface PiTranscriptCompactionTrigger {
+  /** Which dimension crossed. Checked in declaration order, so tokens wins a tie. */
+  reason: PiTranscriptCompactionReason;
+  tokens: number;
+  bytes: number;
+  thresholdTokens: number;
+  byteCeiling: number;
+  messageCount: number;
+  /**
+   * Stored chars of the visible pi_core window, or null when the probe was not
+   * taken (see {@link PI_STORED_WINDOW_PROBE_FRACTION}) or storage could not
+   * answer. Null is not "small" — it is "not measured".
+   */
+  storedChars: number | null;
+  storedCharCeiling: number;
+}
+
+/**
+ * How close the in-memory ESTIMATE must come to the stored-char ceiling before
+ * the stored-char probe is worth a SQL aggregate over the visible window.
+ *
+ * The probe is the only dimension that reads storage, and it runs at the end of
+ * every turn, so it may not cost an ordinary thread anything. The two measures
+ * are incommensurable but not unrelated: a stored row carries the same text the
+ * estimate stringifies plus JSON keys, escaping and UI metadata, so a window
+ * that is over the stored ceiling essentially always estimates above half of it.
+ * Half is the slack for the direction that can go the other way (an
+ * R2-externalized image is huge in the estimate and tiny in the row).
+ */
+export const PI_STORED_WINDOW_PROBE_FRACTION = 0.5;
+
+export interface PiTranscriptCompactionTriggerOptions {
+  byteCeiling?: number;
+  /**
+   * Ceiling on the STORED chars of the visible pi_core window — the measure
+   * that decides whether the next cold load is capped. Omit (or pass a
+   * non-positive number) to skip the dimension entirely.
+   */
+  storedCharCeiling?: number;
+  /**
+   * Reads the stored chars of the visible pi_core window. Called at most once,
+   * and only when the two in-memory dimensions are quiet AND the estimate is
+   * within {@link PI_STORED_WINDOW_PROBE_FRACTION} of the ceiling. Return null
+   * when storage cannot answer.
+   */
+  storedChars?: () => number | null;
+}
+
+/**
+ * THE TRANSCRIPT-KEYED POST-TURN TRIGGER (BOUNDED-MEMORY-BY-CONSTRUCTION §2e).
+ *
+ * {@link shouldCompactPiAfterAssistantUsage} asks the only question the durable
+ * cut used to be gated on: did the PROVIDER report a near-full window for the
+ * last request? On the threads that actually need a durable cut that question
+ * structurally answers "no", and it is this worker that makes it so.
+ * `transformPiProviderContext` compacts the context of every provider request
+ * once it crosses the threshold, so the request the provider bills is the
+ * SHRUNK one — usage comes back comfortable while the session's own transcript
+ * keeps growing behind it. Worse, the mid-turn cut usually cannot be persisted
+ * at all: it keeps the newest ~20k tokens, which on any substantial turn lands
+ * ABOVE `piMainBaselineIndex`, i.e. inside the tail that maps to no committed
+ * `pi_core_messages.idx` yet, so `recordCut` can only memoize it (chat-thread-do's
+ * INDEX SPACE note). Ephemeral cut, comfortable usage, no durable row — repeat for
+ * 607 turns and the thread is 29.4 MB of visible rows with nothing bounding a
+ * load. That is the Salix shape, and the ephemeral path is what hid it.
+ *
+ * So the post-turn pass asks the transcript instead of the provider: is the
+ * SESSION's own message list over the very threshold the per-request path
+ * compacts at (tokens), or over the working-set ceiling (bytes)? Deliberately
+ * the SAME two numbers `compactPiContext` gates on — the point is that a
+ * transcript the request path finds too big must not be allowed to stay that
+ * way once the session is idle and every index IS committed, which is the one
+ * moment the cut can be made durable. The usage trigger stays exactly as it
+ * was: a genuine near-overflow still counts, and it fires on shapes this one
+ * cannot see (a provider window smaller than our estimate believed).
+ *
+ * THE THIRD DIMENSION, and why two were not enough. Both in-memory dimensions
+ * measure the ESTIMATE; the thing 2e is trying to prevent — stage 1c's capped
+ * load — is decided by STORED CHARS (`PI_SESSION_LOAD_MAX_CHARS`, a
+ * `SUM(length(payload))` over the visible window). Those units are not
+ * comparable in either direction: an image stored inline is bigger in the row
+ * than in the estimate (JSON keys, escaping, UI metadata), while an image
+ * externalized to R2 is a tiny row and a huge estimate. So the byte ceiling
+ * sitting above the load cap does NOT imply the cut lands first: an
+ * image-dominated thread whose images are inline is charged a flat
+ * {@link PI_IMAGE_CONTEXT_TOKENS} each (token dimension quiet), estimates under
+ * 16 MB (byte dimension quiet), and still crosses 12 MB of stored payload — it
+ * would be loaded capped with neither in-memory trigger ever firing. Hence
+ * `storedCharCeiling`, expressed in the load cap's own units and set below it
+ * by its caller, so the durable cut lands BEFORE the cap engages.
+ *
+ * PREVENTION, not repair — for the growth shapes these three dimensions can
+ * see, which is what a thread accumulating turns actually does. 1c remains for
+ * the threads that already grew unbounded, for a load that arrives before any
+ * turn ends (the trigger is post-turn: a thread can only be prevented on a turn
+ * boundary), and as the backstop when the probe cannot read storage;
+ * `ChatThreadDO#piCappedLoadNeedsWatermark` forces the durable follow-through
+ * for anything that still gets there.
+ *
+ * WHAT THE CUT THIS TRIGGERS COSTS, since it now fires on threads the old gate
+ * never reached, and it runs on the whole materialized session list:
+ *  - The SUMMARIZATION is chunked at one context window per provider call
+ *    ({@link chunkPiMessagesForSummary}), so its call count is
+ *    O(transcript / window) — bounded above by stage 1c, which is what bounds
+ *    the session list itself (`PI_SESSION_LOAD_MAX_CHARS`). It is also a
+ *    ONE-TIME cost per thread: after the first cut the list is summary + tail
+ *    and every later turn starts from there. A thread that arrived here through
+ *    a capped load pays nothing extra — the watermark its first provider
+ *    request already forced is served by `compactPiContext`'s `row_hit` branch,
+ *    so the post-turn pass reuses that cut instead of summarizing again.
+ *  - The STORAGE side is stage 2a's: the rewrite that follows goes through the
+ *    bounded preserve path, whose peak residency is one batch and which refuses
+ *    to delete rows it could not archive. Nothing here re-derives a thread.
+ */
+export function piTranscriptCompactionTrigger(
+  messages: AgentMessage[],
+  model: Model<any> | null | undefined,
+  options: PiTranscriptCompactionTriggerOptions = {},
+): PiTranscriptCompactionTrigger | null {
+  const byteCeiling = options.byteCeiling ?? PI_CONTEXT_MAX_WORKING_SET_BYTES;
+  const storedCharCeiling = Math.max(0, Math.floor(options.storedCharCeiling ?? 0));
+  if (!Array.isArray(messages) || messages.length === 0) return null;
+  const footprint = estimatePiContextFootprint(messages);
+  const thresholdTokens =
+    piModelContextWindow(model) - piCompactionReserveTokens(model);
+  const overTokens = footprint.tokens >= thresholdTokens;
+  const overBytes = !overTokens && footprint.bytes >= byteCeiling;
+  // Only the last resort reads storage, and only when the estimate says the
+  // answer could plausibly be over the ceiling. See PI_STORED_WINDOW_PROBE_FRACTION.
+  let storedChars: number | null = null;
+  let overStoredChars = false;
+  if (
+    !overTokens &&
+    !overBytes &&
+    storedCharCeiling > 0 &&
+    options.storedChars &&
+    footprint.bytes >= storedCharCeiling * PI_STORED_WINDOW_PROBE_FRACTION
+  ) {
+    const probed = options.storedChars();
+    storedChars = typeof probed === "number" && Number.isFinite(probed) ? probed : null;
+    overStoredChars = storedChars !== null && storedChars >= storedCharCeiling;
+  }
+  if (!overTokens && !overBytes && !overStoredChars) return null;
+  return {
+    reason: overTokens ? "tokens" : overBytes ? "bytes" : "stored_chars",
+    tokens: footprint.tokens,
+    bytes: footprint.bytes,
+    thresholdTokens,
+    byteCeiling,
+    messageCount: footprint.messageCount,
+    storedChars,
+    storedCharCeiling,
+  };
+}
+
 /**
  * A `length` stop that produced no usable answer means the input filled the
  * window and left no room to generate. Pi's own `isContextOverflow` covers this

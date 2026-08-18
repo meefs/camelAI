@@ -4049,7 +4049,9 @@ describe('ChatThreadDO Pi turn handling', () => {
     );
 
     expect(fake.ctx.waitUntil).toHaveBeenCalledWith(expect.any(Promise));
-    expect(fake.compactPiContextAfterTurn).toHaveBeenCalledWith(assistantMessage);
+    // (triggerMessage, initiatingUserId) — the userId is an explicit argument
+    // now rather than a field the scheduler hands over implicitly.
+    expect(fake.compactPiContextAfterTurn.mock.calls[0][0]).toBe(assistantMessage);
   });
 
   it('persists post-turn Pi compaction into live session state and resets baseline', async () => {
@@ -4394,7 +4396,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       },
     ]);
 
-    expect(fake.compactPiContextAfterTurn).toHaveBeenCalledWith(
+    expect(fake.compactPiContextAfterTurn.mock.calls[0][0]).toEqual(
       expect.objectContaining({ role: 'assistant' }),
     );
     expect(fake.ctx.waitUntil).toHaveBeenCalledWith(expect.any(Promise));
@@ -4422,7 +4424,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       },
     ]);
 
-    expect(fake.compactPiContextAfterTurn).toHaveBeenCalledWith(
+    expect(fake.compactPiContextAfterTurn.mock.calls[0][0]).toEqual(
       expect.objectContaining({ role: 'assistant' }),
     );
     expect(fake.ctx.waitUntil).toHaveBeenCalledWith(expect.any(Promise));

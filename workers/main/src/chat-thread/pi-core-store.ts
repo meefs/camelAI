@@ -140,6 +140,28 @@ export const PI_SESSION_IMAGE_RESTORE_MAX_CHARS = 4_000_000;
  */
 export const PI_SESSION_LOAD_MAX_CHARS = 12_000_000;
 
+/**
+ * The stored-char ceiling the DURABLE post-turn cut fires at, in the same units
+ * as {@link PI_SESSION_LOAD_MAX_CHARS} and deliberately BELOW it.
+ *
+ * The post-turn trigger's other two dimensions measure an in-memory estimate,
+ * and neither is comparable to a `SUM(length(payload))` over the visible window
+ * — an inline image is bigger in the row than in the estimate, an
+ * R2-externalized one is far smaller. So an image-dominated thread can cross
+ * this cap with both estimate dimensions quiet, get loaded capped, and only then
+ * acquire a watermark whose summary is the "earlier messages were NOT loaded"
+ * placeholder: a permanent hole in model context where a real summarization
+ * would have preserved the prefix.
+ *
+ * Firing the durable cut at 75% of the cap closes that gap in the cap's own
+ * units: the last turn before a thread would be capped ends with a real
+ * summarization instead. The 25% margin covers the growth one more turn can add
+ * between the probe and the next cold load.
+ */
+export const PI_DURABLE_CUT_MAX_VISIBLE_CHARS = Math.floor(
+  PI_SESSION_LOAD_MAX_CHARS * 0.75,
+);
+
 /** Rows per metadata probe while choosing the capped window's cut. */
 const PI_SESSION_LOAD_ROW_BATCH_SIZE = 256;
 

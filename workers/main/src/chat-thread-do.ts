@@ -256,6 +256,8 @@ import {
   type PiContextFootprint,
   isPiLengthStopContextExhaustion,
   shouldCompactPiAfterAssistantUsage,
+  piTranscriptCompactionTrigger,
+  type PiTranscriptCompactionTrigger,
   loadPiCompleteSimple,
   findPiCompactionCutIndex,
   summarizePiMessages,
@@ -311,6 +313,7 @@ import {
 import {
   PiCoreMessageStore,
   PI_SESSION_LOAD_MAX_CHARS,
+  PI_DURABLE_CUT_MAX_VISIBLE_CHARS,
   type PiCoreImagePolicy,
   type PiImageHydrationBudget,
   type PiSessionLoadWindow,
@@ -1153,7 +1156,17 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   private activeTurnUserId: string | null = null;
   private llmUsageSettlementChain: Promise<void> = Promise.resolve();
   private pendingLlmUsageSettlements: Array<() => Promise<void>> = [];
-  private pendingPiPostTurnCompactionUserId: string | null = null;
+  /**
+   * The post-turn durable cut, single-flighted. Non-null for exactly as long as
+   * a pass is running; see `maybeSchedulePiPostTurnCompaction` for why a
+   * level-shaped trigger makes this mandatory rather than tidy.
+   */
+  private piPostTurnCompactionInFlight: Promise<void> | null = null;
+  /** At most one coalesced follow-up pass, requested while one was in flight. */
+  private piPostTurnCompactionRerun: {
+    triggerMessage: AgentMessage;
+    userId: string | null;
+  } | null = null;
   private workspaceStatusStubs = new Map<string, DurableObjectStub<WorkspaceDO>>();
   // Trailing-debounce state for coalescing WorkspaceDO.recordThreadStreaming
   // running-activity updates. This is a per-thread DO, so a single pending entry
@@ -8033,11 +8046,18 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
    * For an image-dominated one it does not: images are charged a flat
    * `PI_IMAGE_CONTEXT_TOKENS` each, so ~24 screenshots is well under any
    * threshold while the load itself is 12 MB. Nothing else consults `capped`
-   * before the fact, and the post-turn path is usage-gated too, so such a thread
-   * re-enters the capped branch on every wake forever: the placeholder becomes
-   * permanent, `pi_session_load_capped` fires on every turn (the event documents
-   * that a thread appears there at most once), and every wake re-materializes
-   * 12 MB and re-runs the session image externalization pass.
+   * before the fact, and the post-turn path was usage-gated too, so such a
+   * thread re-entered the capped branch on every wake forever: the placeholder
+   * becomes permanent, `pi_session_load_capped` fires on every turn (the event
+   * documents that a thread appears there at most once), and every wake
+   * re-materializes 12 MB and re-runs the session image externalization pass.
+   *
+   * The post-turn trigger now also has a STORED-CHAR dimension
+   * ({@link PI_DURABLE_CUT_MAX_VISIBLE_CHARS}, below the load cap and measured
+   * in its units), so a thread growing turn by turn should acquire its durable
+   * cut before it can be capped at all. This stays as the backstop for the
+   * threads already in that shape, for a load that arrives before any turn ends,
+   * and for the case where the stored-char probe cannot read storage.
    *
    * So the follow-through is forced instead of inferred. On the first provider
    * request of the turn the whole loaded tail is below `piMainBaselineIndex`,
@@ -8477,28 +8497,215 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     );
   }
 
-  private maybeSchedulePiPostTurnCompaction(messages: AgentMessage[]): void {
-    const latestAssistant = latestPiAssistantMessage(messages);
-    if (!latestAssistant || !shouldCompactPiAfterAssistantUsage(latestAssistant, this.piSession?.state.model)) {
+  /**
+   * The post-turn summarizer, behind an instance seam.
+   *
+   * {@link loadPiCompleteSimple} dynamic-imports `@earendil-works/pi-ai/compat`
+   * at CALL time, so a suite that wants a summarizer which never reaches a
+   * provider had to `vi.mock` that whole module. That is not a viable seam: the
+   * factory is file-scoped and hoisted, pi-agent-core imports `EventStream`,
+   * `streamSimple` and `validateToolArguments` from the same module (so a
+   * partial factory is mandatory), and an async `importOriginal` factory cannot
+   * resolve at all when the lazy import happens inside a Durable Object —
+   * Workers refuses the cross-object I/O. Overriding this one method is what
+   * every other compaction surface already does by being handed a
+   * `completeSimple` argument.
+   */
+  protected loadPiCompleteSimple(): Promise<
+    typeof import("@earendil-works/pi-ai/compat").completeSimple
+  > {
+    return loadPiCompleteSimple();
+  }
+
+  /**
+   * Stored chars of the visible pi_core window, for the durable trigger's
+   * stored-char dimension. Null when storage cannot answer — the trigger treats
+   * that as "not measured", never as "small", and stage 1c plus
+   * {@link piCappedLoadNeedsWatermark} remain the backstop.
+   */
+  private piVisibleWindowStoredChars(): number | null {
+    try {
+      const watermark = this.loadPiCoreCompaction();
+      return this.piCoreStore.piCoreVisibleWindowTotals(
+        watermark?.firstKeptIndex ?? 0,
+      ).chars;
+    } catch (error) {
+      console.error("[ChatThreadDO] visible window totals probe failed", error);
+      return null;
+    }
+  }
+
+  /**
+   * Why the post-turn durable cut should run, or null. TWO independent reasons,
+   * and the second is the one that matters for prevention:
+   *
+   *  - `usage`: the provider reported a near-full window for the last request
+   *    ({@link shouldCompactPiAfterAssistantUsage}). Keyed on THIS TURN's
+   *    trigger message — a delta question, and deliberately unchanged: it
+   *    catches shapes the estimate cannot see.
+   *  - `transcript`: the SESSION's whole list is over the threshold the
+   *    per-request path compacts at, over the working-set ceiling, or its
+   *    visible pi_core window is over the stored-char ceiling
+   *    ({@link piTranscriptCompactionTrigger}). This is the trigger the
+   *    ephemeral per-request compaction masks: it shrinks what the provider
+   *    bills, so `usage` structurally never fires on precisely the threads
+   *    growing without bound.
+   *
+   * THE TWO HALVES TAKE DIFFERENT LISTS, and that is the whole point.
+   * `triggerMessage` is the assistant message this turn produced; `transcript`
+   * must be the SESSION's accumulated list. `agent_end` hands the listener the
+   * run DELTA (pi-agent-core seeds `newMessages` with the prompts and pushes
+   * only what this run produced), so measuring the transcript on that argument
+   * asks "was this ONE TURN huge?" — a question that answers no on every
+   * ordinary turn of a 29 MB thread, which is exactly the growth shape this
+   * trigger exists to stop. Callers pass `session.state.messages`.
+   *
+   * Evaluated against the CURRENT list on every check, not captured once: the
+   * post-turn pass awaits the run settling and a model resolve, and a list that
+   * shrank under it (another compaction landed, the session was rebuilt) must
+   * stop this one rather than cut a transcript that no longer needs it.
+   */
+  private piPostTurnCompactionReason(
+    triggerMessage: AgentMessage,
+    transcriptMessages: AgentMessage[],
+    model: Model<any> | null | undefined,
+  ):
+    | { kind: "usage" }
+    | ({ kind: "transcript" } & PiTranscriptCompactionTrigger)
+    | null {
+    if (shouldCompactPiAfterAssistantUsage(triggerMessage, model)) {
+      return { kind: "usage" };
+    }
+    const transcript = piTranscriptCompactionTrigger(transcriptMessages, model, {
+      storedCharCeiling: PI_DURABLE_CUT_MAX_VISIBLE_CHARS,
+      storedChars: () => this.piVisibleWindowStoredChars(),
+    });
+    return transcript ? { kind: "transcript", ...transcript } : null;
+  }
+
+  /**
+   * @param turnMessages the run DELTA `agent_end` reports — the messages THIS
+   *   run produced. Used only to find the trigger message for the usage half;
+   *   the transcript half reads the session's own list. See
+   *   {@link piPostTurnCompactionReason}.
+   */
+  private maybeSchedulePiPostTurnCompaction(turnMessages: AgentMessage[]): void {
+    const latestAssistant = latestPiAssistantMessage(turnMessages);
+    if (!latestAssistant) return;
+    const transcript = this.piSession?.state.messages ?? turnMessages;
+    const reason = this.piPostTurnCompactionReason(
+      latestAssistant,
+      transcript,
+      this.piSession?.state.model,
+    );
+    if (!reason) return;
+
+    // SINGLE FLIGHT, because the transcript reason is LEVEL-shaped, not
+    // edge-shaped: it stays true on every turn until a cut actually lands, and
+    // a pass takes O(transcript / window) sequential metered provider calls to
+    // land one. Without this, a turn that starts and finishes while a pass is
+    // summarizing schedules a second full summarization of the same transcript
+    // — duplicate work, duplicate residency, and duplicate BILLING (each pass
+    // meters under its own `compaction` sourceScope, so nothing dedupes them).
+    // The old usage-only gate was edge-shaped and effectively never doubled up;
+    // this is the exposure the transcript reason introduces.
+    if (this.piPostTurnCompactionInFlight) {
+      // Coalesce rather than drop: the turns that landed during the pass are
+      // not covered by the cut it is computing, and a level trigger that is
+      // merely suppressed would wait for the NEXT turn to be re-noticed.
+      this.piPostTurnCompactionRerun = {
+        triggerMessage: latestAssistant,
+        userId: this.getActiveTurnUserId(),
+      };
       return;
     }
 
-    const initiatingUserId = this.getActiveTurnUserId();
-    this.pendingPiPostTurnCompactionUserId = initiatingUserId;
-    this.ctx.waitUntil(
-      this.compactPiContextAfterTurn(latestAssistant).catch((error) => {
+    this.recordPiPostTurnCompactionDecision(reason);
+    this.startPiPostTurnCompaction(latestAssistant, this.getActiveTurnUserId());
+  }
+
+  /**
+   * The masked case, made visible: this turn's provider usage was comfortable,
+   * and a durable cut is being scheduled anyway because the transcript behind
+   * the request is not. Emitted at the DECISION, not at the outcome — the pass
+   * re-checks and may still stand down, which `pi_context_budget` reports.
+   * Without this event the fix is indistinguishable in telemetry from a thread
+   * that simply never grew.
+   *
+   * One event per pass that actually starts, including a coalesced follow-up;
+   * a suppressed schedule emits nothing, because the pass it folded into
+   * already reported the same decision.
+   */
+  private recordPiPostTurnCompactionDecision(
+    reason: { kind: "usage" } | ({ kind: "transcript" } & PiTranscriptCompactionTrigger),
+  ): void {
+    if (reason.kind !== "transcript") return;
+    this.recordChatThreadObservabilityEvent("pi_post_turn_compaction_transcript", {
+      operation: "compact_context_after_turn",
+      status: reason.reason,
+      count: reason.tokens,
+      size: reason.bytes,
+      model: typeof this.piSession?.state.model?.id === "string"
+        ? this.piSession.state.model.id
+        : null,
+      provider: this.piCurrentUsageProvider || null,
+      extraCounts: [
+        reason.thresholdTokens,
+        reason.byteCeiling,
+        reason.messageCount,
+        reason.storedChars,
+        reason.storedCharCeiling,
+      ],
+    });
+  }
+
+  /**
+   * Owns the in-flight slot: assigned before the promise is handed to
+   * `waitUntil`, cleared in `finally`, and the only place either happens.
+   */
+  private startPiPostTurnCompaction(
+    triggerMessage: AgentMessage,
+    initiatingUserId: string | null,
+  ): void {
+    const run = this.compactPiContextAfterTurn(triggerMessage, initiatingUserId)
+      .catch((error) => {
         console.error("[ChatThreadDO] Pi post-turn compaction failed", error);
-      }),
+      })
+      .finally(() => {
+        this.piPostTurnCompactionInFlight = null;
+        this.runCoalescedPiPostTurnCompaction();
+      });
+    this.piPostTurnCompactionInFlight = run;
+    this.ctx.waitUntil(run);
+  }
+
+  /**
+   * At most ONE follow-up pass per completed pass, re-gated against the list as
+   * it stands now. The pass that just finished usually cut the transcript, so
+   * the common outcome here is that the reason is gone and nothing runs.
+   */
+  private runCoalescedPiPostTurnCompaction(): void {
+    const pending = this.piPostTurnCompactionRerun;
+    this.piPostTurnCompactionRerun = null;
+    if (!pending) return;
+    const session = this.piSession;
+    if (!session) return;
+    const reason = this.piPostTurnCompactionReason(
+      pending.triggerMessage,
+      session.state.messages,
+      session.state.model,
     );
+    if (!reason) return;
+    this.recordPiPostTurnCompactionDecision(reason);
+    this.startPiPostTurnCompaction(pending.triggerMessage, pending.userId);
   }
 
   private async compactPiContextAfterTurn(
     triggerMessage: AgentMessage,
+    initiatingUserId: string | null = null,
   ): Promise<void> {
     const resolver = this.piModelResolver;
     const session = this.piSession;
-    const initiatingUserId = this.pendingPiPostTurnCompactionUserId;
-    this.pendingPiPostTurnCompactionUserId = null;
     if (!resolver || !session) return;
 
     // `agent_end` fires from inside the Pi run, and `isStreaming` is only
@@ -8515,16 +8722,24 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
 
     if (
       session.state.isStreaming ||
-      !shouldCompactPiAfterAssistantUsage(triggerMessage, session.state.model)
+      !this.piPostTurnCompactionReason(
+        triggerMessage,
+        session.state.messages,
+        session.state.model,
+      )
     ) {
       return;
     }
 
-    const completeSimple = await loadPiCompleteSimple();
+    const completeSimple = await this.loadPiCompleteSimple();
     const current = await resolver();
     if (
       session.state.isStreaming ||
-      !shouldCompactPiAfterAssistantUsage(triggerMessage, current.model)
+      !this.piPostTurnCompactionReason(
+        triggerMessage,
+        session.state.messages,
+        current.model,
+      )
     ) {
       return;
     }
@@ -8537,8 +8752,11 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       current.apiKey,
       completeSimple,
       undefined,
-      // Already threshold-gated by shouldCompactPiAfterAssistantUsage above, so no
-      // extra floor; the session is idle here, so every index is committed.
+      // Already gated by piPostTurnCompactionReason above, so no extra floor;
+      // the session is idle here, so every index is committed — which is the
+      // whole reason the durable cut belongs on THIS path and not on the
+      // per-request one, whose cut lands in the uncommitted tail and can only
+      // ever be memoized.
       {
         force: true,
         ...(context

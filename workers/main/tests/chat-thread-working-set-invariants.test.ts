@@ -20,7 +20,7 @@
  *     same budgets. A net nobody has thrown a fish at is a decoration.
  */
 
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { env, runInDurableObject } from 'cloudflare:test';
 import type { UIMessage } from 'ai';
 
@@ -44,6 +44,10 @@ import {
 } from '../../../src/lib/chat-render-history';
 import { uiMessageCreatedAtMs } from '../../../src/lib/ui-message-adapter';
 import { createSseCaptureConnection } from '../src/chat-thread/sse-connection';
+import {
+  PI_DURABLE_CUT_MAX_VISIBLE_CHARS,
+  PI_SESSION_LOAD_MAX_CHARS,
+} from '../src/chat-thread/pi-core-store';
 
 const threadStub = (threadId: string) => {
   const namespace = (env as any).CHAT_THREAD;
@@ -100,6 +104,20 @@ const FAKE_MODEL = {
 const stubCompleteSimple = (async () => ({
   content: [{ type: 'text', text: 'summary of the omitted work' }],
 })) as any;
+
+/**
+ * The post-turn cut resolves its summarizer through the DO's own
+ * `loadPiCompleteSimple` seam. Override that rather than `vi.mock`-ing
+ * `@earendil-works/pi-ai/compat`: the mock would be file-scoped and hoisted
+ * above every import, and pi-agent-core imports `EventStream`, `streamSimple`
+ * and `validateToolArguments` from that module — so a whole-module factory
+ * leaves this suite unable to host a real turn at all, and a partial
+ * (`importOriginal`) factory cannot even resolve, because the lazy import runs
+ * inside a Durable Object and Workers refuses the cross-object I/O.
+ */
+const stubPostTurnSummarizer = (instance: any): void => {
+  instance.loadPiCompleteSimple = async () => stubCompleteSimple;
+};
 
 // ---------------------------------------------------------------------------
 // Shared read fixture. One DO, seeded once: these surfaces are reads, and
@@ -413,6 +431,190 @@ describe('bounded wake + stream surfaces', () => {
       expectWithinBudget(usage, WORKING_SET_BUDGETS.streamReplay);
     });
   }, 120_000);
+});
+
+/**
+ * STAGE 2e, measured rather than argued: the surfaces above prove a whale can be
+ * SERVED inside a budget. This proves a thread does not become one in the first
+ * place — the durable trigger fires from the transcript, so a thread that grows
+ * turn after turn keeps re-acquiring a cut and its visible window never reaches
+ * the size that forces stage 1c's capped load.
+ */
+describe('bounded growth (stage 2e)', () => {
+  const GROWN_THREAD = 'working-set-2e-grown';
+  const GROWN_IMAGE_THREAD = 'working-set-2e-grown-images';
+  /** 200k window, 20k reserve => the same 180_000 the per-request path uses. */
+  const GROWTH_MODEL = { id: 'test-model', contextWindow: 200_000, maxTokens: 8_000 } as any;
+  /** Wide enough that a screenshot thread can never trip the token dimension. */
+  const WIDE_MODEL = { id: 'wide-model', contextWindow: 1_000_000, maxTokens: 8_000 } as any;
+
+  /**
+   * What `agent_end` hands its listener: the messages THIS run produced, not the
+   * conversation behind them. Every round below schedules with one of these and
+   * leaves the grown list on `piSession`, because that is the only shape
+   * production can produce — a growth test that passes the full list instead
+   * would pass against a trigger that measures a single turn.
+   */
+  const runDelta = (assistant: any) => [
+    { role: 'user', content: 'and then?', timestamp: Date.now() },
+    assistant,
+  ] as any;
+
+  const settledAssistant = () => ({
+    role: 'assistant',
+    content: [{ type: 'text', text: 'done' }],
+    stopReason: 'stop',
+    usage: { input: 24_000, output: 400, cacheRead: 0, cacheWrite: 0, totalTokens: 24_400 },
+    timestamp: Date.now(),
+  });
+
+  /** Drain the post-turn pass the way `waitUntil` would in production. */
+  async function runScheduledPostTurnPass(instance: any, delta: any): Promise<void> {
+    const scheduled: Promise<unknown>[] = [];
+    Object.defineProperty(instance.ctx, 'waitUntil', {
+      value: (promise: Promise<unknown>) => { scheduled.push(promise); },
+      configurable: true,
+      writable: true,
+    });
+    try {
+      instance.maybeSchedulePiPostTurnCompaction(delta);
+      await Promise.all(scheduled);
+    } finally {
+      delete instance.ctx.waitUntil;
+    }
+  }
+
+  it('turn start stays in budget for a thread that grew with the durable trigger active', async () => {
+    await runInDurableObject(threadStub(GROWN_THREAD), async (instance: any) => {
+      seedChatContext(instance, GROWN_THREAD);
+      instance.piModelResolver = async () => ({ model: GROWTH_MODEL, apiKey: 'api-key' });
+      stubPostTurnSummarizer(instance);
+
+      let written = 0;
+      for (let round = 0; round < 5; round += 1) {
+        // Each round is a batch of turns landing on the thread: ~4 MB, which on
+        // its own is under every cap. Five of them is 20 MB — over the working-set
+        // ceiling and heading for the 12 MB load cap — unless something cuts.
+        const added = buildWhaleThreadFixture(instance, {
+          rows: 400,
+          totalChars: 4_000_000,
+          images: 0,
+          append: round > 0,
+          startTimestamp: 1_700_000_000_000 + round * 1_000_000,
+        });
+        written += added.totalChars;
+
+        const loaded = await instance.loadBoundedPiCoreSessionWindow();
+        instance.piSessionLoadWindow = {
+          firstRowIdx: loaded.window.firstRowIdx,
+          summaryOffset: loaded.window.summaryOffset,
+          capped: loaded.window.capped,
+        };
+        // The turn ends with COMFORTABLE provider usage every single round —
+        // which is what the ephemeral per-request compaction guarantees, and
+        // what made the usage-gated trigger structurally unreachable.
+        const assistant = settledAssistant();
+        const settled = [...loaded.messages, assistant];
+        instance.piSession = {
+          state: { messages: settled, model: GROWTH_MODEL, isStreaming: false },
+          waitForIdle: async () => undefined,
+        };
+        instance.piMainBaselineIndex = settled.length;
+
+        await runScheduledPostTurnPass(instance, runDelta(assistant));
+      }
+
+      expect(written).toBeGreaterThan(PI_SESSION_LOAD_MAX_CHARS);
+
+      const meter = instrumentDurableObjectStorage(instance);
+      const { result, usage } = await meter.measure(() =>
+        instance.loadBoundedPiCoreSessionWindow(),
+      );
+      const window = (result as any).window;
+      // The point: this thread NEVER needed the capped load. 1c is repair for
+      // threads that already grew unbounded; 2e is why new ones do not.
+      expect(window.capped).toBe(false);
+      // In the load cap's OWN units. `totalChars` is stored payload; comparing it
+      // against the in-memory byte ceiling would be a unit conflation, and the
+      // number that decides whether the next load is capped is this one.
+      expect(window.totalChars).toBeLessThan(PI_DURABLE_CUT_MAX_VISIBLE_CHARS);
+      expectWithinBudget(usage, WORKING_SET_BUDGETS.sessionLoad);
+      // And an order of magnitude under the cap the budget is derived from, not
+      // merely inside it.
+      expect(usage.piCoreBytesMaterialized).toBeLessThan(PI_SESSION_LOAD_MAX_CHARS / 4);
+    });
+  }, 300_000);
+
+  /**
+   * THE POPULATION TWO DIMENSIONS CANNOT SEE.
+   *
+   * Images are charged a flat `PI_IMAGE_CONTEXT_TOKENS`, so a screenshot thread
+   * is token-cheap; stored inline, its rows are BIGGER than the estimate, so it
+   * crosses the 12 MB load cap while the 16 MB working-set ceiling is still
+   * comfortably ahead. With only the two estimate dimensions this thread grows
+   * to a capped load with no durable cut ever scheduled — and the watermark it
+   * eventually acquires there is built on the "earlier messages were NOT loaded"
+   * placeholder, i.e. a permanent hole where a real summary belonged.
+   */
+  it('cuts an image-dominated thread before it can reach the load cap', async () => {
+    await runInDurableObject(threadStub(GROWN_IMAGE_THREAD), async (instance: any) => {
+      seedChatContext(instance, GROWN_IMAGE_THREAD);
+      instance.piModelResolver = async () => ({ model: WIDE_MODEL, apiKey: 'api-key' });
+      stubPostTurnSummarizer(instance);
+
+      const reasons: string[] = [];
+      const recordEvent = instance.recordChatThreadObservabilityEvent.bind(instance);
+      instance.recordChatThreadObservabilityEvent = (name: string, details: any) => {
+        if (name === 'pi_post_turn_compaction_transcript') reasons.push(details.status);
+        return recordEvent(name, details);
+      };
+
+      let written = 0;
+      for (let round = 0; round < 5; round += 1) {
+        // ~2.5 MB a round, nearly all of it inline base64 under
+        // PI_MAX_PERSISTED_IMAGE_DATA_CHARS, so every byte stays in the row.
+        const added = buildWhaleThreadFixture(instance, {
+          rows: 40,
+          totalChars: 2_500_000,
+          images: 6,
+          imageChars: 400_000,
+          append: round > 0,
+          startTimestamp: 1_700_000_000_000 + round * 1_000_000,
+        });
+        written += added.totalChars;
+
+        const loaded = await instance.loadBoundedPiCoreSessionWindow();
+        // Never capped, on any round: that is the whole claim.
+        expect(loaded.window.capped).toBe(false);
+        instance.piSessionLoadWindow = {
+          firstRowIdx: loaded.window.firstRowIdx,
+          summaryOffset: loaded.window.summaryOffset,
+          capped: loaded.window.capped,
+        };
+        const assistant = settledAssistant();
+        const settled = [...loaded.messages, assistant];
+        instance.piSession = {
+          state: { messages: settled, model: WIDE_MODEL, isStreaming: false },
+          waitForIdle: async () => undefined,
+        };
+        instance.piMainBaselineIndex = settled.length;
+
+        await runScheduledPostTurnPass(instance, runDelta(assistant));
+      }
+
+      // The thread wrote well past the durable ceiling, and past the load cap.
+      expect(written).toBeGreaterThan(PI_SESSION_LOAD_MAX_CHARS);
+      // Neither estimate dimension is what caught it — if either had, this test
+      // would be re-proving the case above instead of the one it exists for.
+      expect(reasons).toContain('stored_chars');
+      expect(reasons).not.toContain('tokens');
+      expect(reasons).not.toContain('bytes');
+
+      const window = (await instance.loadBoundedPiCoreSessionWindow()).window;
+      expect(window.capped).toBe(false);
+      expect(window.totalChars).toBeLessThan(PI_DURABLE_CUT_MAX_VISIBLE_CHARS);
+    });
+  }, 300_000);
 });
 
 // ---------------------------------------------------------------------------

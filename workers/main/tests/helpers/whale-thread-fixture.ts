@@ -27,16 +27,31 @@ export interface WhaleFixtureOptions {
   /** Every Nth turn is an unstamped legacy turn (position-derived render ids). */
   legacyEvery?: number;
   startTimestamp?: number;
+  /**
+   * Append to whatever is already stored instead of replacing it, continuing
+   * from `MAX(idx) + 1`. What a thread GROWING looks like — the shape stage 2e
+   * is measured against, since a fixture that replaces the table can only ever
+   * describe a thread that arrived fully formed.
+   */
+  append?: boolean;
 }
 
 export interface WhaleFixture {
+  /** Rows in the table after this call (not just the ones it wrote). */
   rows: number;
+  /** Stored chars THIS CALL wrote; with `append` the table holds more. */
   totalChars: number;
   turns: number;
   images: number;
-  /** Stored chars of the newest `count` rows — what a tail-shaped bound admits. */
+  /**
+   * Stored chars of the newest `count` rows THIS CALL wrote — what a
+   * tail-shaped bound admits.
+   */
   tailChars(count: number): number;
-  /** Stored chars of rows `[0, count)` — what a prefix-shaped bound admits. */
+  /**
+   * Stored chars of the first `count` rows THIS CALL wrote — what a
+   * prefix-shaped bound admits.
+   */
   prefixChars(count: number): number;
 }
 
@@ -64,8 +79,20 @@ export function buildWhaleThreadFixture(
   let timestamp = options.startTimestamp ?? 1_700_000_000_000;
 
   instance.ensurePiCoreTables();
-  instance.ctx.storage.sql.exec("DELETE FROM pi_core_messages");
-  instance.ctx.storage.sql.exec("DELETE FROM pi_core_compaction");
+  if (!options.append) {
+    instance.ctx.storage.sql.exec("DELETE FROM pi_core_messages");
+    instance.ctx.storage.sql.exec("DELETE FROM pi_core_compaction");
+  }
+  const startIdx = options.append
+    ? Math.max(
+        0,
+        Number(
+          (instance.ctx.storage.sql
+            .exec("SELECT COALESCE(MAX(idx) + 1, 0) AS next_idx FROM pi_core_messages")
+            .toArray()[0] as { next_idx: number } | undefined)?.next_idx ?? 0,
+        ),
+      )
+    : 0;
 
   // Rows per turn: user, assistant(+toolCall), toolResult, assistant — plus a
   // steer user and a second assistant commit on steered turns.
@@ -79,7 +106,7 @@ export function buildWhaleThreadFixture(
   const base64 = "A".repeat(imageChars);
 
   const charsByIdx: number[] = [];
-  let idx = 0;
+  let idx = startIdx;
   let imagesWritten = 0;
   const push = (message: AnyRecord): void => {
     const payload = JSON.stringify(message);
