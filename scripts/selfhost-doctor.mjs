@@ -234,7 +234,9 @@ await check("self-host app domains", async () => {
 });
 
 await check("AI provider", async () => {
-  const provider = (env.SELFHOST_AI_PROVIDER || "").trim().toLowerCase();
+  const configured = (name) => String(env[name] ?? process.env[name] ?? "").trim();
+  const provider = configured("SELFHOST_AI_PROVIDER").toLowerCase();
+  const providerApiKey = configured("SELFHOST_AI_API_KEY");
   const supported = new Set([
     "anthropic",
     "bedrock",
@@ -242,24 +244,50 @@ await check("AI provider", async () => {
     "openai",
     "openrouter",
   ]);
-  if (!provider) {
-    fail("missing SELFHOST_AI_PROVIDER; chat cannot run without an AI provider");
-  }
-  if (!supported.has(provider)) {
-    fail(`unsupported SELFHOST_AI_PROVIDER=${provider}`);
-  }
-  if (!(env.SELFHOST_AI_API_KEY || "").trim()) {
-    fail("missing SELFHOST_AI_API_KEY");
-  }
-  if (provider === "custom") {
-    if (!(env.SELFHOST_AI_BASE_URL || "").trim()) {
-      fail("missing SELFHOST_AI_BASE_URL for custom provider");
+  if (provider) {
+    if (!supported.has(provider)) {
+      fail(`unsupported SELFHOST_AI_PROVIDER=${provider}`);
     }
-    if (!(env.SELFHOST_AI_MODEL || "").trim()) {
-      fail("missing SELFHOST_AI_MODEL for custom provider");
+    if (!providerApiKey) {
+      fail("missing SELFHOST_AI_API_KEY");
     }
+    if (provider === "custom") {
+      if (!configured("SELFHOST_AI_BASE_URL")) {
+        fail("missing SELFHOST_AI_BASE_URL for custom provider");
+      }
+      if (!configured("SELFHOST_AI_MODEL")) {
+        fail("missing SELFHOST_AI_MODEL for custom provider");
+      }
+    }
+    note(`SELFHOST_AI_PROVIDER: ${provider}`);
+    return;
   }
-  note(`SELFHOST_AI_PROVIDER: ${provider}`);
+
+  const hasPartialProviderConfig = [
+    providerApiKey,
+    configured("SELFHOST_AI_BASE_URL"),
+    configured("SELFHOST_AI_MODEL"),
+    configured("SELFHOST_AI_NAME"),
+  ].some(Boolean);
+  if (hasPartialProviderConfig) {
+    fail("SELFHOST_AI_PROVIDER is required when SELFHOST_AI_* values are set");
+  }
+
+  const gatewayAccountId = configured("CF_ACCOUNT_ID");
+  const gatewayName = configured("CF_GATEWAY_NAME");
+  const gatewayToken =
+    configured("AI_GATEWAY_AUTH_TOKEN") || configured("CF_GATEWAY_TOKEN");
+  if (
+    !gatewayAccountId ||
+    gatewayAccountId === "selfhost" ||
+    !gatewayName ||
+    !gatewayToken
+  ) {
+    fail(
+      "chat requires SELFHOST_AI_PROVIDER and SELFHOST_AI_API_KEY, or CF_ACCOUNT_ID, CF_GATEWAY_NAME, and AI_GATEWAY_AUTH_TOKEN",
+    );
+  }
+  note(`Cloudflare AI Gateway: ${gatewayName}`);
 });
 
 await check("agent pack", async () => {

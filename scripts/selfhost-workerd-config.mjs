@@ -41,6 +41,7 @@ const SELFHOST_DEFAULT_VARS = {
   AI_VIRTUAL_MODEL: 'dynamic/auto',
   AI_GATEWAY_AUTH_TOKEN: '',
   CF_ACCOUNT_ID: 'selfhost',
+  CF_GATEWAY_BASE_URL: '',
   CF_GATEWAY_NAME: '',
   CF_GATEWAY_TOKEN: '',
   SELFHOST_AI_PROVIDER: '',
@@ -271,7 +272,18 @@ function bindingArtifacts(name, { baseUrl, secret, defaultBranch }) {
   `))`;
 }
 
-function bindingAi(name, { provider, apiKey, awsRegion }) {
+function bindingAi(name, {
+  provider,
+  apiKey,
+  awsRegion,
+  baseUrl,
+  model,
+  authType,
+  api,
+  gatewayAccountId,
+  gatewayName,
+  gatewayBaseUrl,
+}) {
   return `(name = ${q(name)}, wrapped = (` +
     `moduleName = "selfhost:ai-binding", ` +
     `innerBindings = [` +
@@ -279,6 +291,13 @@ function bindingAi(name, { provider, apiKey, awsRegion }) {
         bindingText('provider', provider),
         bindingText('apiKey', apiKey),
         bindingText('awsRegion', awsRegion),
+        bindingText('baseUrl', baseUrl),
+        bindingText('model', model),
+        bindingText('authType', authType),
+        bindingText('api', api),
+        bindingText('gatewayAccountId', gatewayAccountId),
+        bindingText('gatewayName', gatewayName),
+        bindingText('gatewayBaseUrl', gatewayBaseUrl),
       ].join(', ') +
     `]` +
   `))`;
@@ -811,12 +830,44 @@ async function main() {
 
   const selfhostAiProvider = String(vars.SELFHOST_AI_PROVIDER ?? '').trim().toLowerCase();
   const selfhostAiApiKey = String(vars.SELFHOST_AI_API_KEY ?? '').trim();
-  const useSelfhostAiBinding = selfhostAiProvider === 'bedrock' && Boolean(selfhostAiApiKey);
+  const gatewayAccountId = String(vars.CF_ACCOUNT_ID ?? '').trim();
+  const gatewayName = String(vars.CF_GATEWAY_NAME ?? '').trim();
+  const gatewayToken =
+    String(vars.AI_GATEWAY_AUTH_TOKEN ?? '').trim() ||
+    String(vars.CF_GATEWAY_TOKEN ?? '').trim();
+  const gatewayOrigin =
+    String(vars.CF_GATEWAY_BASE_URL ?? '').trim() ||
+    'https://gateway.ai.cloudflare.com';
+  const hasSelfhostProviderConfig = [
+    selfhostAiProvider,
+    selfhostAiApiKey,
+    String(vars.SELFHOST_AI_BASE_URL ?? '').trim(),
+    String(vars.SELFHOST_AI_MODEL ?? '').trim(),
+    String(vars.SELFHOST_AI_NAME ?? '').trim(),
+  ].some(Boolean);
+  const useSelfhostProviderBinding = Boolean(selfhostAiProvider && selfhostAiApiKey);
+  const useGatewayAiBinding = Boolean(
+    !hasSelfhostProviderConfig &&
+    gatewayAccountId &&
+    gatewayAccountId !== 'selfhost' &&
+    gatewayName &&
+    gatewayToken,
+  );
+  const useSelfhostAiBinding = useSelfhostProviderBinding || useGatewayAiBinding;
   if (useSelfhostAiBinding) {
     bindings.push(bindingAi('AI', {
-      provider: selfhostAiProvider,
-      apiKey: selfhostAiApiKey,
+      provider: useSelfhostProviderBinding
+        ? selfhostAiProvider
+        : 'cloudflare-ai-gateway',
+      apiKey: useSelfhostProviderBinding ? selfhostAiApiKey : gatewayToken,
       awsRegion: vars.SELFHOST_AI_AWS_REGION || 'us-east-1',
+      baseUrl: vars.SELFHOST_AI_BASE_URL || '',
+      model: vars.SELFHOST_AI_MODEL || '',
+      authType: vars.SELFHOST_AI_AUTH_TYPE || 'bearer',
+      api: vars.SELFHOST_AI_API || 'openai-completions',
+      gatewayAccountId,
+      gatewayName,
+      gatewayBaseUrl: gatewayOrigin,
     }));
     extensions.push(`(modules = [${capnpExtensionModule(
       'selfhost:ai-binding',

@@ -280,6 +280,134 @@ description: Follow ACME runbooks. Use when shipping internal tools.
     process.exit(compileResult.status ?? 1);
   }
 
+  // The main chat path supports every provider below. Auxiliary generation
+  // must receive the same wrapped AI binding or thread titles and group icons
+  // silently remain at their defaults.
+  for (const providerCase of [
+    { provider: 'anthropic' },
+    { provider: 'openai' },
+    { provider: 'openrouter' },
+    {
+      provider: 'custom',
+      baseUrl: 'https://llm.example.test/v1',
+      model: 'local-small-model',
+      authType: 'x-api-key',
+      api: 'openai-responses',
+    },
+  ]) {
+    const providerOutPath = path.join(
+      tempDir,
+      `camelai-${providerCase.provider}.capnp`,
+    );
+    const providerResult = spawnSync(process.execPath, [
+      'scripts/selfhost-workerd-config.mjs',
+      '--out',
+      providerOutPath,
+      '--state-dir',
+      stateDir,
+      '--socket',
+      '127.0.0.1:0',
+    ], {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        SELFHOST_ENV_FILE: selfhostEnvPath,
+        SELFHOST_AGENT_DIR: agentDir,
+        SELFHOST_AI_PROVIDER: providerCase.provider,
+        SELFHOST_AI_API_KEY: `${providerCase.provider}-test-key`,
+        SELFHOST_AI_AWS_REGION: 'us-east-1',
+        SELFHOST_AI_BASE_URL: providerCase.baseUrl ?? '',
+        SELFHOST_AI_MODEL: providerCase.model ?? '',
+        SELFHOST_AI_AUTH_TYPE: providerCase.authType ?? 'bearer',
+        SELFHOST_AI_API: providerCase.api ?? 'openai-completions',
+      },
+      encoding: 'utf8',
+    });
+    if (providerResult.status !== 0) {
+      process.stderr.write(providerResult.stdout);
+      process.stderr.write(providerResult.stderr);
+      process.exit(providerResult.status ?? 1);
+    }
+
+    const providerManifest = JSON.parse(
+      await fs.readFile(path.join(tempDir, 'manifest.json'), 'utf8'),
+    );
+    const providerConfig = await fs.readFile(providerOutPath, 'utf8');
+    includesAll(providerManifest.bindings.ai, ['AI'], `${providerCase.provider} ai`);
+    assert(
+      providerConfig.includes('(name = "AI", wrapped = ('),
+      `${providerCase.provider} config should contain the wrapped AI binding`,
+    );
+    assert(
+      providerConfig.includes(
+        `(name = "provider", text = "${providerCase.provider}")`,
+      ),
+      `${providerCase.provider} config should pass its provider to the AI binding`,
+    );
+    if (providerCase.provider === 'custom') {
+      for (const [name, value] of [
+        ['baseUrl', providerCase.baseUrl],
+        ['model', providerCase.model],
+        ['authType', providerCase.authType],
+        ['api', providerCase.api],
+      ]) {
+        assert(
+          providerConfig.includes(`(name = "${name}", text = "${value}")`),
+          `custom AI binding should contain ${name}`,
+        );
+      }
+    }
+  }
+
+  const gatewayOutPath = path.join(tempDir, 'camelai-gateway.capnp');
+  const gatewayResult = spawnSync(process.execPath, [
+    'scripts/selfhost-workerd-config.mjs',
+    '--out',
+    gatewayOutPath,
+    '--state-dir',
+    stateDir,
+    '--socket',
+    '127.0.0.1:0',
+  ], {
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      SELFHOST_ENV_FILE: selfhostEnvPath,
+      SELFHOST_AGENT_DIR: agentDir,
+      SELFHOST_AI_PROVIDER: '',
+      SELFHOST_AI_API_KEY: '',
+      CF_ACCOUNT_ID: 'gateway-account-id',
+      CF_GATEWAY_NAME: 'gateway-name',
+      // Whitespace must not mask the legacy fallback token or default origin.
+      AI_GATEWAY_AUTH_TOKEN: '   ',
+      CF_GATEWAY_TOKEN: 'gateway-fallback-token',
+      CF_GATEWAY_BASE_URL: '   ',
+    },
+    encoding: 'utf8',
+  });
+  if (gatewayResult.status !== 0) {
+    process.stderr.write(gatewayResult.stdout);
+    process.stderr.write(gatewayResult.stderr);
+    process.exit(gatewayResult.status ?? 1);
+  }
+  const gatewayManifest = JSON.parse(
+    await fs.readFile(path.join(tempDir, 'manifest.json'), 'utf8'),
+  );
+  const gatewayConfig = await fs.readFile(gatewayOutPath, 'utf8');
+  includesAll(gatewayManifest.bindings.ai, ['AI'], 'gateway ai');
+  for (const [name, value] of [
+    ['provider', 'cloudflare-ai-gateway'],
+    ['apiKey', 'gateway-fallback-token'],
+    ['gatewayAccountId', 'gateway-account-id'],
+    ['gatewayName', 'gateway-name'],
+    ['gatewayBaseUrl', 'https://gateway.ai.cloudflare.com'],
+  ]) {
+    assert(
+      gatewayConfig.includes(`(name = "${name}", text = "${value}")`),
+      `Gateway AI binding should contain ${name}`,
+    );
+  }
+
   console.log('Self-host workerd config test passed.');
 }
 
