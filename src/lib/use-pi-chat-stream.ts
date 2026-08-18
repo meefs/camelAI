@@ -61,6 +61,11 @@ export interface PiChatStream {
   status: string;
   /** True while a client- or server-initiated stream is active for this turn. */
   isStreaming: boolean;
+  /** True after an otherwise-busy stream has made no observable progress past
+   * the client stall bound. Presentation may hide stale progress UI while this
+   * is set, but lifecycle decisions must still honor durable running state.
+   * Genuine progress clears it. */
+  isStallClamped: boolean;
   /** Id of the assistant message currently streaming (the last assistant in the
    * transcript), or null when idle / awaiting the first token. */
   streamingMessageId: string | null;
@@ -374,6 +379,7 @@ export function usePiChatStream(opts: {
     uiMessages,
     status,
     isStreaming,
+    isStallClamped: stallClamped,
     streamingMessageId,
     setUiMessages,
   };

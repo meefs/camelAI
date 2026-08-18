@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   env,
   runDurableObjectAlarm,
@@ -27,6 +27,8 @@ type WorkspaceStatusStub = DurableObjectStub<{
       summary?: string | null;
       activityText?: string | null;
       activityAt?: number | null;
+      clearOnlyIfRunning?: boolean;
+      clearRunningStartedAtOrBefore?: number | null;
     },
   ): Promise<void>;
   listStreamingThreadIds(): Promise<string[]>;
@@ -237,6 +239,78 @@ describe("WorkspaceDO thread status", () => {
     });
 
     await expect(workspaceStub.listStreamingThreadStatuses()).resolves.toEqual([]);
+  });
+
+  it("makes a guarded terminal pre-clear a no-op when no running row exists", async () => {
+    const workspaceStub = await createWorkspaceStatusStub();
+    const threadId = crypto.randomUUID();
+
+    await runInDurableObject(workspaceStub, async (instance) => {
+      const broadcast = vi.spyOn(instance as any, "broadcastThreadStatus");
+      await (instance as any).recordThreadStreaming(threadId, false, {
+        completedAt: Date.now(),
+        summaryStatus: "pending",
+        clearOnlyIfRunning: true,
+      });
+      expect(broadcast).not.toHaveBeenCalled();
+    });
+
+    await expect(workspaceStub.listStreamingThreadStatuses()).resolves.toEqual([]);
+  });
+
+  it("guarded terminal pre-clear deletes an existing running row", async () => {
+    const workspaceStub = await createWorkspaceStatusStub();
+    const threadId = crypto.randomUUID();
+
+    await workspaceStub.recordThreadStreaming(threadId, true);
+    const [runningStatus] = await workspaceStub.listStreamingThreadStatuses();
+    await workspaceStub.recordThreadStreaming(threadId, false, {
+      completedAt: runningStatus.startedAt + 1,
+      summaryStatus: "pending",
+      clearOnlyIfRunning: true,
+    });
+
+    await expect(workspaceStub.listStreamingThreadStatuses()).resolves.toEqual([]);
+  });
+
+  it("does not clear a newer turn when completion metadata was normalized forward", async () => {
+    const workspaceStub = await createWorkspaceStatusStub();
+    const threadId = crypto.randomUUID();
+
+    await workspaceStub.recordThreadStreaming(threadId, true);
+    const [runningStatus] = await workspaceStub.listStreamingThreadStatuses();
+    await workspaceStub.recordThreadStreaming(threadId, false, {
+      // Simulate OrgDO normalizing an old completion beyond the new row's start.
+      completedAt: runningStatus.startedAt + 1_000,
+      clearRunningStartedAtOrBefore: runningStatus.startedAt - 1,
+      summaryStatus: "pending",
+    });
+
+    await expect(workspaceStub.listStreamingThreadStatuses()).resolves.toEqual([
+      runningStatus,
+    ]);
+  });
+
+  it("does not clear a running turn for a delayed summary-only update", async () => {
+    const workspaceStub = await createWorkspaceStatusStub();
+    const threadId = crypto.randomUUID();
+
+    await workspaceStub.recordThreadStreaming(threadId, true);
+    const [runningStatus] = await workspaceStub.listStreamingThreadStatuses();
+    await runInDurableObject(workspaceStub, async (instance) => {
+      const broadcast = vi.spyOn(instance as any, "broadcastThreadStatus");
+      await (instance as any).recordThreadStreaming(threadId, false, {
+        completedAt: runningStatus.startedAt + 1_000,
+        summaryStatus: "ready",
+        summary: "Older turn summary",
+        clearRunningStartedAtOrBefore: null,
+      });
+      expect(broadcast).not.toHaveBeenCalled();
+    });
+
+    await expect(workspaceStub.listStreamingThreadStatuses()).resolves.toEqual([
+      runningStatus,
+    ]);
   });
 
   it("drops a late activity update after the turn was terminally cleared", async () => {

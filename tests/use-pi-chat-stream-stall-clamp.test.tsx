@@ -74,6 +74,7 @@ describe('usePiChatStream stall clamp', () => {
     const { result } = renderStream();
     expect(result.current.isStreaming).toBe(true);
     expect(result.current.status).toBe('streaming');
+    expect(result.current.isStallClamped).toBe(false);
 
     act(() => {
       vi.advanceTimersByTime(STREAM_PROGRESS_STALE_MS + 30_000);
@@ -81,6 +82,7 @@ describe('usePiChatStream stall clamp', () => {
 
     expect(result.current.isStreaming).toBe(false);
     expect(result.current.status).toBe('ready');
+    expect(result.current.isStallClamped).toBe(true);
     expect(result.current.streamingMessageId).toBeNull();
   });
 
@@ -126,6 +128,7 @@ describe('usePiChatStream stall clamp', () => {
 
     expect(result.current.isStreaming).toBe(true);
     expect(result.current.status).toBe('streaming');
+    expect(result.current.isStallClamped).toBe(false);
     expect(result.current.streamingMessageId).toBe('a1');
   });
 

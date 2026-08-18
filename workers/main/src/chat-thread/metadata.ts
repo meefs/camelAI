@@ -145,6 +145,30 @@ export class ChatThreadMetadata {
     const initialSummaryStatus: ThreadCompletionSummaryStatus = hasSummarySource
       ? "pending"
       : "failed";
+
+    // Clear the durable workspace running row before crossing into OrgDO. A
+    // completion used to persist its metadata first and only then publish the
+    // terminal workspace transition. If that first cross-DO RPC reset/evicted
+    // this isolate, the Pi turn was already terminal but WorkspaceDO never saw
+    // `isStreaming = false`, leaving every viewer's Camel indicator running
+    // until the lease expired. A stale OrgDO completion also returned early and
+    // skipped the clear permanently.
+    //
+    // This ordering is safe when a newer turn has already started: WorkspaceDO
+    // compares `completedAt` with the running row's `startedAt` and ignores an
+    // older terminal transition. The later summary update remains best-effort
+    // metadata and must not gate the authoritative running-state transition.
+    await this.deps.recordWorkspaceThreadStreaming(
+      context.workspaceId,
+      context.threadId,
+      false,
+      {
+        completedAt,
+        summaryStatus: initialSummaryStatus,
+        clearOnlyIfRunning: true,
+      },
+    );
+
     const persistenceResult = await this.deps.persistThreadAssistantCompletion(
       context,
       completedAt,
@@ -159,17 +183,31 @@ export class ChatThreadMetadata {
         context.workspaceId,
         context.threadId,
         false,
-        { completedAt, summaryStatus: "failed" },
+        {
+          completedAt,
+          summaryStatus: "failed",
+          clearRunningStartedAtOrBefore: completedAt,
+        },
       );
       return;
     }
     const storedCompletedAt = persistenceResult.completedAt;
 
+    // OrgDO may normalize the completion timestamp forward to keep thread
+    // metadata monotonic. Publish that authoritative value after the guarded
+    // pre-clear; summary generation also relies on it as its stable key.
     await this.deps.recordWorkspaceThreadStreaming(
       context.workspaceId,
       context.threadId,
       false,
-      { completedAt: storedCompletedAt, summaryStatus: initialSummaryStatus },
+      {
+        completedAt: storedCompletedAt,
+        summaryStatus: initialSummaryStatus,
+        // OrgDO may move storedCompletedAt past a newly-started turn while this
+        // RPC is in flight. Liveness ownership is still bounded by the original
+        // terminal observation, not that metadata-normalization timestamp.
+        clearRunningStartedAtOrBefore: completedAt,
+      },
     );
 
     if (hasSummarySource) {
@@ -248,6 +286,9 @@ export class ChatThreadMetadata {
         completedAt: statusCompletedAt,
         summaryStatus:
           persistenceResult.status === "failed" ? "failed" : summaryStatus,
+        // Summary generation is delayed and may finish after another turn has
+        // started. It can enrich an idle unread event, but never owns liveness.
+        clearRunningStartedAtOrBefore: null,
         ...(persistenceResult.status === "stored" && summary
           ? { summary }
           : {}),

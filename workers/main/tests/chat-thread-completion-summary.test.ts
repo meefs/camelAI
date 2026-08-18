@@ -95,15 +95,22 @@ describe("ChatThreadDO completion summaries", () => {
 
     await Promise.all(waitUntilPromises);
 
-    expect(recordThreadStreaming).toHaveBeenCalledTimes(2);
+    expect(recordThreadStreaming).toHaveBeenCalledTimes(3);
     expect(recordThreadStreaming).toHaveBeenNthCalledWith(1, "thread1", false, {
       completedAt: expect.any(Number),
       summaryStatus: "pending",
+      clearOnlyIfRunning: true,
     });
     expect(recordThreadStreaming).toHaveBeenNthCalledWith(2, "thread1", false, {
       completedAt: expect.any(Number),
+      summaryStatus: "pending",
+      clearRunningStartedAtOrBefore: expect.any(Number),
+    });
+    expect(recordThreadStreaming).toHaveBeenNthCalledWith(3, "thread1", false, {
+      completedAt: expect.any(Number),
       summaryStatus: "ready",
       summary: "Generated hover summary.",
+      clearRunningStartedAtOrBefore: null,
     });
     expect(recordThreadAssistantCompletion).toHaveBeenNthCalledWith(
       1,
@@ -145,14 +152,21 @@ describe("ChatThreadDO completion summaries", () => {
 
     await Promise.all(waitUntilPromises);
 
-    expect(recordThreadStreaming).toHaveBeenCalledTimes(2);
+    expect(recordThreadStreaming).toHaveBeenCalledTimes(3);
     expect(recordThreadStreaming).toHaveBeenNthCalledWith(1, "thread1", false, {
       completedAt: expect.any(Number),
       summaryStatus: "pending",
+      clearOnlyIfRunning: true,
     });
     expect(recordThreadStreaming).toHaveBeenNthCalledWith(2, "thread1", false, {
       completedAt: expect.any(Number),
+      summaryStatus: "pending",
+      clearRunningStartedAtOrBefore: expect.any(Number),
+    });
+    expect(recordThreadStreaming).toHaveBeenNthCalledWith(3, "thread1", false, {
+      completedAt: expect.any(Number),
       summaryStatus: "failed",
+      clearRunningStartedAtOrBefore: null,
     });
     expect(recordThreadAssistantCompletion).toHaveBeenNthCalledWith(
       1,
@@ -206,17 +220,24 @@ describe("ChatThreadDO completion summaries", () => {
       summaryStatus: "ready",
     });
     expect(recordThreadStreaming).toHaveBeenNthCalledWith(1, "thread1", false, {
-      completedAt: storedCompletedAt,
+      completedAt: 100,
       summaryStatus: "pending",
+      clearOnlyIfRunning: true,
     });
     expect(recordThreadStreaming).toHaveBeenNthCalledWith(2, "thread1", false, {
       completedAt: storedCompletedAt,
+      summaryStatus: "pending",
+      clearRunningStartedAtOrBefore: 100,
+    });
+    expect(recordThreadStreaming).toHaveBeenNthCalledWith(3, "thread1", false, {
+      completedAt: storedCompletedAt,
       summaryStatus: "ready",
       summary: "Stored timestamp summary.",
+      clearRunningStartedAtOrBefore: null,
     });
   });
 
-  it("does not clear workspace running state when OrgDO rejects a stale completion", async () => {
+  it("clears workspace running state before OrgDO rejects a stale completion", async () => {
     const {
       fake,
       waitUntilPromises,
@@ -238,7 +259,50 @@ describe("ChatThreadDO completion summaries", () => {
       summary: null,
       summaryStatus: "pending",
     });
-    expect(recordThreadStreaming).not.toHaveBeenCalled();
+    expect(recordThreadStreaming).toHaveBeenCalledWith("thread1", false, {
+      completedAt: 100,
+      summaryStatus: "pending",
+      clearOnlyIfRunning: true,
+    });
+  });
+
+  it("does not let a pending OrgDO completion delay the workspace terminal transition", async () => {
+    const {
+      fake,
+      waitUntilPromises,
+      recordThreadAssistantCompletion,
+      recordThreadStreaming,
+    } = createFakeThread();
+    let resolveCompletion!: (value: number) => void;
+    recordThreadAssistantCompletion.mockImplementation(
+      () => new Promise<number>((resolve) => {
+        resolveCompletion = resolve;
+      }),
+    );
+
+    ChatThreadDO.prototype["finishTurn"].call(fake, {
+      markUnread: true,
+      completedAt: 100,
+      summarySource: null,
+    });
+
+    // Let recordThreadAssistantCompletion enter its first await. WorkspaceDO has
+    // already received the authoritative terminal transition even though OrgDO
+    // has not answered yet (and could reset the owning isolate at this point).
+    await vi.waitFor(() => {
+      expect(recordThreadAssistantCompletion).toHaveBeenCalledTimes(1);
+    });
+    expect(recordThreadStreaming).toHaveBeenCalledWith("thread1", false, {
+      completedAt: 100,
+      summaryStatus: "failed",
+      clearOnlyIfRunning: true,
+    });
+    expect(recordThreadStreaming.mock.invocationCallOrder[0]).toBeLessThan(
+      recordThreadAssistantCompletion.mock.invocationCallOrder[0],
+    );
+
+    resolveCompletion(100);
+    await Promise.all(waitUntilPromises);
   });
 
   it("clears workspace running state when completion persistence fails", async () => {
@@ -264,9 +328,15 @@ describe("ChatThreadDO completion summaries", () => {
       summary: null,
       summaryStatus: "pending",
     });
-    expect(recordThreadStreaming).toHaveBeenCalledWith("thread1", false, {
+    expect(recordThreadStreaming).toHaveBeenNthCalledWith(1, "thread1", false, {
+      completedAt: 100,
+      summaryStatus: "pending",
+      clearOnlyIfRunning: true,
+    });
+    expect(recordThreadStreaming).toHaveBeenNthCalledWith(2, "thread1", false, {
       completedAt: 100,
       summaryStatus: "failed",
+      clearRunningStartedAtOrBefore: 100,
     });
   });
 
@@ -285,9 +355,10 @@ describe("ChatThreadDO completion summaries", () => {
 
     await Promise.all(waitUntilPromises);
 
-    expect(recordThreadStreaming).toHaveBeenNthCalledWith(2, "thread1", false, {
+    expect(recordThreadStreaming).toHaveBeenNthCalledWith(3, "thread1", false, {
       completedAt: expect.any(Number),
       summaryStatus: "failed",
+      clearRunningStartedAtOrBefore: null,
     });
     expect(recordThreadAssistantCompletion).toHaveBeenNthCalledWith(
       2,
@@ -318,6 +389,7 @@ describe("ChatThreadDO completion summaries", () => {
     expect(recordThreadStreaming).toHaveBeenCalledWith("thread1", false, {
       completedAt: expect.any(Number),
       summaryStatus: "failed",
+      clearRunningStartedAtOrBefore: expect.any(Number),
     });
     expect(recordThreadAssistantCompletion).toHaveBeenCalledWith("thread1", {
       completedAt: expect.any(Number),
@@ -340,6 +412,7 @@ describe("ChatThreadDO completion summaries", () => {
     expect(recordThreadStreaming).toHaveBeenCalledWith("thread1", false, {
       completedAt: expect.any(Number),
       summaryStatus: "failed",
+      clearRunningStartedAtOrBefore: expect.any(Number),
     });
     expect(recordThreadAssistantCompletion).toHaveBeenCalledWith("thread1", {
       completedAt: expect.any(Number),

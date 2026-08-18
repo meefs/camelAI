@@ -17,6 +17,18 @@ export interface WorkspaceThreadStreamingOptions {
    * resurrect a turn whose terminal isStreaming=false already cleared it.
    */
   refresh?: boolean;
+  /**
+   * Terminal pre-clear used before completion metadata is persisted. Delete and
+   * broadcast only when a running row currently exists; a duplicate/stale
+   * completion must not manufacture a fresh unread transition.
+   */
+  clearOnlyIfRunning?: boolean;
+  /**
+   * Timestamp used only to decide whether the running row belongs to a newer
+   * turn. This may differ from `completedAt` when OrgDO normalizes metadata
+   * forward after the terminal transition was first observed.
+   */
+  clearRunningStartedAtOrBefore?: number | null;
 }
 
 export function recordWorkspaceThreadStreaming(

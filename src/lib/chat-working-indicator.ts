@@ -42,3 +42,20 @@ export function deriveIsAwaitingAssistant(opts: {
     !isAssistantLikeMessage(opts.lastMessage)
   );
 }
+
+/**
+ * Display-only gate for the global Camel working indicator. A client that has
+ * clamped a dead stream should stop showing elapsed time, even while the
+ * authoritative durable running state remains active for turn controls.
+ */
+export function deriveShowGlobalAssistantIndicator(opts: {
+  assistantTurnActive: boolean;
+  isCompacting: boolean;
+  isStreamStallClamped: boolean;
+}): boolean {
+  return (
+    opts.assistantTurnActive &&
+    !opts.isCompacting &&
+    !opts.isStreamStallClamped
+  );
+}

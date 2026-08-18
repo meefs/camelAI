@@ -127,6 +127,7 @@ import { isFileDrag } from "@/lib/file-drag";
 import { uiMessagesEquivalent } from "@/lib/ui-message-adapter";
 import {
   deriveIsAwaitingAssistant,
+  deriveShowGlobalAssistantIndicator,
   deriveTurnSettled,
 } from "@/lib/chat-working-indicator";
 import {
@@ -3465,7 +3466,11 @@ export default function Chat({
       isStreaming ||
       isAwaitingAssistant ||
       activeAssistantMessageId !== null);
-  const showGlobalAssistantIndicator = assistantTurnActive && !isCompacting;
+  const showGlobalAssistantIndicator = deriveShowGlobalAssistantIndicator({
+    assistantTurnActive,
+    isCompacting,
+    isStreamStallClamped: piChat.isStallClamped,
+  });
   const handleFreshlyCompletedTurnAnimationScheduled =
     clearFreshlyCompletedTurnId;
 

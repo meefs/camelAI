@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   deriveIsAwaitingAssistant,
+  deriveShowGlobalAssistantIndicator,
   deriveTurnSettled,
   isAssistantLikeMessage,
 } from "@/lib/chat-working-indicator";
@@ -64,6 +65,31 @@ describe("deriveIsAwaitingAssistant", () => {
 
   it("does not spin for an empty transcript", () => {
     expect(awaiting({ isRunning: true, lastMessage: null })).toBe(false);
+  });
+});
+
+describe("deriveShowGlobalAssistantIndicator", () => {
+  it("hides only the display Camel after a stall clamp while durable turn state stays authoritative", () => {
+    const authoritativeAwaiting = awaiting({ isRunning: true });
+
+    expect(authoritativeAwaiting).toBe(true);
+    expect(
+      deriveShowGlobalAssistantIndicator({
+        assistantTurnActive: authoritativeAwaiting,
+        isCompacting: false,
+        isStreamStallClamped: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("shows for an active, unclamped, non-compacting turn", () => {
+    expect(
+      deriveShowGlobalAssistantIndicator({
+        assistantTurnActive: true,
+        isCompacting: false,
+        isStreamStallClamped: false,
+      }),
+    ).toBe(true);
   });
 });
 

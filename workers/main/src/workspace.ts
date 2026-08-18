@@ -419,6 +419,8 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       activityText?: string | null;
       activityAt?: number | null;
       refresh?: boolean;
+      clearOnlyIfRunning?: boolean;
+      clearRunningStartedAtOrBefore?: number | null;
     },
   ): Promise<void> {
     const normalizedThreadId = threadId.trim();
@@ -428,6 +430,17 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       typeof options?.completedAt === 'number' && Number.isFinite(options.completedAt)
         ? options.completedAt
         : null;
+    const hasExplicitRunningClearGuard =
+      options !== undefined &&
+      Object.prototype.hasOwnProperty.call(options, 'clearRunningStartedAtOrBefore');
+    const runningClearGuard = hasExplicitRunningClearGuard
+      ? options?.clearRunningStartedAtOrBefore === null
+        ? null
+        : typeof options?.clearRunningStartedAtOrBefore === 'number' &&
+            Number.isFinite(options.clearRunningStartedAtOrBefore)
+          ? options.clearRunningStartedAtOrBefore
+          : completedAt
+      : completedAt;
     const summaryStatus =
       options?.summaryStatus === 'pending' ||
       options?.summaryStatus === 'ready' ||
@@ -512,10 +525,22 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
           normalizedThreadId,
         )
         .toArray()[0] ?? null;
+      if (options?.clearOnlyIfRunning === true && currentRunning === null) {
+        return;
+      }
+      // Metadata-only completion/summary update. It may refresh unread details
+      // when idle, but must never terminate whatever turn currently owns the row.
       if (
-        completedAt !== null &&
+        hasExplicitRunningClearGuard &&
+        options?.clearRunningStartedAtOrBefore === null &&
+        currentRunning !== null
+      ) {
+        return;
+      }
+      if (
+        runningClearGuard !== null &&
         currentRunning !== null &&
-        currentRunning.started_at > completedAt
+        currentRunning.started_at > runningClearGuard
       ) {
         return;
       }
