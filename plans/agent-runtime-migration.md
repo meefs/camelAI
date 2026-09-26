@@ -1,8 +1,9 @@
 # Moving the agent loop to the hosted agent runtime
 
 Status: phase 2 built and tested end to end locally: the MCP server, the
-ChatThreadDO adapter (behind a flag, new threads only) and the inference proxy.
-Human input (ask-user tools, confirmations) waits for the runtime's v1.
+ChatThreadDO adapter (behind a flag, new threads only), the inference proxy,
+and human input (ask_user questions, delete confirmations) through the
+runtime's human-input v1.
 
 Today `ChatThreadDO` runs the Pi agent in the Durable Object: model calls,
 retries, compaction, transcript durability, isolate-death recovery, tools. The
@@ -292,18 +293,34 @@ already checked where messages are accepted (`isOrgBanned`, CTD:6433):
 1. **Billing and routing: an inference proxy in chiridion** (built, section
    10). The runtime tenant bills nothing for these calls; chiridion keeps
    per-call gates, BYOK/Bedrock/Codex/self-host routing and metering.
-2. **Ask-user tools** (AskUserQuestion, prompt_connection_setup, delete
-   confirmations): the runtime's human-input v1 (`ctx.confirm/ask/requireUrl`
-   in serveTools, the `ask_user` built-in, `POST /v1/agents/:id/inputs/:id`).
-   Not built here until v1 lands; the tools are not served meanwhile.
+2. **Ask-user tools** (built, on the runtime's human-input v1):
+   - AskUserQuestion → the runtime's `ask_user` built-in (the definition
+     enables it).
+   - delete_app/delete_project/delete_connection → `ctx.confirm` with the
+     binding's own question (`describeDestructiveConfirmation` stops at the
+     confirmation without effect), then the tool runs `preconfirmed` (a
+     binding prop only the MCP server sets).
+   - prompt_connection_setup → chiridion's in-chat setup form as before, so
+     credentials never pass through the runtime; with nobody in the chat,
+     `ctx.requireUrl` to the connections page (https only).
+   - The adapter keeps a suspended run's UI turn open, asks each input in the
+     chat's question card (questions as they are; approvals and confirmations
+     Yes/No; URL steps Done/Cancel), answers with
+     `POST /v1/agents/:id/inputs/:inputId` as the run's actor, and relays the
+     resume run in the same turn. Stop or the 30-minute question timeout ends
+     the turn; the input stays pending until the next message supersedes it.
+   - Verified live: an ask_user question answered in the chat, a declined and
+     an accepted delete_project confirmation.
 3. **Subagents:** dropped for launch.
 4. **js_exec capabilities:** exposed as tools (section 1).
 
-Left: human input (2); porting the eval runner; an actor for automation
+Left: porting the eval runner; an actor for automation
 threads without a user (`subject` falls back to the thread creator); a
 browser-session cleanup at run end; measuring tool-call latency from us-west-2
 in staging; per-tool `exposure` for remote MCP servers (R7) instead of relying
-on list order for the 64 direct tools.
+on list order for the 64 direct tools (R7 landed: tools now carry
+`_meta["agent-runtime/exposure"]`: tools that ask are direct, chiridion's
+direct set both, the rest codemode).
 
 ## 9. Runtime changes
 
@@ -316,11 +333,11 @@ direct-first tool order), R6 (a tenant's `modelEndpoints`, identity-token
 authenticated). Still needed:
 
 - **R5.** Publish `@camelai/agent-runtime` with `./server` and `./testing`,
-  so chiridion can drop the vendored tarball.
-- **R7.** Per-tool `exposure` for remote MCP servers (today only attached
-  servers read `_meta["agent-runtime/exposure"]`), so chiridion can pick its
-  direct tools instead of relying on list order.
-- Human-input v1 (decision 2).
+  so chiridion can drop the vendored tarball (now built from 54c6366).
+- R7 (per-tool exposure) and human-input v1 landed (54c6366).
+- **R8.** Answering an input over the API with the operator token but no
+  `actor` is refused (403) when the input has an audience; the README says
+  the token has authority. Chiridion now sends the run's actor.
 
 ## 10. Inference proxy (built)
 
@@ -356,7 +373,7 @@ node --experimental-strip-types src/server.ts
 
 # definition
 POST /v1/definitions {"name": "camelai-thread", "model": "chiridion/default",
-  "builtins": ["web_fetch", "web_search"], "fileTools": false,
+  "builtins": ["web_fetch", "web_search", "ask_user"], "fileTools": false,
   "mcpServers": [{"name": "camel", "url": "http://127.0.0.1:3001/mcp/agent",
     "auth": {"type": "runtime"}, "exposure": "both", "timeoutMs": 1200000}]}
 
@@ -387,7 +404,7 @@ E2E_LOCAL=1 bun run dev:local-auth
   "compat": {"maxTokensField": "max_tokens"}}}` (`default` catches models the
   catalog lacks).
 - One definition, created with that tenant's token:
-  `{"name": "camelai-thread", "model": "chiridion/default", "builtins": ["web_fetch", "web_search"], "fileTools": false,
+  `{"name": "camelai-thread", "model": "chiridion/default", "builtins": ["web_fetch", "web_search", "ask_user"], "fileTools": false,
   "mcpServers": [{"name": "camel", "url": "https://staging.camelai.dev/mcp/agent", "auth": {"type": "runtime"}, "exposure": "both", "timeoutMs": 1200000}]}`.
   Check it with `GET /v1/agents/:id?refresh=true` on a test agent (the camel
   source must list ~75 tools).

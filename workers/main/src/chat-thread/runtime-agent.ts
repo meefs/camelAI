@@ -583,13 +583,16 @@ export class RuntimeAgentSession {
     if (inputs.length === 0 || !this.options.answerInput) return null;
     this.inputAbort = new AbortController();
     let resume: string | null = null;
+    // The runtime lets the run's actor answer (the thread's user who sent it);
+    // chiridion already checked who may use the chat.
+    const actor = this.options.actor();
     try {
       for (const input of inputs) {
         const answer = await this.options.answerInput(input, this.inputAbort.signal);
         const answered = await this.call(`/v1/agents/${agent.id}/inputs/${encodeURIComponent(input.id)}`, {
           method: "POST",
           token: this.options.env.AGENT_RUNTIME_API_TOKEN ?? "",
-          body: answer,
+          body: { ...answer, ...(actor ? { actor } : {}) },
         }) as { request?: { id?: unknown } | null };
         if (typeof answered.request?.id === "string") resume = answered.request.id;
       }

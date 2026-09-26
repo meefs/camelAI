@@ -195,7 +195,7 @@ describe("RuntimeAgentSession", () => {
 
     expect(asked).toEqual([input]);
     const answer = runtime.calls.find((call) => call.path === "/v1/agents/client_1/inputs/inp_1")!;
-    expect(answer.body).toEqual({ action: "accept", content: { answers: { "Which?": "A" } } });
+    expect(answer.body).toEqual({ action: "accept", content: { answers: { "Which?": "A" } }, actor: "user2" });
     expect(answer.headers.get("Authorization")).toBe("Bearer operator");
     // One turn for the UI: the placeholder result and the first agent_end are not shown; the
     // answered call's result arrives as its tool end.
