@@ -120,8 +120,20 @@ export interface CodeModeToolsProps {
   threadId?: string;
   userId?: string;
   parentToolUseId?: string;
+  /**
+   * Set only by the agent-runtime MCP server, after the runtime's user
+   * confirmed this destructive call (ctx.confirm): skip the chat-UI question.
+   */
+  preconfirmed?: boolean;
   /** Explicitly false for main-agent js_exec; Research opts in to web tools. */
   allowWebTools?: boolean;
+}
+
+class DestructiveConfirmationRequired extends Error {
+  constructor(readonly question: string) {
+    super(question);
+    this.name = "DestructiveConfirmationRequired";
+  }
 }
 
 export interface AIVirtualBindingProps {
@@ -4876,6 +4888,41 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     });
   }
 
+  /** While set, a destructive tool reports its confirmation question instead of asking it. */
+  private describingConfirmation = false;
+
+  /**
+   * The confirmation a destructive tool asks before acting: the chat UI's
+   * question, already answered for a runtime call the user confirmed there
+   * (`preconfirmed`), or, while describing, the question itself.
+   */
+  private async confirmDestructive(
+    input: Parameters<typeof confirmDestructiveAction>[1],
+  ): Promise<{ confirmed: boolean; unavailableReason?: string }> {
+    if (this.describingConfirmation) throw new DestructiveConfirmationRequired(input.question);
+    if (this.ctx.props.preconfirmed === true) return { confirmed: true };
+    return confirmDestructiveAction((questionArgs) => this.askUserQuestion(questionArgs), input);
+  }
+
+  /**
+   * The question `name` would ask before its destructive effect, computed with
+   * no effect (the tool stops at its confirmation), or null if it asks none.
+   * The agent-runtime MCP server asks it through the runtime, then calls the
+   * tool preconfirmed.
+   */
+  async describeDestructiveConfirmation(name: string, rawArgs: unknown = {}): Promise<string | null> {
+    this.describingConfirmation = true;
+    try {
+      await this.callTool(name, rawArgs);
+      return null;
+    } catch (error) {
+      if (error instanceof DestructiveConfirmationRequired) return error.question;
+      throw error;
+    } finally {
+      this.describingConfirmation = false;
+    }
+  }
+
   private async deleteConnection(args: Record<string, unknown>): Promise<unknown> {
     const connection = typeof args.connection === "string" ? args.connection.trim() : "";
     if (!connection) throw new Error("connection is required");
@@ -4884,8 +4931,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     const summary = entry.connection;
     const question =
       `Delete connection "${summary.name}" (${summary.type})? This removes its stored configuration and cannot be undone.`;
-    const confirmation = await confirmDestructiveAction(
-      (questionArgs) => this.askUserQuestion(questionArgs),
+    const confirmation = await this.confirmDestructive(
       {
         question,
         header: "Delete connection?",
@@ -5526,8 +5572,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
 
     const question =
       `Delete deployed app "${script.script_name}"? This permanently removes its live deployment and URL. Its source project will be kept.`;
-    const confirmation = await confirmDestructiveAction(
-      (questionArgs) => this.askUserQuestion(questionArgs),
+    const confirmation = await this.confirmDestructive(
       {
         question,
         header: "Delete app?",
@@ -5589,8 +5634,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       : "";
     const question =
       `Delete ${projectScope}? This removes the project files and metadata.${appScope} This cannot be undone.`;
-    const confirmation = await confirmDestructiveAction(
-      (questionArgs) => this.askUserQuestion(questionArgs),
+    const confirmation = await this.confirmDestructive(
       {
         question,
         header: "Delete project?",

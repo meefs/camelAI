@@ -89,7 +89,100 @@ export interface RuntimeAgentSessionOptions {
   configuration: () => Promise<{ systemPromptAppend: string }>;
   /** Called for the runtime's heartbeats, so the DO's stall watchdog sees a long tool call as alive. */
   onActivity?: () => void;
+  /**
+   * Ask the thread's user one of the inputs a suspended run waits on, and
+   * return the answer to send; rejects when nobody answers in time or the
+   * signal aborts (the turn then ends and the input stays pending).
+   */
+  answerInput?: (input: RuntimeInput, signal: AbortSignal) => Promise<RuntimeInputAnswer>;
   fetch?: typeof globalThis.fetch;
+}
+
+/** A person's input a suspended run waits on (the runtime's human input). */
+export interface RuntimeInput {
+  id: string;
+  kind: "question" | "approval" | "form" | "url";
+  message: string;
+  detail: Record<string, unknown>;
+  expiresAt?: number;
+}
+
+export interface RuntimeInputAnswer {
+  action: "accept" | "decline" | "cancel";
+  content?: unknown;
+}
+
+/** A question card for the chat UI (AskUserQuestion's shape), and how its answers become the input's. */
+export interface RuntimeInputCard {
+  questions: Array<{
+    question: string;
+    header: string;
+    options: Array<{ label: string; description: string }>;
+    multiSelect: boolean;
+    allowOther: boolean;
+  }>;
+  answer(answers: Record<string, unknown>): RuntimeInputAnswer;
+}
+
+const YES = "Yes";
+const NO = "No";
+
+/**
+ * How the chat asks an input: `ask_user` questions as they are; approvals and
+ * confirmations (an empty form) as Yes/No; a URL step as Done/Cancel with the
+ * link. Forms with fields are not asked in chat (null: the input is cancelled).
+ */
+export function runtimeInputQuestions(input: RuntimeInput): RuntimeInputCard | null {
+  const detail = isRecord(input.detail) ? input.detail : {};
+  if (input.kind === "question" && Array.isArray(detail.questions)) {
+    const questions = (detail.questions as Array<Record<string, unknown>>).map((question) => ({
+      question: String(question.question ?? ""),
+      header: String(question.header ?? ""),
+      options: (Array.isArray(question.options) ? question.options as Array<Record<string, unknown>> : [])
+        .map((option) => ({ label: String(option.label ?? ""), description: String(option.description ?? "") })),
+      multiSelect: question.multiSelect === true,
+      allowOther: question.allowOther === true,
+    }));
+    return {
+      questions,
+      answer: (answers) => ({
+        action: "accept",
+        content: {
+          answers: Object.fromEntries(questions.map((question) => {
+            const given = String(answers[question.question] ?? "");
+            // The chat joins several choices with ", ".
+            const labels = question.options.map((option) => option.label);
+            const picked = question.multiSelect ? given.split(", ").filter((label) => labels.includes(label)) : [];
+            return [question.question, question.multiSelect ? (picked.length > 0 ? picked : [given]) : given];
+          })),
+        },
+      }),
+    };
+  }
+  const yesNo = (question: string, header: string, yes: string, no: string, onYes: RuntimeInputAnswer, onNo: RuntimeInputAnswer): RuntimeInputCard => ({
+    questions: [{
+      question,
+      header,
+      options: [{ label: yes, description: "" }, { label: no, description: "" }],
+      multiSelect: false,
+      allowOther: false,
+    }],
+    answer: (answers) => (answers[question] === yes ? onYes : onNo),
+  });
+  if (input.kind === "approval") {
+    const tool = typeof detail.tool === "string" ? localToolName(detail.tool) : "this tool";
+    return yesNo(input.message || `Allow ${String(tool)} to run?`, "Approve?", YES, NO, { action: "accept" }, { action: "decline" });
+  }
+  if (input.kind === "url" && typeof detail.url === "string") {
+    return yesNo(`${input.message}\n\n${detail.url}`, "Action needed", "Done", "Cancel", { action: "accept" }, { action: "cancel" });
+  }
+  const schema = isRecord(detail.requestedSchema) ? detail.requestedSchema : {};
+  const fields = isRecord(schema.properties) ? Object.keys(schema.properties) : [];
+  if (input.kind === "form" && fields.length === 0) {
+    // A tool's confirmation (ctx.confirm): a form with nothing to fill in.
+    return yesNo(input.message, "Confirm", YES, NO, { action: "accept", content: {} }, { action: "decline" });
+  }
+  return null;
 }
 
 type Listener = (event: AgentEvent) => unknown;
@@ -200,6 +293,11 @@ export class RuntimeAgentSession {
   private running: Promise<void> | null = null;
   private streamAbort: AbortController | null = null;
   private sawAgentEnd = false;
+  /** A suspended run's agent_end, held so the UI turn stays open while the user answers. */
+  private heldAgentEnd: Record<string, unknown> | null = null;
+  /** Set while relaying a resume run, whose agent_start continues the open turn. */
+  private resuming = false;
+  private inputAbort: AbortController | null = null;
 
   constructor(options: RuntimeAgentSessionOptions) {
     this.options = options;
@@ -326,6 +424,27 @@ export class RuntimeAgentSession {
 
   private async emit(event: Record<string, unknown>) {
     const localized = localizeEvent(event) as unknown as AgentEvent & { message?: AgentMessage; toolCallId?: string };
+    const details = (value: unknown) => (isRecord(value) && isRecord(value.details) ? value.details : undefined);
+    // A call waiting on a person gets a placeholder result that the answer later replaces.
+    if (localized.type === "tool_execution_end" && details((localized as { result?: unknown }).result)?.inputRequired) return;
+    if (localized.type === "message_end" && (localized.message as { role?: string })?.role === "toolResult" && details(localized.message)?.inputRequired) return;
+    if (localized.type === "agent_start" && this.resuming) return;
+    if (localized.type === "agent_end") {
+      // Emitted once the response says whether the run finished or suspended.
+      this.heldAgentEnd = localized as unknown as Record<string, unknown>;
+      return;
+    }
+    // A resumed call's result arrives as a message only: show it as the tool's end first.
+    if (this.resuming && localized.type === "message_end" && (localized.message as { role?: string })?.role === "toolResult") {
+      const result = localized.message as unknown as { toolCallId: string; toolName: string; content: unknown; details?: unknown; isError?: boolean };
+      await this.emit({
+        type: "tool_execution_end",
+        toolCallId: result.toolCallId,
+        toolName: result.toolName,
+        result: { content: result.content, details: result.details },
+        isError: result.isError === true,
+      });
+    }
     switch (localized.type) {
       case "agent_start":
         this.state.isStreaming = true;
@@ -351,10 +470,6 @@ export class RuntimeAgentSession {
         break;
       case "tool_execution_end":
         if (localized.toolCallId) this.state.pendingToolCalls.delete(localized.toolCallId);
-        break;
-      case "agent_end":
-        this.sawAgentEnd = true;
-        this.state.isStreaming = false;
         break;
     }
     for (const listener of [...this.listeners]) await listener(localized);
@@ -425,6 +540,16 @@ export class RuntimeAgentSession {
               if (frame.requestId === requestId || frame.requestId === "") await this.emit(frame.event);
             } else if (frame.type === "response" && frame.id === requestId) {
               this.options.store.saveCursor(position);
+              const resume = await this.answerInputs(agent, frame.outcome);
+              if (resume) {
+                // The turn goes on in the resume run: keep relaying, now for it.
+                requestId = resume;
+                this.options.store.saveRun({ requestId, cursor: position });
+                this.heldAgentEnd = null;
+                this.resuming = true;
+                continue;
+              }
+              this.resuming = false;
               await this.settle(frame.outcome);
               return;
             }
@@ -440,14 +565,60 @@ export class RuntimeAgentSession {
     }
   }
 
+  /**
+   * A run that suspended for input (`stopped: "input_required"`): ask the
+   * thread's user each input and answer it, and return the resume run the
+   * last answer starts. Null when the run did not suspend, or when an input
+   * goes unanswered (the turn then ends; the runtime keeps the input pending
+   * until the next message supersedes it).
+   */
+  private async answerInputs(
+    agent: RuntimeAgentRecord,
+    outcome: { result?: unknown } | undefined,
+  ): Promise<string | null> {
+    const result = isRecord(outcome?.result) ? outcome.result : undefined;
+    const inputs = result?.stopped === "input_required" && Array.isArray(result.inputs)
+      ? (result.inputs as RuntimeInput[]).filter((input) => isRecord(input) && typeof input.id === "string")
+      : [];
+    if (inputs.length === 0 || !this.options.answerInput) return null;
+    this.inputAbort = new AbortController();
+    let resume: string | null = null;
+    try {
+      for (const input of inputs) {
+        const answer = await this.options.answerInput(input, this.inputAbort.signal);
+        const answered = await this.call(`/v1/agents/${agent.id}/inputs/${encodeURIComponent(input.id)}`, {
+          method: "POST",
+          token: this.options.env.AGENT_RUNTIME_API_TOKEN ?? "",
+          body: answer,
+        }) as { request?: { id?: unknown } | null };
+        if (typeof answered.request?.id === "string") resume = answered.request.id;
+      }
+    } catch (error) {
+      if (!this.inputAbort.signal.aborted) console.error("[RuntimeAgentSession] input not answered", error);
+      return null;
+    } finally {
+      this.inputAbort = null;
+    }
+    return resume;
+  }
+
   /** The run ended: make sure the DO sees an agent_end even when the runtime refused the run outright. */
   private async settle(outcome: { error?: string } | undefined) {
+    const held = this.heldAgentEnd;
+    this.heldAgentEnd = null;
+    if (held) {
+      this.sawAgentEnd = true;
+      this.state.isStreaming = false;
+      for (const listener of [...this.listeners]) await listener(held as unknown as AgentEvent);
+      return;
+    }
     if (this.sawAgentEnd) return;
     const failure = errorAssistant(this.state.model, outcome?.error || "The agent run ended without a result");
     await this.emit({ type: "message_start", message: failure });
     await this.emit({ type: "message_end", message: failure });
     await this.emit({ type: "turn_end", message: failure, toolResults: [] });
-    await this.emit({ type: "agent_end", messages: [failure] });
+    this.heldAgentEnd = { type: "agent_end", messages: [failure] };
+    await this.settle(outcome);
   }
 
   /** Replay gap: take the run's messages from the agent's history, then close the run out. */
@@ -472,8 +643,9 @@ export class RuntimeAgentSession {
     this.state.messages.push(...runMessages.filter((message) => !known.has(JSON.stringify(message))));
     const last = [...runMessages].reverse().find((message) => (message as { role?: string }).role === "assistant");
     if (last) await this.emit({ type: "turn_end", message: last, toolResults: [] });
-    if (status.outcome && !this.sawAgentEnd) {
-      await this.emit({ type: "agent_end", messages: runMessages });
+    if (status.outcome) {
+      if (!this.heldAgentEnd) this.heldAgentEnd = { type: "agent_end", messages: runMessages };
+      await this.settle(status.outcome);
     }
     const state = await this.call(`/clients/${agent.id}/state`, { token: agent.token }) as { cursor?: unknown };
     if (typeof state.cursor === "number") this.options.store.saveCursor(state.cursor);
@@ -548,6 +720,7 @@ export class RuntimeAgentSession {
   }
 
   abort(): void {
+    this.inputAbort?.abort();
     // The runtime ends the run (and cancels its tool calls); its agent_end and
     // response then arrive on the stream as usual.
     void this.request("abort", {}).catch((error) => {

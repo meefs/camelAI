@@ -375,6 +375,9 @@ import { ChatThreadErrors } from "./chat-thread/errors";
 import {
   RUNTIME_PROMPT_PREAMBLE,
   RuntimeAgentSession,
+  runtimeInputQuestions,
+  type RuntimeInput,
+  type RuntimeInputAnswer,
   runtimeEnabledForOrg,
   type RuntimeAgentRecord,
   type RuntimeRunRecord,
@@ -7916,6 +7919,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       // The runtime agent's prompt is fixed at creation; per-run instructions
       // (a scheduled run's outcome report) ride on the message instead.
       runInstructions: () => this.automationOutcomeInstruction(),
+      answerInput: (input, signal) => this.answerRuntimeInput(input, signal),
       initialState: {
         systemPrompt: "",
         model: capPiMainRequestOutput(model),
@@ -8024,6 +8028,35 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     return new Response(stream, {
       headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" },
     });
+  }
+
+  /**
+   * Ask the thread's user an input a suspended runtime run waits on, in the
+   * chat's question card (the one AskUserQuestion and delete confirmations
+   * use), and turn the choice into the runtime's answer. Rejects when nobody
+   * answers before the question times out, or when the turn is stopped.
+   */
+  private async answerRuntimeInput(input: RuntimeInput, signal: AbortSignal): Promise<RuntimeInputAnswer> {
+    const card = runtimeInputQuestions(input);
+    if (!card) return { action: "cancel" };
+    const onAbort = () => {
+      this.browserPrompts.clearQuestions();
+      this.syncAgentState();
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    try {
+      const answers = await Promise.race([
+        this.askUserQuestion({ questions: card.questions }),
+        new Promise<never>((_, reject) => {
+          if (signal.aborted) reject(new Error("Stopped"));
+          signal.addEventListener("abort", () => reject(new Error("Stopped")), { once: true });
+        }),
+      ]);
+      if (typeof answers.unavailable_reason === "string") return { action: "cancel" };
+      return card.answer(answers as Record<string, unknown>);
+    } finally {
+      signal.removeEventListener("abort", onAbort);
+    }
   }
 
   /** Per-run instructions for a scheduled automation that must report its outcome. */

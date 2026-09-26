@@ -11,7 +11,7 @@
  * implementation js_exec's `tools.<name>()` calls use today.
  */
 import { serveTools, type RuntimeIdentity } from "@camelai/agent-runtime/server";
-import type { CallToolResult, ToolServer } from "@camelai/agent-runtime";
+import { InputRequired, type CallToolResult, type ToolContext, type ToolServer } from "@camelai/agent-runtime";
 import { CODE_MODE_PI_PASSTHROUGH_TOOL_DEFINITIONS, CODE_MODE_TOOL_DEFINITIONS } from "../code-mode-tools.js";
 import type { CodeModeToolsProps } from "../code-mode-tools.js";
 import type { Env, RouteContext } from "../types.js";
@@ -26,13 +26,8 @@ const DEFAULT_RUNTIME = "https://agents.camelai.dev";
  * reach its ChatThreadDO by RPC with the threadId the runtime signs.
  */
 export const AGENT_MCP_EXCLUDED_TOOL_NAMES: ReadonlySet<string> = new Set([
-  // Block on a human answer through AskUserQuestion / the chat UI; they wait
-  // for a runtime-wide ask-user design.
+  // The runtime's ask_user built-in replaces it.
   "AskUserQuestion",
-  "prompt_connection_setup",
-  "delete_app",
-  "delete_project",
-  "delete_connection",
   // The runtime's own web builtins replace these.
   "WebSearch",
   "WebFetch",
@@ -43,6 +38,17 @@ export const AGENT_MCP_EXCLUDED_TOOL_NAMES: ReadonlySet<string> = new Set([
   "Oracle",
 ]);
 
+/**
+ * Destructive tools that confirm with the user first: over MCP the question
+ * goes through the runtime (ctx.confirm, the turn waits), then the tool runs
+ * preconfirmed.
+ */
+export const AGENT_MCP_CONFIRMED_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "delete_app",
+  "delete_project",
+  "delete_connection",
+]);
+
 export const AGENT_MCP_TOOL_NAMES: ReadonlySet<string> = new Set(
   CODE_MODE_TOOL_DEFINITIONS
     .filter((definition) => !definition.hidden && !AGENT_MCP_EXCLUDED_TOOL_NAMES.has(definition.name))
@@ -50,6 +56,7 @@ export const AGENT_MCP_TOOL_NAMES: ReadonlySet<string> = new Set(
 );
 
 type ToolsBinding = {
+  describeDestructiveConfirmation(name: string, args: unknown): Promise<string | null>;
   callToolEnvelope(
     name: string,
     args: unknown,
@@ -121,6 +128,14 @@ export function agentMcpTools() {
   ].map((definition) => ({
       name: definition.name,
       description: definition.description,
+      // Tools that wait on the user cannot run in js_exec; the ones chiridion's
+      // loop gives the model directly (long builds and notebooks among them,
+      // which outlast js_exec's 120 s) stay direct too; the rest are for code.
+      _meta: {
+        "agent-runtime/exposure": AGENT_MCP_CONFIRMED_TOOL_NAMES.has(definition.name) || definition.name === "prompt_connection_setup"
+          ? "direct"
+          : DIRECT_FIRST.has(definition.name) ? "both" : "codemode",
+      },
       // TypeBox schemas are JSON Schema; the round trip drops its symbol keys.
       inputSchema: JSON.parse(JSON.stringify(definition.parameters)) as Record<string, unknown>,
     }));
@@ -177,9 +192,60 @@ export function agentToolServer(env: Env, tools: ToolsFactory): ToolServer {
       // binding streams build progress and records artifacts under it, into
       // the thread's live UI, as it does for js_exec's calls in chiridion.
       const parentToolUseId = context.toolCallId;
-      return toMcpResult(await tools(parentToolUseId ? { ...props, parentToolUseId } : props).callToolEnvelope(name, args));
+      const scoped = parentToolUseId ? { ...props, parentToolUseId } : props;
+      try {
+        if (AGENT_MCP_CONFIRMED_TOOL_NAMES.has(name)) {
+          // Ask first: everything before an ask runs again when the user answers.
+          const question = await tools(props).describeDestructiveConfirmation(name, args);
+          if (question && !await context.confirm(question)) {
+            return toMcpResult({ ok: true, data: { success: false, cancelled: true, message: "The user declined." } });
+          }
+          return toMcpResult(await tools({ ...scoped, preconfirmed: true }).callToolEnvelope(name, args));
+        }
+        const result = toMcpResult(await tools(scoped).callToolEnvelope(name, args));
+        if (name === "prompt_connection_setup") return await connectionSetupFallback(env, result, args, context);
+        return result;
+      } catch (error) {
+        if (error instanceof InputRequired) {
+          return {
+            resultType: "input_required",
+            inputRequests: error.inputRequests,
+            ...(error.requestState ? { requestState: error.requestState } : {}),
+          } as unknown as CallToolResult;
+        }
+        throw error;
+      }
     },
   };
+}
+
+/**
+ * prompt_connection_setup shows chiridion's own setup form in the thread's
+ * chat (credentials never pass through the runtime). With nobody in the chat
+ * to fill it in (a Slack or email thread), send the user to the connections
+ * page instead, through the runtime (ctx.requireUrl), when it is https.
+ */
+async function connectionSetupFallback(
+  env: Env,
+  result: CallToolResult,
+  args: Record<string, unknown>,
+  context: ToolContext,
+): Promise<CallToolResult> {
+  const data = result.structuredContent;
+  const unavailable = data?.cancelled === true && !data.requestId;
+  const base = env.WORKER_BASE_URL?.replace(/\/+$/, "") ?? "";
+  if (!unavailable || !base.startsWith("https://")) return result;
+  const type = typeof args.integration_type === "string" ? args.integration_type : "the";
+  const done = await context.requireUrl(
+    `${base}/connections`,
+    typeof args.message === "string" && args.message.trim() ? args.message : `Set up ${type} connection in camelAI, then come back.`,
+  );
+  return toMcpResult({
+    ok: true,
+    data: done
+      ? { completed: true, message: "The user says they set up the connection; check it with connections_list." }
+      : { cancelled: true, message: "The user did not set up the connection." },
+  });
 }
 
 export function agentMcpHandler(env: Env, tools: ToolsFactory, options: AgentMcpOptions = {}) {

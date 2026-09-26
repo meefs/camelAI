@@ -63,7 +63,7 @@ describe("agent MCP", () => {
   it("lists the served tools with JSON schemas", async () => {
     const { handler } = setup();
     const response = await handler(await rt.request(MCP_URL, { jsonrpc: "2.0", id: 1, method: "tools/list" }, ALICE));
-    const body = await response.json() as { result: { tools: Array<{ name: string; inputSchema: { type?: string } }> } };
+    const body = await response.json() as { result: { tools: Array<{ name: string; inputSchema: { type?: string }; _meta: Record<string, string> }> } };
     const names = body.result.tools.map((tool) => tool.name);
     expect(names).toEqual(expect.arrayContaining([
       "list_projects", "list_apps", "read", "write",
@@ -72,9 +72,11 @@ describe("agent MCP", () => {
       // js_exec's binding-only capabilities as tools.
       "connections_query", "connections_invoke", "browser_launch", "browser_action",
       "generate_image", "transcribe_audio", "http_request",
+      // Confirmed through the runtime's human input.
+      "delete_app", "delete_project", "delete_connection", "prompt_connection_setup",
     ]));
     for (const excluded of [
-      "AskUserQuestion", "prompt_connection_setup", "delete_app", "delete_project", "delete_connection",
+      "AskUserQuestion",
       "WebSearch", "WebFetch", "Agent", "Explore", "warehouse_run_code", "warehouse_list_connections",
     ]) expect(names).not.toContain(excluded);
     // The tools chiridion's own loop gives the model directly come first (the
@@ -84,6 +86,12 @@ describe("agent MCP", () => {
     expect(names.indexOf("run_notebook")).toBeLessThan(64);
     expect(new Set(names)).toEqual(AGENT_MCP_TOOL_NAMES);
     for (const tool of body.result.tools) expect(tool.inputSchema.type).toBe("object");
+    const exposure = (name: string) => body.result.tools.find((tool) => tool.name === name)?._meta["agent-runtime/exposure"];
+    // Tools that wait on the user cannot run in js_exec; long builds stay direct too.
+    expect(exposure("delete_app")).toBe("direct");
+    expect(exposure("prompt_connection_setup")).toBe("direct");
+    expect(exposure("deploy_project")).toBe("both");
+    expect(exposure("connections_query")).toBe("codemode");
   });
 
   it("calls a tool scoped to the agent's context, as the turn's actor", async () => {
@@ -140,9 +148,41 @@ describe("agent MCP", () => {
       });
   });
 
+  it("confirms a destructive tool through the runtime before running it preconfirmed", async () => {
+    const { handler, tools, callToolEnvelope } = setup({ result: { ok: true, data: { success: true, deleted: "shop" } } });
+    const describe = vi.fn(async () => 'Delete deployed app "shop"?');
+    tools.mockImplementation(() => ({ callToolEnvelope, describeDestructiveConfirmation: describe }));
+    const call = async (extra: Record<string, unknown> = {}) => {
+      const response = await handler(await rt.request(MCP_URL, {
+        jsonrpc: "2.0", id: 1, method: "tools/call",
+        params: { name: "delete_app", arguments: { script_name: "shop" }, ...extra },
+      }, ALICE));
+      return (await response.json() as { result: Record<string, unknown> }).result;
+    };
+
+    // First call: the question goes back as input_required; nothing is deleted.
+    const asked = await call();
+    expect(asked).toMatchObject({
+      resultType: "input_required",
+      inputRequests: { input_1: { method: "elicitation/create", params: { mode: "form", message: 'Delete deployed app "shop"?' } } },
+    });
+    expect(callToolEnvelope).not.toHaveBeenCalled();
+
+    // Declined: still nothing deleted.
+    expect(await call({ inputResponses: { input_1: { action: "decline" } } }))
+      .toMatchObject({ structuredContent: { cancelled: true } });
+    expect(callToolEnvelope).not.toHaveBeenCalled();
+
+    // Accepted: the tool runs, preconfirmed so it skips the chat question.
+    expect(await call({ inputResponses: { input_1: { action: "accept", content: {} } } }))
+      .toMatchObject({ structuredContent: { success: true, deleted: "shop" } });
+    expect(tools).toHaveBeenLastCalledWith(expect.objectContaining({ preconfirmed: true }));
+    expect(callToolEnvelope).toHaveBeenCalledWith("delete_app", { script_name: "shop" });
+  });
+
   it("refuses tools it does not serve", async () => {
     const { handler, tools } = setup();
-    for (const name of ["AskUserQuestion", "delete_project", "WebFetch", "Agent", "warehouse_run_code"]) {
+    for (const name of ["AskUserQuestion", "WebFetch", "Agent", "warehouse_run_code"]) {
       await expect(rt.callTool(handler, MCP_URL, name, {}, ALICE)).rejects.toThrow(/Unknown tool/);
     }
     expect(tools).not.toHaveBeenCalled();

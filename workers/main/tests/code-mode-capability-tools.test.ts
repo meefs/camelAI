@@ -257,3 +257,37 @@ describe("report_automation_outcome", () => {
     await expect(methods.reportAutomationOutcome.call(instance, { status: "success", summary: "x" })).rejects.toThrow(/thread scope/);
   });
 });
+
+describe("destructive confirmations for the agent runtime", () => {
+  function deleteAppBinding(props: Record<string, unknown> = {}) {
+    const deleteAppDeployment = vi.fn(async () => {});
+    const askUserQuestion = vi.fn(async () => ({}));
+    const instance = binding({
+      ctx: { props: { ...PROPS, ...props } },
+      deleteAppDeployment,
+      askUserQuestion,
+    });
+    Object.defineProperty(instance, "orgStub", {
+      value: { getWorkerScript: vi.fn(async () => ({ script_name: "shop", workspace_id: "ws1" })) },
+    });
+    return { instance, deleteAppDeployment, askUserQuestion };
+  }
+  type Describe = (this: unknown, name: string, args: Record<string, unknown>) => Promise<string | null>;
+  const describeConfirmation = (CodeModeToolsBinding.prototype as unknown as { describeDestructiveConfirmation: Describe })
+    .describeDestructiveConfirmation;
+
+  it("describes the question without deleting or asking in chat", async () => {
+    const { instance, deleteAppDeployment, askUserQuestion } = deleteAppBinding();
+    const question = await describeConfirmation.call(instance, "delete_app", { script_name: "shop" });
+    expect(question).toMatch(/Delete deployed app "shop"/);
+    expect(deleteAppDeployment).not.toHaveBeenCalled();
+    expect(askUserQuestion).not.toHaveBeenCalled();
+  });
+
+  it("deletes without the chat question once preconfirmed", async () => {
+    const { instance, deleteAppDeployment, askUserQuestion } = deleteAppBinding({ preconfirmed: true });
+    await expect(methods.deleteApp.call(instance, { script_name: "shop" })).resolves.toMatchObject({ success: true });
+    expect(deleteAppDeployment).toHaveBeenCalled();
+    expect(askUserQuestion).not.toHaveBeenCalled();
+  });
+});
