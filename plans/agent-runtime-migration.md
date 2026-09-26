@@ -367,3 +367,64 @@ npx wrangler kv key put --local --binding APP_KV --persist-to .wrangler/state ag
 E2E_LOCAL=1 bun run dev:local-auth
 # then start a new chat thread in the UI
 ```
+
+## 12. Staging rollout plan (proposed; nothing done)
+
+**Deploy**
+1. chiridion staging (`bun run deploy:main:staging`) from this branch, after
+   review. The new code is inert without the flag: with `AGENT_RUNTIME_ENABLED`
+   unset, no thread is pinned and the MCP/proxy routes only answer valid
+   runtime tokens.
+2. Runtime: nothing to deploy. R1–R4 and R6 are on agent-runtime main
+   (agents.camelai.dev). There is no staging runtime, so staging chiridion
+   uses production's runtime under its own tenant.
+
+**Runtime config** (tenants secret, `AGENT_TENANTS_SECRET_ARN`)
+- A new tenant `chiridion-staging`: its own operator token, `billing: "none"`,
+  a modest `maxAgents`, and
+  `"modelEndpoints": {"chiridion": {"baseUrl": "https://staging.camelai.dev/agent-runtime/llm/v1",
+  "models": {"default": {"contextWindow": 200000, "maxTokens": 16000, "reasoning": true, "input": ["text", "image"]}},
+  "compat": {"maxTokensField": "max_tokens"}}}` (`default` catches models the
+  catalog lacks).
+- One definition, created with that tenant's token:
+  `{"name": "camelai-thread", "model": "chiridion/default", "builtins": ["web_fetch", "web_search"], "fileTools": false,
+  "mcpServers": [{"name": "camel", "url": "https://staging.camelai.dev/mcp/agent", "auth": {"type": "runtime"}, "exposure": "both", "timeoutMs": 1200000}]}`.
+  Check it with `GET /v1/agents/:id?refresh=true` on a test agent (the camel
+  source must list ~75 tools).
+
+**Chiridion staging config**
+- Secret `AGENT_RUNTIME_API_TOKEN` (the tenant's operator token).
+- Vars in `wrangler.staging.jsonc`: `AGENT_RUNTIME_ENABLED=true`,
+  `AGENT_RUNTIME_TENANT=chiridion-staging`, `AGENT_RUNTIME_DEFINITION=def_…`
+  (`AGENT_RUNTIME_URL` defaults to agents.camelai.dev).
+- Cloudflare Access: staging is behind Access, which would block the runtime.
+  Add a bypass for `/mcp/agent` and `/agent-runtime/llm/v1/chat/completions`
+  only; both refuse anything without a valid runtime token.
+
+**Allowlist**
+- `PUT /api/admin/orgs/<staff org>/agent-runtime` for one staff org first;
+  only its new threads switch. Then a few more internal orgs.
+
+**What to measure** (a week of internal use, compared with in-DO threads)
+- Tool-call latency from the runtime: `code_mode_project_tool_call_*` and
+  lake `tool_calls` durations for runtime threads, plus the runtime's MCP call
+  timings, for US- and EU-homed orgs.
+- Time to first token and turn duration (proxy adds a hop).
+- Turn outcomes: completed / errored / stopped, `agent_backend_pinned` counts,
+  runtime `turn_resumed`/`turn_recovered`, replay gaps, "did not reach the
+  agent" closes.
+- Usage parity: `usage_log` rows per turn (source `pi_assistant`, acting
+  user), cache-read share, credit and user-limit refusals (402/429).
+- Deploy/notebook tools over MCP (long calls, progress in the UI), and
+  signature continuity (no provider errors on tool continuations).
+- DO duration and wake counts for runtime threads.
+
+**Rollback**
+- One org: `DELETE /api/admin/orgs/:id/agent-runtime`; its new threads go
+  back to the in-DO loop.
+- Everyone: `AGENT_RUNTIME_ENABLED=false` (a var change and redeploy). New
+  threads use the in-DO loop at once.
+- Threads already pinned to the runtime keep using it (their transcript lives
+  there) as long as the tenant, definition and token stay; removing those
+  breaks them, so leave them in place until those threads are abandoned or a
+  migration back exists.
