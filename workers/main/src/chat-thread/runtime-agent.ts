@@ -115,6 +115,15 @@ export async function runtimeEnabledForOrg(env: RuntimeAgentEnv, orgId: string):
   return (await env.APP_KV.get(runtimeOrgAllowKey(orgId))) !== null;
 }
 
+/**
+ * A model id as the runtime's catalog knows it: OpenRouter routing variants
+ * (`:nitro`, `:floor`, `:free`, `:online`, …) name the same model, so they are
+ * cut. Only the runtime's metadata uses it; the proxy routes the full id.
+ */
+export function runtimeCatalogModelId(modelId: string): string {
+  return modelId.replace(/:[A-Za-z0-9_-]+$/, "");
+}
+
 export class RuntimeAgentError extends Error {
   constructor(message: string, readonly status = 0) {
     super(message);
@@ -238,7 +247,7 @@ export class RuntimeAgentSession {
    * call to the thread's current model whatever the id says.
    */
   private runtimeModel(): string {
-    return `${RUNTIME_MODEL_ENDPOINT}/${this.state.model.id}`;
+    return `${RUNTIME_MODEL_ENDPOINT}/${runtimeCatalogModelId(this.state.model.id)}`;
   }
 
   /** The thread's runtime agent, created (idempotently, per thread) on first use. */

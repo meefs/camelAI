@@ -7958,13 +7958,6 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     if (!this.isRuntimeAgentThread()) {
       return fail(403, "This thread does not run on the agent runtime", "forbidden");
     }
-    let request: ReturnType<typeof openAiRequestToPiContext>;
-    try {
-      request = openAiRequestToPiContext(body);
-    } catch (error) {
-      if (error instanceof OpenAiRequestError) return fail(400, error.message, "invalid_request_error");
-      throw error;
-    }
     await this.ensurePiSessionReady();
     const resolveModel = this.piModelResolver;
     if (!resolveModel) return fail(503, "The thread's model is not available", "unavailable");
@@ -7980,6 +7973,14 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     }
     const { streamSimple } = await import("@earendil-works/pi-ai/compat");
     const model = capPiMainRequestOutput(modelConfig.model);
+    let request: ReturnType<typeof openAiRequestToPiContext>;
+    try {
+      // Signatures made by another model (the thread switched) are dropped here.
+      request = openAiRequestToPiContext(body, { provider: model.provider, api: model.api, id: model.id });
+    } catch (error) {
+      if (error instanceof OpenAiRequestError) return fail(400, error.message, "invalid_request_error");
+      throw error;
+    }
 
     const billing = {
       source: this.piCurrentBillingSource,

@@ -26,11 +26,24 @@ import type {
 
 type JsonRecord = Record<string, unknown>;
 
+/** The model a response came from: signatures are only valid for that model. */
+export interface ProducingModel {
+  provider: string;
+  api: string;
+  id: string;
+}
+
 /** What a `reasoning.encrypted` detail carries for one tool call. */
 interface ReasoningCarrier {
+  /** The model that produced the signatures. */
+  model: ProducingModel;
   /** The response's thinking blocks, signatures included (on its first tool call only). */
   thinking?: ThinkingContent[];
   thoughtSignature?: string;
+}
+
+function sameModel(a: ProducingModel | undefined, b: ProducingModel | undefined): boolean {
+  return Boolean(a && b && a.provider === b.provider && a.api === b.api && a.id === b.id);
 }
 
 const REASONING_DETAIL_FORMAT = "chiridion.pi.v1";
@@ -104,32 +117,37 @@ function readCarriers(details: unknown): Map<string, ReasoningCarrier> {
   return carriers;
 }
 
-function assistantMessage(message: JsonRecord, model: string): AssistantMessage {
+/**
+ * An assistant message the runtime sends back. Its signatures are restored,
+ * and the message is labelled as the routed model's, only when the model that
+ * produced them is the one this call goes to; otherwise they are dropped (a
+ * thread switched models under one runtime model id), and the message stays
+ * foreign so Pi sends its text only.
+ */
+function assistantMessage(message: JsonRecord, requestModel: string, routed: ProducingModel | undefined): AssistantMessage {
   const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls.filter(isRecord) : [];
   const carriers = readCarriers(message.reasoning_details);
+  const producer = [...carriers.values()].map((carrier) => carrier.model).find(Boolean);
+  const own = sameModel(producer, routed);
   const content: AssistantMessage["content"] = [];
-  const thinking = toolCalls.map((call) => carriers.get(str(call.id))?.thinking).find(Array.isArray);
+  const thinking = own ? toolCalls.map((call) => carriers.get(str(call.id))?.thinking).find(Array.isArray) : undefined;
   if (thinking) content.push(...thinking);
-  else {
-    const reasoning = str(message.reasoning_content) || str(message.reasoning);
-    if (reasoning) content.push({ type: "thinking", thinking: reasoning });
-  }
   const text = textOf(message.content);
   if (text) content.push({ type: "text", text });
   for (const call of toolCalls) {
     const fn = isRecord(call.function) ? call.function : {};
     const id = str(call.id);
     const toolCall: ToolCall = { type: "toolCall", id, name: str(fn.name), arguments: parseArguments(fn.arguments) };
-    const signature = carriers.get(id)?.thoughtSignature;
+    const signature = own ? carriers.get(id)?.thoughtSignature : undefined;
     if (signature) toolCall.thoughtSignature = signature;
     content.push(toolCall);
   }
   return {
     role: "assistant",
     content,
-    api: "openai-completions",
-    provider: "agent-runtime",
-    model,
+    api: own && routed ? routed.api : "openai-completions",
+    provider: own && routed ? routed.provider : "agent-runtime",
+    model: own && routed ? routed.id : requestModel,
     usage: emptyUsage(),
     stopReason: toolCalls.length > 0 ? "toolUse" : "stop",
     timestamp: Date.now(),
@@ -141,7 +159,11 @@ function emptyUsage(): Usage {
 }
 
 /** A chat-completions request body as a Pi context. */
-export function openAiRequestToPiContext(body: unknown): Context & { model: string } {
+/**
+ * A chat-completions request body as a Pi context. `routed` is the model the
+ * call will actually go to: signatures from any other model are dropped.
+ */
+export function openAiRequestToPiContext(body: unknown, routed?: ProducingModel): Context & { model: string } {
   if (!isRecord(body) || !Array.isArray(body.messages)) {
     throw new OpenAiRequestError("Expected a chat completions request with messages");
   }
@@ -161,7 +183,7 @@ export function openAiRequestToPiContext(body: unknown): Context & { model: stri
         messages.push({ role: "user", content: userContent(raw.content), timestamp: now });
         break;
       case "assistant": {
-        const message = assistantMessage(raw, model);
+        const message = assistantMessage(raw, model, routed);
         for (const block of message.content) if (block.type === "toolCall") toolNames.set(block.id, block.name);
         messages.push(message);
         break;
@@ -226,7 +248,7 @@ export function reasoningDetails(message: AssistantMessage): JsonRecord[] {
   let thinkingPlaced = false;
   for (const block of message.content) {
     if (block.type !== "toolCall") continue;
-    const carrier: ReasoningCarrier = {};
+    const carrier: ReasoningCarrier = { model: { provider: message.provider, api: message.api, id: message.model } };
     if (!thinkingPlaced && thinking.length > 0) {
       carrier.thinking = message.content.filter((b): b is ThinkingContent => b.type === "thinking");
       thinkingPlaced = true;

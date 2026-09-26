@@ -192,3 +192,13 @@ describe("RuntimeAgentSession", () => {
     expect(events.at(-1)).toMatchObject({ type: "agent_end", messages: [{ errorMessage: expect.stringContaining("did not reach") }] });
   });
 });
+
+describe("runtimeCatalogModelId", () => {
+  it("cuts OpenRouter routing variants and leaves other ids alone", async () => {
+    const { runtimeCatalogModelId } = await import("../src/chat-thread/runtime-agent");
+    expect(runtimeCatalogModelId("anthropic/claude-sonnet-5:nitro")).toBe("anthropic/claude-sonnet-5");
+    expect(runtimeCatalogModelId("deepseek/deepseek-v4:free")).toBe("deepseek/deepseek-v4");
+    expect(runtimeCatalogModelId("openai/gpt-6:online")).toBe("openai/gpt-6");
+    expect(runtimeCatalogModelId("claude-sonnet-5")).toBe("claude-sonnet-5");
+  });
+});

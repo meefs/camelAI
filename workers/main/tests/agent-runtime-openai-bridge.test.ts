@@ -56,28 +56,34 @@ describe("openAiRequestToPiContext", () => {
     expect(() => openAiRequestToPiContext({ messages: [{ role: "function", content: "x" }] })).toThrow(OpenAiRequestError);
   });
 
-  it("restores thinking signatures that went out as reasoning_details", () => {
-    const final = assistant([
-      { type: "thinking", thinking: "plan", thinkingSignature: "sig-1" },
-      { type: "text", text: "ok" },
-      { type: "toolCall", id: "call_1", name: "t", arguments: {}, thoughtSignature: "gem-1" },
-      { type: "toolCall", id: "call_2", name: "t", arguments: {} },
-    ]);
-    const details = reasoningDetails(final);
+  const ROUTED = { provider: "anthropic", api: "anthropic-messages", id: "claude" };
+  const signed = assistant([
+    { type: "thinking", thinking: "plan", thinkingSignature: "sig-1" },
+    { type: "text", text: "ok" },
+    { type: "toolCall", id: "call_1", name: "t", arguments: {}, thoughtSignature: "gem-1" },
+    { type: "toolCall", id: "call_2", name: "t", arguments: {} },
+  ]);
+  // What Pi's openai-completions client sends back on the next request.
+  const echoed = (details: unknown) => ({
+    messages: [{
+      role: "assistant",
+      content: "ok",
+      tool_calls: [
+        { id: "call_1", type: "function", function: { name: "t", arguments: "{}" } },
+        { id: "call_2", type: "function", function: { name: "t", arguments: "{}" } },
+      ],
+      reasoning_details: details,
+    }],
+  });
+
+  it("restores signatures for the model that made them, labelled as that model so Pi keeps them", () => {
+    const details = reasoningDetails(signed);
     expect(details).toHaveLength(1);
-    // What Pi's openai-completions client sends back on the next request.
-    const context = openAiRequestToPiContext({
-      messages: [{
-        role: "assistant",
-        content: "ok",
-        tool_calls: [
-          { id: "call_1", type: "function", function: { name: "t", arguments: "{}" } },
-          { id: "call_2", type: "function", function: { name: "t", arguments: "{}" } },
-        ],
-        reasoning_details: details,
-      }],
-    });
+    const context = openAiRequestToPiContext(echoed(details), ROUTED);
     expect(context.messages[0]).toMatchObject({
+      provider: "anthropic",
+      api: "anthropic-messages",
+      model: "claude",
       content: [
         { type: "thinking", thinking: "plan", thinkingSignature: "sig-1" },
         { type: "text", text: "ok" },
@@ -85,6 +91,17 @@ describe("openAiRequestToPiContext", () => {
         { type: "toolCall", id: "call_2" },
       ],
     });
+  });
+
+  it("drops signatures made by another model than the one this call routes to", () => {
+    const context = openAiRequestToPiContext(echoed(reasoningDetails(signed)), { ...ROUTED, id: "gpt-6" });
+    const message = context.messages[0] as AssistantMessage;
+    expect(message.provider).toBe("agent-runtime");
+    expect(message.content.some((block) => block.type === "thinking")).toBe(false);
+    expect(message.content.find((block) => block.type === "toolCall")).not.toHaveProperty("thoughtSignature");
+    // Unlabelled or foreign details are ignored too.
+    const untagged = openAiRequestToPiContext(echoed([{ type: "reasoning.encrypted", id: "call_1", data: "opaque" }]), ROUTED);
+    expect((untagged.messages[0] as AssistantMessage).content.some((block) => block.type === "thinking")).toBe(false);
   });
 });
 
