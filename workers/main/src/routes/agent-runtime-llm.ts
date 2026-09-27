@@ -1,17 +1,19 @@
 /**
- * Inference proxy for the hosted agent runtime: an OpenAI-compatible
- * `POST /agent-runtime/llm/v1/chat/completions` (streaming) that the runtime
- * calls for every model request of chiridion's agents, authenticated with the
- * same runtime identity token as the MCP server. The request runs in the
- * thread's ChatThreadDO (`runtimeChatCompletion`), which applies chiridion's
- * model routing (BYOK, Bedrock, Codex, hosted gateway), the credit and
- * per-user gates, and usage metering, as the user acting in the turn.
+ * The hosted agent runtime's model endpoint for chiridion's tenant
+ * (`modelEndpoints.chiridion.baseUrl` = `https://<host>/agent-runtime/llm`).
+ * The runtime's Pi client speaks a provider's native protocol to
+ * `/agent-runtime/llm/<provider>/<rest>`; this verifies the runtime identity
+ * token (in `X-Agent-Runtime-Identity`), authorizes the caller like the MCP
+ * server, and hands the call to the thread's ChatThreadDO
+ * (`runtimeProviderRequest`), which gates, checks the route, injects the real
+ * credential, forwards it untouched and meters it (agent-runtime/passthrough.ts).
  */
-import { RuntimeTokenError, bearerToken, verifyRuntimeToken } from "@camelai/agent-runtime/server";
+import { RuntimeTokenError, verifyRuntimeToken } from "@camelai/agent-runtime/server";
 import type { Env, RouteContext } from "../types.js";
 import { authorizeRuntimeIdentity } from "./agent-mcp.js";
 
-export const AGENT_RUNTIME_LLM_BASE_PATH = "/agent-runtime/llm/v1";
+export const AGENT_RUNTIME_LLM_BASE_PATH = "/agent-runtime/llm";
+export const AGENT_RUNTIME_IDENTITY_HEADER = "X-Agent-Runtime-Identity";
 const DEFAULT_RUNTIME = "https://agents.camelai.dev";
 
 export interface AgentRuntimeLlmOptions {
@@ -19,16 +21,13 @@ export interface AgentRuntimeLlmOptions {
   fetch?: typeof globalThis.fetch;
 }
 
-function openAiError(status: number, message: string, code: string): Response {
+function error(status: number, message: string, code: string): Response {
   return Response.json({ error: { message, type: code, code } }, { status });
 }
 
-/** The URLs tokens may name: the base URL the runtime is configured with, or the endpoint itself. */
-function audiences(env: Env, req: Request): string[] {
-  if (env.AGENT_RUNTIME_LLM_AUDIENCE) return [env.AGENT_RUNTIME_LLM_AUDIENCE];
-  const url = new URL(req.url);
-  const base = `${url.origin}${AGENT_RUNTIME_LLM_BASE_PATH}`;
-  return [base, `${base}/chat/completions`];
+/** The base URL the runtime is configured with, which its tokens name as their audience. */
+function audience(env: Env, req: Request): string {
+  return env.AGENT_RUNTIME_LLM_AUDIENCE || `${new URL(req.url).origin}${AGENT_RUNTIME_LLM_BASE_PATH}`;
 }
 
 export async function handleAgentRuntimeLlmRequest(
@@ -36,40 +35,47 @@ export async function handleAgentRuntimeLlmRequest(
   env: Env,
   options: AgentRuntimeLlmOptions = {},
 ): Promise<Response> {
-  if (req.method !== "POST") return openAiError(405, "Use POST", "method_not_allowed");
-  const token = bearerToken(req);
-  if (!token) return openAiError(401, "No bearer token", "invalid_token");
+  const url = new URL(req.url);
+  const match = /^\/agent-runtime\/llm\/([a-z0-9-]+)\/(.+)$/.exec(url.pathname);
+  if (!match) return error(404, "Not found", "not_found");
+  const [, provider, path] = match;
+  const token = req.headers.get(AGENT_RUNTIME_IDENTITY_HEADER)?.trim();
+  if (!token) return error(401, `No ${AGENT_RUNTIME_IDENTITY_HEADER} token`, "invalid_token");
   let identity: Awaited<ReturnType<typeof verifyRuntimeToken>>;
   try {
     identity = await verifyRuntimeToken(token, {
       runtime: env.AGENT_RUNTIME_URL || DEFAULT_RUNTIME,
-      audience: audiences(env, req),
+      audience: audience(env, req),
       ...(options.fetch ? { fetch: options.fetch } : {}),
     });
-  } catch (error) {
-    if (error instanceof RuntimeTokenError) return openAiError(401, error.message, "invalid_token");
-    throw error;
+  } catch (cause) {
+    if (cause instanceof RuntimeTokenError) return error(401, cause.message, "invalid_token");
+    throw cause;
   }
   const props = await authorizeRuntimeIdentity(env, identity);
-  if ("error" in props) return openAiError(403, props.error, "forbidden");
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch {
-    return openAiError(400, "The body must be JSON", "invalid_request_error");
-  }
-  const stub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(props.threadId)) as unknown as {
-    runtimeChatCompletion(
-      body: unknown,
+  if ("error" in props) return error(403, props.error, "forbidden");
+  const stub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(props.threadId ?? "")) as unknown as {
+    runtimeProviderRequest(
+      request: { provider: string; path: string; search: string; method: string; headers: [string, string][]; body: string },
       caller: { orgId: string; workspaceId: string; threadId: string; userId: string },
     ): Promise<Response>;
   };
-  return stub.runtimeChatCompletion(body, {
-    orgId: props.orgId,
-    workspaceId: props.workspaceId,
-    threadId: props.threadId ?? "",
-    userId: props.userId ?? "",
-  });
+  return stub.runtimeProviderRequest(
+    {
+      provider,
+      path,
+      search: url.search,
+      method: req.method,
+      headers: [...req.headers],
+      body: req.method === "GET" || req.method === "HEAD" ? "" : await req.text(),
+    },
+    {
+      orgId: props.orgId,
+      workspaceId: props.workspaceId,
+      threadId: props.threadId ?? "",
+      userId: props.userId ?? "",
+    },
+  );
 }
 
 export async function handleAgentRuntimeLlm({ req, env }: RouteContext): Promise<Response> {

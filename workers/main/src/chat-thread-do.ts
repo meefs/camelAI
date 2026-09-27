@@ -373,6 +373,7 @@ import {
 // broadcast) stays on this DO.
 import { ChatThreadErrors } from "./chat-thread/errors";
 import {
+  RUNTIME_MODEL_ENDPOINT,
   RUNTIME_PROMPT_PREAMBLE,
   RuntimeAgentSession,
   runtimeInputQuestions,
@@ -383,10 +384,13 @@ import {
   type RuntimeRunRecord,
 } from "./chat-thread/runtime-agent";
 import {
-  OpenAiRequestError,
-  openAiRequestToPiContext,
-  piEventsToOpenAiSse,
-} from "./agent-runtime/openai-bridge";
+  forwardedRequestHeaders,
+  forwardedResponseHeaders,
+  passthroughRoute,
+  readUsage,
+  runtimeModelFor,
+  type PassthroughRoute,
+} from "./agent-runtime/passthrough";
 
 // Pi tool-definition surface (executor-style tool list + Agent/Explore
 // subagent runner + subagent system prompt).
@@ -5647,8 +5651,16 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       // The runtime kept running the turn (or finished it): relay its events
       // again from the run's start. Nothing is re-prompted, so no resume budget.
       await this.ensurePiSessionReady();
-      const session = this.piSession as unknown as RuntimeAgentSession | null;
-      if (!session) throw new Error("Runtime agent session was not available to resume the turn");
+      const session: unknown = this.piSession;
+      // A route the forwarder cannot take sent the thread back to the in-DO loop.
+      if (session instanceof RuntimeAgentSession) return await this.resumeRuntimeTurn(session);
+    }
+    return await this.resumeActivePiTurnInDo(options);
+  }
+
+  /** resumeActivePiTurn for a runtime thread: relay the run in flight, or prompt what was never sent. */
+  private async resumeRuntimeTurn(session: RuntimeAgentSession): Promise<void> {
+    {
       if (session.hasRunInFlight()) {
         await session.continue();
         return;
@@ -5668,8 +5680,12 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       const prompted = session.prompt(first);
       for (const message of rest) session.steer(message);
       await prompted;
-      return;
     }
+  }
+
+  private async resumeActivePiTurnInDo(
+    options: { cause?: PiTurnResumeCause } = {},
+  ): Promise<void> {
     // FIRST thing, before ensurePiSessionReady or any other awaitable work: the
     // increment only bounds the loop if it survives an isolate that dies inside
     // this very re-drive. Absent marker (null) = nothing to bound; the resume
@@ -7732,7 +7748,10 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     const persistedMessages = loaded.messages;
     this.recordPiSessionLoadWindow(loaded.window);
     this.piMainBaselineIndex = persistedMessages.length;
-    if (await this.resolveAgentBackend(context) === "runtime") {
+    if (
+      await this.resolveAgentBackend(context) === "runtime" &&
+      this.keepRuntimeBackend(modelConfig)
+    ) {
       const session = this.createRuntimeAgentSession(context, envVars, modelConfig.model, persistedMessages);
       this.subscribePiSession(session as unknown as PiCoreAgent);
       return session as unknown as PiCoreAgent;
@@ -7860,6 +7879,22 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     }
   }
 
+  /**
+   * A thread pinned to the runtime whose route the forwarder cannot take
+   * (Bedrock, Codex, custom, the gateway's dynamic routes) goes back to the
+   * in-DO loop, as long as the runtime has not started it yet.
+   */
+  private keepRuntimeBackend(config: PiResolvedModelConfig): boolean {
+    if (passthroughRoute(config)) return true;
+    if (this.ctx.storage.kv.get(RUNTIME_AGENT_KEY)) return true;
+    this.ctx.storage.kv.put(CHAT_AGENT_BACKEND_KEY, "pi");
+    this.recordChatThreadObservabilityEvent("agent_backend_pinned", {
+      operation: "resolve_agent_backend",
+      status: "pi_unsupported_route",
+    });
+    return false;
+  }
+
   /** Whether this thread's turns run on the hosted agent runtime. */
   private isRuntimeAgentThread(): boolean {
     return this.ctx?.storage?.kv?.get<string>(CHAT_AGENT_BACKEND_KEY) === "runtime";
@@ -7919,6 +7954,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       // The runtime agent's prompt is fixed at creation; per-run instructions
       // (a scheduled run's outcome report) ride on the message instead.
       runInstructions: () => this.automationOutcomeInstruction(),
+      runtimeModel: () => this.runtimeModelId(),
       answerInput: (input, signal) => this.answerRuntimeInput(input, signal),
       initialState: {
         systemPrompt: "",
@@ -7938,14 +7974,33 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   }
 
   /**
-   * One model call of this thread's runtime agent, from the inference proxy
-   * (routes/agent-runtime-llm.ts): an OpenAI chat-completions request in, a
-   * streamed chat-completions response out. The call goes through the same
-   * model routing, credit and user-limit gates, provider retries and usage
-   * metering as an in-DO Pi turn, as the user the runtime says is acting.
+   * The pass-through route this thread's model calls take now (the model the
+   * thread resolves to: picker, BYOK, gateway, credit fallback), or null when
+   * that route cannot be forwarded (it stays on the in-DO loop).
    */
-  async runtimeChatCompletion(
-    body: unknown,
+  private async currentRuntimeRoute(): Promise<{ route: PassthroughRoute | null; config: PiResolvedModelConfig }> {
+    await this.ensurePiSessionReady();
+    const resolveModel = this.piModelResolver;
+    if (!resolveModel) throw new Error("The thread's model is not available");
+    const config = await resolveModel();
+    return { route: passthroughRoute(config), config };
+  }
+
+  /** The runtime model id (`chiridion/<provider>/<model>`) for the thread's route. */
+  private async runtimeModelId(): Promise<string | null> {
+    const { route } = await this.currentRuntimeRoute();
+    return route ? runtimeModelFor(RUNTIME_MODEL_ENDPOINT, route) : null;
+  }
+
+  /**
+   * One model call of this thread's runtime agent, forwarded to the provider
+   * (routes/agent-runtime-llm.ts): gates as the acting user, the route checked
+   * against the call's provider and model, the runtime's credentials swapped
+   * for the route's, the body and the answer passed through untouched, and
+   * the provider's reported usage metered.
+   */
+  async runtimeProviderRequest(
+    request: { provider: string; path: string; search: string; method: string; headers: [string, string][]; body: string },
     caller: { orgId: string; workspaceId: string; threadId: string; userId: string },
   ): Promise<Response> {
     const fail = (status: number, message: string, code: string) =>
@@ -7962,72 +8017,77 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     if (!this.isRuntimeAgentThread()) {
       return fail(403, "This thread does not run on the agent runtime", "forbidden");
     }
-    await this.ensurePiSessionReady();
-    const resolveModel = this.piModelResolver;
-    if (!resolveModel) return fail(503, "The thread's model is not available", "unavailable");
-    let modelConfig: PiResolvedModelConfig;
+    let resolved: Awaited<ReturnType<ChatThreadDO["currentRuntimeRoute"]>>;
     try {
-      modelConfig = await resolveModel();
-      await this.assertPiUserLlmUsageAccess(context, modelConfig, caller.userId);
+      resolved = await this.currentRuntimeRoute();
+      await this.assertPiUserLlmUsageAccess(context, resolved.config, caller.userId);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (error instanceof UserLlmUsageLimitError) return fail(429, message, "usage_limit");
       if (error instanceof HostedModelFallbackRequiredError) return fail(402, message, "insufficient_credits");
       throw error;
     }
-    const { streamSimple } = await import("@earendil-works/pi-ai/compat");
-    const model = capPiMainRequestOutput(modelConfig.model);
-    let request: ReturnType<typeof openAiRequestToPiContext>;
-    try {
-      // Signatures made by another model (the thread switched) are dropped here.
-      request = openAiRequestToPiContext(body, { provider: model.provider, api: model.api, id: model.id });
-    } catch (error) {
-      if (error instanceof OpenAiRequestError) return fail(400, error.message, "invalid_request_error");
-      throw error;
+    const { route, config } = resolved;
+    if (!route) {
+      return fail(409, "This thread's model cannot run on the agent runtime; switch models to continue.", "unsupported_route");
     }
-
-    const billing = {
-      source: this.piCurrentBillingSource,
-      chargeable: this.piCurrentCreditChargeable,
-      provider: this.piCurrentUsageProvider,
-    };
+    if (request.provider !== route.provider) {
+      return fail(409, `This thread's model goes through ${route.provider}, not ${request.provider}`, "route_mismatch");
+    }
+    let requestedModel: unknown;
+    try {
+      requestedModel = request.body ? (JSON.parse(request.body) as { model?: unknown }).model : undefined;
+    } catch {
+      return fail(400, "The body must be JSON", "invalid_request_error");
+    }
+    if (requestedModel !== route.modelId) {
+      return fail(409, `This thread's model is ${route.modelId}, not ${String(requestedModel)}`, "model_mismatch");
+    }
     const startedAtMs = Date.now();
-    const events = this.streamPiModel(
-      model,
-      { systemPrompt: request.systemPrompt, messages: request.messages, tools: request.tools },
-      {
-        apiKey: modelConfig.apiKey,
-        sessionId: context.threadId,
-        reasoning: primaryPiThinkingLevel(this.currentThreadModel),
-      },
-      streamSimple,
-    );
-    const stream = piEventsToOpenAiSse(events, {
-      id: `chatcmpl-${crypto.randomUUID()}`,
-      model: model.id,
-      onFinal: (message) => {
-        this.ctx.waitUntil(
-          this.recordPiAssistantUsage(
-            message as AgentMessage,
-            Date.now() - startedAtMs,
-            billing.source,
-            billing.chargeable,
-            billing.provider,
-            {
-              userId: caller.userId,
-              model: message.model || model.id,
-              usageSurface: "agent",
-              sourceScope: this.piRuntimeThreadId(),
+    const upstream = await fetch(`${route.upstreamBase}/${request.path}${request.search}`, {
+      method: request.method,
+      headers: forwardedRequestHeaders(request.headers, route),
+      body: request.body,
+    });
+    const headers = forwardedResponseHeaders(upstream.headers);
+    if (!upstream.body) return new Response(null, { status: upstream.status, headers });
+    const [toRuntime, toMeter] = upstream.body.tee();
+    const billing = { source: config.billingSource, chargeable: config.creditChargeable, provider: config.usageProvider };
+    const contentType = upstream.headers.get("content-type") ?? "";
+    this.ctx.waitUntil(
+      readUsage(toMeter, contentType)
+        .then((usage) => {
+          if (!usage) return;
+          const message = {
+            role: "assistant",
+            content: [],
+            provider: route.provider,
+            model: route.modelId,
+            ...(usage.responseId ? { responseId: usage.responseId } : {}),
+            ...(usage.responseModel ? { responseModel: usage.responseModel } : {}),
+            usage: {
+              input: usage.input,
+              output: usage.output,
+              cacheRead: usage.cacheRead,
+              cacheWrite: usage.cacheWrite,
+              reasoning: usage.reasoning,
+              totalTokens: usage.input + usage.output + usage.cacheRead + usage.cacheWrite,
+              cost: { total: usage.costUsd ?? 0 },
             },
-          ).catch((error) => {
-            console.error("[ChatThreadDO] failed to record runtime model usage", error);
-          }),
-        );
-      },
-    });
-    return new Response(stream, {
-      headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" },
-    });
+            timestamp: startedAtMs,
+          } as unknown as AgentMessage;
+          return this.recordPiAssistantUsage(message, Date.now() - startedAtMs, billing.source, billing.chargeable, billing.provider, {
+            userId: caller.userId,
+            model: usage.responseModel || route.modelId,
+            usageSurface: "agent",
+            sourceScope: this.piRuntimeThreadId(),
+          });
+        })
+        .catch((error) => {
+          console.error("[ChatThreadDO] failed to meter runtime model call", error);
+        }),
+    );
+    return new Response(toRuntime, { status: upstream.status, statusText: upstream.statusText, headers });
   }
 
   /**

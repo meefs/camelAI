@@ -20,9 +20,8 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 /** The MCP server name chiridion's tools are served under in the runtime definition. */
 export const RUNTIME_TOOL_SERVER = "camel";
 const TOOL_PREFIX = `${RUNTIME_TOOL_SERVER}__`;
-/** The tenant's model endpoint (the inference proxy) and its declared fallback model. */
+/** The tenant's model endpoint in the runtime (chiridion's forwarder). */
 export const RUNTIME_MODEL_ENDPOINT = "chiridion";
-export const RUNTIME_DEFAULT_MODEL = "default";
 const FRAME_LIMIT_BYTES = 16 * 1024 * 1024;
 
 /**
@@ -83,6 +82,8 @@ export interface RuntimeAgentSessionOptions {
   actor: () => string | null;
   /** Instructions for the run being started, sent ahead of its message. */
   runInstructions?: () => string | null;
+  /** The runtime model for the thread's current route, or null when the route cannot be forwarded. */
+  runtimeModel: () => Promise<string | null>;
   /** The committed transcript the DO loaded; runtime messages append to it. */
   initialState: Pick<AgentState, "systemPrompt" | "model" | "tools" | "messages" | "thinkingLevel">;
   /** The configuration applied once, right after the agent is created. */
@@ -208,15 +209,6 @@ export async function runtimeEnabledForOrg(env: RuntimeAgentEnv, orgId: string):
   return (await env.APP_KV.get(runtimeOrgAllowKey(orgId))) !== null;
 }
 
-/**
- * A model id as the runtime's catalog knows it: OpenRouter routing variants
- * (`:nitro`, `:floor`, `:free`, `:online`, …) name the same model, so they are
- * cut. Only the runtime's metadata uses it; the proxy routes the full id.
- */
-export function runtimeCatalogModelId(modelId: string): string {
-  return modelId.replace(/:[A-Za-z0-9_-]+$/, "");
-}
-
 export class RuntimeAgentError extends Error {
   constructor(message: string, readonly status = 0) {
     super(message);
@@ -337,15 +329,16 @@ export class RuntimeAgentSession {
     return body;
   }
 
-  /** The thread's runtime agent, created (idempotently, per thread) on first use. */
   /**
-   * The runtime model this thread's calls go under: chiridion's endpoint
-   * (`chiridion/…`, the inference proxy) with the thread model's catalog id,
-   * so the runtime knows its context window and inputs. The proxy routes each
-   * call to the thread's current model whatever the id says.
+   * The runtime model for the thread's current route
+   * (`chiridion/<provider>/<provider-native model id>`); the runtime's own Pi
+   * client then speaks that provider's protocol through the forwarder. Refuses
+   * a route the forwarder cannot take.
    */
-  private runtimeModel(): string {
-    return `${RUNTIME_MODEL_ENDPOINT}/${runtimeCatalogModelId(this.state.model.id)}`;
+  private async runtimeModel(): Promise<string> {
+    const model = await this.options.runtimeModel();
+    if (!model) throw new RuntimeAgentError("This thread's model cannot run on the agent runtime; switch models to continue.");
+    return model;
   }
 
   /** The thread's runtime agent, created (idempotently, per thread) on first use. */
@@ -354,7 +347,8 @@ export class RuntimeAgentSession {
     if (stored) return stored;
     const { env, identity } = this.options;
     const { systemPromptAppend } = await this.options.configuration();
-    const create = (model: string) => this.call("/v1/agents", {
+    const model = await this.runtimeModel();
+    const created = await this.call("/v1/agents", {
       method: "POST",
       token: env.AGENT_RUNTIME_API_TOKEN ?? "",
       headers: { "Idempotency-Key": `thread_${identity.threadId}` },
@@ -370,17 +364,7 @@ export class RuntimeAgentSession {
         ...(identity.subject ? { subject: identity.subject } : {}),
         context: { org: identity.orgId, workspace: identity.workspaceId, thread: identity.threadId },
       },
-    }) as Promise<{ id?: unknown; token?: unknown }>;
-    let model = this.runtimeModel();
-    let created: { id?: unknown; token?: unknown };
-    try {
-      created = await create(model);
-    } catch (error) {
-      // A model the runtime's catalog does not know: the endpoint's declared default.
-      if (!(error instanceof RuntimeAgentError && error.status === 400 && /model/i.test(error.message))) throw error;
-      model = `${RUNTIME_MODEL_ENDPOINT}/${RUNTIME_DEFAULT_MODEL}`;
-      created = await create(model);
-    }
+    }) as { id?: unknown; token?: unknown };
     if (typeof created.id !== "string" || typeof created.token !== "string") {
       throw new RuntimeAgentError("Agent runtime returned no agent id or token");
     }
@@ -389,20 +373,15 @@ export class RuntimeAgentSession {
     return record;
   }
 
-  /** Follow the thread's model: the runtime takes a change before the next run. */
+  /** Follow the thread's route: the runtime takes a model change before the next run. */
   private async syncModel(agent: RuntimeAgentRecord): Promise<void> {
-    const model = this.runtimeModel();
+    const model = await this.runtimeModel();
     if (agent.model === model) return;
-    try {
-      await this.call(`/v1/agents/${agent.id}/configuration`, {
-        method: "PATCH",
-        token: this.options.env.AGENT_RUNTIME_API_TOKEN ?? "",
-        body: { requestId: `model_${crypto.randomUUID()}`, model, thinkingLevel: this.state.thinkingLevel },
-      });
-    } catch (error) {
-      if (!(error instanceof RuntimeAgentError && error.status === 400)) throw error;
-      // Unknown to the catalog: keep the model the agent has; the proxy routes by thread anyway.
-    }
+    await this.call(`/v1/agents/${agent.id}/configuration`, {
+      method: "PATCH",
+      token: this.options.env.AGENT_RUNTIME_API_TOKEN ?? "",
+      body: { requestId: `model_${crypto.randomUUID()}`, model, thinkingLevel: this.state.thinkingLevel },
+    });
     this.options.store.saveAgent({ ...agent, model });
   }
 

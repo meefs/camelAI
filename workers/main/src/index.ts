@@ -205,7 +205,7 @@ const routes: Route[] = [
   // MCP tools for the hosted agent runtime (runtime identity-token auth)
   { method: 'ALL', path: /^\/mcp\/agent$/, handler: handleAgentMcp },
   // Inference proxy for the hosted agent runtime's model calls (same token)
-  { method: 'POST', path: /^\/agent-runtime\/llm\/v1\/chat\/completions$/, handler: handleAgentRuntimeLlm },
+  { method: 'POST', path: /^\/agent-runtime\/llm\/[a-z0-9-]+\/.+$/, handler: handleAgentRuntimeLlm },
 
   // Stripe billing webhook
   { method: 'POST', path: /^\/api\/billing\/stripe\/webhook$/, handler: handleStripeWebhook },

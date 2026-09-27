@@ -62,6 +62,8 @@ function memoryStore() {
   };
 }
 
+let routeModel: string | null = "chiridion/openrouter/anthropic/claude-sonnet-5";
+
 function session(runtime: ReturnType<typeof fakeRuntime>, store = memoryStore()) {
   let activity = 0;
   const agent = new RuntimeAgentSession({
@@ -71,6 +73,7 @@ function session(runtime: ReturnType<typeof fakeRuntime>, store = memoryStore())
     actor: () => "user2",
     initialState: { systemPrompt: "", model: MODEL, tools: [], messages: [], thinkingLevel: "medium" },
     configuration: async () => ({ systemPromptAppend: "camel prompt" }),
+    runtimeModel: async () => routeModel,
     onActivity: () => { activity += 1; },
     fetch: runtime.fetch,
   });
@@ -100,7 +103,7 @@ describe("RuntimeAgentSession", () => {
     expect(create.headers.get("Idempotency-Key")).toBe("thread_thread1");
     expect(create.body).toMatchObject({
       definition: "def_1",
-      model: "chiridion/sonnet",
+      model: "chiridion/openrouter/anthropic/claude-sonnet-5",
       thinkingLevel: "medium",
       systemPromptAppend: "camel prompt",
       fileTools: false,
@@ -119,17 +122,18 @@ describe("RuntimeAgentSession", () => {
     expect(agent.state.messages[0]).toBe(userMessage);
     expect(agent.state.messages[1]).toMatchObject({ content: [{ name: "list_apps" }] });
     expect(agent.state.isStreaming).toBe(false);
-    expect(store.data.agent).toEqual({ id: "client_1", token: "agent-token", model: "chiridion/sonnet" });
+    expect(store.data.agent).toEqual({ id: "client_1", token: "agent-token", model: "chiridion/openrouter/anthropic/claude-sonnet-5" });
     expect(store.data.cursor).toBe(12);
     expect(store.data.run).toBeNull();
     expect(activity()).toBeGreaterThan(0);
 
     // A second run reuses the agent; a changed thread model is configured before it.
-    agent.state.model = { ...agent.state.model, id: "opus" };
+    routeModel = "chiridion/anthropic/claude-opus-5";
     await agent.prompt(userMessage);
     expect(runtime.calls.filter((call) => call.path === "/v1/agents")).toHaveLength(1);
-    expect(runtime.calls.find((call) => call.method === "PATCH")!.body).toMatchObject({ model: "chiridion/opus" });
-    expect(store.data.agent?.model).toBe("chiridion/opus");
+    expect(runtime.calls.find((call) => call.method === "PATCH")!.body).toMatchObject({ model: "chiridion/anthropic/claude-opus-5" });
+    expect(store.data.agent?.model).toBe("chiridion/anthropic/claude-opus-5");
+    routeModel = "chiridion/openrouter/anthropic/claude-sonnet-5";
   });
 
   it("sends run instructions ahead of the message and steers without an actor", async () => {
@@ -147,6 +151,7 @@ describe("RuntimeAgentSession", () => {
       runInstructions: () => "## Outcome",
       initialState: { systemPrompt: "", model: MODEL, tools: [], messages: [], thinkingLevel: "medium" },
       configuration: async () => ({ systemPromptAppend: "" }),
+      runtimeModel: async () => "chiridion/openrouter/anthropic/claude-sonnet-5",
       fetch: runtime.fetch,
     });
     await agent.prompt(userMessage);
@@ -187,6 +192,7 @@ describe("RuntimeAgentSession", () => {
       answerInput: async (value) => { asked.push(value); return { action: "accept", content: { answers: { "Which?": "A" } } }; },
       initialState: { systemPrompt: "", model: MODEL, tools: [], messages: [], thinkingLevel: "medium" },
       configuration: async () => ({ systemPromptAppend: "" }),
+      runtimeModel: async () => "chiridion/openrouter/anthropic/claude-sonnet-5",
       fetch: runtime.fetch,
     });
     const events: Array<Record<string, unknown>> = [];
@@ -222,6 +228,7 @@ describe("RuntimeAgentSession", () => {
       answerInput: async () => { throw new Error("question timed out"); },
       initialState: { systemPrompt: "", model: MODEL, tools: [], messages: [], thinkingLevel: "medium" },
       configuration: async () => ({ systemPromptAppend: "" }),
+      runtimeModel: async () => "chiridion/openrouter/anthropic/claude-sonnet-5",
       fetch: runtime.fetch,
     });
     const events: Array<Record<string, unknown>> = [];
@@ -229,6 +236,18 @@ describe("RuntimeAgentSession", () => {
     await agent.prompt(userMessage);
     expect(events.map((event) => event.type)).toEqual(["agent_end"]);
     expect(runtime.calls.some((call) => call.path.includes("/inputs/"))).toBe(false);
+  });
+
+  it("refuses to start a run on a route the forwarder cannot take", async () => {
+    const runtime = fakeRuntime(() => []);
+    routeModel = null;
+    try {
+      const { agent } = session(runtime);
+      await expect(agent.prompt(userMessage)).rejects.toThrow(/cannot run on the agent runtime/);
+      expect(runtime.calls.some((call) => call.path === "/v1/agents")).toBe(false);
+    } finally {
+      routeModel = "chiridion/openrouter/anthropic/claude-sonnet-5";
+    }
   });
 
   it("closes the turn with an error when the runtime refuses the run", async () => {
@@ -265,16 +284,6 @@ describe("RuntimeAgentSession", () => {
     const { agent, events } = session(runtime);
     await agent.continue();
     expect(events.at(-1)).toMatchObject({ type: "agent_end", messages: [{ errorMessage: expect.stringContaining("did not reach") }] });
-  });
-});
-
-describe("runtimeCatalogModelId", () => {
-  it("cuts OpenRouter routing variants and leaves other ids alone", async () => {
-    const { runtimeCatalogModelId } = await import("../src/chat-thread/runtime-agent");
-    expect(runtimeCatalogModelId("anthropic/claude-sonnet-5:nitro")).toBe("anthropic/claude-sonnet-5");
-    expect(runtimeCatalogModelId("deepseek/deepseek-v4:free")).toBe("deepseek/deepseek-v4");
-    expect(runtimeCatalogModelId("openai/gpt-6:online")).toBe("openai/gpt-6");
-    expect(runtimeCatalogModelId("claude-sonnet-5")).toBe("claude-sonnet-5");
   });
 });
 
