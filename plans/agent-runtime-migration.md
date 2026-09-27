@@ -16,9 +16,12 @@ the move chiridion is:
 2. **A client** that creates one runtime agent per thread, sends prompts, and
    streams the agent's events into the existing chat UI (the ChatThreadDO
    adapter, `workers/main/src/chat-thread/runtime-agent.ts`).
-3. **An inference proxy** the runtime sends every model call to
-   (`workers/main/src/routes/agent-runtime-llm.ts`), so chiridion keeps its
-   model routing, BYOK, credit and user-limit gates and usage metering.
+3. **A model-call forwarder** the runtime sends every model call to
+   (`workers/main/src/routes/agent-runtime-llm.ts`, the AI Gateway pattern):
+   it checks the call against the thread's route, injects the real
+   credential, passes the provider's native request and answer through
+   untouched, and meters the usage, so chiridion keeps its model routing,
+   BYOK, credit and user-limit gates.
 
 ```text
 browser ─WS/poll─ ChatThreadDO ──POST prompt/steer/abort──> runtime (AWS us-west-2)
@@ -26,7 +29,7 @@ browser ─WS/poll─ ChatThreadDO ──POST prompt/steer/abort──> runtime 
                      │                                           │ tools/call + identity JWT
                      └── UI state RPCs (preview, todos) ── /mcp/agent (Worker) ── CodeModeToolsBinding
                      │                                             └─ OrgDO, WorkspaceFilesystemDO, sandboxes, R2
-                     └── runtimeChatCompletion ── /agent-runtime/llm/v1/chat/completions <── model calls (same JWT)
+                     └── runtimeProviderRequest ── /agent-runtime/llm/<provider>/* <── model calls (same JWT)
 ```
 
 ## 1. The MCP server (built)
@@ -179,8 +182,8 @@ runtime's event stream carries native Pi `AgentEvent`s, so
   unset nothing is written.
 - **Create** (lazily, first run): `POST /v1/agents` with the operator token
   (`AGENT_RUNTIME_API_TOKEN`), `Idempotency-Key: thread_<id>`,
-  `definition: AGENT_RUNTIME_DEFINITION`, `model: chiridion/<thread model id>`
-  (falling back to `chiridion/default` for ids the catalog lacks),
+  `definition: AGENT_RUNTIME_DEFINITION`, `model: chiridion/<provider>/<model>`
+  from the thread's pass-through route (section 10),
   `thinkingLevel`, `systemPromptAppend` (a preamble mapping tool names and
   js_exec bindings to this surface, then `createPiSystemPrompt`),
   `fileTools: false`, `ttlSeconds: null`, `subject` (the thread creator) and
@@ -217,8 +220,7 @@ runtime's event stream carries native Pi `AgentEvent`s, so
 Verified locally (runtime from agent-runtime main, chiridion `bun run
 dev:local-auth`): a new thread's first message created the runtime agent,
 the runtime called `camel__list_apps` and `camel__read` in parallel through
-MCP, every model call went through the proxy (reasoning included; the tool
-continuation after thinking worked, so signatures round-trip), the UI stream
+MCP, every model call went through the proxy (reasoning included), the UI stream
 got ListApps/Read tool parts and text, the render history reloads, a second
 turn kept context, steer and stop worked, and `usage_log` rows carry the
 acting user and cache reads. Not exercised live: a DO restart mid-run (unit
@@ -334,31 +336,53 @@ authenticated). Still needed:
   `actor` is refused (403) when the input has an audience; the README says
   the token has authority. Chiridion now sends the run's actor.
 
-## 10. Inference proxy (built)
+## 10. Model-call forwarder (built)
 
-`POST /agent-runtime/llm/v1/chat/completions` (`routes/agent-runtime-llm.ts`):
-verifies the runtime identity token (SDK `verifyRuntimeToken`, audience = the
-base URL or the endpoint, or `AGENT_RUNTIME_LLM_AUDIENCE`), authorizes
-`act ?? sub` in `ctx` like the MCP server, then calls the thread's
-`ChatThreadDO.runtimeChatCompletion`. That converts the OpenAI request to a
-Pi context (`agent-runtime/openai-bridge.ts`), resolves the thread's current
-model (`piModelResolver`: picker, BYOK, Bedrock, Codex, credit fallback),
-applies the user-limit gate as the acting user, streams through
-`streamPiModel` (provider retries, Bedrock region fallback, prompt caching
-keyed by thread) and streams chat-completion chunks back; the final message is
-metered with `recordPiAssistantUsage`. Gate refusals are 429 (user limit) or
-402 (credits) before any stream. The request's `model` is informational.
-Thinking/thought signatures ride as `reasoning_details` keyed by tool call id
-and are restored on the way back in.
+The runtime's own Pi client speaks each provider's native protocol (OpenRouter
+through the Responses API) to `<baseUrl>/<provider>/<rest>`, with
+`modelEndpoints.chiridion.baseUrl = https://<host>/agent-runtime/llm` and the
+agent's model `chiridion/<provider>/<provider-native model id>`.
+`routes/agent-runtime-llm.ts` verifies the identity token from
+`X-Agent-Runtime-Identity` (audience = the base URL, or
+`AGENT_RUNTIME_LLM_AUDIENCE`), authorizes `act ?? sub` in `ctx` like the MCP
+server, and calls `ChatThreadDO.runtimeProviderRequest`, which:
+
+1. resolves the thread's route (`piModelResolver` → `passthroughRoute`,
+   `agent-runtime/passthrough.ts`) and runs the user-limit gate as the acting
+   user (credit exhaustion surfaces from the resolver): 429 / 402 before any
+   upstream call;
+2. refuses (409) a provider or body `model` that is not the route's;
+3. forwards to `<route upstream>/<rest>` with the body untouched, the
+   runtime's `Authorization` / `x-api-key` / identity headers dropped, and the
+   route's credential injected;
+4. streams the provider's answer back untouched while a tee reads its usage
+   (Responses `response.completed`, Anthropic `message_start` +
+   `message_delta`, Chat Completions `usage`, or a JSON body; OpenRouter's
+   `cost` when present) into `recordPiAssistantUsage` as the acting user.
+
+Routes:
+
+| Thread route | Runtime provider | Upstream | Credential |
+| --- | --- | --- | --- |
+| hosted (AI Gateway, openrouter/anthropic/openai provider) | the gateway provider | the gateway URL for it | `cf-aig-authorization` + gateway metadata headers |
+| BYOK OpenRouter | openrouter | `https://openrouter.ai/api/v1` | `Authorization: Bearer <key>` |
+| BYOK Anthropic | anthropic | `https://api.anthropic.com` | `x-api-key` |
+| BYOK OpenAI | openai | `https://api.openai.com/v1` | `Authorization: Bearer <key>` |
+| Bedrock, Codex subscription, custom endpoint, self-host, gateway `compat` dynamic routes (deepseek, the free tier's luna/muse) | none | — | — |
+
+A thread whose route has none is pinned back to the in-DO loop before the
+runtime starts it; a runtime thread that later switches to such a route gets
+"switch models to continue". Codex is not forwardable as is: the runtime's
+Codex client derives its account headers from the OAuth token itself, which
+it never has. Bedrock's Anthropic-compatible endpoint would need
+Bedrock-native model ids declared to the runtime.
 
 ## 11. Local end-to-end recipe
 
 ```sh
 # runtime (from ~/agent-runtime main), own database; tenants file entry:
 #   "chiridion": {"tokenSha256": …, "modelEndpoints": {"chiridion": {
-#     "baseUrl": "http://127.0.0.1:3001/agent-runtime/llm/v1",
-#     "models": {"default": {"contextWindow": 200000, "maxTokens": 16000, "reasoning": true, "input": ["text", "image"]}},
-#     "compat": {"maxTokensField": "max_tokens"}}}}
+#     "baseUrl": "http://127.0.0.1:3001/agent-runtime/llm"}}}
 docker exec agent-runtime-pg psql -U postgres -c "create database chiridion_r6"
 AGENT_TENANTS_FILE=… AGENT_SECRETS_KEY=<64 hex> AGENT_SESSION_SECRET=… \
 AGENT_DATABASE_URL=postgres://postgres:test@127.0.0.1:55432/chiridion_r6 \
@@ -367,7 +391,7 @@ AGENT_OUTBOUND_ALLOW_HTTP=true AGENT_OUTBOUND_ALLOW_CIDRS=127.0.0.1/32 \
 node --experimental-strip-types src/server.ts
 
 # definition
-POST /v1/definitions {"name": "camelai-thread", "model": "chiridion/default",
+POST /v1/definitions {"name": "camelai-thread", "model": "chiridion/openrouter/anthropic/claude-sonnet-5",
   "builtins": ["web_fetch", "web_search", "ask_user"], "fileTools": false,
   "mcpServers": [{"name": "camel", "url": "http://127.0.0.1:3001/mcp/agent",
     "auth": {"type": "runtime"}, "exposure": "both", "timeoutMs": 1200000}]}
@@ -394,12 +418,9 @@ E2E_LOCAL=1 bun run dev:local-auth
 **Runtime config** (tenants secret, `AGENT_TENANTS_SECRET_ARN`)
 - A new tenant `chiridion-staging`: its own operator token, `billing: "none"`,
   a modest `maxAgents`, and
-  `"modelEndpoints": {"chiridion": {"baseUrl": "https://staging.camelai.dev/agent-runtime/llm/v1",
-  "models": {"default": {"contextWindow": 200000, "maxTokens": 16000, "reasoning": true, "input": ["text", "image"]}},
-  "compat": {"maxTokensField": "max_tokens"}}}` (`default` catches models the
-  catalog lacks).
+  `"modelEndpoints": {"chiridion": {"baseUrl": "https://staging.camelai.dev/agent-runtime/llm"}}`.
 - One definition, created with that tenant's token:
-  `{"name": "camelai-thread", "model": "chiridion/default", "builtins": ["web_fetch", "web_search", "ask_user"], "fileTools": false,
+  `{"name": "camelai-thread", "model": "chiridion/openrouter/anthropic/claude-sonnet-5", "builtins": ["web_fetch", "web_search", "ask_user"], "fileTools": false,
   "mcpServers": [{"name": "camel", "url": "https://staging.camelai.dev/mcp/agent", "auth": {"type": "runtime"}, "exposure": "both", "timeoutMs": 1200000}]}`.
   Check it with `GET /v1/agents/:id?refresh=true` on a test agent (the camel
   source must list ~75 tools).
@@ -410,7 +431,7 @@ E2E_LOCAL=1 bun run dev:local-auth
   `AGENT_RUNTIME_TENANT=chiridion-staging`, `AGENT_RUNTIME_DEFINITION=def_…`
   (`AGENT_RUNTIME_URL` defaults to agents.camelai.dev).
 - Cloudflare Access: staging is behind Access, which would block the runtime.
-  Add a bypass for `/mcp/agent` and `/agent-runtime/llm/v1/chat/completions`
+  Add a bypass for `/mcp/agent` and `/agent-runtime/llm/*`
   only; both refuse anything without a valid runtime token.
 
 **Allowlist**
