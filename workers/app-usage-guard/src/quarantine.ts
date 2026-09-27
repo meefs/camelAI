@@ -1,4 +1,5 @@
 import {
+  USAGE_GUARD_QUARANTINE_MARKER as QUARANTINE_MARKER,
   dispatchScriptVersionFromApiBody,
   withUsageGuardTracing,
 } from "../../main/src/usage-guard-config.js";
@@ -9,8 +10,6 @@ type ScriptSettings = {
   compatibility_flags?: string[];
   tail_consumers?: Array<Record<string, unknown>>;
 };
-
-const QUARANTINE_MARKER = "CAMELAI_USAGE_GUARD_QUARANTINE";
 
 function cloudflareResult<T>(body: unknown): T {
   if (!body || typeof body !== "object" || Array.isArray(body) || !("result" in body)) {

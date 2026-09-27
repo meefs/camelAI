@@ -19,6 +19,11 @@ import {
 } from "./selfhost-worker-registry.js";
 import { resolveUploadedDispatchScriptVersion, withUsageGuardTracing } from "./usage-guard-config.js";
 import {
+  userAppCostControlsConfig,
+  withUserAppCostControls,
+  type UserAppCostControlsEnv,
+} from "./user-app-cost-controls.js";
+import {
   acquireUsageGuardOperationLeaseWithRetry,
   releaseUsageGuardOperationLease,
 } from "./usage-guard-state.js";
@@ -40,7 +45,7 @@ const DIRECT_DEPLOY_ASSET_BATCH_SIZE = 8;
 // to a single bucket (plus base64 overhead) instead of every bucket at once.
 const DIRECT_DEPLOY_ASSET_UPLOAD_CONCURRENCY = 1;
 
-export interface DirectDispatchDeployEnv {
+export interface DirectDispatchDeployEnv extends UserAppCostControlsEnv {
   CF_API_TOKEN?: string;
   CF_ACCOUNT_ID?: string;
   CF_DISPATCH_NAMESPACE?: string;
@@ -353,9 +358,12 @@ export async function deployWorkerModulesDirect(
     warnings.push(`Deploy artifact cache unavailable: ${errorMessage(error)}`);
   }
   timings.artifactCacheMs = Date.now() - artifactCacheStartedAt;
+  // The artifact cache keeps the app's own bundle; cost controls are applied to
+  // each upload (deploy and rollback) so they always reflect current config.
+  const upload = withUserAppCostControls(metadata, request.modules, userAppCostControlsConfig(env), javascriptModule);
   const form = new FormData();
-  form.append("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }));
-  for (const module of request.modules) {
+  form.append("metadata", new Blob([JSON.stringify(upload.metadata)], { type: "application/json" }));
+  for (const module of upload.modules) {
     form.append(module.name, new Blob([blobPart(module.content)], { type: module.contentType }), module.name);
   }
 
@@ -897,10 +905,16 @@ export async function rollbackWorkerDeployFromArtifactCache(
     metadata = { ...metadata, tail_consumers: withPlatformTailConsumer(metadata.tail_consumers, tailWorkerName) };
   }
   metadata = withUsageGuardTracing(metadata);
+  const upload = withUserAppCostControls(
+    metadata,
+    record.modules,
+    userAppCostControlsConfig(env),
+    (name, source) => ({ name, contentType: "application/javascript+module", contentBase64: bytesToBase64(new TextEncoder().encode(source)) }),
+  );
 
   const form = new FormData();
-  form.append("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }));
-  for (const module of record.modules) {
+  form.append("metadata", new Blob([JSON.stringify(upload.metadata)], { type: "application/json" }));
+  for (const module of upload.modules) {
     form.append(
       module.name,
       new Blob([base64ToBytes(module.contentBase64) as BlobPart], { type: module.contentType }),
@@ -1242,6 +1256,10 @@ function base64ToBytes(value: string): Uint8Array {
     bytes[index] = binary.charCodeAt(index);
   }
   return bytes;
+}
+
+function javascriptModule(name: string, content: string): DirectWorkerModule {
+  return { name, contentType: "application/javascript+module", content };
 }
 
 function blobPart(content: string | Uint8Array | ArrayBuffer): BlobPart {

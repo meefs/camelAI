@@ -332,6 +332,14 @@ export const RefreshOrgCustomDomainResponseSchema = z.object({
   apps: z.array(RefreshOrgCustomDomainAppSchema),
 });
 
+export const UserAppCostControlsBackfillResponseSchema = z.object({
+  status: z.enum(["applied", "skipped"]),
+  dispatchScriptName: z.string(),
+  reason: z.string().optional(),
+  artifactCacheKey: z.string().optional(),
+  scriptVersion: z.string().optional(),
+});
+
 export const ThreadSchema = z.object({
   id: z.string(),
   title: z.string().nullable().optional(),

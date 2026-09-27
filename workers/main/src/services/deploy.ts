@@ -19,7 +19,7 @@ import {
 const SCRIPT_PREFIX = 'script:';
 
 export async function handleDeploySideEffects(env: Env, info: DeploySideEffectsInfo): Promise<void> {
-  const { scriptName, dispatchScriptName, orgId, orgSlug, workspaceId, hostname, threadId, projectId, configPath, commitSha, artifactCacheKey, scriptVersion } = info;
+  const { scriptName, orgId, orgSlug, workspaceId, hostname, threadId, projectId, configPath, commitSha, artifactCacheKey } = info;
   const orgStub = getOrgStub(env, orgId);
 
   // Register ownership (stores user-facing scriptName in OrgDO)
@@ -35,6 +35,59 @@ export async function handleDeploySideEffects(env: Env, info: DeploySideEffectsI
 
   const script = await orgStub.registerWorkerScript(scriptName, workspaceId, createdBy, configPath, projectId, commitSha, artifactCacheKey);
 
+  await refreshAppRegistryAfterDeploy(env, info, script.is_public);
+
+  // Update preview status
+  const envPrefix = resolveEnvPrefix(env.WORKER_BASE_URL, hostname);
+  const previewResult = await orgStub.updateWorkerScriptPreview(scriptName, {
+    status: 'pending',
+    preview_key: null,
+    preview_error: null,
+    deploy_ts: script.updated_at,
+  });
+
+  if (previewResult.stale) return;
+
+  // Queue screenshot
+  if (!env.APP_SCREENSHOT_QUEUE) return;
+
+  const jobBase: AppScreenshotJob = {
+    script_name: scriptName,
+    org_id: orgId,
+    org_slug: orgSlug,
+    workspace_id: workspaceId,
+    deploy_ts: script.updated_at,
+    env_prefix: envPrefix,
+    is_public: script.is_public,
+  };
+
+  try {
+    const sendOptions = {
+      contentType: 'json',
+      messageId: `${scriptName}:${script.updated_at}`,
+    } as unknown as QueueSendOptions;
+    await env.APP_SCREENSHOT_QUEUE.send(jobBase, sendOptions);
+  } catch (err) {
+    await orgStub.updateWorkerScriptPreview(scriptName, {
+      status: 'failed',
+      preview_key: null,
+      preview_error: String(err),
+      deploy_ts: script.updated_at,
+    });
+  }
+}
+
+/**
+ * Re-points the dispatcher's KV app registry and the usage guard at the newly
+ * uploaded script version. Shared by user deploys and platform re-uploads
+ * (the cost-controls backfill), which keep the app's existing visibility.
+ */
+export async function refreshAppRegistryAfterDeploy(
+  env: Env,
+  info: DeploySideEffectsInfo,
+  isPublic?: boolean,
+): Promise<void> {
+  const { scriptName, dispatchScriptName, orgId, orgSlug, workspaceId, artifactCacheKey, scriptVersion } = info;
   const primaryRegistryKey = `${SCRIPT_PREFIX}${dispatchScriptName}`;
   let existingRegistry: (UsageGuardRegistryFields & { org_id?: string; org_slug?: string; is_public?: boolean }) | null = null;
   try {
@@ -82,45 +135,6 @@ export async function handleDeploySideEffects(env: Env, info: DeploySideEffectsI
   // This allows the dispatcher to look up access info by dispatchScriptName
   await env.APP_KV.put(
     primaryRegistryKey,
-    JSON.stringify({ org_id: orgId, org_slug: orgSlug, is_public: script.is_public, ...usageGuardFields })
+    JSON.stringify({ org_id: orgId, org_slug: orgSlug, is_public: isPublic ?? existingRegistry?.is_public ?? false, ...usageGuardFields })
   );
-
-  // Update preview status
-  const envPrefix = resolveEnvPrefix(env.WORKER_BASE_URL, hostname);
-  const previewResult = await orgStub.updateWorkerScriptPreview(scriptName, {
-    status: 'pending',
-    preview_key: null,
-    preview_error: null,
-    deploy_ts: script.updated_at,
-  });
-
-  if (previewResult.stale) return;
-
-  // Queue screenshot
-  if (!env.APP_SCREENSHOT_QUEUE) return;
-
-  const jobBase: AppScreenshotJob = {
-    script_name: scriptName,
-    org_id: orgId,
-    org_slug: orgSlug,
-    workspace_id: workspaceId,
-    deploy_ts: script.updated_at,
-    env_prefix: envPrefix,
-    is_public: script.is_public,
-  };
-
-  try {
-    const sendOptions = {
-      contentType: 'json',
-      messageId: `${scriptName}:${script.updated_at}`,
-    } as unknown as QueueSendOptions;
-    await env.APP_SCREENSHOT_QUEUE.send(jobBase, sendOptions);
-  } catch (err) {
-    await orgStub.updateWorkerScriptPreview(scriptName, {
-      status: 'failed',
-      preview_key: null,
-      preview_error: String(err),
-      deploy_ts: script.updated_at,
-    });
-  }
 }

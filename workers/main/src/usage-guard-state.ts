@@ -98,7 +98,7 @@ export async function ensureUsageGuardSchema(db: D1Database): Promise<void> {
   if (upgrades.length > 0) await db.batch(upgrades);
 }
 
-function operationLeaseName(appId: string): string {
+export function operationLeaseName(appId: string): string {
   return `app-operation:${appId}`;
 }
 

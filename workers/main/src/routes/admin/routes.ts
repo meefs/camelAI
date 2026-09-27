@@ -108,7 +108,10 @@ import {
   AddEmailDomainBodySchema,
   paginatedList,
   dataList,
+  UserAppCostControlsBackfillResponseSchema,
 } from "./schemas.js";
+import { backfillUserAppCostControls } from "../../user-app-cost-controls-backfill.js";
+import { refreshAppRegistryAfterDeploy } from "../../services/deploy.js";
 import {
   UsageControlsValidationError,
   validateUserLlmUsageCursor,
@@ -3202,5 +3205,40 @@ routes.get(
       httpMetadata: obj.httpMetadata,
       customMetadata: obj.customMetadata,
     });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POST /apps/:dispatchScriptName/cost-controls
+// ---------------------------------------------------------------------------
+
+routes.post(
+  "/apps/:dispatchScriptName/cost-controls",
+  openApi({
+    summary:
+      "Re-apply current user-app cost controls by replaying the app's latest cached deploy artifact (restarts its Durable Objects)",
+    responses: {
+      200: UserAppCostControlsBackfillResponseSchema,
+      502: ErrorSchema,
+    },
+  }),
+  async (c) => {
+    const dispatchScriptName = c.req.param("dispatchScriptName");
+    try {
+      const result = await backfillUserAppCostControls(c.env, dispatchScriptName, {
+        onDeploySideEffects: (info) => refreshAppRegistryAfterDeploy(c.env, info),
+      });
+      return c.json(result);
+    } catch (error) {
+      return c.json(
+        {
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to re-apply cost controls",
+        },
+        502,
+      );
+    }
   },
 );

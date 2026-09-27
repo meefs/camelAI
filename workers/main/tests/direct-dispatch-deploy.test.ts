@@ -886,4 +886,82 @@ describe("deployWorkerModulesDirect", () => {
     const metadata = JSON.parse(await (form.get("metadata") as Blob).text());
     expect(metadata.tail_consumers).toEqual([{ service: "chiridion-user-logs-tail" }]);
   });
+
+  it("uploads with a CPU limit and wraps Durable Object classes in the alarm guard", async () => {
+    const fetcher = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/scripts/demo-app--acme")) {
+        return Response.json({ success: false, errors: [{ code: 10092, message: "not found" }], result: null }, { status: 404 });
+      }
+      return Response.json({ success: true, result: { id: "version-1" } });
+    });
+
+    await deployWorkerModulesDirect({ ...env, USER_APP_ALARM_MIN_INTERVAL_MS: "60000", USER_APP_CPU_MS: "2000" }, {
+      scriptName: "demo-app",
+      hostname: "camelai.dev",
+      identity,
+      metadata: {
+        main_module: "index.js",
+        bindings: [{ type: "durable_object_namespace", name: "COUNTER", class_name: "CounterDO" }],
+        migrations: [{ tag: "v1", new_sqlite_classes: ["CounterDO"] }],
+      },
+      modules: [{ name: "index.js", contentType: "application/javascript+module", content: "export default {};" }],
+    }, { fetcher: fetcher as unknown as typeof fetch });
+
+    const form = fetcher.mock.calls.find((call) => call[1]?.method === "PUT")![1]?.body as FormData;
+    const metadata = JSON.parse(await (form.get("metadata") as Blob).text());
+    expect(metadata.limits).toEqual({ cpu_ms: 2000 });
+    expect(metadata.main_module).toBe("__camelai_entry.js");
+    expect(metadata.bindings).toContainEqual({ type: "durable_object_namespace", name: "COUNTER", class_name: "CounterDO" });
+    expect(await (form.get("index.js") as Blob).text()).toBe("export default {};");
+    const entry = await (form.get("__camelai_entry.js") as Blob).text();
+    expect(entry).toContain(`export const CounterDO = guardDurableObjectClass(app.CounterDO, options);`);
+    expect(entry).toContain(`"minIntervalMs":60000`);
+    expect((form.get("__camelai_alarm_guard.js") as Blob).type).toBe("application/javascript+module");
+  });
+
+  it("applies cost controls when rolling back an artifact cached before them", async () => {
+    const r2 = new Map<string, { body: string | Uint8Array; options?: unknown }>();
+    const fetcher = vi.fn(async () => Response.json({ success: true, result: { id: "version-1" } }));
+    const rollbackEnv = {
+      ...env,
+      APP_KV: { put: vi.fn(async () => undefined) },
+      R2_BUCKET: {
+        put: vi.fn(async () => undefined),
+        get: vi.fn(async (key: string) => {
+          const item = r2.get(key);
+          return item ? { text: async () => item.body as string } : null;
+        }),
+      },
+    };
+    const artifactCacheKey = "deploy-artifacts/org-1/workspace-1/project-1/demo-app--acme/legacy-do.json";
+    r2.set(artifactCacheKey, {
+      body: JSON.stringify({
+        schemaVersion: 1,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        scriptName: "demo-app",
+        dispatchScriptName: "demo-app--acme",
+        identity,
+        metadata: {
+          main_module: "index.js",
+          bindings: [{ type: "durable_object_namespace", name: "COUNTER", class_name: "CounterDO" }],
+        },
+        modules: [{ name: "index.js", contentType: "application/javascript+module", contentBase64: "ZXhwb3J0IGRlZmF1bHQge307" }],
+        assetsRecord: null,
+      }),
+    });
+
+    await rollbackWorkerDeployFromArtifactCache(rollbackEnv, {
+      artifactCacheKey,
+      hostname: "camelai.dev",
+      expected: { orgId: "org-1", workspaceId: "workspace-1", scriptName: "demo-app" },
+    }, { fetcher: fetcher as unknown as typeof fetch });
+
+    const form = fetcher.mock.calls.find((call) => call[1]?.method === "PUT")![1]?.body as FormData;
+    const metadata = JSON.parse(await (form.get("metadata") as Blob).text());
+    expect(metadata.limits).toEqual({ cpu_ms: 1000 });
+    expect(metadata.main_module).toBe("__camelai_entry.js");
+    expect(await (form.get("__camelai_entry.js") as Blob).text()).toContain("guardDurableObjectClass(app.CounterDO, options)");
+    expect(await (form.get("__camelai_alarm_guard.js") as Blob).text()).toContain("export function installAlarmGuard");
+  });
 });

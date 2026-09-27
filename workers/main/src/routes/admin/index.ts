@@ -38,6 +38,7 @@
  *   GET   /api/admin/kv/:key              — Get KV value
  *   GET   /api/admin/r2                    — List R2 objects
  *   GET   /api/admin/r2/:key+             — R2 object metadata
+ *   POST  /api/admin/apps/:name/cost-controls — Re-apply user-app cost controls (backfill)
  */
 
 import { Hono } from 'hono';

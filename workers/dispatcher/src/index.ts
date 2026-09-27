@@ -103,14 +103,25 @@ interface Env {
   DATA_PROXY_MAX_RESPONSE_BYTES?: string;
   LOCAL_APP_VANITY_DOMAIN?: string;
   LOCAL_APP_IFRAME_DOMAIN?: string;
+  USER_WORKER_SUBREQUEST_LIMIT?: string;
 }
 
-const USER_WORKER_SUBREQUEST_LIMIT = 10_000_000;
+// Cloudflare's own paid-plan default. Virtualized bindings (KV, AI, data
+// proxy) are service calls into the main worker and each one counts, so this
+// stays well above 1,000; it only needs to stop runaway fan-out loops.
+// CPU is capped per script by `limits.cpu_ms` at upload time (which also
+// covers Durable Object requests and alarms), not here.
+const DEFAULT_USER_WORKER_SUBREQUEST_LIMIT = 10_000;
+
+function userWorkerSubrequestLimit(env: Env): number {
+  const configured = Number(env.USER_WORKER_SUBREQUEST_LIMIT);
+  return Number.isInteger(configured) && configured > 0 ? configured : DEFAULT_USER_WORKER_SUBREQUEST_LIMIT;
+}
 
 function getUserWorker(env: Env, dispatchScriptName: string) {
   return env.DISPATCHER.get(dispatchScriptName, {}, {
     limits: {
-      subRequests: USER_WORKER_SUBREQUEST_LIMIT,
+      subRequests: userWorkerSubrequestLimit(env),
     },
   });
 }
