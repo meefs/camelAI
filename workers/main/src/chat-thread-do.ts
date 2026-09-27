@@ -380,7 +380,7 @@ import {
   type RuntimeInput,
   type RuntimeInputAnswer,
   type RuntimeRunConfig,
-  runtimeEnabledForOrg,
+  runtimeConfigured,
   type RuntimeAgentRecord,
   type RuntimeRunRecord,
 } from "./chat-thread/runtime-agent";
@@ -5652,9 +5652,10 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   private async resumeActivePiTurn(
     options: { cause?: PiTurnResumeCause } = {},
   ): Promise<void> {
-    if (this.chatContext && await this.resolveAgentBackend(this.chatContext) === "runtime") {
+    if (this.chatContext && this.mayRunOnRuntime()) {
       // The runtime kept running the turn (or finished it): relay its events
       // again from the run's start. Nothing is re-prompted, so no resume budget.
+      // A new thread whose first turn never started is pinned here.
       await this.ensurePiSessionReady();
       const session: unknown = this.piSession;
       // A route the forwarder cannot take sent the thread back to the in-DO loop.
@@ -7754,7 +7755,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     this.recordPiSessionLoadWindow(loaded.window);
     this.piMainBaselineIndex = persistedMessages.length;
     if (
-      await this.resolveAgentBackend(context) === "runtime" &&
+      this.resolveAgentBackend(modelConfig) === "runtime" &&
       this.keepRuntimeBackend(modelConfig)
     ) {
       const session = this.createRuntimeAgentSession(context, envVars, modelConfig.model, persistedMessages);
@@ -7885,9 +7886,9 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   }
 
   /**
-   * A thread pinned to the runtime whose route the forwarder cannot take
-   * (Bedrock, Codex, custom, the gateway's dynamic routes) goes back to the
-   * in-DO loop, as long as the runtime has not started it yet.
+   * A runtime thread whose model has since lost its runtime route (switched
+   * to a custom endpoint, say) goes back to the in-DO loop, as long as the
+   * runtime has not started it yet.
    */
   private keepRuntimeBackend(config: PiResolvedModelConfig): boolean {
     if (this.runtimeRouteFor(config)) return true;
@@ -7895,7 +7896,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     this.ctx.storage.kv.put(CHAT_AGENT_BACKEND_KEY, "pi");
     this.recordChatThreadObservabilityEvent("agent_backend_pinned", {
       operation: "resolve_agent_backend",
-      status: "pi_unsupported_route",
+      status: "pi_route_changed",
     });
     return false;
   }
@@ -7905,26 +7906,36 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     return this.ctx?.storage?.kv?.get<string>(CHAT_AGENT_BACKEND_KEY) === "runtime";
   }
 
+  /** Whether this thread is, or may still become, a runtime thread (no session needed to tell). */
+  private mayRunOnRuntime(): boolean {
+    const pinned = this.ctx?.storage?.kv?.get<string>(CHAT_AGENT_BACKEND_KEY);
+    if (pinned !== undefined) return pinned === "runtime";
+    return runtimeConfigured(this.env ?? {}) && this.hasNoModelTranscript();
+  }
+
   /**
-   * The loop this thread runs on, pinned the first time it is asked. Only a
-   * thread with no transcript yet can start on the runtime, so an existing
-   * conversation never moves between loops.
+   * The loop this thread runs on, pinned the first time a session is made. A
+   * new thread (the model has never answered in it) goes to the runtime when
+   * this deployment has a runtime tenant and the thread's model has a runtime
+   * route; an existing conversation never moves between loops. The pin is
+   * recorded as `agent_backend_pinned` with the reason for any fallback.
    */
-  private async resolveAgentBackend(context: ChatContextState): Promise<"runtime" | "pi"> {
+  private resolveAgentBackend(config: PiResolvedModelConfig): "runtime" | "pi" {
     const kv = this.ctx?.storage?.kv;
-    if (!kv || this.env?.AGENT_RUNTIME_ENABLED === undefined && kv.get(CHAT_AGENT_BACKEND_KEY) === undefined) {
-      // Runtime never configured here (and never pinned): the in-DO loop, without a write.
-      return "pi";
-    }
-    const pinned = kv.get<string>(CHAT_AGENT_BACKEND_KEY);
+    const pinned = kv?.get<string>(CHAT_AGENT_BACKEND_KEY);
     if (pinned === "runtime" || pinned === "pi") return pinned;
-    const backend = this.hasNoModelTranscript() && await runtimeEnabledForOrg(this.env, context.orgId)
-      ? "runtime"
-      : "pi";
+    // No runtime tenant here (dev, self-host): the in-DO loop, without a write.
+    if (!kv || !runtimeConfigured(this.env ?? {})) return "pi";
+    const fallback = !this.hasNoModelTranscript() ? "pi_existing_transcript"
+      : !this.runtimeRouteFor(config) ? "pi_no_runtime_route"
+      : null;
+    const backend = fallback ? "pi" : "runtime";
     kv.put(CHAT_AGENT_BACKEND_KEY, backend);
     this.recordChatThreadObservabilityEvent("agent_backend_pinned", {
       operation: "resolve_agent_backend",
-      status: backend,
+      status: fallback ?? "runtime",
+      provider: config.usageProvider,
+      model: config.model.id,
     });
     return backend;
   }

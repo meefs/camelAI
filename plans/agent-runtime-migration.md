@@ -82,8 +82,10 @@ runtime ──usage webhook (Standard Webhooks)──> /agent-runtime/usage (Wor
   - `AGENT_RUNTIME_TENANT`: when set, tokens for any other tenant are refused;
   - `AGENT_RUNTIME_MCP_AUDIENCE` / `AGENT_RUNTIME_LLM_AUDIENCE`: only needed
     behind a proxy;
-  - adapter: `AGENT_RUNTIME_ENABLED`, `AGENT_RUNTIME_API_TOKEN` (operator
-    token, a secret), `AGENT_RUNTIME_DEFINITION`.
+  - adapter: `AGENT_RUNTIME_API_TOKEN` (operator token, a secret) and
+    `AGENT_RUNTIME_DEFINITION`; with `AGENT_RUNTIME_TENANT` they turn the
+    runtime on (§6);
+  - `AGENT_RUNTIME_WEBHOOK_SECRET`: the usage webhook's signing secret.
 - **SDK dependency.** `@camelai/agent-runtime@^0.5.0` from npm (`./server`, `./testing`).
 - **Tests.** `bun run test:workers -- agent-mcp` (`testRuntime()` signs real
   tokens). They cover:
@@ -177,11 +179,11 @@ runtime's event stream carries native Pi `AgentEvent`s, so
 `pi_core_*` render mirror, run unchanged. `camel__` tool names are mapped back
 (`camel__list_apps` → `list_apps`) so the UI's tool renderers apply.
 
-- **Backend pin.** `resolveAgentBackend` pins `agentBackend` in DO KV the
-  first time a thread is asked: `runtime` only for a thread the model has
-  never answered (one probe of `pi_core_messages`), in an allowlisted org,
-  with `AGENT_RUNTIME_ENABLED=true`. Everything else is `pi`; with the flag
-  unset nothing is written.
+- **Backend pin.** `resolveAgentBackend` pins `agentBackend` in DO KV when
+  the thread's first session is made (§6): `runtime` only for a thread the
+  model has never answered (one probe of `pi_core_messages`) whose model has
+  a runtime route, on a deployment with the runtime config. Everything else
+  is `pi`; without the config nothing is written.
 - **Create** (lazily, first run): `POST /v1/agents` with the operator token
   (`AGENT_RUNTIME_API_TOKEN`), `Idempotency-Key: thread_<id>`,
   `definition: AGENT_RUNTIME_DEFINITION`, `model: chiridion/<provider>/<model>`
@@ -249,20 +251,27 @@ tested), and 402/429 from the proxy ending a runtime turn.
   the runtime's own `read/write/...` are gone; `fs`, `present_file` and
   attachments stay.
 
-## 6. Rollout flag
+## 6. Which threads run on the runtime
 
-There is no generic flag system. Use the pattern of the KV ban list, which is
-already checked where messages are accepted (`isOrgBanned`, CTD:6433):
+No flag and no allowlist: a deployment turns the runtime on by having a
+runtime tenant, i.e. `AGENT_RUNTIME_API_TOKEN`, `AGENT_RUNTIME_TENANT` and
+`AGENT_RUNTIME_DEFINITION` all set (`runtimeConfigured`).
 
-- `AGENT_RUNTIME_ENABLED` (env kill switch), plus a KV allowlist
-  `agent_runtime_org:<orgId>` in `APP_KV`, managed with
-  `GET/PUT/DELETE /api/admin/orgs/:id/agent-runtime`.
-- The decision is pinned per thread at its first turn (`agentBackend`
-  in DO KV) and never flips. Existing threads keep the in-DO loop, and new
-  threads in allowlisted orgs use the runtime. Transcripts are not migrated.
-  Importing history later is possible with `initialMessages`.
-- Kill switch semantics: new threads fall back to the in-DO loop. Pinned
-  runtime threads keep using the runtime.
+- A thread is pinned when its first session is made (`agentBackend` in DO
+  KV) and never flips. It goes to the runtime when it is new (the model has
+  never answered in it) and its resolved model has a runtime route (§10:
+  hosted, free tier, BYOK Anthropic/OpenAI/OpenRouter/Bedrock, Codex).
+  Otherwise it stays on the in-DO loop: custom endpoints, self-host
+  providers, and every thread that already has a transcript. Transcripts are
+  not migrated (`initialMessages` could import history later).
+- Each pin is recorded as `agent_backend_pinned` with status `runtime`, or
+  the fallback reason `pi_existing_transcript` / `pi_no_runtime_route`, plus
+  the provider and model. A runtime thread whose model loses its route
+  before the runtime started it is re-pinned `pi_route_changed`. A
+  deployment without the runtime config pins nothing and records nothing.
+- Turning it off: remove `AGENT_RUNTIME_DEFINITION` and redeploy. New
+  threads then use the in-DO loop; threads already pinned to the runtime keep
+  using it, since they only need the operator token (§12).
 
 ## 7. Latency and cost risks
 
@@ -449,78 +458,87 @@ AGENT_OUTBOUND_ALLOW_HTTP=true AGENT_OUTBOUND_ALLOW_CIDRS=127.0.0.1/32 \
 node --experimental-strip-types src/server.ts
 
 # definition
-POST /v1/definitions {"name": "camelai-thread", "model": "chiridion/openrouter/anthropic/claude-sonnet-5",
+POST /v1/definitions {"name": "camelai-thread", "model": "openrouter/anthropic/claude-sonnet-5:nitro",
   "builtins": ["web_fetch", "web_search", "ask_user"], "fileTools": false,
   "mcpServers": [{"name": "camel", "url": "http://127.0.0.1:3001/mcp/agent",
     "auth": {"type": "runtime"}, "exposure": "both", "timeoutMs": 1200000}]}
 
 # chiridion .dev.vars: AGENT_RUNTIME_URL=http://127.0.0.1:8795
-#   AGENT_RUNTIME_TENANT=chiridion AGENT_RUNTIME_ENABLED=true
+#   AGENT_RUNTIME_TENANT=chiridion
 #   AGENT_RUNTIME_API_TOKEN=<operator token> AGENT_RUNTIME_DEFINITION=def_…
 #   AGENT_RUNTIME_WEBHOOK_SECRET=whsec_… (the runtime's webhook secret)
-npx wrangler kv key put --local --binding APP_KV --persist-to .wrangler/state agent_runtime_org:local-dev-org 1
 E2E_LOCAL=1 bun run dev:local-auth
 # then start a new chat thread in the UI
 ```
 
-## 12. Staging rollout plan (proposed; nothing done)
+## 12. Staging rollout plan
+
+The steps are in one script Miguel runs (`staging-activate.sh`, kept outside
+the repo): runtime tenant, usage webhook, definition, worker secrets, Access
+bypass. It prints no secret and is safe to re-run.
 
 **Deploy**
-1. chiridion staging (`bun run deploy:main:staging`) from this branch, after
-   review. The new code is inert without the flag: with `AGENT_RUNTIME_ENABLED`
-   unset, no thread is pinned and the MCP/proxy routes only answer valid
-   runtime tokens.
-2. Runtime: nothing to deploy. R1–R4 and R6 are on agent-runtime main
-   (agents.camelai.dev). There is no staging runtime, so staging chiridion
-   uses production's runtime under its own tenant.
+1. Merge this branch; staging deploys it. It is inert there until the
+   runtime config exists: without `AGENT_RUNTIME_API_TOKEN`,
+   `AGENT_RUNTIME_TENANT` and `AGENT_RUNTIME_DEFINITION` no thread is pinned,
+   and the MCP, Codex and usage routes only answer valid runtime tokens or
+   signatures.
+2. Runtime: nothing to deploy (agents.camelai.dev). There is no staging
+   runtime, so staging chiridion uses production's runtime under its own tenant.
 
-**Runtime config** (tenants secret, `AGENT_TENANTS_SECRET_ARN`)
-- A new tenant `chiridion-staging`: its own operator token, `billing: "none"`,
+**Runtime config** (tenants secret `camelai/agent-runtime/tenants`)
+- Tenant `chiridion-staging`: its own operator token (kept at
+  `camelai/agent-runtime/operator-token/chiridion-staging`), `billing: "none"`,
   a modest `maxAgents`, and
   `"modelEndpoints": {"chiridion": {"baseUrl": "https://staging.camelai.dev/agent-runtime/llm"}}`
-  (Codex only), and its usage webhook at `https://staging.camelai.dev/agent-runtime/usage`
-  with a signing secret. The hosted and org key scopes are created by chiridion itself.
-- One definition, created with that tenant's token:
-  `{"name": "camelai-thread", "model": "chiridion/openrouter/anthropic/claude-sonnet-5", "builtins": ["web_fetch", "web_search", "ask_user"], "fileTools": false,
+  (Codex only). Its usage webhook is `https://staging.camelai.dev/agent-runtime/usage`.
+  chiridion creates the `hosted` and `org_<id>` key scopes itself.
+- One definition, made with that tenant's token:
+  `{"name": "camelai-thread", "model": "openrouter/anthropic/claude-sonnet-5:nitro", "builtins": ["web_fetch", "web_search", "ask_user"], "fileTools": false,
   "mcpServers": [{"name": "camel", "url": "https://staging.camelai.dev/mcp/agent", "auth": {"type": "runtime"}, "exposure": "both", "timeoutMs": 1200000}]}`.
-  Check it with `GET /v1/agents/:id?refresh=true` on a test agent (the camel
-  source must list ~75 tools).
+  Its model is only a default: chiridion sets each agent's model and key scope.
 
 **Chiridion staging config**
 - Secrets `AGENT_RUNTIME_API_TOKEN` (the tenant's operator token) and
   `AGENT_RUNTIME_WEBHOOK_SECRET` (the usage webhook's `whsec_…`).
-- Vars in `wrangler.staging.jsonc`: `AGENT_RUNTIME_ENABLED=true`,
-  `AGENT_RUNTIME_TENANT=chiridion-staging`, `AGENT_RUNTIME_DEFINITION=def_…`
-  (`AGENT_RUNTIME_URL` defaults to agents.camelai.dev).
+- Vars in `wrangler.staging.jsonc`: `AGENT_RUNTIME_TENANT=chiridion-staging`,
+  `AGENT_RUNTIME_DEFINITION=def_…` (`AGENT_RUNTIME_URL` defaults to
+  agents.camelai.dev). Once they are deployed with the secrets, every new
+  thread with a runtime route runs on the runtime.
 - Cloudflare Access: staging is behind Access, which would block the runtime.
-  Add a bypass for `/mcp/agent`, `/agent-runtime/llm/openai-codex/*` and
-  `/agent-runtime/usage`
-  only; both refuse anything without a valid runtime token.
+  Bypass `/mcp/agent`, `/agent-runtime/llm/openai-codex` and
+  `/agent-runtime/usage` only; each refuses anything without a valid runtime
+  token or webhook signature.
 
-**Allowlist**
-- `PUT /api/admin/orgs/<staff org>/agent-runtime` for one staff org first;
-  only its new threads switch. Then a few more internal orgs.
+**Check**
+- A new thread: `agent_backend_pinned` status `runtime`, the camel tools on
+  its agent, usage_log rows with source `agent_runtime`.
+- A thread from before the deploy, and one on a custom endpoint: pinned
+  `pi_existing_transcript` / `pi_no_runtime_route`.
 
 **What to measure** (a week of internal use, compared with in-DO threads)
 - Tool-call latency from the runtime: `code_mode_project_tool_call_*` and
   lake `tool_calls` durations for runtime threads, plus the runtime's MCP call
   timings, for US- and EU-homed orgs.
-- Time to first token and turn duration (proxy adds a hop).
-- Turn outcomes: completed / errored / stopped, `agent_backend_pinned` counts,
-  runtime `turn_resumed`/`turn_recovered`, replay gaps, "did not reach the
-  agent" closes.
-- Usage parity: `usage_log` rows per turn (source `pi_assistant`, acting
-  user), cache-read share, credit and user-limit refusals (402/429).
-- Deploy/notebook tools over MCP (long calls, progress in the UI), and
-  signature continuity (no provider errors on tool continuations).
+- Time to first token and turn duration.
+- Turn outcomes: completed / errored / stopped, `agent_backend_pinned` counts
+  by status, runtime `turn_resumed`/`turn_recovered`, replay gaps, "did not
+  reach the agent" closes.
+- Usage parity: `usage_log` rows per turn (source `agent_runtime`, acting
+  user), cache-read share, credit and user-limit refusals, spend-limit stops.
+- Deploy/notebook tools over MCP (long calls, progress in the UI).
 - DO duration and wake counts for runtime threads.
 
 **Rollback**
-- One org: `DELETE /api/admin/orgs/:id/agent-runtime`; its new threads go
-  back to the in-DO loop.
-- Everyone: `AGENT_RUNTIME_ENABLED=false` (a var change and redeploy). New
-  threads use the in-DO loop at once.
-- Threads already pinned to the runtime keep using it (their transcript lives
-  there) as long as the tenant, definition and token stay; removing those
-  breaks them, so leave them in place until those threads are abandoned or a
-  migration back exists.
+- Remove `AGENT_RUNTIME_DEFINITION` from `wrangler.staging.jsonc` and deploy.
+  The runtime config is then incomplete, so new threads use the in-DO loop at
+  once, while threads already pinned to the runtime keep working: their agents
+  exist, and the operator token (still set) is all they need.
+- Removing the token or the tenant as well would break those pinned threads
+  (their transcripts live in the runtime), so leave them until those threads
+  are abandoned or a migration back exists.
+
+**Production** would need the same: its own runtime tenant, webhook,
+definition, secrets and vars. Deploying this code to production changes
+nothing until production has that config; from then on all its new threads
+with a runtime route use the runtime. Miguel decides when.

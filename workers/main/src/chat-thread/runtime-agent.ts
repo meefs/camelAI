@@ -37,8 +37,8 @@ export const RUNTIME_PROMPT_PREAMBLE = [
 ].join("\n\n");
 
 export interface RuntimeAgentEnv {
-  AGENT_RUNTIME_ENABLED?: string;
   AGENT_RUNTIME_URL?: string;
+  AGENT_RUNTIME_TENANT?: string;
   AGENT_RUNTIME_API_TOKEN?: string;
   AGENT_RUNTIME_DEFINITION?: string;
   APP_KV: KVNamespace;
@@ -214,16 +214,12 @@ export function runtimeUrl(env: RuntimeAgentEnv): string {
   return (env.AGENT_RUNTIME_URL || "https://agents.camelai.dev").replace(/\/+$/, "");
 }
 
-/** KV allowlist key: an org whose new threads run on the hosted runtime. */
-export function runtimeOrgAllowKey(orgId: string): string {
-  return `agent_runtime_org:${orgId}`;
-}
-
-/** Whether a new thread in `orgId` should run on the hosted runtime. */
-export async function runtimeEnabledForOrg(env: RuntimeAgentEnv, orgId: string): Promise<boolean> {
-  if (env.AGENT_RUNTIME_ENABLED !== "true") return false;
-  if (!env.AGENT_RUNTIME_API_TOKEN || !env.AGENT_RUNTIME_DEFINITION) return false;
-  return (await env.APP_KV.get(runtimeOrgAllowKey(orgId))) !== null;
+/**
+ * Whether this deployment has a runtime tenant: its operator token, tenant id
+ * and agent definition. Without them every thread runs on the in-DO loop.
+ */
+export function runtimeConfigured(env: Partial<RuntimeAgentEnv>): boolean {
+  return Boolean(env.AGENT_RUNTIME_API_TOKEN?.trim() && env.AGENT_RUNTIME_TENANT?.trim() && env.AGENT_RUNTIME_DEFINITION?.trim());
 }
 
 export class RuntimeAgentError extends Error {
