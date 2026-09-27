@@ -360,22 +360,38 @@ server, and calls `ChatThreadDO.runtimeProviderRequest`, which:
    `message_delta`, Chat Completions `usage`, or a JSON body; OpenRouter's
    `cost` when present) into `recordPiAssistantUsage` as the acting user.
 
-Routes:
+Routes (the runtime's upstream mapping: `<endpoint>/<provider>/<rest>` →
+the provider's base + `<rest>`; the real key replaces the runtime's in the
+header slot its client used):
 
 | Thread route | Runtime provider | Upstream | Credential |
 | --- | --- | --- | --- |
-| hosted (AI Gateway, openrouter/anthropic/openai provider) | the gateway provider | the gateway URL for it | `cf-aig-authorization` + gateway metadata headers |
-| BYOK OpenRouter | openrouter | `https://openrouter.ai/api/v1` | `Authorization: Bearer <key>` |
+| hosted (AI Gateway, openrouter/anthropic/openai provider) | the gateway provider | the gateway URL for it (OpenRouter: its prefix is `/api/v1`, so `v1/…` is cut) | `cf-aig-authorization` + gateway metadata headers |
+| BYOK OpenRouter | openrouter | `https://openrouter.ai/api` (`/v1/responses`; `/v1/messages` for Anthropic models, which keeps prompt caching) | the key in `Authorization` or `x-api-key` |
 | BYOK Anthropic | anthropic | `https://api.anthropic.com` | `x-api-key` |
 | BYOK OpenAI | openai | `https://api.openai.com/v1` | `Authorization: Bearer <key>` |
-| Bedrock, Codex subscription, custom endpoint, self-host, gateway `compat` dynamic routes (deepseek, the free tier's luna/muse) | none | — | — |
+| BYOK Bedrock (Claude) | amazon-bedrock | `https://bedrock-runtime.<region>.amazonaws.com` (`<rest>` = `<region>/model/<id>/converse-stream`; region and model checked) | the org's Bedrock API key as `Authorization: Bearer` |
+| Codex subscription (skipped), custom endpoint, self-host, Bedrock OpenAI models, gateway `compat` dynamic routes | none | — | — |
 
 A thread whose route has none is pinned back to the in-DO loop before the
 runtime starts it; a runtime thread that later switches to such a route gets
-"switch models to continue". Codex is not forwardable as is: the runtime's
-Codex client derives its account headers from the OAuth token itself, which
-it never has. Bedrock's Anthropic-compatible endpoint would need
-Bedrock-native model ids declared to the runtime.
+"switch models to continue". Bedrock: chiridion stores Bedrock API keys (the
+bearer tokens bedrock-runtime accepts), not IAM access keys, so there is
+nothing to SigV4-sign; Converse-stream usage comes from the AWS event
+stream's `metadata` event. Codex is skipped by decision (its client derives
+account headers from the OAuth token itself).
+
+**Codex enablement** (for checking use later): an org admin connects a
+ChatGPT subscription in Settings → Organization → AI provider (device-code
+sign-in, `POST /api/orgs/:id/llm-provider` intents `startOpenAiSubscription` /
+`pollOpenAiSubscription`), which stores one row in the org's OrgDO table
+`openai_subscription` (`id = 'active'`, `account_email`, `plan_type`,
+`created_at`). A thread then uses it whenever its model resolves to an OpenAI
+model (it takes precedence over the hosted route); the proxy is
+`OPENAI_CODEX_PROXY_BASE_URL`/`_TOKEN`. There is no cross-org index: find
+users per OrgDO (`getOpenAiSubscription`, e.g. through `admin_js_exec`), or
+from `usage_log` rows with `billing_source = 'byok'` and `provider = 'openai'`
+on orgs without an OpenAI API key.
 
 ## 11. Local end-to-end recipe
 
