@@ -4,6 +4,7 @@ import {
   eventStreamPayloads,
   foldUsage,
   passthroughRoute,
+  providerError,
   readUsage,
   runtimeModelFor,
   upstreamCall,
@@ -96,6 +97,53 @@ describe("passthroughRoute", () => {
     expect(passthroughRoute(config({ usageProvider: "custom", model: { provider: "custom", id: "x", baseUrl: "https://llm.example" } }))).toBeNull();
     expect(passthroughRoute(config({ usageProvider: "bedrock", model: { provider: "custom", api: "openai-responses", id: "openai.gpt", baseUrl: "https://bedrock-mantle.us-east-1.api.aws/openai/v1" } }))).toBeNull();
     expect(passthroughRoute(config({ billingSource: "hosted", usageProvider: "compat", model: { provider: "cloudflare-ai-gateway", id: "dynamic/x", baseUrl: GATEWAY } }))).toBeNull();
+  });
+});
+
+describe("the free tier", () => {
+  const free = config({
+    apiKey: "gateway-token",
+    billingSource: "hosted",
+    creditChargeable: false,
+    usageProvider: "compat",
+    model: {
+      provider: "cloudflare-ai-gateway",
+      api: "openai-completions",
+      id: "dynamic/luna-muse-fallback",
+      baseUrl: "https://gateway.ai.cloudflare.com/v1/acct/gw/compat",
+      headers: { "cf-aig-metadata": "{}", "x-sticky-key": "t1", "X-Chiridion-VLLM-Priority": "low" },
+    },
+  });
+
+  it("runs GPT-6 Luna through the gateway's OpenRouter provider, uncharged", () => {
+    const route = passthroughRoute(free, { freeTier: true })!;
+    expect(route).toEqual({
+      provider: "openrouter",
+      modelId: "openai/gpt-6-luna",
+      kind: "gateway",
+      upstreamBase: "https://gateway.ai.cloudflare.com/v1/acct/gw/openrouter",
+      credential: "gateway-token",
+      headers: { "cf-aig-metadata": "{}" },
+      usageProvider: "openrouter",
+    });
+    expect(runtimeModelFor("chiridion", route)).toBe("chiridion/openrouter/openai/gpt-6-luna");
+    // Responses, the path the runtime uses for non-Anthropic OpenRouter models.
+    expect(upstreamCall(route, "v1/responses", "", [["authorization", "Bearer jwt"]], JSON.stringify({ model: "openai/gpt-6-luna" })))
+      .toMatchObject({ url: "https://gateway.ai.cloudflare.com/v1/acct/gw/openrouter/responses" });
+  });
+
+  it("leaves other dynamic routes without a runtime route", () => {
+    expect(passthroughRoute(free)).toBeNull();
+  });
+});
+
+describe("providerError", () => {
+  it("answers in each provider's own error shape", async () => {
+    expect(await providerError("anthropic", 429, "limit", "usage_limit").json()).toEqual({ type: "error", error: { type: "rate_limit_error", message: "limit" } });
+    const bedrock = providerError("amazon-bedrock", 429, "limit", "usage_limit");
+    expect(bedrock.headers.get("x-amzn-errortype")).toBe("ThrottlingException");
+    expect(await bedrock.json()).toEqual({ message: "limit" });
+    expect(await providerError("openrouter", 402, "no credits", "insufficient_credits").json()).toEqual({ error: { message: "no credits", type: "insufficient_credits", code: "insufficient_credits" } });
   });
 });
 

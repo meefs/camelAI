@@ -34,7 +34,19 @@ export interface PassthroughRoute {
   headers: Record<string, string>;
   /** Bedrock: the org's region. */
   region?: string;
+  /** The provider usage is recorded under, when it is not the resolver's (the free tier's gateway route). */
+  usageProvider?: string;
 }
+
+/**
+ * The free tier on the runtime: GPT-6 Luna on OpenRouter, over the Responses
+ * API, through the hosted AI Gateway. (The in-DO loop keeps the free tier's
+ * gateway dynamic route, which only takes chat completions.)
+ */
+export const FREE_TIER_RUNTIME_MODEL = "openai/gpt-6-luna";
+
+/** Headers only the gateway's dynamic routes read (sticky routing, vLLM priority). */
+const DYNAMIC_ROUTE_HEADERS = /^(x-sticky-key|x-chiridion-vllm-priority)$/i;
 
 /** The provider base URLs the runtime's clients assume under `<endpoint>/<provider>`. */
 export const DIRECT_BASES = {
@@ -83,11 +95,29 @@ export function bedrockInferenceProfileId(modelId: string, region: string): stri
  * The pass-through route for a thread's resolved model, or null when it has
  * none: the Codex subscription (skipped: its client derives account headers
  * from the OAuth token itself), custom endpoints, self-host providers, Bedrock
- * OpenAI models and the gateway's `compat` dynamic routes.
+ * OpenAI models and the gateway's `compat` dynamic routes other than the free
+ * tier's (`freeTier`: the thread's model is the credit-free camelCode model).
  */
-export function passthroughRoute(config: PiResolvedModelConfig): PassthroughRoute | null {
+export function passthroughRoute(
+  config: PiResolvedModelConfig,
+  options: { freeTier?: boolean } = {},
+): PassthroughRoute | null {
   const { model } = config;
   const extra = presentHeaders(model.headers as Record<string, string | null> | undefined);
+  if (options.freeTier && model.provider === "cloudflare-ai-gateway" && config.usageProvider === "compat") {
+    // The free tier's hosted route is a gateway dynamic route; on the runtime
+    // it is GPT-6 Luna through the same gateway's OpenRouter provider.
+    for (const name of Object.keys(extra)) if (DYNAMIC_ROUTE_HEADERS.test(name)) delete extra[name];
+    return {
+      provider: "openrouter",
+      modelId: FREE_TIER_RUNTIME_MODEL,
+      kind: "gateway",
+      upstreamBase: model.baseUrl.replace(/\/+$/, "").replace(/\/compat$/, "/openrouter"),
+      credential: config.apiKey,
+      headers: extra,
+      usageProvider: "openrouter",
+    };
+  }
   if (model.provider === "cloudflare-ai-gateway") {
     // The gateway holds the provider keys; it takes its own token.
     if (!isGatewayProvider(config.usageProvider)) return null;
@@ -391,4 +421,20 @@ async function readEventStreamUsage(body: ReadableStream<Uint8Array>): Promise<P
     pending = rest.slice();
   }
   return seen;
+}
+
+/**
+ * A refusal in the upstream provider's own error shape, so the runtime's
+ * client for it reads the message (and the user sees it) as the provider's.
+ */
+export function providerError(provider: string, status: number, message: string, code: string): Response {
+  if (provider === "anthropic") {
+    const type = status === 429 ? "rate_limit_error" : status === 402 ? "billing_error" : status === 403 ? "permission_error" : "invalid_request_error";
+    return Response.json({ type: "error", error: { type, message } }, { status });
+  }
+  if (provider === "amazon-bedrock") {
+    const type = status === 429 ? "ThrottlingException" : status === 402 || status === 403 ? "AccessDeniedException" : "ValidationException";
+    return Response.json({ message }, { status, headers: { "x-amzn-errortype": type } });
+  }
+  return Response.json({ error: { message, type: code, code } }, { status });
 }

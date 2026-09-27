@@ -95,6 +95,7 @@ import {
   getStoredBedrockAwsRegion,
   getStoredCustomLlmProviderApi,
   getStoredCustomLlmProviderModelId,
+  isCreditFreeHostedModel,
   normalizeLlmModel,
 } from "../../../src/lib/llm-provider-config";
 import { isTransientDurableObjectRpcError } from "../../../src/lib/do-rpc-retry.server";
@@ -386,6 +387,7 @@ import {
 import {
   forwardedResponseHeaders,
   passthroughRoute,
+  providerError,
   readUsage,
   runtimeModelFor,
   upstreamCall,
@@ -7885,7 +7887,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
    * in-DO loop, as long as the runtime has not started it yet.
    */
   private keepRuntimeBackend(config: PiResolvedModelConfig): boolean {
-    if (passthroughRoute(config)) return true;
+    if (passthroughRoute(config, { freeTier: isCreditFreeHostedModel(this.currentThreadModel) })) return true;
     if (this.ctx.storage.kv.get(RUNTIME_AGENT_KEY)) return true;
     this.ctx.storage.kv.put(CHAT_AGENT_BACKEND_KEY, "pi");
     this.recordChatThreadObservabilityEvent("agent_backend_pinned", {
@@ -7983,7 +7985,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     const resolveModel = this.piModelResolver;
     if (!resolveModel) throw new Error("The thread's model is not available");
     const config = await resolveModel();
-    return { route: passthroughRoute(config), config };
+    return { route: passthroughRoute(config, { freeTier: isCreditFreeHostedModel(this.currentThreadModel) }), config };
   }
 
   /** The runtime model id (`chiridion/<provider>/<model>`) for the thread's route. */
@@ -8004,7 +8006,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     caller: { orgId: string; workspaceId: string; threadId: string; userId: string },
   ): Promise<Response> {
     const fail = (status: number, message: string, code: string) =>
-      Response.json({ error: { message, type: code, code } }, { status });
+      providerError(request.provider, status, message, code);
     const context = this.chatContext;
     if (
       !context ||
@@ -8045,7 +8047,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     const headers = forwardedResponseHeaders(upstream.headers);
     if (!upstream.body) return new Response(null, { status: upstream.status, headers });
     const [toRuntime, toMeter] = upstream.body.tee();
-    const billing = { source: config.billingSource, chargeable: config.creditChargeable, provider: config.usageProvider };
+    const billing = { source: config.billingSource, chargeable: config.creditChargeable, provider: route.usageProvider ?? config.usageProvider };
     const contentType = upstream.headers.get("content-type") ?? "";
     this.ctx.waitUntil(
       readUsage(toMeter, contentType)
