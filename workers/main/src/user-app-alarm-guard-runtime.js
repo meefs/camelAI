@@ -5,11 +5,25 @@
 // It patches setAlarm on the object's real storage before the user constructor
 // runs (the runtime rejects a proxied ctx), clamps every requested alarm to at
 // least now + minIntervalMs, and counts alarm invocations per UTC day in the
-// object's own storage. Once the daily budget is spent, setAlarm is a no-op
-// until the next UTC day.
+// object's own storage. Once the daily budget is spent, setAlarm defers to the
+// start of the next UTC day plus a per-object jitter, so the object keeps
+// working tomorrow without every throttled object waking at 00:00.
 
 const GUARD_NAME = "__camelai_guard";
 const DAY_MS = 86_400_000;
+const DEFAULT_DEFER_JITTER_MS = 300_000;
+
+// Stable per-object offset in [0, maxMs] (FNV-1a of the object id).
+function jitterFor(key, maxMs) {
+  if (!maxMs) return 0;
+  if (!key) return Math.floor(Math.random() * (maxMs + 1));
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < key.length; i++) {
+    hash ^= key.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash % (maxMs + 1);
+}
 
 function utcDay() {
   return Math.floor(Date.now() / DAY_MS);
@@ -26,11 +40,15 @@ function sqlStorage(storage) {
   }
 }
 
-export function installAlarmGuard(storage, options = {}) {
+export function installAlarmGuard(storage, options = {}, objectId) {
   if (!storage || typeof storage.setAlarm !== "function") return null;
   if (storage[GUARD_NAME]) return storage[GUARD_NAME];
   const minIntervalMs = Math.max(0, Number(options.minIntervalMs) || 0);
   const dailyBudget = Math.max(0, Math.floor(Number(options.dailyBudget) || 0));
+  const deferJitterMs = jitterFor(
+    objectId,
+    Math.max(0, Math.floor(Number(options.deferJitterMs ?? DEFAULT_DEFER_JITTER_MS) || 0)),
+  );
   let sql;
   let state = null;
   let loading = null;
@@ -93,7 +111,7 @@ export function installAlarmGuard(storage, options = {}) {
     if (!dailyBudget || s.count < dailyBudget) return false;
     if (warnedDay !== s.day) {
       warnedDay = s.day;
-      console.warn(`[camelai] Durable Object alarm budget of ${dailyBudget}/day reached; setAlarm() is ignored until 00:00 UTC.`);
+      console.warn(`[camelai] Durable Object alarm budget of ${dailyBudget}/day reached; alarms are deferred to the next UTC day.`);
     }
     return true;
   }
@@ -104,13 +122,20 @@ export function installAlarmGuard(storage, options = {}) {
     return Math.max(time, Date.now() + minIntervalMs);
   }
 
+  // Requests already past the next UTC midnight need no deferral.
+  function deferToNextDay(time, s) {
+    const nextDay = (s.day + 1) * DAY_MS;
+    if (typeof time !== "number" || time >= nextDay) return time;
+    return nextDay + deferJitterMs;
+  }
+
   function guardSetAlarm(target) {
     const setAlarm = target.setAlarm;
     function guardedSetAlarm(scheduledTime, alarmOptions) {
       const s = dailyBudget ? current() : null;
       if (s === undefined) return load().then(() => guardedSetAlarm(scheduledTime, alarmOptions));
-      if (s && overBudget(s)) return Promise.resolve();
-      return setAlarm.call(target, clamp(scheduledTime), alarmOptions);
+      const time = clamp(scheduledTime);
+      return setAlarm.call(target, s && overBudget(s) ? deferToNextDay(time, s) : time, alarmOptions);
     }
     Object.defineProperty(target, "setAlarm", { value: guardedSetAlarm, configurable: true, writable: true });
   }
@@ -159,7 +184,7 @@ export function guardDurableObjectClass(Base, options) {
   if (typeof Base !== "function" || !Base.prototype) return Base;
   class Guarded extends Base {
     constructor(ctx, env, ...rest) {
-      const guard = installAlarmGuard(ctx && ctx.storage, options);
+      const guard = installAlarmGuard(ctx && ctx.storage, options, ctx && ctx.id && String(ctx.id));
       super(ctx, env, ...rest);
       if (guard) guard.wrapAlarmHandler(this);
     }

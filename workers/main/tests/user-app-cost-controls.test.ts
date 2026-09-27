@@ -35,7 +35,20 @@ function storageView(storage: DurableObjectStorage, backend: "sql" | "kv") {
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.restoreAllMocks();
 });
+
+const DAY_MS = 86_400_000;
+const JITTER_MS = 300_000;
+
+function nextUtcMidnight(now = Date.now()) {
+  return (Math.floor(now / DAY_MS) + 1) * DAY_MS;
+}
+
+function expectDeferredToNextDay(time: unknown, now = Date.now()) {
+  expect(time).toBeGreaterThanOrEqual(nextUtcMidnight(now));
+  expect(time).toBeLessThanOrEqual(nextUtcMidnight(now) + JITTER_MS);
+}
 
 describe("alarm guard runtime", () => {
   it("patches setAlarm on real Durable Object storage and clamps Date and number times", async () => {
@@ -59,7 +72,7 @@ describe("alarm guard runtime", () => {
     });
   });
 
-  it("persists the daily budget in SQLite across re-instantiation and no-ops once spent", async () => {
+  it("persists the daily budget in SQLite across re-instantiation and defers once spent", async () => {
     await runInDurableObject(freshObject(), async (_instance, state) => {
       const first = storageView(state.storage, "sql");
       const firstSetAlarm = first.setAlarm;
@@ -81,9 +94,10 @@ describe("alarm guard runtime", () => {
       installAlarmGuard(third, { minIntervalMs: 0, dailyBudget: 2 });
       await third.setAlarm(Date.now() + 1_000);
       await third.setAlarm(new Date(Date.now() + 1_000));
-      expect(thirdSetAlarm).not.toHaveBeenCalled();
+      expect(thirdSetAlarm).toHaveBeenCalledTimes(2);
+      expectDeferredToNextDay(thirdSetAlarm.mock.calls[0]![0]);
+      expectDeferredToNextDay(thirdSetAlarm.mock.calls[1]![0]);
       expect(warn).toHaveBeenCalledTimes(1);
-      warn.mockRestore();
 
       expect(state.storage.sql.exec("SELECT count FROM __camelai_guard WHERE key = 'alarms'").one().count).toBe(2);
       // KV-API reads never see the guard's SQLite row.
@@ -103,7 +117,43 @@ describe("alarm guard runtime", () => {
       installAlarmGuard(second, { minIntervalMs: 0, dailyBudget: 1 });
       vi.spyOn(console, "warn").mockImplementation(() => {});
       await second.setAlarm(Date.now() + 1_000);
-      expect(originalSetAlarm).not.toHaveBeenCalled();
+      expectDeferredToNextDay(originalSetAlarm.mock.calls[0]![0]);
+    });
+  });
+
+  it("passes through over-budget requests that are already past the next UTC midnight", async () => {
+    await runInDurableObject(freshObject(), async (_instance, state) => {
+      const view = storageView(state.storage, "sql");
+      const setAlarm = view.setAlarm;
+      const guard = installAlarmGuard(view, { minIntervalMs: 0, dailyBudget: 1 })!;
+      await guard.recordAlarm();
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const later = nextUtcMidnight() + 3_600_000;
+      await view.setAlarm(later);
+      await view.setAlarm(new Date(later));
+      expect(setAlarm.mock.calls.map((call) => call[0])).toEqual([later, later]);
+    });
+  });
+
+  it("jitters deferred alarms per object, stably, within the window", async () => {
+    await runInDurableObject(freshObject(), async (_instance, state) => {
+      const deferredFor = async (objectId: string) => {
+        const view = storageView(state.storage, "sql");
+        const setAlarm = view.setAlarm;
+        const guard = installAlarmGuard(view, { minIntervalMs: 0, dailyBudget: 1 }, objectId)!;
+        await guard.recordAlarm();
+        await view.setAlarm(Date.now() + 1_000);
+        return setAlarm.mock.calls[0]![0] as number;
+      };
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const offsets = await Promise.all(["a".repeat(64), "b".repeat(64), "c".repeat(64), "a".repeat(64)]
+        .map(async (id) => (await deferredFor(id)) - nextUtcMidnight()));
+      for (const offset of offsets) {
+        expect(offset).toBeGreaterThanOrEqual(0);
+        expect(offset).toBeLessThanOrEqual(JITTER_MS);
+      }
+      expect(offsets[3]).toBe(offsets[0]);
+      expect(new Set(offsets.slice(0, 3)).size).toBeGreaterThan(1);
     });
   });
 
@@ -113,15 +163,21 @@ describe("alarm guard runtime", () => {
       vi.setSystemTime(new Date("2026-09-27T23:59:00Z"));
       const view = storageView(state.storage, "sql");
       const setAlarm = view.setAlarm;
-      const guard = installAlarmGuard(view, { minIntervalMs: 0, dailyBudget: 1 })!;
+      const guard = installAlarmGuard(view, { minIntervalMs: 0, dailyBudget: 2 })!;
+      await guard.recordAlarm();
       await guard.recordAlarm();
       vi.spyOn(console, "warn").mockImplementation(() => {});
       await view.setAlarm(Date.now() + 1_000);
-      expect(setAlarm).not.toHaveBeenCalled();
+      expectDeferredToNextDay(setAlarm.mock.calls[0]![0]);
 
-      vi.setSystemTime(new Date("2026-09-28T00:00:01Z"));
-      await view.setAlarm(Date.now() + 1_000);
-      expect(setAlarm).toHaveBeenCalledTimes(1);
+      // The deferred alarm fires on the new day with a fresh budget.
+      vi.setSystemTime(new Date("2026-09-28T00:02:00Z"));
+      await guard.recordAlarm();
+      expect(state.storage.sql.exec("SELECT day, count FROM __camelai_guard WHERE key = 'alarms'").one())
+        .toEqual({ day: Math.floor(Date.now() / DAY_MS), count: 1 });
+      const later = Date.now() + 1_000;
+      await view.setAlarm(later);
+      expect(setAlarm).toHaveBeenLastCalledWith(later, undefined);
     });
   });
 
@@ -178,8 +234,10 @@ describe("alarm guard runtime", () => {
       await object.alarm({ retryCount: 0 });
       await object.alarm({ retryCount: 0 });
       expect(alarmRuns).toHaveLength(2);
-      // The second alarm spent the budget, so it could not re-arm.
-      expect(originalSetAlarm).toHaveBeenCalledTimes(2);
+      // The second alarm spent the budget, so its re-arm moved to tomorrow.
+      expect(originalSetAlarm).toHaveBeenCalledTimes(3);
+      expect(originalSetAlarm.mock.calls[1]![0]).toBeLessThan(nextUtcMidnight());
+      expectDeferredToNextDay(originalSetAlarm.mock.calls[2]![0]);
     });
   });
 

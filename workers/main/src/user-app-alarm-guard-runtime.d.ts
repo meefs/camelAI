@@ -1,6 +1,7 @@
 export interface AlarmGuardOptions {
   minIntervalMs?: number;
   dailyBudget?: number;
+  deferJitterMs?: number;
 }
 
 export interface AlarmGuard {
@@ -15,6 +16,10 @@ interface GuardableStorage {
   transaction?: unknown;
 }
 
-export function installAlarmGuard(storage: GuardableStorage | null | undefined, options?: AlarmGuardOptions): AlarmGuard | null;
+export function installAlarmGuard(
+  storage: GuardableStorage | null | undefined,
+  options?: AlarmGuardOptions,
+  objectId?: string,
+): AlarmGuard | null;
 
 export function guardDurableObjectClass<T>(Base: T, options: AlarmGuardOptions): T;
