@@ -347,11 +347,12 @@ DO; it held the DO open for every streamed call and added a hop, which is
 cross-Atlantic for EU-placed DOs. Only Codex is still forwarded.)
 
 **Key scopes** (`agent-runtime/key-scopes.ts`, runtime `PUT
-/v1/key-scopes/:scope/providers/:provider {apiKey, baseUrl?, headers?}`):
+/v1/key-scopes/:scope/providers/:provider {apiKey?, baseUrl?, headers?, region?}`;
+a `baseUrl` replaces the provider's API root):
 
 | Scope | Providers |
 | --- | --- |
-| `hosted` | `openrouter`: base URL the AI Gateway's OpenRouter prefix, the gateway token as key and as `cf-aig-authorization`, OpenRouter attribution headers |
+| `hosted` | `openrouter`: base URL the AI Gateway's OpenRouter prefix, no key (the gateway holds OpenRouter's), the gateway token as `cf-aig-authorization`, OpenRouter attribution headers |
 | `org_<orgId>` | the org's BYOK provider: `anthropic`, `openai`, `openrouter` (key), or `amazon-bedrock` (the Bedrock API key, base `https://bedrock-runtime.<region>.amazonaws.com`) |
 
 Each scope is synced by fingerprint (APP_KV `agent_runtime_key_scope:<scope>`):
@@ -377,16 +378,28 @@ acting user (credit exhaustion through the resolver, per-user limits against
 the model the runtime will call), syncs the scope, and computes the spend limit:
 the least of the org's remaining hosted credit (hosted, credit-chargeable only)
 and the user's per-limit headroom (null when neither applies). The adapter
-creates the agent with `model`, `keyScope` and `spendLimit`, and PATCHes the
-spend limit before every run, with the model and scope when they changed. A
-run the runtime stops at the limit ends with `stopped: "spend_limit"`.
+creates the agent with `model`, `keyScope`, `spendLimit` and `modelHeaders`,
+and PATCHes the spend limit before every run, with the model, scope and model
+headers when they changed. Hosted-scope agents send the thread's
+`cf-aig-metadata` (as the in-DO loop does) on every model call, so the shared
+gateway's logs stay attributed per thread; BYOK and Codex agents send none. A
+run the runtime stops at the limit ends with `stopped: "spend_limit"`, which
+the adapter shows as an error message after the turn's last response; the next
+message then meets the gate's own refusal.
+
+Usage reaches chiridion a few seconds after each response (the runtime's usage
+flush, then the webhook), so a message sent right after a turn is gated on
+spend that may not yet include that turn. The overshoot is bounded by what one
+run can spend inside that lag, and the next run's gate sees it.
 
 **Usage webhook** (`routes/agent-runtime-usage.ts`, `POST /agent-runtime/usage`):
 Standard Webhooks signature under `AGENT_RUNTIME_WEBHOOK_SECRET` (`whsec_…`,
 five-minute tolerance, any of several signatures). Each event becomes one
 usage_log row in the org of its `context`, as `actor ?? subject`, source
 `agent_runtime`, source_id the event id (so a redelivery inserts nothing).
-The hosted scope is billed as hosted and credit-chargeable unless the model is
+The runtime's `amazon-bedrock` is recorded as `bedrock` (chiridion's pricing
+name). A subject equal to the agent id (the runtime's stand-in when an agent
+has none) is no user. The hosted scope is billed as hosted and credit-chargeable unless the model is
 the free tier's or the org is enterprise; an org scope and the Codex endpoint
 are BYOK. A provider-reported cost is stored as reported, a catalog cost as
 estimated. Events for another tenant, or without an org, are acknowledged and
@@ -413,12 +426,14 @@ model. There is no cross-org index: find users per OrgDO
 rows with `billing_source = 'byok'` and `provider = 'openai'` on orgs without
 an OpenAI API key.
 
-Earlier local verification (the forwarder design, same providers) showed the
-runtime's own clients handle hosted OpenRouter (Messages for Anthropic,
-Responses otherwise), BYOK Anthropic, Bedrock Converse and the free tier's
-gpt-6-luna with signed-thinking continuations and prompt caching; the key-scope
-path is built against the runtime's contract and awaits its local end-to-end
-run.
+Verified locally end to end (runtime 5436bab, chiridion dev): the keyless
+hosted scope (free tier's gpt-6-luna through chiridion; hosted Sonnet over
+Messages and gpt-5.6-luna over Responses by direct agents, since `:nitro` ids
+wait on a runtime fix), BYOK Anthropic and Bedrock (with the scope rotating
+on a settings change and an existing thread PATCHed to the new route), prompt
+caching on second turns, a per-user limit stopping a turn mid-way and then
+refusing the next message, webhook rows with provider-reported costs, and a
+redelivered event inserting nothing.
 
 ## 11. Local end-to-end recipe
 

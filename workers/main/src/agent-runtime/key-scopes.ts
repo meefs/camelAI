@@ -38,8 +38,9 @@ const OPENROUTER_ATTRIBUTION = {
 
 /**
  * camelAI's hosted providers: OpenRouter through the AI Gateway, which holds
- * the provider keys and takes its own token. Null when the gateway is not
- * configured (hosted threads then stay on the in-DO loop).
+ * the provider keys and takes its own token as `cf-aig-authorization` (the
+ * entry has no key). Null when the gateway is not configured (hosted threads
+ * then stay on the in-DO loop).
  */
 export function hostedScopeProviders(env: KeyScopeEnv): Providers | null {
   const accountId = env.CF_ACCOUNT_ID?.trim();
@@ -52,10 +53,24 @@ export function hostedScopeProviders(env: KeyScopeEnv): Providers | null {
   );
   return {
     openrouter: {
-      apiKey: token,
       baseUrl: `${gateway}/openrouter`,
       headers: { "cf-aig-authorization": `Bearer ${token}`, ...OPENROUTER_ATTRIBUTION },
     },
+  };
+}
+
+/**
+ * The per-agent headers a hosted-scope agent sends on every model call: the
+ * thread's AI Gateway metadata, as the in-DO loop sends it (pi-model-config).
+ * BYOK and Codex agents send none, so internal ids stay off customers' providers.
+ */
+export function hostedModelHeaders(thread: { orgId: string; workspaceId: string; threadId: string }): Record<string, string> {
+  const { orgId, workspaceId, threadId } = thread;
+  return {
+    "cf-aig-metadata": JSON.stringify({
+      uid: [orgId, workspaceId, threadId].filter(Boolean).join(":"),
+      chiridion: { orgId, workspaceId, threadId },
+    }),
   };
 }
 

@@ -4,6 +4,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import {
   RuntimeAgentSession,
   type RuntimeAgentRecord,
+  type RuntimeRunConfig,
   type RuntimeRunRecord,
 } from "../src/chat-thread/runtime-agent";
 
@@ -62,8 +63,10 @@ function memoryStore() {
   };
 }
 
-const HOSTED_RUN = { model: "openrouter/anthropic/claude-sonnet-5:nitro", keyScope: "hosted", spendLimitUsd: 4.5 };
-let nextRun: () => Promise<{ model: string; keyScope: string | null; spendLimitUsd: number | null }> = async () => HOSTED_RUN;
+const HOSTED_RUN: RuntimeRunConfig = {
+  model: "openrouter/anthropic/claude-sonnet-5:nitro", keyScope: "hosted", spendLimitUsd: 4.5, modelHeaders: { "cf-aig-metadata": "{\"uid\":\"org1:ws1:thread1\"}" },
+};
+let nextRun: () => Promise<RuntimeRunConfig> = async () => HOSTED_RUN;
 
 function session(runtime: ReturnType<typeof fakeRuntime>, store = memoryStore()) {
   let activity = 0;
@@ -107,6 +110,7 @@ describe("RuntimeAgentSession", () => {
       model: "openrouter/anthropic/claude-sonnet-5:nitro",
       keyScope: "hosted",
       spendLimit: { usd: 4.5 },
+      modelHeaders: { "cf-aig-metadata": "{\"uid\":\"org1:ws1:thread1\"}" },
       thinkingLevel: "medium",
       systemPromptAppend: "camel prompt",
       fileTools: false,
@@ -132,11 +136,11 @@ describe("RuntimeAgentSession", () => {
     expect(activity()).toBeGreaterThan(0);
 
     // A second run reuses the agent; a new route (the org added its own key) is configured before it.
-    nextRun = async () => ({ model: "anthropic/claude-opus-5", keyScope: "org_org1", spendLimitUsd: null });
+    nextRun = async () => ({ model: "anthropic/claude-opus-5", keyScope: "org_org1", spendLimitUsd: null, modelHeaders: null });
     await agent.prompt(userMessage);
     expect(runtime.calls.filter((call) => call.path === "/v1/agents")).toHaveLength(1);
     expect(runtime.calls.filter((call) => call.method === "PATCH").at(-1)!.body).toEqual({
-      requestId: expect.any(String), spendLimit: null, model: "anthropic/claude-opus-5", thinkingLevel: "medium", keyScope: "org_org1",
+      requestId: expect.any(String), spendLimit: null, model: "anthropic/claude-opus-5", thinkingLevel: "medium", keyScope: "org_org1", modelHeaders: null,
     });
     expect(store.data.agent).toMatchObject({ model: "anthropic/claude-opus-5", keyScope: "org_org1" });
     nextRun = async () => HOSTED_RUN;
@@ -262,6 +266,20 @@ describe("RuntimeAgentSession", () => {
     await agent.prompt(userMessage);
     expect(events.map((event) => event.type)).toEqual(["message_start", "message_end", "turn_end", "agent_end"]);
     expect(events[3]).toMatchObject({ messages: [{ stopReason: "error", errorMessage: "Payment required" }] });
+  });
+
+  it("says why a turn stopped at its spend limit", async () => {
+    const reply = { role: "assistant", content: [{ type: "toolCall", id: "c1", name: "camel__list_apps", arguments: {} }], stopReason: "toolUse" };
+    const runtime = fakeRuntime((requestId) => [
+      { type: "event", requestId, event: { type: "message_end", message: reply } },
+      { type: "event", requestId, event: { type: "agent_end", messages: [reply] } },
+      { type: "response", id: requestId, outcome: { result: { stopped: "spend_limit" } } },
+    ]);
+    const { agent, events } = session(runtime);
+    await agent.prompt(userMessage);
+    expect(events.map((event) => event.type)).toEqual(["message_end", "message_start", "message_end", "agent_end"]);
+    expect(events[2]).toMatchObject({ message: { stopReason: "error", errorMessage: expect.stringContaining("spending limit") } });
+    expect((events[3] as { messages: unknown[] }).messages).toHaveLength(2);
   });
 
   it("resumes a run in flight by replaying it from its start cursor, without prompting again", async () => {

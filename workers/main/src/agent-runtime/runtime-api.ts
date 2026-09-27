@@ -52,9 +52,13 @@ export async function runtimeApi(
   return parsed;
 }
 
-/** A provider entry of a key scope: the key, and for a gateway its base URL and sealed extra headers. */
+/**
+ * A provider entry of a key scope: the key, and for a gateway its base URL
+ * and sealed extra headers. A gateway that authenticates by header alone takes
+ * no key (the runtime then sends no Authorization/x-api-key).
+ */
 export interface KeyScopeProvider {
-  apiKey: string;
+  apiKey?: string;
   baseUrl?: string;
   headers?: Record<string, string>;
 }

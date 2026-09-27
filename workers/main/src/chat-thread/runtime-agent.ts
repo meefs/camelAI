@@ -59,6 +59,8 @@ export interface RuntimeRunConfig {
   keyScope: string | null;
   /** USD the run may spend; null for no limit. */
   spendLimitUsd: number | null;
+  /** Non-secret headers on every model call (the hosted scope's gateway metadata); null for none. They follow the key scope. */
+  modelHeaders: Record<string, string> | null;
 }
 
 export interface RuntimeRunRecord {
@@ -298,6 +300,9 @@ function userText(message: AgentMessage): string {
   return content.map((part) => (isRecord(part) && part.type === "text" ? String(part.text ?? "") : "")).join("");
 }
 
+const SPEND_LIMIT_MESSAGE =
+  "This reply stopped at your spending limit (your LLM usage limit or your organization's remaining hosted credits).";
+
 function errorAssistant(model: AgentState["model"], message: string): AssistantMessage {
   return {
     role: "assistant",
@@ -384,6 +389,7 @@ export class RuntimeAgentSession {
         model: config.model,
         ...(config.keyScope ? { keyScope: config.keyScope } : {}),
         ...(config.spendLimitUsd !== null ? { spendLimit: { usd: config.spendLimitUsd } } : {}),
+        ...(config.modelHeaders ? { modelHeaders: config.modelHeaders } : {}),
         thinkingLevel: this.state.thinkingLevel,
         systemPromptAppend,
         fileTools: false,
@@ -400,7 +406,8 @@ export class RuntimeAgentSession {
   }
 
   /**
-   * Before a run: follow the thread's route (model, key scope) and set the
+   * Before a run: follow the thread's route (model, key scope and the model
+   * headers that go with it) and set the
    * run's spend limit, in one configuration change the runtime applies before
    * the run.
    */
@@ -412,7 +419,7 @@ export class RuntimeAgentSession {
         requestId: `run_${crypto.randomUUID()}`,
         spendLimit: run.spendLimitUsd === null ? null : { usd: run.spendLimitUsd },
         ...(agent.model !== run.model ? { model: run.model, thinkingLevel: this.state.thinkingLevel } : {}),
-        ...((agent.keyScope ?? null) !== run.keyScope ? { keyScope: run.keyScope } : {}),
+        ...((agent.keyScope ?? null) !== run.keyScope ? { keyScope: run.keyScope, modelHeaders: run.modelHeaders } : {}),
       },
     });
     if (agent.model !== run.model || (agent.keyScope ?? null) !== run.keyScope) {
@@ -619,10 +626,20 @@ export class RuntimeAgentSession {
     return resume;
   }
 
-  /** The run ended: make sure the DO sees an agent_end even when the runtime refused the run outright. */
-  private async settle(outcome: { error?: string } | undefined) {
+  /**
+   * The run ended: make sure the DO sees an agent_end even when the runtime
+   * refused the run outright, and say why a turn stopped at its spend limit
+   * (the runtime ends it quietly after the response that crossed it).
+   */
+  private async settle(outcome: { error?: string; result?: unknown } | undefined) {
     const held = this.heldAgentEnd;
     this.heldAgentEnd = null;
+    if (held && isRecord(outcome?.result) && outcome.result.stopped === "spend_limit") {
+      const notice = errorAssistant(this.state.model, SPEND_LIMIT_MESSAGE);
+      await this.emit({ type: "message_start", message: notice });
+      await this.emit({ type: "message_end", message: notice });
+      held.messages = [...(Array.isArray(held.messages) ? held.messages : []), notice];
+    }
     if (held) {
       this.sawAgentEnd = true;
       this.state.isStreaming = false;

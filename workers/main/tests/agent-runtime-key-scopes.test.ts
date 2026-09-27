@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { encryptCredentials } from "../../../src/lib/integration-crypto";
-import { hostedScopeProviders, orgScopeProviders, syncKeyScope, syncOrgKeyScope, type KeyScopeEnv } from "../src/agent-runtime/key-scopes";
+import { hostedModelHeaders, hostedScopeProviders, orgScopeProviders, syncKeyScope, syncOrgKeyScope, type KeyScopeEnv } from "../src/agent-runtime/key-scopes";
 
 const SECRET = "test-integration-secret-key-for-key-scope-tests";
 
@@ -48,11 +48,15 @@ describe("key scope providers", () => {
     expect(hostedScopeProviders(env(kv))).toBeNull();
     expect(hostedScopeProviders(env(kv, { CF_ACCOUNT_ID: "acct", CF_GATEWAY_NAME: "gw", AI_GATEWAY_AUTH_TOKEN: "gw-token" }))).toEqual({
       openrouter: {
-        apiKey: "gw-token",
         baseUrl: "https://gateway.ai.cloudflare.com/v1/acct/gw/openrouter",
         headers: expect.objectContaining({ "cf-aig-authorization": "Bearer gw-token", "HTTP-Referer": "https://camelai.dev" }),
       },
     });
+  });
+
+  it("gives hosted agents the thread's gateway metadata", () => {
+    const headers = hostedModelHeaders({ orgId: "o1", workspaceId: "w1", threadId: "t1" });
+    expect(JSON.parse(headers["cf-aig-metadata"])).toEqual({ uid: "o1:w1:t1", chiridion: { orgId: "o1", workspaceId: "w1", threadId: "t1" } });
   });
 
   it("builds an org scope from its BYOK settings", async () => {

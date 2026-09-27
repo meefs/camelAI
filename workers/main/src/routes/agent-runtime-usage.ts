@@ -90,11 +90,14 @@ export function usageRowFor(event: RuntimeUsageEvent, org: { billing_status?: un
     provider = "openai";
     model = model.slice("openai-codex/".length);
   }
+  // chiridion's usage and pricing name Bedrock `bedrock`.
+  if (provider === "amazon-bedrock") provider = "bedrock";
   const freeTier = `${provider}/${model}` === FREE_TIER_RUNTIME_MODEL;
   const context = event.context ?? {};
   return {
     workspace_id: text(context.workspace),
-    user_id: text(event.actor) || text(event.subject),
+    // The runtime reports the agent itself as subject when it has none.
+    user_id: text(event.actor) || (text(event.subject) !== text(event.agent) ? text(event.subject) : ""),
     thread_id: text(context.thread),
     model: model || "unknown",
     provider: provider || "unknown",

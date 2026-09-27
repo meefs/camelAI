@@ -38,7 +38,7 @@ const event: RuntimeUsageEvent = {
   keyScope: "hosted",
   provider: "openrouter",
   model: "anthropic/claude-sonnet-5:nitro",
-  kind: "turn",
+  kind: "response",
   input: 12,
   output: 30,
   cacheRead: 2000,
@@ -90,6 +90,10 @@ describe("usageRowFor", () => {
     expect(usageRowFor({ ...event, keyScope: null, provider: "chiridion", model: "openai-codex/gpt-5.6-sol", actor: undefined }, null))
       .toMatchObject({ billing_source: "byok", provider: "openai", model: "gpt-5.6-sol", user_id: "user1" });
     expect(usageRowFor({ ...event, kind: "compaction" }, null).usage_surface).toBe("compaction");
+    expect(usageRowFor({ ...event, keyScope: "org_org1", provider: "amazon-bedrock", model: "us.anthropic.claude-sonnet-5" }, null))
+      .toMatchObject({ provider: "bedrock", model: "us.anthropic.claude-sonnet-5", billing_source: "byok" });
+    // The runtime reports the agent as subject when it has none: no user then.
+    expect(usageRowFor({ ...event, actor: null as never, subject: "client_1" }, null).user_id).toBe("");
   });
 });
 

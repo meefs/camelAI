@@ -395,7 +395,7 @@ import {
   runtimeModelRoute,
   type RuntimeModelRoute,
 } from "./agent-runtime/model-routes";
-import { HOSTED_KEY_SCOPE, ensureHostedKeyScope, syncOrgKeyScope } from "./agent-runtime/key-scopes";
+import { HOSTED_KEY_SCOPE, ensureHostedKeyScope, hostedModelHeaders, syncOrgKeyScope } from "./agent-runtime/key-scopes";
 
 // Pi tool-definition surface (executor-style tool list + Agent/Explore
 // subagent runner + subagent system prompt).
@@ -8039,6 +8039,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       model: route.model,
       keyScope: route.kind === "scope" ? route.keyScope : null,
       spendLimitUsd: budgets.length > 0 ? Math.max(0, Math.min(...budgets)) : null,
+      modelHeaders: route.kind === "scope" && route.keyScope === HOSTED_KEY_SCOPE ? hostedModelHeaders(context) : null,
     };
   }
 
