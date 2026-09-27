@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   eventStreamPayloads,
   foldUsage,
+  codexAccountId,
   passthroughRoute,
   providerError,
   readUsage,
@@ -92,7 +93,8 @@ describe("passthroughRoute", () => {
     });
   });
 
-  it("has no route for Codex, custom endpoints, Bedrock OpenAI models or the gateway's dynamic routes", () => {
+  it("has no route for custom endpoints, Bedrock OpenAI models or the gateway's dynamic routes", () => {
+    // A Codex token without an account claim cannot be forwarded either.
     expect(passthroughRoute(config({ usageProvider: "openai", model: { provider: "openai-codex", id: "gpt-5.6", baseUrl: "https://chatgpt.com/backend-api" } }))).toBeNull();
     expect(passthroughRoute(config({ usageProvider: "custom", model: { provider: "custom", id: "x", baseUrl: "https://llm.example" } }))).toBeNull();
     expect(passthroughRoute(config({ usageProvider: "bedrock", model: { provider: "custom", api: "openai-responses", id: "openai.gpt", baseUrl: "https://bedrock-mantle.us-east-1.api.aws/openai/v1" } }))).toBeNull();
@@ -134,6 +136,54 @@ describe("the free tier", () => {
 
   it("leaves other dynamic routes without a runtime route", () => {
     expect(passthroughRoute(free)).toBeNull();
+  });
+});
+
+const b64url = (value: unknown) => btoa(JSON.stringify(value)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const CODEX_TOKEN = `${b64url({ alg: "RS256" })}.${b64url({ "https://api.openai.com/auth": { chatgpt_account_id: "acct_123" } })}.sig`;
+const codex = config({
+  apiKey: CODEX_TOKEN,
+  usageProvider: "openai",
+  model: { provider: "openai-codex", api: "openai-codex-responses", id: "gpt-5.6-sol", baseUrl: "https://chatgpt.com/backend-api/codex" },
+});
+
+describe("Codex subscription", () => {
+  it("reads the ChatGPT account from the access token", () => {
+    expect(codexAccountId(CODEX_TOKEN)).toBe("acct_123");
+    expect(codexAccountId("not-a-jwt")).toBeNull();
+  });
+
+  it("forwards to the Codex backend with the org's token and real account id", () => {
+    const route = passthroughRoute(codex)!;
+    expect(route).toMatchObject({ provider: "openai-codex", kind: "codex", modelId: "gpt-5.6-sol", upstreamBase: "https://chatgpt.com/backend-api", accountId: "acct_123" });
+    expect(runtimeModelFor("chiridion", route)).toBe("chiridion/openai-codex/gpt-5.6-sol");
+    const call = upstreamCall(route, "codex/responses", "", [
+      ["authorization", "Bearer runtime-jwt"],
+      ["chatgpt-account-id", "passthrough"],
+      ["originator", "pi"],
+      ["openai-beta", "responses=experimental"],
+      ["session-id", "s1"],
+      ["x-agent-runtime-identity", "runtime-jwt"],
+    ], JSON.stringify({ model: "gpt-5.6-sol" })) as { url: string; headers: Headers };
+    expect(call.url).toBe("https://chatgpt.com/backend-api/codex/responses");
+    expect(Object.fromEntries(call.headers)).toEqual({
+      authorization: `Bearer ${CODEX_TOKEN}`,
+      "chatgpt-account-id": "acct_123",
+      originator: "pi",
+      "openai-beta": "responses=experimental",
+      "session-id": "s1",
+    });
+  });
+
+  it("goes through chiridion's Codex proxy with its token when configured", () => {
+    const proxied = config({
+      apiKey: CODEX_TOKEN,
+      usageProvider: "openai",
+      model: { provider: "openai-codex", id: "gpt-5.6-sol", baseUrl: "https://codex-proxy.example/backend-api/codex", headers: { "X-CamelAI-Proxy-Token": "proxy-secret" } },
+    });
+    const call = upstreamCall(passthroughRoute(proxied)!, "codex/responses", "", [], JSON.stringify({ model: "gpt-5.6-sol" })) as { url: string; headers: Headers };
+    expect(call.url).toBe("https://codex-proxy.example/backend-api/codex/responses");
+    expect(call.headers.get("x-camelai-proxy-token")).toBe("proxy-secret");
   });
 });
 
@@ -360,6 +410,22 @@ describe("ChatThreadDO.runtimeProviderRequest", () => {
       fake.chatContext,
       expect.objectContaining({ usageProvider: "openrouter", model: expect.objectContaining({ id: "openai/gpt-6-luna" }) }),
       "user2",
+    );
+  });
+
+  it("meters a Codex call from its Responses usage as BYOK OpenAI", async () => {
+    const answer = "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_c\",\"usage\":{\"input_tokens\":50,\"output_tokens\":7,\"input_tokens_details\":{\"cached_tokens\":20}}}}\n\n";
+    const upstream = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(answer, { headers: { "content-type": "text/event-stream" } }));
+    const route = passthroughRoute(codex);
+    const { fake, recordPiAssistantUsage, waits } = fakeThread(route);
+    fake.currentRuntimeRoute = async () => ({ route, config: codex });
+    const response = await forward.call(fake, request({ provider: "openai-codex", path: "codex/responses", body: JSON.stringify({ model: "gpt-5.6-sol" }) }), caller);
+    expect(await response.text()).toBe(answer);
+    expect((upstream.mock.calls[0] as [string])[0]).toBe("https://chatgpt.com/backend-api/codex/responses");
+    await Promise.all(waits);
+    expect(recordPiAssistantUsage).toHaveBeenCalledWith(
+      expect.objectContaining({ usage: expect.objectContaining({ input: 30, output: 7, cacheRead: 20 }) }),
+      expect.any(Number), "byok", false, "openai", expect.anything(),
     );
   });
 

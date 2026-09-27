@@ -17,7 +17,7 @@ import type { PiResolvedModelConfig } from "../chat-thread/pi-model-config";
 /** A provider id the runtime's Pi client knows, and the model id it must send. */
 export interface PassthroughRoute {
   /** Pi provider id: the path segment after the forwarder's base, and the runtime model's provider. */
-  provider: "openrouter" | "anthropic" | "openai" | "amazon-bedrock";
+  provider: "openrouter" | "anthropic" | "openai" | "amazon-bedrock" | "openai-codex";
   /** The upstream model id, exactly as the provider takes it (and the runtime sends it). */
   modelId: string;
   /**
@@ -26,7 +26,7 @@ export interface PassthroughRoute {
    * provider (OpenRouter's gateway prefix is its `/api/v1`). `bedrock`: the
    * regional bedrock-runtime endpoint, `<rest>` starting with the region.
    */
-  kind: "direct" | "gateway" | "bedrock";
+  kind: "direct" | "gateway" | "bedrock" | "codex";
   upstreamBase: string;
   /** The route's secret: an API key, the gateway token, or a Bedrock API key. */
   credential: string;
@@ -36,6 +36,8 @@ export interface PassthroughRoute {
   region?: string;
   /** The provider usage is recorded under, when it is not the resolver's (the free tier's gateway route). */
   usageProvider?: string;
+  /** Codex: the ChatGPT account the subscription's token belongs to. */
+  accountId?: string;
 }
 
 /**
@@ -93,8 +95,7 @@ export function bedrockInferenceProfileId(modelId: string, region: string): stri
 
 /**
  * The pass-through route for a thread's resolved model, or null when it has
- * none: the Codex subscription (skipped: its client derives account headers
- * from the OAuth token itself), custom endpoints, self-host providers, Bedrock
+ * none: custom endpoints, self-host providers, Bedrock
  * OpenAI models and the gateway's `compat` dynamic routes other than the free
  * tier's (`freeTier`: the thread's model is the credit-free camelCode model).
  */
@@ -131,6 +132,21 @@ export function passthroughRoute(
     };
   }
   if (config.billingSource !== "byok" || !config.apiKey) return null;
+  if (model.provider === "openai-codex") {
+    // The org's ChatGPT subscription: its (freshly refreshed) access token, and
+    // the account it names; the base is chiridion's Codex proxy when set.
+    const accountId = codexAccountId(config.apiKey);
+    if (!accountId) return null;
+    return {
+      provider: "openai-codex",
+      modelId: model.id,
+      kind: "codex",
+      upstreamBase: model.baseUrl.replace(/\/+$/, "").replace(/\/codex$/, ""),
+      credential: config.apiKey,
+      headers: extra,
+      accountId,
+    };
+  }
   if (config.usageProvider === "bedrock") {
     // Bedrock Claude (chiridion's own loop uses the Anthropic-compatible
     // bedrock-mantle endpoint; the runtime uses Converse on bedrock-runtime).
@@ -165,6 +181,20 @@ export type UpstreamCall =
   | { url: string; headers: Headers }
   | { error: string };
 
+/** The ChatGPT account id in a Codex access token (the claim Codex clients read). */
+export function codexAccountId(accessToken: string): string | null {
+  try {
+    const [, payload] = accessToken.split(".");
+    if (!payload) return null;
+    const claims = JSON.parse(atob(payload.replace(/-/g, "+").replace(/_/g, "/"))) as Record<string, unknown>;
+    const auth = claims["https://api.openai.com/auth"];
+    const accountId = auth && typeof auth === "object" ? (auth as Record<string, unknown>).chatgpt_account_id : undefined;
+    return typeof accountId === "string" && accountId ? accountId : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Request headers passed on to the provider; everything else (the runtime's auth, hop headers) is dropped. */
 const FORWARDED_REQUEST_HEADERS = new Set([
   "content-type",
@@ -175,6 +205,10 @@ const FORWARDED_REQUEST_HEADERS = new Set([
   "x-stainless-helper-method",
   "http-referer",
   "x-title",
+  // Codex's own request headers.
+  "originator",
+  "session-id",
+  "x-client-request-id",
 ]);
 
 /**
@@ -221,6 +255,11 @@ export function upstreamCall(
   }
   if (model !== route.modelId) return { error: `This thread's model is ${route.modelId}, not ${String(model)}` };
 
+  if (route.kind === "codex") {
+    headers.set("Authorization", `Bearer ${route.credential}`);
+    headers.set("chatgpt-account-id", route.accountId ?? "");
+    return { url: `${route.upstreamBase}/${rest}${search}`, headers };
+  }
   if (route.kind === "gateway") {
     headers.set("cf-aig-authorization", `Bearer ${route.credential}`);
     // OpenRouter's gateway prefix is its /api/v1; the runtime's paths start below /api.
