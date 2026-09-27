@@ -426,10 +426,9 @@ model. There is no cross-org index: find users per OrgDO
 rows with `billing_source = 'byok'` and `provider = 'openai'` on orgs without
 an OpenAI API key.
 
-Verified locally end to end (runtime 5436bab, chiridion dev): the keyless
-hosted scope (free tier's gpt-6-luna through chiridion; hosted Sonnet over
-Messages and gpt-5.6-luna over Responses by direct agents, since `:nitro` ids
-wait on a runtime fix), BYOK Anthropic and Bedrock (with the scope rotating
+Verified locally end to end (runtime 83ebb52, chiridion dev): the keyless
+hosted scope through chiridion (Sonnet `:nitro` over Messages, gpt-5.6-luna
+over Responses, the free tier's gpt-6-luna), BYOK Anthropic and Bedrock (with the scope rotating
 on a settings change and an existing thread PATCHed to the new route), prompt
 caching on second turns, a per-user limit stopping a turn mid-way and then
 refusing the next message, webhook rows with provider-reported costs, and a
