@@ -78,6 +78,12 @@ describe("calculateUsageCostUsd", () => {
     expect(lookupPricing("openai/gpt-5.6-luna:nitro")).toBe(
       lookupPricing("gpt-5.6-luna"),
     );
+    // The runtime's free tier.
+    expect(lookupPricingOrNull("openai/gpt-6-luna")).toMatchObject({
+      inputPerToken: 0.0000001,
+      outputPerToken: 0.0000005,
+      cacheReadPerToken: 0.00000001,
+    });
     expect(lookupPricing("gpt-5.6")).toBe(lookupPricing("gpt-5.6-sol"));
     expect(lookupPricingOrNull("openai.gpt-5.6-sol")).toBe(
       lookupPricing("gpt-5.6-sol"),

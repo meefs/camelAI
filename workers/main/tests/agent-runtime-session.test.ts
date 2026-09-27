@@ -315,3 +315,13 @@ describe("runtimeInputQuestions", () => {
     expect(runtimeInputQuestions({ id: "i", kind: "form", message: "Fill", detail: { requestedSchema: { type: "object", properties: { a: { type: "string" } } } } })).toBeNull();
   });
 });
+
+describe("readableProviderError", () => {
+  it("reduces a provider error to the message chiridion's forwarder wrote", async () => {
+    const { readableProviderError } = await import("../src/chat-thread/runtime-agent");
+    expect(readableProviderError('openrouter API error (429): {"message":"LLM usage limit reached.","type":"usage_limit"}')).toBe("LLM usage limit reached.");
+    expect(readableProviderError('Unknown: 429: {"message":"Limit hit"}')).toBe("Limit hit");
+    expect(readableProviderError('Anthropic API error (402): {"type":"error","error":{"type":"billing_error","message":"Out of credits"}}')).toBe("Out of credits");
+    expect(readableProviderError("socket hang up")).toBe("socket hang up");
+  });
+});

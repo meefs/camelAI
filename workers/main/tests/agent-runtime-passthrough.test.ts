@@ -345,6 +345,24 @@ describe("ChatThreadDO.runtimeProviderRequest", () => {
     );
   });
 
+  it("checks a free-tier call's limits against GPT-6 Luna, the model it really uses", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}", { headers: { "content-type": "application/json" } }));
+    const freeConfig = config({
+      apiKey: "gateway-token", billingSource: "hosted", usageProvider: "compat",
+      model: { provider: "cloudflare-ai-gateway", id: "dynamic/luna-muse-fallback", baseUrl: "https://gateway.ai.cloudflare.com/v1/acct/gw/compat" },
+    });
+    const route = passthroughRoute(freeConfig, { freeTier: true });
+    const { fake } = fakeThread(route);
+    fake.currentRuntimeRoute = async () => ({ route, config: freeConfig });
+    const response = await forward.call(fake, request({ body: JSON.stringify({ model: "openai/gpt-6-luna" }) }), caller);
+    expect(response.status).toBe(200);
+    expect(fake.assertPiUserLlmUsageAccess).toHaveBeenCalledWith(
+      fake.chatContext,
+      expect.objectContaining({ usageProvider: "openrouter", model: expect.objectContaining({ id: "openai/gpt-6-luna" }) }),
+      "user2",
+    );
+  });
+
   it("refuses calls for another provider or model than the thread's route, and routes it cannot take", async () => {
     const upstream = vi.spyOn(globalThis, "fetch");
     const { fake } = fakeThread();

@@ -225,8 +225,11 @@ export function localToolName(name: unknown): unknown {
   return typeof name === "string" && name.startsWith(TOOL_PREFIX) ? name.slice(TOOL_PREFIX.length) : name;
 }
 
-function localizeMessage<T>(message: T): T {
-  if (!isRecord(message)) return message;
+function localizeMessage<T>(input: T): T {
+  if (!isRecord(input)) return input;
+  const message: Record<string, unknown> = input.role === "assistant" && typeof input.errorMessage === "string"
+    ? { ...input, errorMessage: readableProviderError(input.errorMessage) }
+    : input;
   if (message.role === "toolResult" && typeof message.toolName === "string") {
     return { ...message, toolName: localToolName(message.toolName) } as T;
   }
@@ -237,7 +240,7 @@ function localizeMessage<T>(message: T): T {
         isRecord(block) && block.type === "toolCall" ? { ...block, name: localToolName(block.name) } : block),
     } as T;
   }
-  return message;
+  return message as T;
 }
 
 /** A runtime event with chiridion's tool names, as the DO's handler expects it. */
@@ -253,6 +256,24 @@ export function localizeEvent(event: Record<string, unknown>): Record<string, un
     localized.assistantMessageEvent = inner;
   }
   return localized;
+}
+
+/**
+ * A provider error as the runtime's client reports it (`openrouter API error
+ * (429): {"error":{"message":…}}`, `Unknown: 429: {…}`), reduced to its
+ * message, which chiridion's forwarder wrote for the user.
+ */
+export function readableProviderError(text: string): string {
+  const match = /\(?(\d{3})\)?:\s*(\{[\s\S]*\})\s*$/.exec(text);
+  if (!match) return text;
+  try {
+    const body = JSON.parse(match[2]) as { message?: unknown; error?: unknown };
+    const error = isRecord(body.error) ? body.error : body;
+    const message = typeof error.message === "string" ? error.message : typeof body.error === "string" ? body.error : null;
+    return message?.trim() ? message.trim() : text;
+  } catch {
+    return text;
+  }
 }
 
 function userText(message: AgentMessage): string {

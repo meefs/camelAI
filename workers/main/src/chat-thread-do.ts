@@ -8022,7 +8022,16 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     let resolved: Awaited<ReturnType<ChatThreadDO["currentRuntimeRoute"]>>;
     try {
       resolved = await this.currentRuntimeRoute();
-      await this.assertPiUserLlmUsageAccess(context, resolved.config, caller.userId);
+      // Limits are checked against what the call really uses (the free tier's
+      // runtime route is not the in-DO loop's dynamic route).
+      const gated = resolved.route?.usageProvider
+        ? {
+            ...resolved.config,
+            usageProvider: resolved.route.usageProvider,
+            model: { ...resolved.config.model, id: resolved.route.modelId },
+          }
+        : resolved.config;
+      await this.assertPiUserLlmUsageAccess(context, gated, caller.userId);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (error instanceof UserLlmUsageLimitError) return fail(429, message, "usage_limit");

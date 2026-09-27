@@ -371,13 +371,18 @@ header slot its client used):
 | BYOK Anthropic | anthropic | `https://api.anthropic.com` | `x-api-key` |
 | BYOK OpenAI | openai | `https://api.openai.com/v1` | `Authorization: Bearer <key>` |
 | BYOK Bedrock (Claude) | amazon-bedrock | `https://bedrock-runtime.<region>.amazonaws.com` (`<rest>` = `<region>/model/<id>/converse-stream`; region and model checked) | the org's Bedrock API key as `Authorization: Bearer` |
-| Codex subscription (skipped), custom endpoint, self-host, Bedrock OpenAI models, gateway `compat` dynamic routes | none | — | — |
+| Free tier (camelCode, gateway `compat` dynamic route) | openrouter | the gateway's OpenRouter URL, model `openai/gpt-6-luna` | `cf-aig-authorization` |
+| Codex subscription (skipped), custom endpoint, self-host, Bedrock OpenAI models, other gateway `compat` dynamic routes (deepseek) | none | — | — |
 
 A thread whose route has none is pinned back to the in-DO loop before the
 runtime starts it; a runtime thread that later switches to such a route gets
-"switch models to continue". Known gap: the free tier's hosted routes are the
-gateway's `compat` dynamic routes (deepseek, the luna/muse fallback), so
-free-tier threads do not use the runtime yet. Bedrock must work before the
+"switch models to continue". The free tier (the credit-free camelCode model) runs on the runtime as
+`chiridion/openrouter/openai/gpt-6-luna` (Responses, through the gateway's
+OpenRouter provider; 1.05M context, 128k output, in the runtime's catalog),
+while the in-DO loop keeps its gateway dynamic route (chat completions only):
+its gates and billing stay the hosted resolution's (not credit-chargeable,
+per-user limits checked against gpt-6-luna), metered as openrouter with
+built-in gpt-6-luna pricing (OpenRouter list prices). Bedrock must work before the
 full cutover (staging may leave Bedrock orgs on the in-DO loop). Gateway
 prefixes, per Cloudflare's docs: `…/openrouter` = `openrouter.ai/api/v1`,
 `…/anthropic` = `api.anthropic.com`. Bedrock: chiridion stores Bedrock API keys (the
@@ -399,6 +404,14 @@ user LLM limit made the forwarder answer 429 before any upstream call; the
 runtime ended the turn with that message, which the UI shows as the turn's
 error. A 402 (credit exhaustion) was not exercised live: the resolver's
 free-model fallback answers first locally.
+
+Free tier, verified locally: a thread on the camelCode model ran on the
+runtime as gpt-6-luna over Responses, two turns with tool calls, turn 2
+reading about 13k cached tokens, rows `hosted`, not credit-chargeable, priced
+by the built-in table; a per-user limit refused the next call before the
+provider, and the user saw the limit message itself (provider errors are
+reduced to their message). A limit window that holds unpriced usage blocks
+all calls, as it always has.
 
 **Codex enablement** (for checking use later): an org admin connects a
 ChatGPT subscription in Settings → Organization → AI provider (device-code
