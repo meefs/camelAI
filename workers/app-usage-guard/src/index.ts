@@ -6,7 +6,7 @@ import {
 } from "../../main/src/usage-guard-state.js";
 import { evaluateUsage, estimatedSqliteCostUsd, USAGE_GUARD_POLICY_VERSION, type UsageWindow } from "./policy.js";
 import { quarantineDispatchScript } from "./quarantine.js";
-import { queryDurableObjectRows, scriptUsageKey } from "./telemetry.js";
+import { queryDurableObjectRows } from "./telemetry.js";
 
 interface Env {
   APP_DB: D1Database;
@@ -270,7 +270,7 @@ export async function runUsageGuard(env: Env, now = Date.now()): Promise<void> {
         to: windowEnd,
       }).then((result) => ({
         ...result,
-        usageByScript: new Map(result.usage.map((usage) => [scriptUsageKey(usage.scriptName, usage.scriptVersion), usage])),
+        usageByScript: new Map(result.usage.map((usage) => [usage.scriptName, usage])),
       })),
     })));
 
@@ -282,11 +282,10 @@ export async function runUsageGuard(env: Env, now = Date.now()): Promise<void> {
       const windows: UsageWindow[] = [];
       for (const query of queryResults) {
         if (state.eligible_at > query.from) continue;
-        const usage = query.result.usageByScript.get(
-          scriptUsageKey(state.dispatch_script_name, state.eligible_script_version),
-        ) ?? {
+        // Analytics are per namespace, not per version; eligible_at above keeps
+        // windows from reaching back before the eligible deployment.
+        const usage = query.result.usageByScript.get(state.dispatch_script_name) ?? {
           scriptName: state.dispatch_script_name,
-          scriptVersion: state.eligible_script_version,
           rowsRead: 0,
           rowsWritten: 0,
         };

@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { runUsageGuard } from "../../app-usage-guard/src/index";
 import { evaluateUsage, estimatedSqliteCostUsd, type UsageWindow } from "../../app-usage-guard/src/policy";
 import { quarantineDispatchScript, quarantineModule } from "../../app-usage-guard/src/quarantine";
-import { queryDurableObjectRows } from "../../app-usage-guard/src/telemetry";
+import { clearNamespaceScriptCache, queryDurableObjectRows } from "../../app-usage-guard/src/telemetry";
 import {
   acquireUsageGuardOperationLease,
   acquireUsageGuardOperationLeaseWithRetry,
@@ -16,7 +16,6 @@ import {
 function window(overrides: Partial<UsageWindow>): UsageWindow {
   const usage = {
     scriptName: "demo--acme",
-    scriptVersion: "version-1",
     rowsRead: 0,
     rowsWritten: 0,
     windowMinutes: 15 as const,
@@ -107,55 +106,107 @@ describe.sequential("usage guard operation leases", () => {
   });
 });
 
-describe("Workers Observability telemetry", () => {
-  it("groups rows read and written by script", async () => {
-    const fetcher = vi.fn(async () => Response.json({
-      success: true,
-      result: {
-        run: { id: "run-1", statistics: { abr_level: 1 } },
-        calculations: [
-          {
-            alias: "rows_read",
-            aggregates: [{ value: 4002, groups: [
-              { key: "cloudflare.script_name", value: "demo--acme" },
-              { key: "cloudflare.script_version.id", value: "version-1" },
-            ] }],
-          },
-          {
-            alias: "rows_written",
-            aggregates: [{ value: 1002, groups: [
-              { key: "cloudflare.script_name", value: "demo--acme" },
-              { key: "cloudflare.script_version.id", value: "version-1" },
-            ] }],
-          },
-        ],
+function analyticsResponse(groups: Array<{ namespaceId: string; rowsRead: number; rowsWritten: number }>) {
+  return Response.json({
+    data: {
+      viewer: {
+        accounts: [{
+          groups: groups.map(({ namespaceId, rowsRead, rowsWritten }) => ({
+            dimensions: { namespaceId },
+            sum: { rowsRead, rowsWritten },
+          })),
+        }],
       },
-    }));
+    },
+    errors: null,
+  });
+}
+
+function namespaceResponse(url: string, owners: Record<string, string>) {
+  const namespaceId = decodeURIComponent(url.slice(url.lastIndexOf("/") + 1));
+  const script = owners[namespaceId];
+  if (!script) return Response.json({ success: false, errors: [{ message: "not found" }] }, { status: 404 });
+  return Response.json({ success: true, result: { id: namespaceId, script } });
+}
+
+describe("Durable Object analytics", () => {
+  afterEach(() => clearNamespaceScriptCache());
+
+  it("sums rows by owning script and skips deleted namespaces", async () => {
+    const fetcher = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/graphql")) {
+        const body = JSON.parse(String(init?.body)) as { variables: Record<string, unknown> };
+        expect(body.variables).toMatchObject({
+          accountTag: "account",
+          from: "2026-09-27T00:00:00.000Z",
+          to: "2026-09-27T00:15:00.000Z",
+        });
+        return analyticsResponse([
+          { namespaceId: "ns-a", rowsRead: 4000, rowsWritten: 1000 },
+          { namespaceId: "ns-b", rowsRead: 2, rowsWritten: 2 },
+          { namespaceId: "ns-deleted", rowsRead: 0, rowsWritten: 9 },
+          { namespaceId: "ns-idle", rowsRead: 0, rowsWritten: 0 },
+        ]);
+      }
+      return namespaceResponse(url, { "ns-a": "demo--acme", "ns-b": "demo--acme", "ns-idle": "idle--acme" });
+    });
 
     await expect(queryDurableObjectRows({
       accountId: "account",
       apiToken: "token",
-      from: 1,
-      to: 2,
+      from: Date.parse("2026-09-27T00:00:00Z"),
+      to: Date.parse("2026-09-27T00:15:00Z"),
       fetcher: fetcher as unknown as typeof fetch,
     })).resolves.toEqual({
-      runId: "run-1",
-      usage: [{ scriptName: "demo--acme", scriptVersion: "version-1", rowsRead: 4002, rowsWritten: 1002 }],
+      runId: null,
+      usage: [{ scriptName: "demo--acme", rowsRead: 4002, rowsWritten: 1002 }],
     });
+    // Namespaces with no usage are never looked up.
+    expect(fetcher.mock.calls.filter(([url]) => String(url).includes("ns-idle"))).toEqual([]);
   });
 
-  it("rejects adaptively sampled query results", async () => {
-    const fetcher = vi.fn(async () => Response.json({
-      success: true,
-      result: { run: { id: "run-1", statistics: { abr_level: 2 } }, calculations: [] },
-    }));
+  it("caches namespace owners across queries", async () => {
+    const fetcher = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/graphql")) return analyticsResponse([{ namespaceId: "ns-a", rowsRead: 1, rowsWritten: 1 }]);
+      return namespaceResponse(url, { "ns-a": "demo--acme" });
+    });
+    const query = () => queryDurableObjectRows({
+      accountId: "account",
+      apiToken: "token",
+      from: 1,
+      to: 2,
+      fetcher: fetcher as unknown as typeof fetch,
+    });
+    await Promise.all([query(), query()]);
+    await query();
+    expect(fetcher.mock.calls.filter(([url]) => String(url).includes("/durable_objects/namespaces/"))).toHaveLength(1);
+  });
+
+  it("fails loudly on query errors instead of reporting zero usage", async () => {
+    const fetcher = vi.fn(async () => Response.json({ data: null, errors: [{ message: "not authorized" }] }));
     await expect(queryDurableObjectRows({
       accountId: "account",
       apiToken: "token",
       from: 1,
       to: 2,
       fetcher: fetcher as unknown as typeof fetch,
-    })).rejects.toThrow("unsupported ABR level 2");
+    })).rejects.toThrow("Durable Object analytics query failed: not authorized");
+  });
+
+  it("fails when a namespace owner cannot be resolved", async () => {
+    const fetcher = vi.fn(async (input: string | URL | Request) => {
+      if (String(input).endsWith("/graphql")) return analyticsResponse([{ namespaceId: "ns-a", rowsRead: 1, rowsWritten: 1 }]);
+      return Response.json({ success: false, errors: [{ message: "rate limited" }] }, { status: 429 });
+    });
+    await expect(queryDurableObjectRows({
+      accountId: "account",
+      apiToken: "token",
+      from: 1,
+      to: 2,
+      fetcher: fetcher as unknown as typeof fetch,
+    })).rejects.toThrow("namespace lookup failed for ns-a: rate limited");
   });
 });
 
@@ -263,31 +314,13 @@ function guardFetcher(options: { failSettingsOnce?: boolean; failTelemetry?: boo
   let settingsFailed = false;
   return vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
-    if (url.includes("/workers/observability/telemetry/query")) {
+    if (url.endsWith("/graphql")) {
       await options.onTelemetry?.();
       if (options.failTelemetry) throw new Error("telemetry unavailable");
-      return Response.json({
-        success: true,
-        result: {
-          run: { id: "run-state", statistics: { abr_level: 1 } },
-          calculations: [
-            {
-              alias: "rows_read",
-              aggregates: [{ value: 0, groups: [
-                { key: "cloudflare.script_name", value: "guard-state-app--acme" },
-                { key: "cloudflare.script_version.id", value: "eligible-version" },
-              ] }],
-            },
-            {
-              alias: "rows_written",
-              aggregates: [{ value: 1_000_000, groups: [
-                { key: "cloudflare.script_name", value: "guard-state-app--acme" },
-                { key: "cloudflare.script_version.id", value: "eligible-version" },
-              ] }],
-            },
-          ],
-        },
-      });
+      return analyticsResponse([{ namespaceId: "guard-state-namespace", rowsRead: 0, rowsWritten: 1_000_000 }]);
+    }
+    if (url.includes("/durable_objects/namespaces/")) {
+      return namespaceResponse(url, { "guard-state-namespace": "guard-state-app--acme" });
     }
     if (url.endsWith("/settings")) {
       if (options.failSettingsOnce && !settingsFailed) {
