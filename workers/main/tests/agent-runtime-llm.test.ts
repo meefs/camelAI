@@ -52,7 +52,7 @@ describe("agent runtime inference proxy", () => {
     expect(response.status).toBe(200);
     expect(completion).toHaveBeenCalledWith(
       "thread1",
-      expect.objectContaining({ provider: "openrouter", path: "responses", method: "POST", body: JSON.stringify(BODY) }),
+      expect.objectContaining({ provider: "openrouter", path: "responses", method: "POST", body: expect.any(ArrayBuffer) }),
       { orgId: "org1", workspaceId: "ws1", threadId: "thread1", userId: "user2" },
     );
   });

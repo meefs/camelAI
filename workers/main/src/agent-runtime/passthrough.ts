@@ -177,6 +177,17 @@ export function passthroughRoute(
   };
 }
 
+function checkBodyModel(route: PassthroughRoute, body: Uint8Array | string): { error: string } | null {
+  let model: unknown;
+  try {
+    const text = typeof body === "string" ? body : new TextDecoder().decode(body);
+    model = text ? (JSON.parse(text) as { model?: unknown }).model : undefined;
+  } catch {
+    return { error: "The body must be JSON" };
+  }
+  return model === route.modelId ? null : { error: `This thread's model is ${route.modelId}, not ${String(model)}` };
+}
+
 export type UpstreamCall =
   | { url: string; headers: Headers }
   | { error: string };
@@ -205,10 +216,12 @@ const FORWARDED_REQUEST_HEADERS = new Set([
   "x-stainless-helper-method",
   "http-referer",
   "x-title",
-  // Codex's own request headers.
+  // Codex's own request headers, and its zstd body's encoding.
   "originator",
   "session-id",
   "x-client-request-id",
+  "user-agent",
+  "content-encoding",
 ]);
 
 /**
@@ -223,13 +236,15 @@ export function upstreamCall(
   rest: string,
   search: string,
   incoming: Iterable<[string, string]>,
-  body: string,
+  body: Uint8Array | string,
 ): UpstreamCall {
   const headers = new Headers();
   let keyHeader: "x-api-key" | "authorization" | null = null;
+  let encoded = false;
   for (const [name, value] of incoming) {
     const lower = name.toLowerCase();
     if (FORWARDED_REQUEST_HEADERS.has(lower)) headers.set(name, value);
+    if (lower === "content-encoding" && value.trim() && value.trim().toLowerCase() !== "identity") encoded = true;
     if (lower === "x-api-key") keyHeader = "x-api-key";
     if (lower === "authorization" && !keyHeader) keyHeader = "authorization";
   }
@@ -247,19 +262,22 @@ export function upstreamCall(
     return { url: `${route.upstreamBase}/model/${encodeURIComponent(modelId)}/${action}${search}`, headers };
   }
 
-  let model: unknown;
-  try {
-    model = body ? (JSON.parse(body) as { model?: unknown }).model : undefined;
-  } catch {
-    return { error: "The body must be JSON" };
-  }
-  if (model !== route.modelId) return { error: `This thread's model is ${route.modelId}, not ${String(model)}` };
-
   if (route.kind === "codex") {
+    // The runtime sends Codex bodies zstd-compressed, which the backend takes
+    // as is (and Workers cannot decompress): only a plain body's model is
+    // checked; the agent's model is one only chiridion configures.
+    if (!encoded) {
+      const refused = checkBodyModel(route, body);
+      if (refused) return refused;
+    }
     headers.set("Authorization", `Bearer ${route.credential}`);
     headers.set("chatgpt-account-id", route.accountId ?? "");
     return { url: `${route.upstreamBase}/${rest}${search}`, headers };
   }
+  if (encoded) return { error: "Compressed request bodies are only accepted for openai-codex" };
+  const refused = checkBodyModel(route, body);
+  if (refused) return refused;
+
   if (route.kind === "gateway") {
     headers.set("cf-aig-authorization", `Bearer ${route.credential}`);
     // OpenRouter's gateway prefix is its /api/v1; the runtime's paths start below /api.

@@ -336,15 +336,19 @@ describe("ChatThreadDO.runtimeProviderRequest", () => {
     return { fake, recordPiAssistantUsage, waits };
   }
 
-  const request = (overrides: Record<string, unknown> = {}) => ({
-    provider: "openrouter",
-    path: "v1/responses",
-    search: "",
-    method: "POST",
-    headers: [["content-type", "application/json"], ["authorization", "Bearer runtime-jwt"], ["x-agent-runtime-identity", "runtime-jwt"]],
-    body,
-    ...overrides,
-  });
+  const bytes = (text: string) => new TextEncoder().encode(text).buffer as ArrayBuffer;
+  const request = (overrides: Record<string, unknown> = {}) => {
+    const { body: text, ...rest } = overrides;
+    return {
+      provider: "openrouter",
+      path: "v1/responses",
+      search: "",
+      method: "POST",
+      headers: [["content-type", "application/json"], ["authorization", "Bearer runtime-jwt"], ["x-agent-runtime-identity", "runtime-jwt"]],
+      body: text instanceof ArrayBuffer ? text : bytes(typeof text === "string" ? text : body),
+      ...rest,
+    };
+  };
 
   it("forwards the body untouched with the route's credential, streams the answer back and meters it", async () => {
     const answer = "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"usage\":{\"input_tokens\":100,\"output_tokens\":9,\"input_tokens_details\":{\"cached_tokens\":60},\"cost\":0.001}}}\n\n";
@@ -354,7 +358,7 @@ describe("ChatThreadDO.runtimeProviderRequest", () => {
     expect(await response.text()).toBe(answer);
     const [url, init] = upstream.mock.calls[0] as [string, RequestInit];
     expect(url).toBe(`${GATEWAY}/responses`);
-    expect(init.body).toBe(body);
+    expect(new TextDecoder().decode(init.body as Uint8Array)).toBe(body);
     const sent = Object.fromEntries(init.headers as Headers);
     expect(sent["cf-aig-authorization"]).toBe("Bearer gateway-token");
     expect(sent.authorization).toBeUndefined();
@@ -387,7 +391,7 @@ describe("ChatThreadDO.runtimeProviderRequest", () => {
     const [url, init] = upstream.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("https://bedrock-runtime.us-west-2.amazonaws.com/model/us.anthropic.claude-sonnet-5/converse-stream");
     expect((init.headers as Headers).get("authorization")).toBe("Bearer bedrock-api-key");
-    expect(init.body).toBe("{\"messages\":[]}");
+    expect(new TextDecoder().decode(init.body as Uint8Array)).toBe("{\"messages\":[]}");
     await Promise.all(waits);
     expect(recordPiAssistantUsage).toHaveBeenCalledWith(
       expect.objectContaining({ usage: expect.objectContaining({ input: 11, output: 2 }) }),
@@ -427,6 +431,54 @@ describe("ChatThreadDO.runtimeProviderRequest", () => {
       expect.objectContaining({ usage: expect.objectContaining({ input: 30, output: 7, cacheRead: 20 }) }),
       expect.any(Number), "byok", false, "openai", expect.anything(),
     );
+  });
+
+  it("forwards a zstd Codex body byte for byte, without a model check it cannot make", async () => {
+    const upstream = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } }));
+    const route = passthroughRoute(codex);
+    const { fake } = fakeThread(route);
+    fake.currentRuntimeRoute = async () => ({ route, config: codex });
+    // A zstd frame (magic 28 b5 2f fd) the forwarder must not read or alter.
+    const zstd = new Uint8Array([0x28, 0xb5, 0x2f, 0xfd, 0x04, 0x58, 0x99, 0x00, 0xff, 0x10]);
+    const response = await forward.call(fake, request({
+      provider: "openai-codex",
+      path: "codex/responses",
+      headers: [
+        ["authorization", "Bearer runtime-jwt"],
+        ["x-agent-runtime-identity", "runtime-jwt"],
+        ["chatgpt-account-id", "passthrough"],
+        ["content-type", "application/json"],
+        ["content-encoding", "zstd"],
+        ["originator", "pi"],
+        ["openai-beta", "responses=experimental"],
+        ["user-agent", "pi (linux)"],
+        ["accept", "text/event-stream"],
+      ],
+      body: zstd.buffer,
+    }), caller);
+    expect(response.status).toBe(200);
+    const [url, init] = upstream.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://chatgpt.com/backend-api/codex/responses");
+    expect(new Uint8Array(init.body as Uint8Array)).toEqual(zstd);
+    const sent = Object.fromEntries(init.headers as Headers);
+    expect(sent).toEqual({
+      authorization: `Bearer ${CODEX_TOKEN}`,
+      "chatgpt-account-id": "acct_123",
+      "content-type": "application/json",
+      "content-encoding": "zstd",
+      originator: "pi",
+      "openai-beta": "responses=experimental",
+      "user-agent": "pi (linux)",
+      accept: "text/event-stream",
+    });
+  });
+
+  it("refuses compressed bodies on routes that must check the model", async () => {
+    const upstream = vi.spyOn(globalThis, "fetch");
+    const { fake } = fakeThread();
+    const refused = await forward.call(fake, request({ headers: [["content-encoding", "zstd"]], body: new Uint8Array([1, 2, 3]).buffer }), caller);
+    expect(refused.status).toBe(409);
+    expect(upstream).not.toHaveBeenCalled();
   });
 
   it("refuses calls for another provider or model than the thread's route, and routes it cannot take", async () => {

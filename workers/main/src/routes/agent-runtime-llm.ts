@@ -56,7 +56,7 @@ export async function handleAgentRuntimeLlmRequest(
   if ("error" in props) return error(403, props.error, "forbidden");
   const stub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(props.threadId ?? "")) as unknown as {
     runtimeProviderRequest(
-      request: { provider: string; path: string; search: string; method: string; headers: [string, string][]; body: string },
+      request: { provider: string; path: string; search: string; method: string; headers: [string, string][]; body: ArrayBuffer | null },
       caller: { orgId: string; workspaceId: string; threadId: string; userId: string },
     ): Promise<Response>;
   };
@@ -67,7 +67,8 @@ export async function handleAgentRuntimeLlmRequest(
       search: url.search,
       method: req.method,
       headers: [...req.headers],
-      body: req.method === "GET" || req.method === "HEAD" ? "" : await req.text(),
+      // Bytes, untouched: a Codex body arrives zstd-compressed.
+      body: req.method === "GET" || req.method === "HEAD" ? null : await req.arrayBuffer(),
     },
     {
       orgId: props.orgId,

@@ -8002,7 +8002,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
    * the provider's reported usage metered.
    */
   async runtimeProviderRequest(
-    request: { provider: string; path: string; search: string; method: string; headers: [string, string][]; body: string },
+    request: { provider: string; path: string; search: string; method: string; headers: [string, string][]; body: ArrayBuffer | null },
     caller: { orgId: string; workspaceId: string; threadId: string; userId: string },
   ): Promise<Response> {
     const fail = (status: number, message: string, code: string) =>
@@ -8045,13 +8045,15 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     if (request.provider !== route.provider) {
       return fail(409, `This thread's model goes through ${route.provider}, not ${request.provider}`, "route_mismatch");
     }
-    const call = upstreamCall(route, request.path, request.search, request.headers, request.body);
+    const requestBody = request.body ? new Uint8Array(request.body) : new Uint8Array(0);
+    const call = upstreamCall(route, request.path, request.search, request.headers, requestBody);
     if ("error" in call) return fail(409, call.error, "route_mismatch");
     const startedAtMs = Date.now();
     const upstream = await fetch(call.url, {
       method: request.method,
       headers: call.headers,
-      body: request.body || undefined,
+      // The bytes as the runtime sent them (a Codex body is zstd).
+      body: requestBody.byteLength > 0 ? requestBody : undefined,
     });
     const headers = forwardedResponseHeaders(upstream.headers);
     if (!upstream.body) return new Response(null, { status: upstream.status, headers });
