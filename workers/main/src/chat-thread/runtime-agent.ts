@@ -34,7 +34,7 @@ export const RUNTIME_PROMPT_PREAMBLE = [
   `camelAI's tools are named ${TOOL_PREFIX}<tool> (for example ${TOOL_PREFIX}read, ${TOOL_PREFIX}deploy_project, ${TOOL_PREFIX}set_preview). Where the instructions below name a tool, use its ${TOOL_PREFIX} form; in js_exec call it as tools.${TOOL_PREFIX}<tool>(args).`,
   `js_exec has no env bindings, connections object or network here: query or call a connection with ${TOOL_PREFIX}connections_query / ${TOOL_PREFIX}connections_invoke, drive a browser with ${TOOL_PREFIX}browser_launch / ${TOOL_PREFIX}browser_action, generate images or transcribe audio with ${TOOL_PREFIX}generate_image / ${TOOL_PREFIX}transcribe_audio, call a deployed app with ${TOOL_PREFIX}http_request, and read the web with web_fetch / web_search.`,
   `Workspace, project and uploaded files live in camelAI: use the ${TOOL_PREFIX} file tools with an explicit location, not fs.`,
-  `In js_exec, await tools.${TOOL_PREFIX}<tool>(args) returns the tool's data itself (for example ${TOOL_PREFIX}list_apps gives { total, count, apps: [...] }; a file read gives its text, or { text, ...details }): use it directly, without JSON.parse or unwrapping. The { output: [...] } you see after js_exec is only how your script's return value and printed text come back to you.`,
+  `In js_exec, await tools.${TOOL_PREFIX}<tool>(args) returns the tool's data itself (for example ${TOOL_PREFIX}list_apps gives { total, count, apps: [...] }; a file read gives its text, or { text, ...details }): use it directly, without JSON.parse or unwrapping.`,
 ].join("\n\n");
 
 export interface RuntimeAgentEnv {
