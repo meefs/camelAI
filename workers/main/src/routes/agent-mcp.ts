@@ -152,11 +152,14 @@ export function toMcpResult(envelope: Awaited<ReturnType<ToolsBinding["callToolE
   if (!envelope.ok) return toolError(envelope.error.message);
   const { data } = envelope;
   // The Pi file tools already answer in MCP content blocks (text, and images
-  // the model should see natively): pass them through.
+  // the model should see natively): pass them through. Code (js_exec) gets the
+  // structured value, so it carries the text beside the details (a read's
+  // file text, not only its truncation metadata).
   if (isRecord(data) && Array.isArray(data.content) && data.content.length > 0 && data.content.every(isContentBlock)) {
+    const text = data.content.flatMap((block) => (block.type === "text" ? [block.text as string] : [])).join("\n");
     return {
       content: data.content,
-      ...(isRecord(data.details) ? { structuredContent: data.details } : {}),
+      ...(isRecord(data.details) ? { structuredContent: { ...data.details, text } } : {}),
     };
   }
   // Screenshots (browser_action screenshot, take_screenshot with

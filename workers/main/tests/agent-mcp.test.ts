@@ -127,7 +127,14 @@ describe("agent MCP", () => {
     ];
     const { handler } = setup({ result: { ok: true, data: { text: "Read image file [image/png]", content, details: { image: true } } } });
     expect(await rt.callTool(handler, MCP_URL, "read", { location: "workspace", path: "a.png" }, ALICE))
-      .toEqual({ content, structuredContent: { image: true } });
+      .toEqual({ content, structuredContent: { image: true, text: "Read image file [image/png]" } });
+  });
+
+  it("gives code a read's text beside its details", async () => {
+    const content = [{ type: "text", text: "line 1\nline 2" }];
+    const { handler } = setup({ result: { ok: true, data: { content, details: { path: "a.txt", truncation: { truncated: false } } } } });
+    expect(await rt.callTool(handler, MCP_URL, "read", { location: "workspace", path: "a.txt" }, ALICE))
+      .toEqual({ content, structuredContent: { path: "a.txt", truncation: { truncated: false }, text: "line 1\nline 2" } });
   });
 
   it("returns tool failures as isError results", async () => {
