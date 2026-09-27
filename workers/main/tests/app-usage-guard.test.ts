@@ -184,6 +184,23 @@ describe("Durable Object analytics", () => {
     expect(fetcher.mock.calls.filter(([url]) => String(url).includes("/durable_objects/namespaces/"))).toHaveLength(1);
   });
 
+  it("calls the fetcher unbound, as the runtime's fetch requires", async () => {
+    // The runtime's fetch throws "Illegal invocation" when called as a method.
+    const fetcher = vi.fn(async function (this: unknown, input: string | URL | Request) {
+      if (this !== undefined && this !== globalThis) throw new TypeError("Illegal invocation");
+      const url = String(input);
+      if (url.endsWith("/graphql")) return analyticsResponse([{ namespaceId: "ns-a", rowsRead: 1, rowsWritten: 1 }]);
+      return namespaceResponse(url, { "ns-a": "demo--acme" });
+    });
+    await expect(queryDurableObjectRows({
+      accountId: "account",
+      apiToken: "token",
+      from: 1,
+      to: 2,
+      fetcher: fetcher as unknown as typeof fetch,
+    })).resolves.toEqual({ runId: null, usage: [{ scriptName: "demo--acme", rowsRead: 1, rowsWritten: 1 }] });
+  });
+
   it("fails loudly on query errors instead of reporting zero usage", async () => {
     const fetcher = vi.fn(async () => Response.json({ data: null, errors: [{ message: "not authorized" }] }));
     await expect(queryDurableObjectRows({
