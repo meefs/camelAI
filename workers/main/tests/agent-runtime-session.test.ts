@@ -15,6 +15,9 @@ function fakeRuntime(script: (requestId: string, method: string) => Array<Record
   const calls: Array<{ method: string; path: string; body?: unknown; headers: Headers }> = [];
   let frames: string[] = [];
   let nextId = 6;
+  // Events before `floor` are gone (as after an idle unload); `gaps` more event reads answer 409 anyway.
+  let floor = 0;
+  let gaps = 0;
   const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
     const method = init?.method ?? "GET";
@@ -23,7 +26,8 @@ function fakeRuntime(script: (requestId: string, method: string) => Array<Record
     calls.push({ method, path: url.pathname, body, headers });
     if (method === "POST" && url.pathname === "/v1/agents") return Response.json({ id: "client_1", token: "agent-token" }, { status: 201 });
     if (method === "PATCH") return Response.json({ id: "configure" }, { status: 202 });
-    if (url.pathname === "/clients/client_1/state") return Response.json({ cursor: 5, requests: [] });
+    if (url.pathname === "/clients/client_1/state") return Response.json({ cursor: Math.max(5, floor), requests: [] });
+    if (url.pathname === "/clients/client_1/history") return Response.json({ messages: [] });
     if (method === "POST" && url.pathname === "/clients/client_1/requests") {
       const params = body as { id: string; method: string };
       if (params.method === "prompt" || params.method === "continue") {
@@ -40,23 +44,29 @@ function fakeRuntime(script: (requestId: string, method: string) => Array<Record
     }
     if (url.pathname === "/clients/client_1/events") {
       const after = Number(headers.get("Last-Event-ID") ?? 0);
+      if (after < floor || (gaps > 0 && gaps--)) return Response.json({ error: "REPLAY_GAP" }, { status: 409 });
       const pending = frames.filter((frame) => Number(/^id: (\d+)/.exec(frame)![1]) > after);
       return new Response(`event: ready\ndata: {}\n\n: heartbeat\n\n${pending.join("")}`, { headers: { "Content-Type": "text/event-stream" } });
     }
     return new Response("not found", { status: 404 });
   }) as typeof globalThis.fetch;
-  return { fetch, calls, reset: () => { frames = []; } };
+  return {
+    fetch,
+    calls,
+    reset: () => { frames = []; },
+    // The runtime unloaded the idle agent and loaded it again: event ids restart at a higher base.
+    unload: () => { frames = []; nextId = 101; floor = 100; },
+    gap: (count: number) => { gaps = count; },
+  };
 }
 
 function memoryStore() {
-  const data: { agent: RuntimeAgentRecord | null; cursor: number | null; run: RuntimeRunRecord | null } = { agent: null, cursor: null, run: null };
+  const data: { agent: RuntimeAgentRecord | null; run: RuntimeRunRecord | null } = { agent: null, run: null };
   return {
     data,
     store: {
       agent: () => data.agent,
       saveAgent: (agent: RuntimeAgentRecord) => { data.agent = agent; },
-      cursor: () => data.cursor,
-      saveCursor: (cursor: number) => { data.cursor = cursor; },
       run: () => data.run,
       saveRun: (run: RuntimeRunRecord | null) => { data.run = run; },
     },
@@ -131,7 +141,6 @@ describe("RuntimeAgentSession", () => {
     expect(agent.state.messages[1]).toMatchObject({ content: [{ name: "list_apps" }] });
     expect(agent.state.isStreaming).toBe(false);
     expect(store.data.agent).toEqual({ id: "client_1", token: "agent-token", model: "openrouter/anthropic/claude-sonnet-5:nitro", keyScope: "hosted" });
-    expect(store.data.cursor).toBe(12);
     expect(store.data.run).toBeNull();
     expect(activity()).toBeGreaterThan(0);
 
@@ -280,6 +289,50 @@ describe("RuntimeAgentSession", () => {
     expect(events.map((event) => event.type)).toEqual(["message_end", "message_start", "message_end", "agent_end"]);
     expect(events[2]).toMatchObject({ message: { stopReason: "error", errorMessage: expect.stringContaining("spending limit") } });
     expect((events[3] as { messages: unknown[] }).messages).toHaveLength(2);
+  });
+
+  it("relays a follow-up after the runtime unloaded the idle agent and its event ids moved on", async () => {
+    const reply = (text: string) => ({ role: "assistant", content: [{ type: "text", text }], stopReason: "stop" });
+    let turn = 0;
+    const runtime = fakeRuntime((requestId) => {
+      turn += 1;
+      return [
+        { type: "event", requestId, event: { type: "message_end", message: reply(`reply ${turn}`) } },
+        { type: "event", requestId, event: { type: "agent_end", messages: [] } },
+        { type: "response", id: requestId, outcome: { result: {} } },
+      ];
+    });
+    const { agent, events } = session(runtime);
+    await agent.prompt(userMessage);
+    runtime.unload();
+    await agent.prompt(userMessage);
+    const replies = events.filter((event) => event.type === "message_end").map((event) => (event.message as { content: Array<{ text: string }> }).content[0].text);
+    expect(replies).toEqual(["reply 1", "reply 2"]);
+    expect(events.at(-1)).toMatchObject({ type: "agent_end" });
+    // The follow-up read the live cursor, so its stream never fell below the new buffer.
+    const reads = runtime.calls.filter((call) => call.path === "/clients/client_1/events").map((call) => call.headers.get("Last-Event-ID"));
+    expect(reads.at(-1)).toBe("100");
+  });
+
+  it("keeps relaying a run whose stream hits a replay gap before the model answered", async () => {
+    const runtime = fakeRuntime((requestId) => [
+      { type: "event", requestId, event: { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "late reply" }], stopReason: "stop" } } },
+      { type: "event", requestId, event: { type: "agent_end", messages: [] } },
+      { type: "response", id: requestId, outcome: { result: {} } },
+    ]);
+    runtime.gap(1);
+    const { agent, events } = session(runtime);
+    await agent.prompt(userMessage);
+    expect(events.map((event) => event.type)).toEqual(["message_end", "agent_end"]);
+    expect(runtime.calls.filter((call) => call.path === "/clients/client_1/history")).toHaveLength(1);
+  });
+
+  it("gives up on a stream that keeps losing its place instead of looping", async () => {
+    const runtime = fakeRuntime(() => []);
+    runtime.gap(Number.MAX_SAFE_INTEGER);
+    const { agent } = session(runtime);
+    await expect(agent.prompt(userMessage)).rejects.toThrow("kept losing its place");
+    expect(runtime.calls.filter((call) => call.path === "/clients/client_1/history")).toHaveLength(4);
   });
 
   it("resumes a run in flight by replaying it from its start cursor, without prompting again", async () => {

@@ -564,7 +564,6 @@ type AutomationOutcomeStatus = (typeof AUTOMATION_OUTCOME_STATUSES)[number];
 // (in the DO). Pinned at the thread's first turn; a thread never switches.
 const CHAT_AGENT_BACKEND_KEY = "agentBackend";
 const RUNTIME_AGENT_KEY = "runtimeAgent";
-const RUNTIME_AGENT_CURSOR_KEY = "runtimeAgentCursor";
 const RUNTIME_AGENT_RUN_KEY = "runtimeAgentRun";
 // Durable resume of an interrupted Pi turn (e.g. the DO is evicted mid-turn by a
 // deploy). ai-chat's `chatRecovery` owns recovery now: a turn runs through
@@ -7958,8 +7957,6 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       store: {
         agent: () => kv.get<RuntimeAgentRecord>(RUNTIME_AGENT_KEY) ?? null,
         saveAgent: (agent) => kv.put(RUNTIME_AGENT_KEY, agent),
-        cursor: () => kv.get<number>(RUNTIME_AGENT_CURSOR_KEY) ?? null,
-        saveCursor: (cursor) => kv.put(RUNTIME_AGENT_CURSOR_KEY, cursor),
         run: () => kv.get<RuntimeRunRecord>(RUNTIME_AGENT_RUN_KEY) ?? null,
         saveRun: (run) => {
           if (run) kv.put(RUNTIME_AGENT_RUN_KEY, run);
