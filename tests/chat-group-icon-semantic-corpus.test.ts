@@ -8,6 +8,7 @@ import {
 import { CHAT_GROUP_ICON_SEMANTIC_CORPUS } from "./fixtures/chat-group-icon-semantic-corpus";
 
 describe("chat group icon semantic corpus", () => {
+  // The whole corpus runs in one test: about 5-6 s on CI's shared runners, past vitest's 5 s default.
   it("meets the deterministic selection release gates", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const results = await Promise.all(
@@ -54,5 +55,5 @@ describe("chat group icon semantic corpus", () => {
       acceptable.length / results.length,
       JSON.stringify(failures, null, 2),
     ).toBeGreaterThanOrEqual(0.9);
-  });
+  }, 30_000);
 });
