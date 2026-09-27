@@ -226,6 +226,22 @@ const modelPricingTable: Record<string, ModelPricing> = {
       },
     ],
   },
+  // OpenRouter list prices; the free tier's model on the hosted agent runtime.
+  "gpt-6-luna": {
+    inputPerToken: 0.0000001,
+    outputPerToken: 0.0000005,
+    cacheCreationPerToken: 0.000000125,
+    cacheReadPerToken: 0.00000001,
+    tiers: [
+      {
+        inputTokensAbove: 272_000,
+        inputPerToken: 0.0000002,
+        outputPerToken: 0.00000075,
+        cacheCreationPerToken: 0.00000025,
+        cacheReadPerToken: 0.00000002,
+      },
+    ],
+  },
   "gpt-5.6-luna": {
     inputPerToken: 0.0000002,
     outputPerToken: 0.0000012,
@@ -400,6 +416,9 @@ export function lookupPricingOrNull(model: string): ModelPricing | null {
 
   if (normalized.startsWith("gpt-5.6-terra")) {
     return modelPricingTable["gpt-5.6-terra"];
+  }
+  if (normalized.startsWith("gpt-6-luna")) {
+    return modelPricingTable["gpt-6-luna"];
   }
   if (normalized.startsWith("gpt-5.6-luna")) {
     return modelPricingTable["gpt-5.6-luna"];

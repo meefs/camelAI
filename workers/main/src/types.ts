@@ -110,6 +110,14 @@ export interface Env
   SALESFORCE_CLIENT_ID?: string;
   SALESFORCE_CLIENT_SECRET?: string;
   INTEGRATION_SECRET_KEY: string;
+  // Hosted agent runtime (routes/agent-mcp.ts, routes/agent-runtime-llm.ts): the
+  // tenant its identity tokens must name, and the audiences to expect when these
+  // endpoints sit behind a proxy. AGENT_RUNTIME_URL (its JWKS) is on ChatEnv.
+  AGENT_RUNTIME_TENANT?: string;
+  AGENT_RUNTIME_MCP_AUDIENCE?: string;
+  AGENT_RUNTIME_LLM_AUDIENCE?: string;
+  // Standard Webhooks secret (whsec_…) the runtime signs usage events with.
+  AGENT_RUNTIME_WEBHOOK_SECRET?: string;
   WORKSPACE_EMAIL_DOMAIN?: string;
   EMAIL_FROM_ADDRESS?: string;
   EMAIL?: ChatEnv["EMAIL"];
