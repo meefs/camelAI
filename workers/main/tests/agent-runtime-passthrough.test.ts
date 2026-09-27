@@ -82,7 +82,7 @@ describe("passthroughRoute", () => {
     }))).toMatchObject({ provider: "openai", upstreamBase: "https://api.openai.com/v1" });
     expect(passthroughRoute(bedrock)).toEqual({
       provider: "amazon-bedrock",
-      modelId: "anthropic.claude-sonnet-5",
+      modelId: "us.anthropic.claude-sonnet-5",
       kind: "bedrock",
       upstreamBase: "https://bedrock-runtime.us-west-2.amazonaws.com",
       credential: "bedrock-api-key",
@@ -142,10 +142,15 @@ describe("upstreamCall", () => {
 
   it("sends Bedrock calls to the region's bedrock-runtime with the org's Bedrock API key, checking region and model", () => {
     const route = passthroughRoute(bedrock)!;
-    const call = upstreamCall(route, "us-west-2/model/anthropic.claude-sonnet-5/converse-stream", "", runtimeHeaders("authorization"), "{\"messages\":[]}") as { url: string; headers: Headers };
-    expect(call.url).toBe("https://bedrock-runtime.us-west-2.amazonaws.com/model/anthropic.claude-sonnet-5/converse-stream");
+    expect(runtimeModelFor("chiridion", route)).toBe("chiridion/amazon-bedrock/us-west-2/us.anthropic.claude-sonnet-5");
+    const call = upstreamCall(route, "us-west-2/model/us.anthropic.claude-sonnet-5/converse-stream", "", runtimeHeaders("authorization"), "{\"messages\":[]}") as { url: string; headers: Headers };
+    expect(call.url).toBe("https://bedrock-runtime.us-west-2.amazonaws.com/model/us.anthropic.claude-sonnet-5/converse-stream");
     expect(call.headers.get("authorization")).toBe("Bearer bedrock-api-key");
-    expect(upstreamCall(route, "us-east-1/model/anthropic.claude-sonnet-5/converse-stream", "", [], "{}")).toEqual({ error: expect.stringMatching(/region/) });
+    expect(upstreamCall(route, "us-east-1/model/us.anthropic.claude-sonnet-5/converse-stream", "", [], "{}")).toEqual({ error: expect.stringMatching(/region/) });
+    // Ids with ':' arrive URL-encoded.
+    const versioned = { ...route, modelId: "us.anthropic.claude-sonnet-5-v1:0" };
+    expect(upstreamCall(versioned, "us-west-2/model/us.anthropic.claude-sonnet-5-v1%3A0/converse-stream", "", [], "{}"))
+      .toMatchObject({ url: "https://bedrock-runtime.us-west-2.amazonaws.com/model/us.anthropic.claude-sonnet-5-v1%3A0/converse-stream" });
     expect(upstreamCall(route, "us-west-2/model/anthropic.claude-opus-5/converse", "", [], "{}")).toEqual({ error: expect.stringMatching(/model/) });
   });
 });
@@ -277,12 +282,12 @@ describe("ChatThreadDO.runtimeProviderRequest", () => {
     fake.currentRuntimeRoute = async () => ({ route, config: bedrock });
     const response = await forward.call(fake, request({
       provider: "amazon-bedrock",
-      path: "us-west-2/model/anthropic.claude-sonnet-5/converse-stream",
+      path: "us-west-2/model/us.anthropic.claude-sonnet-5/converse-stream",
       body: "{\"messages\":[]}",
     }), caller);
     expect(new Uint8Array(await response.arrayBuffer())).toEqual(frame);
     const [url, init] = upstream.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("https://bedrock-runtime.us-west-2.amazonaws.com/model/anthropic.claude-sonnet-5/converse-stream");
+    expect(url).toBe("https://bedrock-runtime.us-west-2.amazonaws.com/model/us.anthropic.claude-sonnet-5/converse-stream");
     expect((init.headers as Headers).get("authorization")).toBe("Bearer bedrock-api-key");
     expect(init.body).toBe("{\"messages\":[]}");
     await Promise.all(waits);

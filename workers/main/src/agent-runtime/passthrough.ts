@@ -55,9 +55,28 @@ function presentHeaders(headers: Record<string, string | null | undefined> | und
   return out;
 }
 
-/** The runtime model id for a route: `chiridion/<provider>/<model id>`. */
-export function runtimeModelFor(endpoint: string, route: Pick<PassthroughRoute, "provider" | "modelId">): string {
-  return `${endpoint}/${route.provider}/${route.modelId}`;
+/**
+ * The runtime model id for a route: `chiridion/<provider>/<model id>`, and for
+ * Bedrock `chiridion/amazon-bedrock/<region>/<model id>`.
+ */
+export function runtimeModelFor(endpoint: string, route: Pick<PassthroughRoute, "provider" | "modelId" | "region">): string {
+  return route.provider === "amazon-bedrock"
+    ? `${endpoint}/${route.provider}/${route.region}/${route.modelId}`
+    : `${endpoint}/${route.provider}/${route.modelId}`;
+}
+
+/**
+ * Converse on bedrock-runtime takes Claude through a cross-region inference
+ * profile (`us.`/`eu.`/`apac.` + the model id; `global.` elsewhere), where the
+ * bedrock-mantle endpoint chiridion's own loop uses takes the bare id.
+ */
+export function bedrockInferenceProfileId(modelId: string, region: string): string {
+  if (/^(us|eu|apac|global)\./.test(modelId)) return modelId;
+  const geo = region.startsWith("us-") ? "us"
+    : region.startsWith("eu-") ? "eu"
+    : region.startsWith("ap-") ? "apac"
+    : "global";
+  return `${geo}.${modelId}`;
 }
 
 /**
@@ -89,7 +108,7 @@ export function passthroughRoute(config: PiResolvedModelConfig): PassthroughRout
     if (!region || model.api !== "anthropic-messages") return null;
     return {
       provider: "amazon-bedrock",
-      modelId: model.id,
+      modelId: bedrockInferenceProfileId(model.id, region),
       kind: "bedrock",
       upstreamBase: `https://bedrock-runtime.${region}.amazonaws.com`,
       credential: config.apiKey,
