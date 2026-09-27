@@ -20,6 +20,10 @@ import {
   recordObservabilityEvent,
 } from "../observability.js";
 import { createSignedSession } from "../signed-session.js";
+import { ACCESS_JWT_HEADER, getAccessConfig } from "../helpers/access-session.js";
+import { ProxyAuthUnavailableError, verifyProxyJwt } from "../helpers/proxy-auth-core.js";
+import { getUserByEmail } from "../../../../src/lib/auth-do.js";
+import type { AuthEnv } from "../../../../src/lib/auth-helpers.js";
 import {
   createAdminJsExecActor,
   deleteAdminJsExecActor,
@@ -173,20 +177,84 @@ function parseStaticRedirectUris(value: string | undefined): string[] {
     .filter(Boolean);
 }
 
+/**
+ * Where Cloudflare Access fronts the whole hostname (staging), it answers the
+ * MCP client's OAuth itself and forwards a signed assertion, so the admin MCP's
+ * own OAuth endpoints are never reachable. When ADMIN_MCP_ACCESS_TEAM_DOMAIN
+ * and ADMIN_MCP_ACCESS_AUD are set, a verified assertion identifies the caller
+ * and gets the same scope and superuser checks as an OAuth token. Otherwise
+ * the header is ignored. This deliberately does not use the app-wide
+ * CLOUDFLARE_ACCESS_* settings, which also enable Access login provisioning.
+ */
+interface AdminMcpAccessEnv {
+  ADMIN_MCP_ACCESS_TEAM_DOMAIN?: string;
+  ADMIN_MCP_ACCESS_AUD?: string;
+}
+
+async function verifyAccessIdentityGrant(
+  req: Request,
+  env: Env & AdminMcpAccessEnv,
+): Promise<AdminMcpTokenGrantRecord | Response | null> {
+  const assertion = req.headers.get(ACCESS_JWT_HEADER);
+  if (!assertion) return null;
+  const config = getAccessConfig({
+    CLOUDFLARE_ACCESS_TEAM_DOMAIN: env.ADMIN_MCP_ACCESS_TEAM_DOMAIN,
+    CLOUDFLARE_ACCESS_AUD: env.ADMIN_MCP_ACCESS_AUD,
+  });
+  if (!config) return null;
+
+  let payload;
+  try {
+    payload = await verifyProxyJwt(assertion, config);
+  } catch (error) {
+    if (error instanceof ProxyAuthUnavailableError) {
+      return Response.json(
+        { error: "Unavailable", details: "Cloudflare Access keys are unavailable" },
+        { status: 503, headers: JSON_HEADERS },
+      );
+    }
+    return unauthorized(req, "Invalid Cloudflare Access assertion");
+  }
+
+  const email = typeof payload.email === "string" ? payload.email.trim() : "";
+  const found = email ? await getUserByEmail(env as unknown as AuthEnv, email) : null;
+  if (!found) {
+    return Response.json(
+      { error: "Forbidden", details: "Admin access required" },
+      { status: 403, headers: JSON_HEADERS },
+    );
+  }
+  const now = Date.now();
+  return {
+    client_id: "cloudflare-access",
+    user_id: found.userId,
+    scopes: [ADMIN_MCP_SCOPE],
+    resource: getAdminMcpResource(req),
+    created_at: now,
+    expires_at: typeof payload.exp === "number" ? payload.exp * 1000 : now,
+  };
+}
+
 async function verifyAdminMcpAuth(
   req: Request,
   env: Env,
 ): Promise<AdminMcpTokenGrantRecord | Response> {
-  const auth = req.headers.get("authorization");
-  if (!auth?.startsWith("Bearer ")) return unauthorized(req);
+  const accessGrant = await verifyAccessIdentityGrant(req, env);
+  if (accessGrant instanceof Response) return accessGrant;
 
-  const oauth = new AdminMcpOAuthProvider(
-    env.APP_KV,
-    env.ADMIN_MCP_CLIENT_ID,
-    parseStaticRedirectUris(env.ADMIN_MCP_REDIRECT_URIS),
-  );
-  const grant = await oauth.verifyAccessToken(auth.slice(7), getAdminMcpResource(req));
-  if (!grant) return unauthorized(req, "Invalid or expired token");
+  let grant = accessGrant;
+  if (!grant) {
+    const auth = req.headers.get("authorization");
+    if (!auth?.startsWith("Bearer ")) return unauthorized(req);
+
+    const oauth = new AdminMcpOAuthProvider(
+      env.APP_KV,
+      env.ADMIN_MCP_CLIENT_ID,
+      parseStaticRedirectUris(env.ADMIN_MCP_REDIRECT_URIS),
+    );
+    grant = await oauth.verifyAccessToken(auth.slice(7), getAdminMcpResource(req));
+    if (!grant) return unauthorized(req, "Invalid or expired token");
+  }
   if (!grant.scopes.includes(ADMIN_MCP_SCOPE)) {
     return Response.json(
       { error: "Forbidden", details: "Missing admin MCP scope" },

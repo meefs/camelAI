@@ -25,6 +25,11 @@
   "vpc_services": [],
   "vars": {
     "AI_VIRTUAL_MODEL": "dynamic/auto",
+    // Cloudflare Access fronts staging.camelai.dev ("camelAI staging internal"),
+    // so admin MCP callers are identified by its signed assertion rather than
+    // the admin MCP's own OAuth, which Access keeps unreachable.
+    "ADMIN_MCP_ACCESS_TEAM_DOMAIN": "https://qaml.cloudflareaccess.com",
+    "ADMIN_MCP_ACCESS_AUD": "724083f7ecdae7fd3b3be02c757980bd0de635c785f9398e4a3faf8a9205d3ad",
     // Hosted agent runtime (plans/agent-runtime-migration.md): with these plus the
     // AGENT_RUNTIME_API_TOKEN secret, new threads with a runtime route run on it.
     // Remove AGENT_RUNTIME_DEFINITION to send new threads back to the in-DO loop.
