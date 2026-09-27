@@ -709,6 +709,28 @@ function withPlatformTailConsumer(
   return [...preserved, { service: tailWorkerName }];
 }
 
+/**
+ * A cached artifact carries the migrations computed for its original deploy,
+ * which have already run once the live script reached their new_tag. Replaying
+ * them then fails ("migration tag precondition failed ... expected tag is
+ * 'v1'"), so drop them. Any other live tag keeps them, and the upload fails
+ * exactly as it did before.
+ */
+async function migrationsForReplay(
+  accountId: string,
+  dispatchNamespace: string,
+  dispatchScriptName: string,
+  migrations: DirectWorkerMetadata["migrations"],
+  cfApiToken: string,
+  fetcher: typeof fetch,
+): Promise<DirectWorkerMetadata["migrations"]> {
+  if (!migrations || typeof migrations !== "object" || Array.isArray(migrations)) return migrations;
+  const newTag = (migrations as { new_tag?: unknown }).new_tag;
+  if (typeof newTag !== "string" || !newTag) return migrations;
+  const currentTag = await readCurrentWorkerMigrationTag(accountId, dispatchNamespace, dispatchScriptName, cfApiToken, fetcher);
+  return currentTag === newTag ? undefined : migrations;
+}
+
 function migrationStepsForUpload(migrations: unknown[]): Array<Record<string, unknown>> {
   return migrations.map((migration) => {
     const { tag: _tag, ...step } = migration as Record<string, unknown>;
@@ -904,6 +926,17 @@ export async function rollbackWorkerDeployFromArtifactCache(
   if (tailWorkerName) {
     metadata = { ...metadata, tail_consumers: withPlatformTailConsumer(metadata.tail_consumers, tailWorkerName) };
   }
+  metadata = {
+    ...metadata,
+    migrations: await migrationsForReplay(
+      accountId,
+      dispatchNamespace,
+      record.dispatchScriptName,
+      metadata.migrations,
+      cfApiToken,
+      fetcher,
+    ),
+  };
   metadata = withUsageGuardTracing(metadata);
   const upload = withUserAppCostControls(
     metadata,

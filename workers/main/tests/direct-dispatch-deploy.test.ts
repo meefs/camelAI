@@ -845,6 +845,50 @@ describe("deployWorkerModulesDirect", () => {
     expect(form.get("index.js")).toBeInstanceOf(Blob);
   });
 
+  it("drops cached Durable Object migrations the live script has already applied", async () => {
+    const migrations = { new_tag: "v1", steps: [{ new_sqlite_classes: ["FeedbackStore"] }] };
+    for (const [liveTag, expectMigrations] of [["v1", undefined], [undefined, migrations]] as const) {
+      const r2 = new Map<string, string>();
+      const fetcher = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        if ((init?.method ?? "GET") === "GET") {
+          return Response.json({ success: true, result: { script: liveTag ? { migration_tag: liveTag } : {} } });
+        }
+        return Response.json({ success: true, result: { id: "version-2" } });
+      });
+      const rollbackEnv = {
+        ...env,
+        APP_KV: { put: vi.fn(async () => undefined) },
+        R2_BUCKET: {
+          put: vi.fn(async () => undefined),
+          get: vi.fn(async (key: string) => (r2.has(key) ? { text: async () => r2.get(key)! } : null)),
+        },
+      };
+      const artifactCacheKey = `deploy-artifacts/org-1/workspace-1/project-1/demo-app--acme/do-${liveTag ?? "none"}.json`;
+      r2.set(artifactCacheKey, JSON.stringify({
+        schemaVersion: 1,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        scriptName: "demo-app",
+        dispatchScriptName: "demo-app--acme",
+        identity,
+        metadata: { main_module: "index.js", migrations },
+        modules: [{ name: "index.js", contentType: "application/javascript+module", contentBase64: "ZXhwb3J0IGRlZmF1bHQge307" }],
+        assetsRecord: null,
+      }));
+
+      await rollbackWorkerDeployFromArtifactCache(rollbackEnv, {
+        artifactCacheKey,
+        hostname: "camelai.dev",
+        threadId: "thread-rollback",
+      }, { fetcher: fetcher as unknown as typeof fetch });
+
+      const upload = fetcher.mock.calls.find(([, init]) => init?.method === "PUT");
+      expect(upload).toBeDefined();
+      const form = upload![1]!.body as FormData;
+      const metadata = JSON.parse(await (form.get("metadata") as Blob).text());
+      expect(metadata.migrations, `live tag ${liveTag}`).toEqual(expectMigrations);
+    }
+  });
+
   it("re-applies the platform tail consumer when rolling back an artifact cached without one", async () => {
     const r2 = new Map<string, { body: string | Uint8Array; options?: unknown }>();
     const fetcher = vi.fn(async () => Response.json({ success: true, result: { id: "version-1" } }));
