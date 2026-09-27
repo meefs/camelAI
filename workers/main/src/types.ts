@@ -116,6 +116,8 @@ export interface Env
   AGENT_RUNTIME_TENANT?: string;
   AGENT_RUNTIME_MCP_AUDIENCE?: string;
   AGENT_RUNTIME_LLM_AUDIENCE?: string;
+  // Standard Webhooks secret (whsec_…) the runtime signs usage events with.
+  AGENT_RUNTIME_WEBHOOK_SECRET?: string;
   WORKSPACE_EMAIL_DOMAIN?: string;
   EMAIL_FROM_ADDRESS?: string;
   EMAIL?: ChatEnv["EMAIL"];

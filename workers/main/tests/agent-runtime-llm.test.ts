@@ -5,7 +5,7 @@ import { handleAgentRuntimeLlmRequest } from "../src/routes/agent-runtime-llm";
 import type { Env } from "../src/types";
 
 const BASE = "https://camel.test/agent-runtime/llm";
-const URL_ = `${BASE}/openrouter/responses`;
+const URL_ = `${BASE}/openai-codex/codex/responses`;
 const ALICE: TestIdentity = { tenant: "chiridion", subject: "user1", actor: "user2", context: { org: "org1", workspace: "ws1", thread: "thread1" } };
 const BODY = { model: "anthropic/claude-sonnet-5", stream: true, input: [] };
 
@@ -52,7 +52,7 @@ describe("agent runtime inference proxy", () => {
     expect(response.status).toBe(200);
     expect(completion).toHaveBeenCalledWith(
       "thread1",
-      expect.objectContaining({ provider: "openrouter", path: "responses", method: "POST", body: expect.any(ArrayBuffer) }),
+      expect.objectContaining({ provider: "openai-codex", path: "codex/responses", method: "POST", body: expect.any(ArrayBuffer) }),
       { orgId: "org1", workspaceId: "ws1", threadId: "thread1", userId: "user2" },
     );
   });

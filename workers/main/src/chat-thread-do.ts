@@ -374,25 +374,28 @@ import {
 // broadcast) stays on this DO.
 import { ChatThreadErrors } from "./chat-thread/errors";
 import {
-  RUNTIME_MODEL_ENDPOINT,
   RUNTIME_PROMPT_PREAMBLE,
   RuntimeAgentSession,
   runtimeInputQuestions,
   type RuntimeInput,
   type RuntimeInputAnswer,
+  type RuntimeRunConfig,
   runtimeEnabledForOrg,
   type RuntimeAgentRecord,
   type RuntimeRunRecord,
 } from "./chat-thread/runtime-agent";
 import {
+  codexError,
+  codexRoute,
+  codexUpstreamCall,
   forwardedResponseHeaders,
-  passthroughRoute,
-  providerError,
-  readUsage,
-  runtimeModelFor,
-  upstreamCall,
-  type PassthroughRoute,
-} from "./agent-runtime/passthrough";
+} from "./agent-runtime/codex-forwarder";
+import {
+  FREE_TIER_RUNTIME_MODEL,
+  runtimeModelRoute,
+  type RuntimeModelRoute,
+} from "./agent-runtime/model-routes";
+import { HOSTED_KEY_SCOPE, ensureHostedKeyScope, syncOrgKeyScope } from "./agent-runtime/key-scopes";
 
 // Pi tool-definition surface (executor-style tool list + Agent/Explore
 // subagent runner + subagent system prompt).
@@ -7887,7 +7890,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
    * in-DO loop, as long as the runtime has not started it yet.
    */
   private keepRuntimeBackend(config: PiResolvedModelConfig): boolean {
-    if (passthroughRoute(config, { freeTier: isCreditFreeHostedModel(this.currentThreadModel) })) return true;
+    if (this.runtimeRouteFor(config)) return true;
     if (this.ctx.storage.kv.get(RUNTIME_AGENT_KEY)) return true;
     this.ctx.storage.kv.put(CHAT_AGENT_BACKEND_KEY, "pi");
     this.recordChatThreadObservabilityEvent("agent_backend_pinned", {
@@ -7956,7 +7959,7 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       // The runtime agent's prompt is fixed at creation; per-run instructions
       // (a scheduled run's outcome report) ride on the message instead.
       runInstructions: () => this.automationOutcomeInstruction(),
-      runtimeModel: () => this.runtimeModelId(),
+      prepareRun: () => this.prepareRuntimeRun(),
       answerInput: (input, signal) => this.answerRuntimeInput(input, signal),
       initialState: {
         systemPrompt: "",
@@ -7976,37 +7979,94 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
   }
 
   /**
-   * The pass-through route this thread's model calls take now (the model the
-   * thread resolves to: picker, BYOK, gateway, credit fallback), or null when
-   * that route cannot be forwarded (it stays on the in-DO loop).
+   * How this thread's model runs on the runtime now (the model the thread
+   * resolves to: picker, BYOK, gateway, credit fallback), or null when it has
+   * no runtime route (it stays on the in-DO loop).
    */
-  private async currentRuntimeRoute(): Promise<{ route: PassthroughRoute | null; config: PiResolvedModelConfig }> {
+  private async currentRuntimeRoute(): Promise<{ route: RuntimeModelRoute | null; config: PiResolvedModelConfig }> {
     await this.ensurePiSessionReady();
     const resolveModel = this.piModelResolver;
     if (!resolveModel) throw new Error("The thread's model is not available");
     const config = await resolveModel();
-    return { route: passthroughRoute(config, { freeTier: isCreditFreeHostedModel(this.currentThreadModel) }), config };
+    return { route: this.runtimeRouteFor(config), config };
   }
 
-  /** The runtime model id (`chiridion/<provider>/<model>`) for the thread's route. */
-  private async runtimeModelId(): Promise<string | null> {
-    const { route } = await this.currentRuntimeRoute();
-    return route ? runtimeModelFor(RUNTIME_MODEL_ENDPOINT, route) : null;
+  private runtimeRouteFor(config: PiResolvedModelConfig): RuntimeModelRoute | null {
+    return runtimeModelRoute(config, {
+      orgId: this.chatContext?.orgId ?? "",
+      freeTier: isCreditFreeHostedModel(this.currentThreadModel),
+    });
   }
 
   /**
-   * One model call of this thread's runtime agent, forwarded to the provider
-   * (routes/agent-runtime-llm.ts): gates as the acting user, the route checked
-   * against the call's provider and model, the runtime's credentials swapped
-   * for the route's, the body and the answer passed through untouched, and
-   * the provider's reported usage metered.
+   * Before a runtime run: the thread's route (model and key scope), the gates
+   * as the acting user (credits through the resolver, per-user limits), the
+   * key scope synced, and the spend limit the run may use: the least of the
+   * org's remaining hosted credit and the user's limit headroom (null: none).
+   */
+  private async prepareRuntimeRun(): Promise<RuntimeRunConfig> {
+    const context = this.chatContext;
+    if (!context) throw new Error("Missing chat context");
+    const { route, config } = await this.currentRuntimeRoute();
+    if (!route) throw new Error("This thread's model cannot run on the agent runtime; switch models to continue.");
+    const userId = this.getActiveTurnUserId();
+    // Limits are checked against the model the runtime will call (the free
+    // tier's runtime model is not the in-DO loop's dynamic route).
+    const gated = route.kind === "scope" && route.model === FREE_TIER_RUNTIME_MODEL
+      ? { ...config, usageProvider: "openrouter", model: { ...config.model, id: "openai/gpt-6-luna" } }
+      : config;
+    await this.assertPiUserLlmUsageAccess(context, gated, userId);
+    if (route.kind === "scope") {
+      if (route.keyScope === HOSTED_KEY_SCOPE) {
+        if (!await ensureHostedKeyScope(this.env)) throw new Error("Hosted models are not configured for the agent runtime.");
+      } else {
+        await syncOrgKeyScope(this.env, context.orgId);
+      }
+    }
+    const budgets: number[] = [];
+    if (config.billingSource === "hosted" && config.creditChargeable) {
+      const credit = await this.hostedCreditRemainingUsd(context.orgId);
+      if (credit !== null) budgets.push(credit);
+    }
+    if (userId) {
+      const org = this.env.ORG.get(this.env.ORG.idFromName(context.orgId)) as unknown as {
+        getUserLlmUsageLimits(userId: string): Promise<{ status: { limits?: Array<{ remaining_usd: number }> } }>;
+      };
+      const { status } = await org.getUserLlmUsageLimits(userId);
+      for (const limit of status.limits ?? []) budgets.push(limit.remaining_usd);
+    }
+    return {
+      model: route.model,
+      keyScope: route.kind === "scope" ? route.keyScope : null,
+      spendLimitUsd: budgets.length > 0 ? Math.max(0, Math.min(...budgets)) : null,
+    };
+  }
+
+  /** The org's hosted credit left, in USD (checkHostedPiModelAccess's arithmetic); null when unmetered. */
+  private async hostedCreditRemainingUsd(orgId: string): Promise<number | null> {
+    const org = this.env.ORG.get(this.env.ORG.idFromName(orgId)) as unknown as {
+      getInfo(): Promise<Record<string, unknown> | null>;
+      getUsageLogSum(from: number, to: number, creditChargeableOnly: boolean): Promise<{ total_cost_usd?: number }>;
+    };
+    const info = await org.getInfo();
+    if (!info || info.billing_status === "enterprise") return null;
+    const usage = await org.getUsageLogSum(0, Date.now(), true);
+    const spentCents = Math.round(Number(usage.total_cost_usd ?? 0) * 100);
+    const totalCents = Number(info.billing_credit_purchase_total_cents ?? 0) + Number(info.billing_credit_grant_total_cents ?? 0);
+    return Math.max(0, totalCents - spentCents) / 100;
+  }
+
+  /**
+   * One Codex call of this thread's runtime agent (routes/agent-runtime-llm.ts):
+   * the org's ChatGPT subscription is the one route chiridion still forwards.
+   * The per-user gate runs as the acting user, the runtime's credentials are
+   * swapped for the subscription's token and account, and the body and the
+   * answer pass through untouched. Usage arrives by the runtime's webhook.
    */
   async runtimeProviderRequest(
     request: { provider: string; path: string; search: string; method: string; headers: [string, string][]; body: ArrayBuffer | null },
     caller: { orgId: string; workspaceId: string; threadId: string; userId: string },
   ): Promise<Response> {
-    const fail = (status: number, message: string, code: string) =>
-      providerError(request.provider, status, message, code);
     const context = this.chatContext;
     if (
       !context ||
@@ -8014,86 +8074,42 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       context.workspaceId !== caller.workspaceId ||
       context.orgId !== caller.orgId
     ) {
-      return fail(403, "The token is not for this thread", "forbidden");
+      return codexError(403, "The token is not for this thread", "forbidden");
     }
     if (!this.isRuntimeAgentThread()) {
-      return fail(403, "This thread does not run on the agent runtime", "forbidden");
+      return codexError(403, "This thread does not run on the agent runtime", "forbidden");
     }
-    let resolved: Awaited<ReturnType<ChatThreadDO["currentRuntimeRoute"]>>;
+    if (request.provider !== "openai-codex") {
+      return codexError(404, `chiridion forwards only openai-codex, not ${request.provider}`, "not_found");
+    }
+    let config: PiResolvedModelConfig;
     try {
-      resolved = await this.currentRuntimeRoute();
-      // Limits are checked against what the call really uses (the free tier's
-      // runtime route is not the in-DO loop's dynamic route).
-      const gated = resolved.route?.usageProvider
-        ? {
-            ...resolved.config,
-            usageProvider: resolved.route.usageProvider,
-            model: { ...resolved.config.model, id: resolved.route.modelId },
-          }
-        : resolved.config;
-      await this.assertPiUserLlmUsageAccess(context, gated, caller.userId);
+      ({ config } = await this.currentRuntimeRoute());
+      await this.assertPiUserLlmUsageAccess(context, config, caller.userId);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (error instanceof UserLlmUsageLimitError) return fail(429, message, "usage_limit");
-      if (error instanceof HostedModelFallbackRequiredError) return fail(402, message, "insufficient_credits");
+      if (error instanceof UserLlmUsageLimitError) return codexError(429, message, "usage_limit");
+      if (error instanceof HostedModelFallbackRequiredError) return codexError(402, message, "insufficient_credits");
       throw error;
     }
-    const { route, config } = resolved;
+    const route = codexRoute(config);
     if (!route) {
-      return fail(409, "This thread's model cannot run on the agent runtime; switch models to continue.", "unsupported_route");
-    }
-    if (request.provider !== route.provider) {
-      return fail(409, `This thread's model goes through ${route.provider}, not ${request.provider}`, "route_mismatch");
+      return codexError(409, "This thread's model no longer uses the ChatGPT subscription; send the message again.", "route_mismatch");
     }
     const requestBody = request.body ? new Uint8Array(request.body) : new Uint8Array(0);
-    const call = upstreamCall(route, request.path, request.search, request.headers, requestBody);
-    if ("error" in call) return fail(409, call.error, "route_mismatch");
-    const startedAtMs = Date.now();
+    const call = codexUpstreamCall(route, request.path, request.search, request.headers, requestBody);
+    if ("error" in call) return codexError(409, call.error, "route_mismatch");
     const upstream = await fetch(call.url, {
       method: request.method,
       headers: call.headers,
-      // The bytes as the runtime sent them (a Codex body is zstd).
+      // The bytes as the runtime sent them (zstd).
       body: requestBody.byteLength > 0 ? requestBody : undefined,
     });
-    const headers = forwardedResponseHeaders(upstream.headers);
-    if (!upstream.body) return new Response(null, { status: upstream.status, headers });
-    const [toRuntime, toMeter] = upstream.body.tee();
-    const billing = { source: config.billingSource, chargeable: config.creditChargeable, provider: route.usageProvider ?? config.usageProvider };
-    const contentType = upstream.headers.get("content-type") ?? "";
-    this.ctx.waitUntil(
-      readUsage(toMeter, contentType)
-        .then((usage) => {
-          if (!usage) return;
-          const message = {
-            role: "assistant",
-            content: [],
-            provider: route.provider,
-            model: route.modelId,
-            ...(usage.responseId ? { responseId: usage.responseId } : {}),
-            ...(usage.responseModel ? { responseModel: usage.responseModel } : {}),
-            usage: {
-              input: usage.input,
-              output: usage.output,
-              cacheRead: usage.cacheRead,
-              cacheWrite: usage.cacheWrite,
-              reasoning: usage.reasoning,
-              totalTokens: usage.input + usage.output + usage.cacheRead + usage.cacheWrite,
-              cost: { total: usage.costUsd ?? 0 },
-            },
-            timestamp: startedAtMs,
-          } as unknown as AgentMessage;
-          return this.recordPiAssistantUsage(message, Date.now() - startedAtMs, billing.source, billing.chargeable, billing.provider, {
-            userId: caller.userId,
-            model: usage.responseModel || route.modelId,
-            usageSurface: "agent",
-            sourceScope: this.piRuntimeThreadId(),
-          });
-        })
-        .catch((error) => {
-          console.error("[ChatThreadDO] failed to meter runtime model call", error);
-        }),
-    );
-    return new Response(toRuntime, { status: upstream.status, statusText: upstream.statusText, headers });
+    return new Response(upstream.body, {
+      status: upstream.status,
+      statusText: upstream.statusText,
+      headers: forwardedResponseHeaders(upstream.headers),
+    });
   }
 
   /**

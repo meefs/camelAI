@@ -47,8 +47,18 @@ export interface RuntimeAgentEnv {
 export interface RuntimeAgentRecord {
   id: string;
   token: string;
-  /** The runtime model last configured (`chiridion/<id>`). */
+  /** The runtime model and key scope last configured. */
   model?: string;
+  keyScope?: string | null;
+}
+
+/** A run's configuration: a Pi model id (or the Codex forwarder's), its key scope, and its spend limit. */
+export interface RuntimeRunConfig {
+  model: string;
+  /** `hosted` or `org_<id>`; null for the Codex forwarder (a tenant endpoint). */
+  keyScope: string | null;
+  /** USD the run may spend; null for no limit. */
+  spendLimitUsd: number | null;
 }
 
 export interface RuntimeRunRecord {
@@ -82,8 +92,13 @@ export interface RuntimeAgentSessionOptions {
   actor: () => string | null;
   /** Instructions for the run being started, sent ahead of its message. */
   runInstructions?: () => string | null;
-  /** The runtime model for the thread's current route, or null when the route cannot be forwarded. */
-  runtimeModel: () => Promise<string | null>;
+  /**
+   * Before each run (and the agent's creation): the thread's model and key
+   * scope now, after the gates as the acting user, and the spend limit the
+   * run may use. Throws when the run may not start (credits, limits, a route
+   * the runtime cannot take).
+   */
+  prepareRun: () => Promise<RuntimeRunConfig>;
   /** The committed transcript the DO loaded; runtime messages append to it. */
   initialState: Pick<AgentState, "systemPrompt" | "model" | "tools" | "messages" | "thinkingLevel">;
   /** The configuration applied once, right after the agent is created. */
@@ -350,25 +365,13 @@ export class RuntimeAgentSession {
     return body;
   }
 
-  /**
-   * The runtime model for the thread's current route
-   * (`chiridion/<provider>/<provider-native model id>`); the runtime's own Pi
-   * client then speaks that provider's protocol through the forwarder. Refuses
-   * a route the forwarder cannot take.
-   */
-  private async runtimeModel(): Promise<string> {
-    const model = await this.options.runtimeModel();
-    if (!model) throw new RuntimeAgentError("This thread's model cannot run on the agent runtime; switch models to continue.");
-    return model;
-  }
-
   /** The thread's runtime agent, created (idempotently, per thread) on first use. */
-  private async agent(): Promise<RuntimeAgentRecord> {
+  private async agent(run?: RuntimeRunConfig): Promise<RuntimeAgentRecord> {
     const stored = this.options.store.agent();
     if (stored) return stored;
     const { env, identity } = this.options;
     const { systemPromptAppend } = await this.options.configuration();
-    const model = await this.runtimeModel();
+    const config = run ?? await this.options.prepareRun();
     const created = await this.call("/v1/agents", {
       method: "POST",
       token: env.AGENT_RUNTIME_API_TOKEN ?? "",
@@ -378,7 +381,9 @@ export class RuntimeAgentSession {
         name: identity.threadId,
         type: "camelai-thread",
         ttlSeconds: null,
-        model,
+        model: config.model,
+        ...(config.keyScope ? { keyScope: config.keyScope } : {}),
+        ...(config.spendLimitUsd !== null ? { spendLimit: { usd: config.spendLimitUsd } } : {}),
         thinkingLevel: this.state.thinkingLevel,
         systemPromptAppend,
         fileTools: false,
@@ -389,21 +394,30 @@ export class RuntimeAgentSession {
     if (typeof created.id !== "string" || typeof created.token !== "string") {
       throw new RuntimeAgentError("Agent runtime returned no agent id or token");
     }
-    const record = { id: created.id, token: created.token, model };
+    const record = { id: created.id, token: created.token, model: config.model, keyScope: config.keyScope };
     this.options.store.saveAgent(record);
     return record;
   }
 
-  /** Follow the thread's route: the runtime takes a model change before the next run. */
-  private async syncModel(agent: RuntimeAgentRecord): Promise<void> {
-    const model = await this.runtimeModel();
-    if (agent.model === model) return;
+  /**
+   * Before a run: follow the thread's route (model, key scope) and set the
+   * run's spend limit, in one configuration change the runtime applies before
+   * the run.
+   */
+  private async configureRun(agent: RuntimeAgentRecord, run: RuntimeRunConfig): Promise<void> {
     await this.call(`/v1/agents/${agent.id}/configuration`, {
       method: "PATCH",
       token: this.options.env.AGENT_RUNTIME_API_TOKEN ?? "",
-      body: { requestId: `model_${crypto.randomUUID()}`, model, thinkingLevel: this.state.thinkingLevel },
+      body: {
+        requestId: `run_${crypto.randomUUID()}`,
+        spendLimit: run.spendLimitUsd === null ? null : { usd: run.spendLimitUsd },
+        ...(agent.model !== run.model ? { model: run.model, thinkingLevel: this.state.thinkingLevel } : {}),
+        ...((agent.keyScope ?? null) !== run.keyScope ? { keyScope: run.keyScope } : {}),
+      },
     });
-    this.options.store.saveAgent({ ...agent, model });
+    if (agent.model !== run.model || (agent.keyScope ?? null) !== run.keyScope) {
+      this.options.store.saveAgent({ ...agent, model: run.model, keyScope: run.keyScope });
+    }
   }
 
   private async request(method: string, params: Record<string, unknown>, id: string = crypto.randomUUID()) {
@@ -655,8 +669,9 @@ export class RuntimeAgentSession {
   }
 
   private async run(method: "prompt" | "continue", params: Record<string, unknown>) {
-    const agent = await this.agent();
-    await this.syncModel(agent);
+    const config = await this.options.prepareRun();
+    const agent = await this.agent(config);
+    await this.configureRun(agent, config);
     const cursor = await this.currentCursor(agent);
     const requestId = crypto.randomUUID();
     this.options.store.saveRun({ requestId, cursor });

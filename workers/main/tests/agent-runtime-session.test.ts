@@ -62,7 +62,8 @@ function memoryStore() {
   };
 }
 
-let routeModel: string | null = "chiridion/openrouter/anthropic/claude-sonnet-5";
+const HOSTED_RUN = { model: "openrouter/anthropic/claude-sonnet-5:nitro", keyScope: "hosted", spendLimitUsd: 4.5 };
+let nextRun: () => Promise<{ model: string; keyScope: string | null; spendLimitUsd: number | null }> = async () => HOSTED_RUN;
 
 function session(runtime: ReturnType<typeof fakeRuntime>, store = memoryStore()) {
   let activity = 0;
@@ -73,7 +74,7 @@ function session(runtime: ReturnType<typeof fakeRuntime>, store = memoryStore())
     actor: () => "user2",
     initialState: { systemPrompt: "", model: MODEL, tools: [], messages: [], thinkingLevel: "medium" },
     configuration: async () => ({ systemPromptAppend: "camel prompt" }),
-    runtimeModel: async () => routeModel,
+    prepareRun: () => nextRun(),
     onActivity: () => { activity += 1; },
     fetch: runtime.fetch,
   });
@@ -103,7 +104,9 @@ describe("RuntimeAgentSession", () => {
     expect(create.headers.get("Idempotency-Key")).toBe("thread_thread1");
     expect(create.body).toMatchObject({
       definition: "def_1",
-      model: "chiridion/openrouter/anthropic/claude-sonnet-5",
+      model: "openrouter/anthropic/claude-sonnet-5:nitro",
+      keyScope: "hosted",
+      spendLimit: { usd: 4.5 },
       thinkingLevel: "medium",
       systemPromptAppend: "camel prompt",
       fileTools: false,
@@ -111,7 +114,8 @@ describe("RuntimeAgentSession", () => {
       subject: "user1",
       context: { org: "org1", workspace: "ws1", thread: "thread1" },
     });
-    expect(runtime.calls.some((call) => call.method === "PATCH")).toBe(false);
+    // Each run sets its spend limit (the model and scope only when they change).
+    expect(runtime.calls.find((call) => call.method === "PATCH")!.body).toEqual({ requestId: expect.any(String), spendLimit: { usd: 4.5 } });
     const prompt = runtime.calls.find((call) => call.path === "/clients/client_1/requests")!;
     expect(prompt.body).toMatchObject({ method: "prompt", params: { text: "hello", actor: "user2" } });
     expect(prompt.headers.get("Authorization")).toBe("Bearer agent-token");
@@ -122,18 +126,20 @@ describe("RuntimeAgentSession", () => {
     expect(agent.state.messages[0]).toBe(userMessage);
     expect(agent.state.messages[1]).toMatchObject({ content: [{ name: "list_apps" }] });
     expect(agent.state.isStreaming).toBe(false);
-    expect(store.data.agent).toEqual({ id: "client_1", token: "agent-token", model: "chiridion/openrouter/anthropic/claude-sonnet-5" });
+    expect(store.data.agent).toEqual({ id: "client_1", token: "agent-token", model: "openrouter/anthropic/claude-sonnet-5:nitro", keyScope: "hosted" });
     expect(store.data.cursor).toBe(12);
     expect(store.data.run).toBeNull();
     expect(activity()).toBeGreaterThan(0);
 
-    // A second run reuses the agent; a changed thread model is configured before it.
-    routeModel = "chiridion/anthropic/claude-opus-5";
+    // A second run reuses the agent; a new route (the org added its own key) is configured before it.
+    nextRun = async () => ({ model: "anthropic/claude-opus-5", keyScope: "org_org1", spendLimitUsd: null });
     await agent.prompt(userMessage);
     expect(runtime.calls.filter((call) => call.path === "/v1/agents")).toHaveLength(1);
-    expect(runtime.calls.find((call) => call.method === "PATCH")!.body).toMatchObject({ model: "chiridion/anthropic/claude-opus-5" });
-    expect(store.data.agent?.model).toBe("chiridion/anthropic/claude-opus-5");
-    routeModel = "chiridion/openrouter/anthropic/claude-sonnet-5";
+    expect(runtime.calls.filter((call) => call.method === "PATCH").at(-1)!.body).toEqual({
+      requestId: expect.any(String), spendLimit: null, model: "anthropic/claude-opus-5", thinkingLevel: "medium", keyScope: "org_org1",
+    });
+    expect(store.data.agent).toMatchObject({ model: "anthropic/claude-opus-5", keyScope: "org_org1" });
+    nextRun = async () => HOSTED_RUN;
   });
 
   it("sends run instructions ahead of the message and steers without an actor", async () => {
@@ -151,7 +157,7 @@ describe("RuntimeAgentSession", () => {
       runInstructions: () => "## Outcome",
       initialState: { systemPrompt: "", model: MODEL, tools: [], messages: [], thinkingLevel: "medium" },
       configuration: async () => ({ systemPromptAppend: "" }),
-      runtimeModel: async () => "chiridion/openrouter/anthropic/claude-sonnet-5",
+      prepareRun: async () => HOSTED_RUN,
       fetch: runtime.fetch,
     });
     await agent.prompt(userMessage);
@@ -192,7 +198,7 @@ describe("RuntimeAgentSession", () => {
       answerInput: async (value) => { asked.push(value); return { action: "accept", content: { answers: { "Which?": "A" } } }; },
       initialState: { systemPrompt: "", model: MODEL, tools: [], messages: [], thinkingLevel: "medium" },
       configuration: async () => ({ systemPromptAppend: "" }),
-      runtimeModel: async () => "chiridion/openrouter/anthropic/claude-sonnet-5",
+      prepareRun: async () => HOSTED_RUN,
       fetch: runtime.fetch,
     });
     const events: Array<Record<string, unknown>> = [];
@@ -228,7 +234,7 @@ describe("RuntimeAgentSession", () => {
       answerInput: async () => { throw new Error("question timed out"); },
       initialState: { systemPrompt: "", model: MODEL, tools: [], messages: [], thinkingLevel: "medium" },
       configuration: async () => ({ systemPromptAppend: "" }),
-      runtimeModel: async () => "chiridion/openrouter/anthropic/claude-sonnet-5",
+      prepareRun: async () => HOSTED_RUN,
       fetch: runtime.fetch,
     });
     const events: Array<Record<string, unknown>> = [];
@@ -238,15 +244,15 @@ describe("RuntimeAgentSession", () => {
     expect(runtime.calls.some((call) => call.path.includes("/inputs/"))).toBe(false);
   });
 
-  it("refuses to start a run on a route the forwarder cannot take", async () => {
+  it("starts no run the gates refuse", async () => {
     const runtime = fakeRuntime(() => []);
-    routeModel = null;
+    nextRun = async () => { throw new Error("Hosted model credits are used up."); };
     try {
       const { agent } = session(runtime);
-      await expect(agent.prompt(userMessage)).rejects.toThrow(/cannot run on the agent runtime/);
-      expect(runtime.calls.some((call) => call.path === "/v1/agents")).toBe(false);
+      await expect(agent.prompt(userMessage)).rejects.toThrow(/credits are used up/);
+      expect(runtime.calls.some((call) => call.path === "/v1/agents" || call.path.includes("/requests"))).toBe(false);
     } finally {
-      routeModel = "chiridion/openrouter/anthropic/claude-sonnet-5";
+      nextRun = async () => HOSTED_RUN;
     }
   });
 

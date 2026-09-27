@@ -1,12 +1,11 @@
 /**
  * The hosted agent runtime's model endpoint for chiridion's tenant
- * (`modelEndpoints.chiridion.baseUrl` = `https://<host>/agent-runtime/llm`).
- * The runtime's Pi client speaks a provider's native protocol to
- * `/agent-runtime/llm/<provider>/<rest>`; this verifies the runtime identity
- * token (in `X-Agent-Runtime-Identity`), authorizes the caller like the MCP
- * server, and hands the call to the thread's ChatThreadDO
- * (`runtimeProviderRequest`), which gates, checks the route, injects the real
- * credential, forwards it untouched and meters it (agent-runtime/passthrough.ts).
+ * (`modelEndpoints.chiridion.baseUrl` = `https://<host>/agent-runtime/llm`),
+ * which now serves one route: `openai-codex`, the org's ChatGPT subscription.
+ * Every other provider the runtime calls itself with a key scope's keys.
+ * This verifies the runtime identity token (in `X-Agent-Runtime-Identity`),
+ * authorizes the caller like the MCP server, and hands the call to the
+ * thread's ChatThreadDO (`runtimeProviderRequest`, agent-runtime/codex-forwarder.ts).
  */
 import { RuntimeTokenError, verifyRuntimeToken } from "@camelai/agent-runtime/server";
 import type { Env, RouteContext } from "../types.js";

@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { syncOrgKeyScope, type KeyScopeEnv } from "../agent-runtime/key-scopes";
 import type { DOEnv } from "./env";
 import {
   WorkspaceDO,
@@ -9061,6 +9062,19 @@ export class OrgDO extends DurableObject<DOEnv> {
 
   async notifyByokChanged(): Promise<number> {
     const threadIds = this.getActiveThreadIdsForByokChange();
+    // Runtime agents call providers with the org's key scope: keep it in step.
+    const env = this.env as unknown as KeyScopeEnv;
+    const orgId = this.getInfoSync()?.id;
+    if (orgId && env.AGENT_RUNTIME_API_TOKEN) {
+      this.ctx.waitUntil(
+        syncOrgKeyScope(env, orgId, this.getLlmProviderConfig()).catch((error) => {
+          console.error("[OrgDO] agent runtime key scope sync failed", {
+            orgId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }),
+      );
+    }
 
     for (let index = 0; index < threadIds.length; index += 50) {
       const batch = threadIds.slice(index, index + 50);
