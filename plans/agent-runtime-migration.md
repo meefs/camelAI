@@ -375,7 +375,12 @@ header slot its client used):
 
 A thread whose route has none is pinned back to the in-DO loop before the
 runtime starts it; a runtime thread that later switches to such a route gets
-"switch models to continue". Bedrock: chiridion stores Bedrock API keys (the
+"switch models to continue". Known gap: the free tier's hosted routes are the
+gateway's `compat` dynamic routes (deepseek, the luna/muse fallback), so
+free-tier threads do not use the runtime yet. Bedrock must work before the
+full cutover (staging may leave Bedrock orgs on the in-DO loop). Gateway
+prefixes, per Cloudflare's docs: `…/openrouter` = `openrouter.ai/api/v1`,
+`…/anthropic` = `api.anthropic.com`. Bedrock: chiridion stores Bedrock API keys (the
 bearer tokens bedrock-runtime accepts), not IAM access keys, so there is
 nothing to SigV4-sign; Converse-stream usage comes from the AWS event
 stream's `metadata` event. Codex is skipped by decision (its client derives

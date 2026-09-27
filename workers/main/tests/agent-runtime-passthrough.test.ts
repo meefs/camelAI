@@ -126,6 +126,14 @@ describe("upstreamCall", () => {
     expect(call.headers.get("cf-aig-authorization")).toBe("Bearer gateway-token");
     expect(call.headers.get("authorization")).toBeNull();
     expect(call.headers.get("cf-aig-metadata")).toBe("{\"uid\":\"o:w:t\"}");
+    // Anthropic models stay on OpenRouter's Messages API (prompt caching): /api/v1/messages.
+    const messages = upstreamCall(passthroughRoute(hosted)!, "v1/messages", "", runtimeHeaders("x-api-key"), JSON.stringify({ model: "anthropic/claude-sonnet-5:nitro" })) as { url: string; headers: Headers };
+    expect(messages.url).toBe(`${GATEWAY}/messages`);
+    expect(messages.headers.get("x-api-key")).toBeNull();
+    // The gateway's Anthropic prefix is api.anthropic.com itself: v1/messages stays.
+    const anthropicGateway = { ...passthroughRoute(hosted)!, provider: "anthropic" as const, upstreamBase: "https://gateway.ai.cloudflare.com/v1/acct/gw/anthropic", modelId: "claude-sonnet-5" };
+    expect(upstreamCall(anthropicGateway, "v1/messages", "", [], JSON.stringify({ model: "claude-sonnet-5" })))
+      .toMatchObject({ url: "https://gateway.ai.cloudflare.com/v1/acct/gw/anthropic/v1/messages" });
   });
 
   it("refuses another model", () => {
