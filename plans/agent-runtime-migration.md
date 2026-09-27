@@ -372,7 +372,8 @@ header slot its client used):
 | BYOK OpenAI | openai | `https://api.openai.com/v1` | `Authorization: Bearer <key>` |
 | BYOK Bedrock (Claude) | amazon-bedrock | `https://bedrock-runtime.<region>.amazonaws.com` (`<rest>` = `<region>/model/<id>/converse-stream`; region and model checked) | the org's Bedrock API key as `Authorization: Bearer` |
 | Free tier (camelCode, gateway `compat` dynamic route) | openrouter | the gateway's OpenRouter URL, model `openai/gpt-6-luna` | `cf-aig-authorization` |
-| Codex subscription (skipped), custom endpoint, self-host, Bedrock OpenAI models, other gateway `compat` dynamic routes (deepseek) | none | — | — |
+| Codex subscription (an OpenAI model in an org with ChatGPT connected) | openai-codex | `https://chatgpt.com/backend-api` (`codex/responses`), or `OPENAI_CODEX_PROXY_BASE_URL` without its `/codex` | the subscription's access token as Bearer, `chatgpt-account-id` from its account claim, the proxy token when proxied |
+| Custom endpoint, self-host, Bedrock OpenAI models, other gateway `compat` dynamic routes (deepseek) | none | — | — |
 
 A thread whose route has none is pinned back to the in-DO loop before the
 runtime starts it; a runtime thread that later switches to such a route gets
@@ -388,8 +389,11 @@ prefixes, per Cloudflare's docs: `…/openrouter` = `openrouter.ai/api/v1`,
 `…/anthropic` = `api.anthropic.com`. Bedrock: chiridion stores Bedrock API keys (the
 bearer tokens bedrock-runtime accepts), not IAM access keys, so there is
 nothing to SigV4-sign; Converse-stream usage comes from the AWS event
-stream's `metadata` event. Codex is skipped by decision (its client derives
-account headers from the OAuth token itself).
+stream's `metadata` event. Codex: the runtime's client sends a placeholder
+`chatgpt-account-id`; the forwarder sets the real one and the token, which the
+resolver refreshes per call (`getFreshOpenAiSubscription`). Not verified live
+yet: it needs the runtime's openai-codex endpoint and a connected ChatGPT
+subscription (device-code sign-in in Settings → AI provider).
 
 Verified locally against agent-runtime 86925d9 (runtime pass-through), with
 real providers, each over two turns with thinking and tool continuations:
