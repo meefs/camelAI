@@ -56,7 +56,10 @@ async function resolveNamespaceScript(input: {
   namespaceId: string;
   fetcher: typeof fetch;
 }): Promise<string | null> {
-  const response = await input.fetcher(
+  // Call it unbound: invoking the runtime's fetch as a method of `input`
+  // throws "Illegal invocation".
+  const { fetcher } = input;
+  const response = await fetcher(
     `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(input.accountId)}/workers/durable_objects/namespaces/${encodeURIComponent(input.namespaceId)}`,
     { headers: { Authorization: `Bearer ${input.apiToken}` } },
   );
@@ -99,7 +102,7 @@ export async function queryDurableObjectRows(input: {
   to: number;
   fetcher?: typeof fetch;
 }): Promise<{ runId: string | null; usage: ScriptUsage[] }> {
-  const fetcher = input.fetcher ?? fetch;
+  const fetcher = input.fetcher ?? ((...args: Parameters<typeof fetch>) => fetch(...args));
   const response = await fetcher("https://api.cloudflare.com/client/v4/graphql", {
     method: "POST",
     headers: {
