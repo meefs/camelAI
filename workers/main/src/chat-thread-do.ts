@@ -384,11 +384,11 @@ import {
   type RuntimeRunRecord,
 } from "./chat-thread/runtime-agent";
 import {
-  forwardedRequestHeaders,
   forwardedResponseHeaders,
   passthroughRoute,
   readUsage,
   runtimeModelFor,
+  upstreamCall,
   type PassthroughRoute,
 } from "./agent-runtime/passthrough";
 
@@ -8034,20 +8034,13 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     if (request.provider !== route.provider) {
       return fail(409, `This thread's model goes through ${route.provider}, not ${request.provider}`, "route_mismatch");
     }
-    let requestedModel: unknown;
-    try {
-      requestedModel = request.body ? (JSON.parse(request.body) as { model?: unknown }).model : undefined;
-    } catch {
-      return fail(400, "The body must be JSON", "invalid_request_error");
-    }
-    if (requestedModel !== route.modelId) {
-      return fail(409, `This thread's model is ${route.modelId}, not ${String(requestedModel)}`, "model_mismatch");
-    }
+    const call = upstreamCall(route, request.path, request.search, request.headers, request.body);
+    if ("error" in call) return fail(409, call.error, "route_mismatch");
     const startedAtMs = Date.now();
-    const upstream = await fetch(`${route.upstreamBase}/${request.path}${request.search}`, {
+    const upstream = await fetch(call.url, {
       method: request.method,
-      headers: forwardedRequestHeaders(request.headers, route),
-      body: request.body,
+      headers: call.headers,
+      body: request.body || undefined,
     });
     const headers = forwardedResponseHeaders(upstream.headers);
     if (!upstream.body) return new Response(null, { status: upstream.status, headers });

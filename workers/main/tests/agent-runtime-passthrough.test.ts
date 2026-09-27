@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  eventStreamPayloads,
   foldUsage,
-  forwardedRequestHeaders,
   passthroughRoute,
   readUsage,
   runtimeModelFor,
+  upstreamCall,
+  type PassthroughRoute,
 } from "../src/agent-runtime/passthrough";
 import type { PiResolvedModelConfig } from "../src/chat-thread/pi-model-config";
 import { ChatThreadDO } from "../src/chat-thread-do";
@@ -44,60 +46,99 @@ const hosted = config({
   },
 });
 
+const bedrock = config({
+  usageProvider: "bedrock",
+  apiKey: "bedrock-api-key",
+  model: { provider: "custom", api: "anthropic-messages", id: "anthropic.claude-sonnet-5", baseUrl: "https://bedrock-mantle.us-west-2.api.aws/anthropic" },
+});
+
 describe("passthroughRoute", () => {
   it("sends hosted calls through the gateway with its token and metadata", () => {
     expect(passthroughRoute(hosted)).toEqual({
       provider: "openrouter",
       modelId: "anthropic/claude-sonnet-5:nitro",
+      kind: "gateway",
       upstreamBase: GATEWAY,
-      headers: {
-        "cf-aig-metadata": "{\"uid\":\"o:w:t\"}",
-        "HTTP-Referer": "https://camelai.com",
-        "cf-aig-authorization": "Bearer gateway-token",
-      },
+      credential: "gateway-token",
+      headers: { "cf-aig-metadata": "{\"uid\":\"o:w:t\"}", "HTTP-Referer": "https://camelai.com" },
     });
     expect(runtimeModelFor("chiridion", passthroughRoute(hosted)!)).toBe("chiridion/openrouter/anthropic/claude-sonnet-5:nitro");
   });
 
-  it("sends BYOK keys to the provider itself", () => {
-    const openrouter = passthroughRoute(config({
+  it("sends BYOK keys to the provider itself, and Bedrock keys to bedrock-runtime in the org's region", () => {
+    expect(passthroughRoute(config({
       model: { provider: "anthropic", api: "anthropic-messages", id: "anthropic/claude-sonnet-5:nitro", baseUrl: "https://openrouter.ai/api", headers: { Authorization: "Bearer or-key" } },
       apiKey: "or-key",
-    }));
-    expect(openrouter).toMatchObject({ provider: "openrouter", upstreamBase: "https://openrouter.ai/api/v1", headers: { Authorization: "Bearer or-key" } });
-    const anthropic = passthroughRoute(config({
+    }))).toMatchObject({ provider: "openrouter", kind: "direct", upstreamBase: "https://openrouter.ai/api", credential: "or-key", headers: {} });
+    expect(passthroughRoute(config({
       usageProvider: "anthropic",
       apiKey: "sk-ant",
       model: { provider: "anthropic", api: "anthropic-messages", id: "claude-sonnet-5", baseUrl: "https://api.anthropic.com" },
-    }));
-    expect(anthropic).toEqual({ provider: "anthropic", modelId: "claude-sonnet-5", upstreamBase: "https://api.anthropic.com", headers: { "x-api-key": "sk-ant" } });
-    const openai = passthroughRoute(config({
+    }))).toMatchObject({ provider: "anthropic", upstreamBase: "https://api.anthropic.com", credential: "sk-ant" });
+    expect(passthroughRoute(config({
       usageProvider: "openai",
       apiKey: "sk-oa",
       model: { provider: "openai", api: "openai-responses", id: "gpt-5.6-sol", baseUrl: "https://api.openai.com/v1" },
-    }));
-    expect(openai).toMatchObject({ provider: "openai", upstreamBase: "https://api.openai.com/v1", headers: { Authorization: "Bearer sk-oa" } });
+    }))).toMatchObject({ provider: "openai", upstreamBase: "https://api.openai.com/v1" });
+    expect(passthroughRoute(bedrock)).toEqual({
+      provider: "amazon-bedrock",
+      modelId: "anthropic.claude-sonnet-5",
+      kind: "bedrock",
+      upstreamBase: "https://bedrock-runtime.us-west-2.amazonaws.com",
+      credential: "bedrock-api-key",
+      headers: {},
+      region: "us-west-2",
+    });
   });
 
-  it("has no route for Bedrock, Codex, custom endpoints or the gateway's dynamic routes", () => {
-    expect(passthroughRoute(config({ usageProvider: "bedrock", model: { provider: "custom", id: "x", baseUrl: "https://bedrock-mantle.us-east-1.api.aws" } }))).toBeNull();
+  it("has no route for Codex, custom endpoints, Bedrock OpenAI models or the gateway's dynamic routes", () => {
     expect(passthroughRoute(config({ usageProvider: "openai", model: { provider: "openai-codex", id: "gpt-5.6", baseUrl: "https://chatgpt.com/backend-api" } }))).toBeNull();
     expect(passthroughRoute(config({ usageProvider: "custom", model: { provider: "custom", id: "x", baseUrl: "https://llm.example" } }))).toBeNull();
+    expect(passthroughRoute(config({ usageProvider: "bedrock", model: { provider: "custom", api: "openai-responses", id: "openai.gpt", baseUrl: "https://bedrock-mantle.us-east-1.api.aws/openai/v1" } }))).toBeNull();
     expect(passthroughRoute(config({ billingSource: "hosted", usageProvider: "compat", model: { provider: "cloudflare-ai-gateway", id: "dynamic/x", baseUrl: GATEWAY } }))).toBeNull();
   });
 });
 
-describe("forwardedRequestHeaders", () => {
-  it("drops the runtime's credentials and adds the route's", () => {
-    const headers = forwardedRequestHeaders([
-      ["content-type", "application/json"],
-      ["authorization", "Bearer runtime-jwt"],
-      ["x-api-key", "runtime-jwt"],
-      ["x-agent-runtime-identity", "runtime-jwt"],
-      ["anthropic-version", "2023-06-01"],
-      ["cookie", "a=b"],
-    ], { provider: "anthropic", modelId: "m", upstreamBase: "https://api.anthropic.com", headers: { "x-api-key": "sk-ant" } });
-    expect(Object.fromEntries(headers)).toEqual({ "content-type": "application/json", "anthropic-version": "2023-06-01", "x-api-key": "sk-ant" });
+describe("upstreamCall", () => {
+  const runtimeHeaders = (key: "authorization" | "x-api-key"): [string, string][] => [
+    ["content-type", "application/json"],
+    [key, key === "authorization" ? "Bearer runtime-jwt" : "runtime-jwt"],
+    ["x-agent-runtime-identity", "runtime-jwt"],
+    ["anthropic-version", "2023-06-01"],
+    ["cookie", "a=b"],
+  ];
+  const direct: PassthroughRoute = { provider: "openrouter", modelId: "anthropic/claude-sonnet-5", kind: "direct", upstreamBase: "https://openrouter.ai/api", credential: "or-key", headers: {} };
+  const body = JSON.stringify({ model: "anthropic/claude-sonnet-5" });
+
+  it("puts the real key in the header slot the runtime's client used", () => {
+    const messages = upstreamCall(direct, "v1/messages", "", runtimeHeaders("x-api-key"), body);
+    expect(messages).toMatchObject({ url: "https://openrouter.ai/api/v1/messages" });
+    expect(Object.fromEntries((messages as { headers: Headers }).headers)).toEqual({ "content-type": "application/json", "anthropic-version": "2023-06-01", "x-api-key": "or-key" });
+    const responses = upstreamCall(direct, "v1/responses", "", runtimeHeaders("authorization"), body) as { url: string; headers: Headers };
+    expect(responses.url).toBe("https://openrouter.ai/api/v1/responses");
+    expect(responses.headers.get("authorization")).toBe("Bearer or-key");
+    expect(responses.headers.get("x-agent-runtime-identity")).toBeNull();
+  });
+
+  it("maps OpenRouter paths onto the gateway's /api/v1 prefix with the gateway token only", () => {
+    const call = upstreamCall(passthroughRoute(hosted)!, "v1/responses", "", runtimeHeaders("authorization"), JSON.stringify({ model: "anthropic/claude-sonnet-5:nitro" })) as { url: string; headers: Headers };
+    expect(call.url).toBe(`${GATEWAY}/responses`);
+    expect(call.headers.get("cf-aig-authorization")).toBe("Bearer gateway-token");
+    expect(call.headers.get("authorization")).toBeNull();
+    expect(call.headers.get("cf-aig-metadata")).toBe("{\"uid\":\"o:w:t\"}");
+  });
+
+  it("refuses another model", () => {
+    expect(upstreamCall(direct, "v1/responses", "", [], JSON.stringify({ model: "openai/gpt-6" }))).toEqual({ error: expect.stringMatching(/not openai\/gpt-6/) });
+  });
+
+  it("sends Bedrock calls to the region's bedrock-runtime with the org's Bedrock API key, checking region and model", () => {
+    const route = passthroughRoute(bedrock)!;
+    const call = upstreamCall(route, "us-west-2/model/anthropic.claude-sonnet-5/converse-stream", "", runtimeHeaders("authorization"), "{\"messages\":[]}") as { url: string; headers: Headers };
+    expect(call.url).toBe("https://bedrock-runtime.us-west-2.amazonaws.com/model/anthropic.claude-sonnet-5/converse-stream");
+    expect(call.headers.get("authorization")).toBe("Bearer bedrock-api-key");
+    expect(upstreamCall(route, "us-east-1/model/anthropic.claude-sonnet-5/converse-stream", "", [], "{}")).toEqual({ error: expect.stringMatching(/region/) });
+    expect(upstreamCall(route, "us-west-2/model/anthropic.claude-opus-5/converse", "", [], "{}")).toEqual({ error: expect.stringMatching(/model/) });
   });
 });
 
@@ -112,6 +153,37 @@ describe("usage", () => {
     expect(anthropic).toEqual({ input: 10, output: 42, cacheRead: 500, cacheWrite: 30, reasoning: 0, responseId: "msg_1", responseModel: "claude-sonnet-5" });
     expect(foldUsage(null, { id: "c", choices: [], usage: { prompt_tokens: 100, completion_tokens: 5, prompt_tokens_details: { cached_tokens: 60 } } }))
       .toMatchObject({ input: 40, output: 5, cacheRead: 60 });
+  });
+
+  it("reads Bedrock Converse usage from its event stream", async () => {
+    const frame = (eventType: string, payload: unknown) => {
+      const name = new TextEncoder().encode(":event-type");
+      const value = new TextEncoder().encode(eventType);
+      const headers = new Uint8Array(1 + name.length + 1 + 2 + value.length);
+      headers[0] = name.length; headers.set(name, 1); headers[1 + name.length] = 7;
+      new DataView(headers.buffer).setUint16(2 + name.length, value.length); headers.set(value, 4 + name.length);
+      const body = new TextEncoder().encode(JSON.stringify(payload));
+      const total = 12 + headers.length + body.length + 4;
+      const bytes = new Uint8Array(total);
+      const view = new DataView(bytes.buffer);
+      view.setUint32(0, total); view.setUint32(4, headers.length);
+      bytes.set(headers, 12); bytes.set(body, 12 + headers.length);
+      return bytes;
+    };
+    const whole = new Uint8Array([
+      ...frame("contentBlockDelta", { delta: { text: "hi" } }),
+      ...frame("metadata", { usage: { inputTokens: 30, outputTokens: 4, cacheReadInputTokens: 900, cacheWriteInputTokens: 12 }, metrics: { latencyMs: 5 } }),
+    ]);
+    expect(eventStreamPayloads(whole).payloads).toHaveLength(2);
+    // Split mid-frame, as a network stream would.
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(whole.slice(0, 50));
+        controller.enqueue(whole.slice(50));
+        controller.close();
+      },
+    });
+    expect(await readUsage(body, "application/vnd.amazon.eventstream")).toEqual({ input: 30, output: 4, cacheRead: 900, cacheWrite: 12, reasoning: 0 });
   });
 
   it("reads usage from an SSE body split across chunks", async () => {
@@ -155,7 +227,7 @@ describe("ChatThreadDO.runtimeProviderRequest", () => {
 
   const request = (overrides: Record<string, unknown> = {}) => ({
     provider: "openrouter",
-    path: "responses",
+    path: "v1/responses",
     search: "",
     method: "POST",
     headers: [["content-type", "application/json"], ["authorization", "Bearer runtime-jwt"], ["x-agent-runtime-identity", "runtime-jwt"]],
@@ -182,6 +254,33 @@ describe("ChatThreadDO.runtimeProviderRequest", () => {
       expect.objectContaining({ role: "assistant", responseId: "r1", usage: expect.objectContaining({ input: 40, output: 9, cacheRead: 60, cost: { total: 0.001 } }) }),
       expect.any(Number), "hosted", true, "openrouter",
       expect.objectContaining({ userId: "user2", usageSurface: "agent" }),
+    );
+  });
+
+  it("forwards a Bedrock Converse stream with the org's Bedrock API key and meters its metadata usage", async () => {
+    const payload = new TextEncoder().encode(JSON.stringify({ usage: { inputTokens: 11, outputTokens: 2 } }));
+    const total = 12 + payload.length + 4;
+    const frame = new Uint8Array(total);
+    new DataView(frame.buffer).setUint32(0, total);
+    frame.set(payload, 12);
+    const upstream = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(frame, { headers: { "content-type": "application/vnd.amazon.eventstream" } }));
+    const route = passthroughRoute(bedrock);
+    const { fake, recordPiAssistantUsage, waits } = fakeThread(route);
+    fake.currentRuntimeRoute = async () => ({ route, config: bedrock });
+    const response = await forward.call(fake, request({
+      provider: "amazon-bedrock",
+      path: "us-west-2/model/anthropic.claude-sonnet-5/converse-stream",
+      body: "{\"messages\":[]}",
+    }), caller);
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(frame);
+    const [url, init] = upstream.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://bedrock-runtime.us-west-2.amazonaws.com/model/anthropic.claude-sonnet-5/converse-stream");
+    expect((init.headers as Headers).get("authorization")).toBe("Bearer bedrock-api-key");
+    expect(init.body).toBe("{\"messages\":[]}");
+    await Promise.all(waits);
+    expect(recordPiAssistantUsage).toHaveBeenCalledWith(
+      expect.objectContaining({ usage: expect.objectContaining({ input: 11, output: 2 }) }),
+      expect.any(Number), "byok", false, "bedrock", expect.anything(),
     );
   });
 
