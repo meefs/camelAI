@@ -1,5 +1,8 @@
 export const USAGE_GUARD_TRACE_SAMPLING_RATE = 1;
 
+// Plain-text binding the usage guard sets on a quarantined script.
+export const USAGE_GUARD_QUARANTINE_MARKER = "CAMELAI_USAGE_GUARD_QUARANTINE";
+
 export function normalizeDispatchScriptVersion(value: string): string {
   const trimmed = value.trim();
   return /^[0-9a-f-]{32,36}$/i.test(trimmed) ? trimmed.replaceAll("-", "").toLowerCase() : trimmed;

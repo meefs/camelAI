@@ -213,6 +213,36 @@ Other Workers have dedicated `deploy:*` scripts in [package.json](package.json).
 Environment-specific bindings live in the corresponding `wrangler*.jsonc`
 files.
 
+### Re-applying user-app cost controls
+
+Every app deploy (and rollback) wraps the app's Durable Object classes in an
+alarm throttle and sets a per-script CPU limit (`USER_APP_ALARM_MIN_INTERVAL_MS`,
+`USER_APP_ALARM_DAILY_BUDGET`, `USER_APP_CPU_MS` on the main worker; see
+`workers/main/src/user-app-cost-controls-policy.ts`). Apps deployed before a
+change only pick it up on their next deploy. To backfill them, replay each live
+app's latest cached deploy artifact:
+
+```bash
+# Dry run (default): read-only Cloudflare API calls, lists what would be redeployed
+CLOUDFLARE_API_TOKEN=... bun run backfill:user-app-cost-controls --env prod --order alarm-spend --limit 20
+
+# Redeploy, top alarm spenders first, one app at a time
+CLOUDFLARE_API_TOKEN=... ADMIN_API_KEY=... bun run backfill:user-app-cost-controls \
+  --env prod --apply --order alarm-spend --limit 20
+```
+
+- `--scripts a,b,c` limits the run to those dispatch script names; `--limit N`
+  stops after N redeploys; `--delay-ms N` sets the pause between them (default 2000).
+- **Replaying uploads a new script version, which resets every Durable Object
+  instance of that app** (in-memory state and open WebSockets are dropped;
+  storage is kept). Run it off-peak and start with a small `--limit`.
+- Apps are skipped when they already carry the current controls, have no
+  artifact record in the usage-guard state, are quarantined or suspended by the
+  usage guard, or hold a deploy lease. The summary counts each skip reason, and
+  the script exits non-zero if any redeploy failed.
+- `--apply` calls `POST /api/admin/apps/:dispatchScriptName/cost-controls` on the
+  target environment, so the main worker there must already include this code.
+
 ## Contributing
 
 Before opening a pull request:
