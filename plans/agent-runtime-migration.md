@@ -79,10 +79,7 @@ browser ─WS/poll─ ChatThreadDO ──POST prompt/steer/abort──> runtime 
     behind a proxy;
   - adapter: `AGENT_RUNTIME_ENABLED`, `AGENT_RUNTIME_API_TOKEN` (operator
     token, a secret), `AGENT_RUNTIME_DEFINITION`.
-- **SDK dependency.** `serveTools` and `testRuntime` are not on npm yet
-  (npm has 0.4.0 without `./server`). The SDK is vendored as
-  `vendor/camelai-agent-runtime-0.4.0-9bb8ecd.tgz`, built from agent-runtime
-  9bb8ecd. Swap it for the published version when it ships.
+- **SDK dependency.** `@camelai/agent-runtime@^0.5.0` from npm (`./server`, `./testing`).
 - **Tests.** `bun run test:workers -- agent-mcp` (`testRuntime()` signs real
   tokens). They cover:
   - bad, expired, wrong-audience and wrong-issuer tokens;
@@ -332,9 +329,7 @@ timeouts, reset by progress; js_exec itself still caps at 120 s, hence the
 direct-first tool order), R6 (a tenant's `modelEndpoints`, identity-token
 authenticated). Still needed:
 
-- **R5.** Publish `@camelai/agent-runtime` with `./server` and `./testing`,
-  so chiridion can drop the vendored tarball (now built from 54c6366).
-- R7 (per-tool exposure) and human-input v1 landed (54c6366).
+- R5 landed: `@camelai/agent-runtime` 0.5.0 on npm, which chiridion now depends on.
 - **R8.** Answering an input over the API with the operator token but no
   `actor` is refused (403) when the input has an audience; the README says
   the token has authority. Chiridion now sends the run's actor.
