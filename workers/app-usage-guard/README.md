@@ -1,7 +1,13 @@
 # App usage guard
 
-This Worker queries account-wide Workers Observability spans every five minutes
-and evaluates Durable Object SQLite rows read/written by dispatch script. Only
+This Worker queries the account's Durable Object billing analytics
+(`durableObjectsPeriodicGroups` in the GraphQL Analytics API) every five
+minutes, attributes SQLite rows read/written to the namespace's owning dispatch
+script, and evaluates them per script. Workers Observability events stopped
+carrying Durable Object row counts, which left the previous telemetry query
+reporting zero usage for every app. Analytics are per namespace rather than per
+script version; `eligible_at` keeps windows from reaching back past the
+eligible deployment. Only
 apps successfully deployed through the updated deploy pipeline are eligible;
 there is intentionally no backfill.
 
@@ -25,7 +31,8 @@ bun run deploy:usage-guard:staging
 ```
 
 Set the guard's `CF_API_TOKEN` as a Wrangler encrypted secret in each
-environment. The token needs Workers telemetry query access and permission to
+environment. The token needs Account Analytics read access, Workers Scripts
+read access (to resolve Durable Object namespace owners), and permission to
 read/update scripts in the configured dispatch namespace.
 
 Do not deploy production from this task. The production flag is prepared in
