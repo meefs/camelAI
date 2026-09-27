@@ -1,8 +1,8 @@
 # Moving the agent loop to the hosted agent runtime
 
 Status: phase 2 built and tested end to end locally: the MCP server, the
-ChatThreadDO adapter (behind a flag, new threads only), the inference proxy,
-and human input (ask_user questions, delete confirmations) through the
+ChatThreadDO adapter (behind a flag, new threads only), model calls through
+the runtime's key scopes with a usage webhook (Codex forwarded), and human input (ask_user questions, delete confirmations) through the
 runtime's human-input v1.
 
 Today `ChatThreadDO` runs the Pi agent in the Durable Object: model calls,
@@ -16,12 +16,12 @@ the move chiridion is:
 2. **A client** that creates one runtime agent per thread, sends prompts, and
    streams the agent's events into the existing chat UI (the ChatThreadDO
    adapter, `workers/main/src/chat-thread/runtime-agent.ts`).
-3. **A model-call forwarder** the runtime sends every model call to
-   (`workers/main/src/routes/agent-runtime-llm.ts`, the AI Gateway pattern):
-   it checks the call against the thread's route, injects the real
-   credential, passes the provider's native request and answer through
-   untouched, and meters the usage, so chiridion keeps its model routing,
-   BYOK, credit and user-limit gates.
+3. **The keys and the bill:** the runtime calls providers itself with keys
+   chiridion keeps in its key scopes (`hosted`, `org_<id>`), chiridion sets
+   each agent's model, scope and spend limit before every run, and the
+   runtime reports each response's usage to chiridion's webhook, which
+   writes usage_log and charges credits. Only the ChatGPT (Codex)
+   subscription is still forwarded through chiridion.
 
 ```text
 browser ─WS/poll─ ChatThreadDO ──POST prompt/steer/abort──> runtime (AWS us-west-2)
@@ -29,7 +29,9 @@ browser ─WS/poll─ ChatThreadDO ──POST prompt/steer/abort──> runtime 
                      │                                           │ tools/call + identity JWT
                      └── UI state RPCs (preview, todos) ── /mcp/agent (Worker) ── CodeModeToolsBinding
                      │                                             └─ OrgDO, WorkspaceFilesystemDO, sandboxes, R2
-                     └── runtimeProviderRequest ── /agent-runtime/llm/<provider>/* <── model calls (same JWT)
+                     └── runtimeProviderRequest ── /agent-runtime/llm/openai-codex/* <── Codex calls only (same JWT)
+runtime ──model calls, key scope keys──> providers / AI Gateway
+runtime ──usage webhook (Standard Webhooks)──> /agent-runtime/usage (Worker) ── OrgDO usage_log
 ```
 
 ## 1. The MCP server (built)
@@ -336,86 +338,69 @@ authenticated). Still needed:
   `actor` is refused (403) when the input has an audience; the README says
   the token has authority. Chiridion now sends the run's actor.
 
-## 10. Model-call forwarder (built)
+## 10. Model calls: key scopes, spend limits, usage webhook (built)
 
-The runtime's own Pi client speaks each provider's native protocol (OpenRouter
-through the Responses API) to `<baseUrl>/<provider>/<rest>`, with
-`modelEndpoints.chiridion.baseUrl = https://<host>/agent-runtime/llm` and the
-agent's model `chiridion/<provider>/<provider-native model id>`.
-`routes/agent-runtime-llm.ts` verifies the identity token from
-`X-Agent-Runtime-Identity` (audience = the base URL, or
-`AGENT_RUNTIME_LLM_AUDIENCE`), authorizes `act ?? sub` in `ctx` like the MCP
-server, and calls `ChatThreadDO.runtimeProviderRequest`, which:
+The runtime calls providers directly. chiridion only decides which model and
+keys a thread's agent uses, how much it may spend, and bills what the runtime
+reports. (An earlier design forwarded every model call through the thread's
+DO; it held the DO open for every streamed call and added a hop, which is
+cross-Atlantic for EU-placed DOs. Only Codex is still forwarded.)
 
-1. resolves the thread's route (`piModelResolver` → `passthroughRoute`,
-   `agent-runtime/passthrough.ts`) and runs the user-limit gate as the acting
-   user (credit exhaustion surfaces from the resolver): 429 / 402 before any
-   upstream call;
-2. refuses (409) a provider or body `model` that is not the route's;
-3. forwards to `<route upstream>/<rest>` with the body untouched, the
-   runtime's `Authorization` / `x-api-key` / identity headers dropped, and the
-   route's credential injected;
-4. streams the provider's answer back untouched while a tee reads its usage
-   (Responses `response.completed`, Anthropic `message_start` +
-   `message_delta`, Chat Completions `usage`, or a JSON body; OpenRouter's
-   `cost` when present) into `recordPiAssistantUsage` as the acting user.
+**Key scopes** (`agent-runtime/key-scopes.ts`, runtime `PUT
+/v1/key-scopes/:scope/providers/:provider {apiKey, baseUrl?, headers?}`):
 
-Routes (the runtime's upstream mapping: `<endpoint>/<provider>/<rest>` →
-the provider's base + `<rest>`; the real key replaces the runtime's in the
-header slot its client used):
+| Scope | Providers |
+| --- | --- |
+| `hosted` | `openrouter`: base URL the AI Gateway's OpenRouter prefix, the gateway token as key and as `cf-aig-authorization`, OpenRouter attribution headers |
+| `org_<orgId>` | the org's BYOK provider: `anthropic`, `openai`, `openrouter` (key), or `amazon-bedrock` (the Bedrock API key, base `https://bedrock-runtime.<region>.amazonaws.com`) |
 
-| Thread route | Runtime provider | Upstream | Credential |
-| --- | --- | --- | --- |
-| hosted (AI Gateway, openrouter/anthropic/openai provider) | the gateway provider | the gateway URL for it (OpenRouter: its prefix is `/api/v1`, so `v1/…` is cut) | `cf-aig-authorization` + gateway metadata headers |
-| BYOK OpenRouter | openrouter | `https://openrouter.ai/api` (`/v1/responses`; `/v1/messages` for Anthropic models, which keeps prompt caching) | the key in `Authorization` or `x-api-key` |
-| BYOK Anthropic | anthropic | `https://api.anthropic.com` | `x-api-key` |
-| BYOK OpenAI | openai | `https://api.openai.com/v1` | `Authorization: Bearer <key>` |
-| BYOK Bedrock (Claude) | amazon-bedrock | `https://bedrock-runtime.<region>.amazonaws.com` (`<rest>` = `<region>/model/<id>/converse-stream`; region and model checked) | the org's Bedrock API key as `Authorization: Bearer` |
-| Free tier (camelCode, gateway `compat` dynamic route) | openrouter | the gateway's OpenRouter URL, model `openai/gpt-6-luna` | `cf-aig-authorization` |
-| Codex subscription (an OpenAI model in an org with ChatGPT connected) | openai-codex | `https://chatgpt.com/backend-api` (`codex/responses`), or `OPENAI_CODEX_PROXY_BASE_URL` without its `/codex` | the subscription's access token as Bearer, `chatgpt-account-id` from its account claim, the proxy token when proxied |
-| Custom endpoint, self-host, Bedrock OpenAI models, other gateway `compat` dynamic routes (deepseek) | none | — | — |
+Each scope is synced by fingerprint (APP_KV `agent_runtime_key_scope:<scope>`):
+new or changed entries are put before stale ones are deleted, and an empty
+set deletes the scope. The hosted scope syncs before any hosted run; an org
+scope before the org's runs (the lazy backfill) and on
+`OrgDO.notifyByokChanged` (BYOK set, rotated, removed).
 
-A thread whose route has none is pinned back to the in-DO loop before the
-runtime starts it; a runtime thread that later switches to such a route gets
-"switch models to continue". The free tier (the credit-free camelCode model) runs on the runtime as
-`chiridion/openrouter/openai/gpt-6-luna` (Responses, through the gateway's
-OpenRouter provider; 1.05M context, 128k output, in the runtime's catalog),
-while the in-DO loop keeps its gateway dynamic route (chat completions only):
-its gates and billing stay the hosted resolution's (not credit-chargeable,
-per-user limits checked against gpt-6-luna), metered as openrouter with
-built-in gpt-6-luna pricing (OpenRouter list prices). Bedrock must work before the
-full cutover (staging may leave Bedrock orgs on the in-DO loop). Gateway
-prefixes, per Cloudflare's docs: `…/openrouter` = `openrouter.ai/api/v1`,
-`…/anthropic` = `api.anthropic.com`. Bedrock: chiridion stores Bedrock API keys (the
-bearer tokens bedrock-runtime accepts), not IAM access keys, so there is
-nothing to SigV4-sign; Converse-stream usage comes from the AWS event
-stream's `metadata` event. Codex: the runtime's client sends a placeholder
-`chatgpt-account-id`; the forwarder sets the real one and the token, which the
-resolver refreshes per call (`getFreshOpenAiSubscription`). Not verified live
-yet: it needs the runtime's openai-codex endpoint and a connected ChatGPT
-subscription (device-code sign-in in Settings → AI provider).
+**Routes** (`agent-runtime/model-routes.ts`): the thread's resolved model
+becomes a Pi model id and a scope:
 
-Verified locally against agent-runtime 86925d9 (runtime pass-through), with
-real providers, each over two turns with thinking and tool continuations:
-hosted OpenRouter Claude (Messages API through the gateway), hosted OpenRouter
-`openai/gpt-5.6-luna` (Responses through the gateway), BYOK Anthropic, and
-BYOK Bedrock (`chiridion/amazon-bedrock/us-east-1/us.anthropic.claude-sonnet-5`,
-Converse on bedrock-runtime with the org's Bedrock API key). Every continuation
-after signed thinking succeeded; turn 2 read the first turn's cache (about 21k
-cached tokens a call); `usage_log` rows carry the acting user, the route's
-provider and billing source, cache reads and writes, and OpenRouter's cost. A
-user LLM limit made the forwarder answer 429 before any upstream call; the
-runtime ended the turn with that message, which the UI shows as the turn's
-error. A 402 (credit exhaustion) was not exercised live: the resolver's
-free-model fallback answers first locally.
+| Thread route | Runtime model | Scope |
+| --- | --- | --- |
+| hosted (gateway OpenRouter) | `openrouter/<OpenRouter id>` (e.g. `openrouter/anthropic/claude-sonnet-5:nitro`) | `hosted` |
+| free tier (camelCode) | `openrouter/openai/gpt-6-luna` (Responses) | `hosted` |
+| BYOK Anthropic / OpenAI / OpenRouter | `anthropic/<id>`, `openai/<id>`, `openrouter/<id>` | `org_<id>` |
+| BYOK Bedrock (Claude) | `amazon-bedrock/<inference profile id>` (`us.`/`eu.`/`apac.`/`global.`) | `org_<id>` |
+| ChatGPT subscription | `chiridion/openai-codex/<model>` (the Codex forwarder, a tenant endpoint) | none |
+| custom endpoint, self-host, Bedrock OpenAI models, other dynamic routes | none: the thread stays on the in-DO loop | — |
 
-Free tier, verified locally: a thread on the camelCode model ran on the
-runtime as gpt-6-luna over Responses, two turns with tool calls, turn 2
-reading about 13k cached tokens, rows `hosted`, not credit-chargeable, priced
-by the built-in table; a per-user limit refused the next call before the
-provider, and the user saw the limit message itself (provider errors are
-reduced to their message). A limit window that holds unpriced usage blocks
-all calls, as it always has.
+**Runs.** Before each run `prepareRuntimeRun` resolves the route, gates as the
+acting user (credit exhaustion through the resolver, per-user limits against
+the model the runtime will call), syncs the scope, and computes the spend limit:
+the least of the org's remaining hosted credit (hosted, credit-chargeable only)
+and the user's per-limit headroom (null when neither applies). The adapter
+creates the agent with `model`, `keyScope` and `spendLimit`, and PATCHes the
+spend limit before every run, with the model and scope when they changed. A
+run the runtime stops at the limit ends with `stopped: "spend_limit"`.
+
+**Usage webhook** (`routes/agent-runtime-usage.ts`, `POST /agent-runtime/usage`):
+Standard Webhooks signature under `AGENT_RUNTIME_WEBHOOK_SECRET` (`whsec_…`,
+five-minute tolerance, any of several signatures). Each event becomes one
+usage_log row in the org of its `context`, as `actor ?? subject`, source
+`agent_runtime`, source_id the event id (so a redelivery inserts nothing).
+The hosted scope is billed as hosted and credit-chargeable unless the model is
+the free tier's or the org is enterprise; an org scope and the Codex endpoint
+are BYOK. A provider-reported cost is stored as reported, a catalog cost as
+estimated. Events for another tenant, or without an org, are acknowledged and
+logged, not billed.
+
+**Codex forwarder** (`agent-runtime/codex-forwarder.ts`,
+`POST /agent-runtime/llm/openai-codex/codex/responses`): the identity token from
+`X-Agent-Runtime-Identity`, the per-user gate, then the subscription's
+refreshed access token and real `chatgpt-account-id` in place of the runtime's,
+Codex's own headers passed through, and the body forwarded as bytes (the runtime
+sends it zstd; a compressed body is not checked for its model, since the agent's
+model is one only chiridion sets) to `https://chatgpt.com/backend-api` or
+`OPENAI_CODEX_PROXY_BASE_URL`. Not verified live: it needs a connected ChatGPT
+subscription.
 
 **Codex enablement** (for checking use later): an org admin connects a
 ChatGPT subscription in Settings → Organization → AI provider (device-code
@@ -423,18 +408,25 @@ sign-in, `POST /api/orgs/:id/llm-provider` intents `startOpenAiSubscription` /
 `pollOpenAiSubscription`), which stores one row in the org's OrgDO table
 `openai_subscription` (`id = 'active'`, `account_email`, `plan_type`,
 `created_at`). A thread then uses it whenever its model resolves to an OpenAI
-model (it takes precedence over the hosted route); the proxy is
-`OPENAI_CODEX_PROXY_BASE_URL`/`_TOKEN`. There is no cross-org index: find
-users per OrgDO (`getOpenAiSubscription`, e.g. through `admin_js_exec`), or
-from `usage_log` rows with `billing_source = 'byok'` and `provider = 'openai'`
-on orgs without an OpenAI API key.
+model. There is no cross-org index: find users per OrgDO
+(`getOpenAiSubscription`, e.g. through `admin_js_exec`), or from `usage_log`
+rows with `billing_source = 'byok'` and `provider = 'openai'` on orgs without
+an OpenAI API key.
+
+Earlier local verification (the forwarder design, same providers) showed the
+runtime's own clients handle hosted OpenRouter (Messages for Anthropic,
+Responses otherwise), BYOK Anthropic, Bedrock Converse and the free tier's
+gpt-6-luna with signed-thinking continuations and prompt caching; the key-scope
+path is built against the runtime's contract and awaits its local end-to-end
+run.
 
 ## 11. Local end-to-end recipe
 
 ```sh
 # runtime (from ~/agent-runtime main), own database; tenants file entry:
 #   "chiridion": {"tokenSha256": …, "modelEndpoints": {"chiridion": {
-#     "baseUrl": "http://127.0.0.1:3001/agent-runtime/llm"}}}
+#     "baseUrl": "http://127.0.0.1:3001/agent-runtime/llm"}}}   (Codex only)
+#   plus the tenant's usage webhook pointing at http://127.0.0.1:3001/agent-runtime/usage
 docker exec agent-runtime-pg psql -U postgres -c "create database chiridion_r6"
 AGENT_TENANTS_FILE=… AGENT_SECRETS_KEY=<64 hex> AGENT_SESSION_SECRET=… \
 AGENT_DATABASE_URL=postgres://postgres:test@127.0.0.1:55432/chiridion_r6 \
@@ -451,6 +443,7 @@ POST /v1/definitions {"name": "camelai-thread", "model": "chiridion/openrouter/a
 # chiridion .dev.vars: AGENT_RUNTIME_URL=http://127.0.0.1:8795
 #   AGENT_RUNTIME_TENANT=chiridion AGENT_RUNTIME_ENABLED=true
 #   AGENT_RUNTIME_API_TOKEN=<operator token> AGENT_RUNTIME_DEFINITION=def_…
+#   AGENT_RUNTIME_WEBHOOK_SECRET=whsec_… (the runtime's webhook secret)
 npx wrangler kv key put --local --binding APP_KV --persist-to .wrangler/state agent_runtime_org:local-dev-org 1
 E2E_LOCAL=1 bun run dev:local-auth
 # then start a new chat thread in the UI
@@ -470,7 +463,9 @@ E2E_LOCAL=1 bun run dev:local-auth
 **Runtime config** (tenants secret, `AGENT_TENANTS_SECRET_ARN`)
 - A new tenant `chiridion-staging`: its own operator token, `billing: "none"`,
   a modest `maxAgents`, and
-  `"modelEndpoints": {"chiridion": {"baseUrl": "https://staging.camelai.dev/agent-runtime/llm"}}`.
+  `"modelEndpoints": {"chiridion": {"baseUrl": "https://staging.camelai.dev/agent-runtime/llm"}}`
+  (Codex only), and its usage webhook at `https://staging.camelai.dev/agent-runtime/usage`
+  with a signing secret. The hosted and org key scopes are created by chiridion itself.
 - One definition, created with that tenant's token:
   `{"name": "camelai-thread", "model": "chiridion/openrouter/anthropic/claude-sonnet-5", "builtins": ["web_fetch", "web_search", "ask_user"], "fileTools": false,
   "mcpServers": [{"name": "camel", "url": "https://staging.camelai.dev/mcp/agent", "auth": {"type": "runtime"}, "exposure": "both", "timeoutMs": 1200000}]}`.
@@ -478,12 +473,14 @@ E2E_LOCAL=1 bun run dev:local-auth
   source must list ~75 tools).
 
 **Chiridion staging config**
-- Secret `AGENT_RUNTIME_API_TOKEN` (the tenant's operator token).
+- Secrets `AGENT_RUNTIME_API_TOKEN` (the tenant's operator token) and
+  `AGENT_RUNTIME_WEBHOOK_SECRET` (the usage webhook's `whsec_…`).
 - Vars in `wrangler.staging.jsonc`: `AGENT_RUNTIME_ENABLED=true`,
   `AGENT_RUNTIME_TENANT=chiridion-staging`, `AGENT_RUNTIME_DEFINITION=def_…`
   (`AGENT_RUNTIME_URL` defaults to agents.camelai.dev).
 - Cloudflare Access: staging is behind Access, which would block the runtime.
-  Add a bypass for `/mcp/agent` and `/agent-runtime/llm/*`
+  Add a bypass for `/mcp/agent`, `/agent-runtime/llm/openai-codex/*` and
+  `/agent-runtime/usage`
   only; both refuse anything without a valid runtime token.
 
 **Allowlist**
