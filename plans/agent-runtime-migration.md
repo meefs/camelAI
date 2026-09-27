@@ -386,6 +386,20 @@ nothing to SigV4-sign; Converse-stream usage comes from the AWS event
 stream's `metadata` event. Codex is skipped by decision (its client derives
 account headers from the OAuth token itself).
 
+Verified locally against agent-runtime 86925d9 (runtime pass-through), with
+real providers, each over two turns with thinking and tool continuations:
+hosted OpenRouter Claude (Messages API through the gateway), hosted OpenRouter
+`openai/gpt-5.6-luna` (Responses through the gateway), BYOK Anthropic, and
+BYOK Bedrock (`chiridion/amazon-bedrock/us-east-1/us.anthropic.claude-sonnet-5`,
+Converse on bedrock-runtime with the org's Bedrock API key). Every continuation
+after signed thinking succeeded; turn 2 read the first turn's cache (about 21k
+cached tokens a call); `usage_log` rows carry the acting user, the route's
+provider and billing source, cache reads and writes, and OpenRouter's cost. A
+user LLM limit made the forwarder answer 429 before any upstream call; the
+runtime ended the turn with that message, which the UI shows as the turn's
+error. A 402 (credit exhaustion) was not exercised live: the resolver's
+free-model fallback answers first locally.
+
 **Codex enablement** (for checking use later): an org admin connects a
 ChatGPT subscription in Settings → Organization → AI provider (device-code
 sign-in, `POST /api/orgs/:id/llm-provider` intents `startOpenAiSubscription` /
