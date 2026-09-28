@@ -1,4 +1,4 @@
-import type { ActionFunctionArgs } from "react-router";
+import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { requestWorkspaceId, requireRuntimeThread } from "@/lib/runtime-threads.server";
 import type { OrgDO } from "../../../workers/main/src/identity/org-do";
 import { normalizePreviewTabs } from "../../../workers/main/src/chat-thread/preview-state";
@@ -33,4 +33,20 @@ export async function action({ request, context, params }: ActionFunctionArgs) {
   const preview = normalizePreviewTabs(body?.tabs, body?.activeTabId, threadContext.workspaceId, threadContext.threadId);
   const saved = await org.setThreadUiState(threadContext.threadId, preview);
   return Response.json({ previewVersion: saved?.previewVersion ?? null });
+}
+
+/**
+ * GET /api/threads/:id/preview: a runtime thread's saved preview tabs (what
+ * set_preview, a notebook run or a deploy opened, and the user's own tabs),
+ * normalized as they are stored.
+ */
+export async function loader({ request, context, params }: LoaderFunctionArgs) {
+  const { env, context: threadContext } = await requireRuntimeThread(request, context, params.id, requestWorkspaceId(request));
+  const org = env.ORG.get(env.ORG.idFromName(threadContext.orgId)) as unknown as Pick<OrgDO, "getThreadUiState">;
+  const saved = await org.getThreadUiState(threadContext.threadId);
+  const preview = normalizePreviewTabs(saved?.preview?.tabs, saved?.preview?.activeTabId, threadContext.workspaceId, threadContext.threadId);
+  return Response.json(
+    { preview, previewVersion: saved?.previewVersion ?? 0 },
+    { headers: { "Cache-Control": "private, no-store" } },
+  );
 }
