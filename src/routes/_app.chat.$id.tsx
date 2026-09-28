@@ -65,6 +65,7 @@ import {
 } from "@/lib/chat-groups.server";
 import { readThreadMessages } from "@/lib/chat-history.server";
 import type { RuntimeThreadSeed } from "@/lib/use-runtime-thread";
+import { runtimeDirectThreadsEnabled } from "@/lib/agent-runtime-shared";
 import type { ThreadRuntimeRecord } from "../../workers/main/src/identity/org-do";
 import Chat from "@/components/Chat";
 import { ChatTabBar } from "@/components/chat-tab-bar";
@@ -1044,6 +1045,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     moveChatGroups,
     chatDataSeed,
     runtimeThread: Boolean(runtime),
+    directRuntimeThreads: runtimeDirectThreadsEnabled(env as never),
   };
 }
 
@@ -1077,6 +1079,7 @@ export default function ChatPage() {
     moveChatGroups = [],
     chatDataSeed = EMPTY_CHAT_DATA,
     runtimeThread = false,
+    directRuntimeThreads = false,
   } = useLoaderData<typeof loader>();
   const {
     chatData: resolvedChatData,
@@ -1160,9 +1163,11 @@ export default function ChatPage() {
   // A thread switched to in the tab bar before its loader answers connects
   // once its backend is known (remembered from an earlier load, or this one's).
   const loaderBackend = runtimeThread ? "runtime" : "do";
+  // Where no thread runs on the runtime, every thread is a DO thread: never wait.
   const displayBackend = isDisplayingLoaderThread
     ? loaderBackend
-    : (displayThreadId && knownThreadBackend(displayThreadId)) || "pending";
+    : (displayThreadId && knownThreadBackend(displayThreadId)) ||
+      (directRuntimeThreads ? "pending" : "do");
   useEffect(() => {
     if (threadId) rememberThreadBackend(threadId, loaderBackend);
   }, [threadId, loaderBackend]);

@@ -8,7 +8,7 @@
  * token after the caller checked access.
  */
 import { resolveMessageAuthorDisplayName } from "../../../../src/lib/message-author";
-import type { RuntimeInputAnswer } from "../../../../src/lib/agent-runtime-shared";
+import { runtimeDirectThreadsEnabled as directThreadsEnabled, type RuntimeInputAnswer } from "../../../../src/lib/agent-runtime-shared";
 import type { ChatContextState, ChatEnv } from "../chat-thread/types";
 import type { ThreadRuntimeRecord } from "../identity/org-do";
 import { ChatThreadMetadata, type ChatThreadMetadataEnv } from "../chat-thread/metadata";
@@ -67,7 +67,7 @@ export function runtimeThreadsEnabled(env: Partial<ChatEnv>): boolean {
  * tenant is configured and AGENT_RUNTIME_DIRECT_THREADS is on (staging first).
  */
 export function runtimeDirectThreadsEnabled(env: Partial<ChatEnv>): boolean {
-  return runtimeThreadsEnabled(env) && env.AGENT_RUNTIME_DIRECT_THREADS?.trim() === "1";
+  return directThreadsEnabled(env);
 }
 
 /**
