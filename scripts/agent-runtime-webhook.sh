@@ -14,7 +14,10 @@
 #     existing endpoint, then delete the legacy /v1/usage-webhook. Run it right
 #     after chiridion with the usage.recorded handler is deployed. Between the
 #     two calls both deliver, but the legacy receiver (/agent-runtime/usage) is
-#     gone by then, so nothing is counted twice.
+#     gone by then, so nothing is counted twice. Deleting the legacy webhook
+#     also drops its undelivered events; with the receiver gone those were
+#     never going to be recorded. Against a build that still has the legacy
+#     receiver, do not run this: that build records usage only from it.
 #
 # Run from a chiridion checkout (for wrangler), with AWS credentials that can
 # read the tenant's operator token (TOKEN_SECRET_ID overrides where it is).
