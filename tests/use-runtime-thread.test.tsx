@@ -125,7 +125,8 @@ describe("useRuntimeThread", () => {
       running: true,
     }));
     await waitFor(() => expect(result.current.chat.messages.some((message) => message.id === "cm_1" && message.clientMessageId === "cm_1")).toBe(true));
-    expect(result.current.chat.status).toBe("streaming");
+    // The run answers it, but nothing streams yet: still submitted until its first token.
+    expect(result.current.chat.status).toBe("submitted");
   });
 
   it("starts watching once the first send creates the agent", async () => {

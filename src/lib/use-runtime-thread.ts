@@ -170,6 +170,8 @@ export function useRuntimeThread(options: {
   const [submittedAt, setSubmittedAt] = useState<number | null>(null);
   /** Bumped when this tab sends: the view places a starting turn after messages on their way. */
   const [sends, countSend] = useReducer((count: number) => count + 1, 0);
+  /** Where the running run's first message goes (its turn_opened), until it ends. */
+  const runStartRef = useRef<number | undefined>(undefined);
   const [preview, setPreview] = useState(() => ({
     tabs: seed?.previewTabs ?? [],
     activeTabId: seed?.activeTabId ?? null,
@@ -225,6 +227,10 @@ export function useRuntimeThread(options: {
         token: initial.token,
         expiresAt: initial.expiresAt ?? undefined,
         getToken,
+        onEvent: (event: { type?: string; index?: unknown }) => {
+          if (event?.type === "turn_opened" && typeof event.index === "number") runStartRef.current = event.index;
+          else if (event?.type === "agent_end") runStartRef.current = undefined;
+        },
         onChange: (state) => {
           latest = state;
           // Deltas arrive per token: render at most once a frame.
@@ -348,6 +354,7 @@ export function useRuntimeThread(options: {
       running: view.running,
       clientMessageIds,
       pendingSends: sentRef.current.filter((sent) => !echoed.has(sent.clientMessageId)).length,
+      runStartIndex: view.running ? runStartRef.current : undefined,
     }, renderMemoRef.current);
     // `sends` changes when sentRef does.
   }, [threadId, view, clientMessageIds, sends]);
@@ -497,7 +504,9 @@ export function useRuntimeThread(options: {
   const chat = useMemo<RuntimeThreadChat>(() => ({
     messages: rendered.messages,
     uiMessages: EMPTY_UI_MESSAGES,
-    status: streaming ? "streaming" : submittedAt !== null ? "submitted" : "ready",
+    // Streaming once a turn row streams; before its first token the run (or
+    // this tab's send) is submitted.
+    status: rendered.streamingMessageId !== null ? "streaming" : streaming || submittedAt !== null ? "submitted" : "ready",
     isStreaming: streaming,
     isStallClamped: false,
     streamingMessageId: rendered.streamingMessageId,

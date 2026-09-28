@@ -117,8 +117,12 @@ describe("piRender while a message is sent", () => {
     expect(waiting.streamingMessageId).toBeNull();
     expect(waiting.messages.map((message) => message.id)).toEqual(["rt:0", "rt:1"]);
     expect(waiting.messages[1].isStreaming).toBeUndefined();
-    // Another run (not ours) after a finished answer is a new turn.
-    expect(render(history, { running: true }).streamingMessageId).toBe("rt:2");
+    // Another run (not ours) opened after the answer: no row until its first token...
+    expect(render(history, { running: true, runStartIndex: 2 }).streamingMessageId).toBeNull();
+    const partial = { role: "assistant", content: [{ type: "text", text: "a2" }], stopReason: "stop", timestamp: 3 } as unknown as AssistantMessage;
+    expect(render(history, { running: true, runStartIndex: 2, partial }).streamingMessageId).toBe("rt:2");
+    // ...while between its final message_end and agent_end, a run's answer is its tail.
+    expect(render(history, { running: true, runStartIndex: 0 }).streamingMessageId).toBe("rt:1");
   });
 
   it("keeps a turn that goes on (it called tools) as the streaming one", () => {

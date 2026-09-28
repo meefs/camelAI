@@ -61,6 +61,8 @@ export interface PiRenderInput {
   clientMessageIds?: ReadonlyMap<number, string>;
   /** This tab's messages sent and not in the history yet: a turn that starts now follows them. */
   pendingSends?: number;
+  /** Where the running run's first message goes (its `turn_opened`), when the stream said. */
+  runStartIndex?: number;
 }
 
 export interface PiRenderResult {
@@ -221,26 +223,30 @@ export function piRender(input: PiRenderInput, memo?: PiRenderMemo): PiRenderRes
     open.assistants.push(message as unknown as AssistantMessage);
   });
 
-  // The turn streaming now: the open one when it goes on (its last response
-  // called tools), else a new one, at the index its first message will take
-  // (after this tab's messages still on their way). A run can start before its
-  // message arrives; the answer before it is not the one streaming.
+  // The turn streaming now:
+  // - a response streaming (partial) goes into the open turn when that turn
+  //   goes on (its last response called tools), else it opens a new turn, at
+  //   the index its first message will take (after this tab's messages still
+  //   on their way). A new turn appears only with its first token.
+  // - with nothing streaming, the open turn is still the running one (its
+  //   tail: `running` stays true between its final message_end and
+  //   agent_end) unless the run opened after it (`runStartIndex`) and has no
+  //   message yet, or a message of ours is still on its way. Then no turn
+  //   row shows yet, and Chat shows the send as submitted.
   let streaming: Extract<Group, { kind: "turn" }> | null = null;
-  if (input.partial || input.running) {
-    const lastMessage = messages[messages.length - 1];
-    const lastGroup = groups[groups.length - 1];
-    // A response streaming now into a turn that goes on is that turn's, even
-    // with a message of ours on its way (it steers the turn after this step).
-    if (lastGroup?.kind === "turn" && continuesTurn(lastMessage) && (input.partial || !input.pendingSends)) {
+  const lastMessage = messages[messages.length - 1];
+  const lastGroup = groups[groups.length - 1];
+  const lastIndex = indexes.length > 0 ? indexes[indexes.length - 1] : -1;
+  if (input.partial) {
+    if (lastGroup?.kind === "turn" && continuesTurn(lastMessage)) {
       streaming = lastGroup;
-    } else if (input.partial || !input.pendingSends) {
-      const nextIndex = (indexes.length > 0 ? indexes[indexes.length - 1] + 1 : 0) + (input.pendingSends ?? 0);
-      streaming = { kind: "turn", index: nextIndex, assistants: [], lastUserAt };
+    } else {
+      streaming = { kind: "turn", index: lastIndex + 1 + (input.pendingSends ?? 0), assistants: [], lastUserAt };
       groups.push(streaming);
     }
-    // Else the run answers a message of ours not here yet: its (empty) turn
-    // waits for it, so it cannot land above the optimistic bubble, which Chat
-    // adds after the transcript. Chat shows the send as submitted meanwhile.
+  } else if (input.running && !input.pendingSends && lastGroup?.kind === "turn") {
+    const runStartedAfter = input.runStartIndex !== undefined && input.runStartIndex > lastIndex;
+    if (!runStartedAfter) streaming = lastGroup;
   }
 
   const view: Message[] = [];
