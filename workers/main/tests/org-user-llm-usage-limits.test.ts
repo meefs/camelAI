@@ -116,7 +116,7 @@ describe("OrgDO per-user LLM usage controls", () => {
         "idx_usage_log_user_created_at",
         "idx_usage_log_user_model_created_at",
       ]));
-      expect(state.storage.kv.get("schemaVersion")).toBe(52);
+      expect(state.storage.kv.get("schemaVersion")).toBe(53);
     });
     await evictDurableObject(orgStub);
     const reentered = await orgStub.getUsageLog({ user_id: userId, limit: 10 });
