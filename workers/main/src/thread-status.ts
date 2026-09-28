@@ -17,6 +17,8 @@ export interface WorkspaceThreadStreamingOptions {
    * resurrect a turn whose terminal isStreaming=false already cleared it.
    */
   refresh?: boolean;
+  /** Who sent a `refresh`, for the lease-refresh-missed event (e.g. `chat_thread_do`, `runtime_usage`). */
+  source?: string;
   /**
    * Terminal pre-clear used before completion metadata is persisted. Delete and
    * broadcast only when a running row currently exists; a duplicate/stale

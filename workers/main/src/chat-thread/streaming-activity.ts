@@ -122,7 +122,7 @@ export class ChatThreadStreamingActivity {
           context.workspaceId,
           context.threadId,
           true,
-          { refresh: true },
+          { refresh: true, source: "chat_thread_do" },
         ),
       );
     }, WORKSPACE_STREAMING_LEASE_REFRESH_MS));

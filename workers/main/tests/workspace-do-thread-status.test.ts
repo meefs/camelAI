@@ -667,6 +667,53 @@ describe("WorkspaceDO thread status", () => {
     await stream.cancel();
   });
 
+  it("records each expired running lease it sweeps, with its age", async () => {
+    const workspaceStub = await createWorkspaceStatusStub();
+    const threadId = crypto.randomUUID();
+    await workspaceStub.recordThreadStreaming(threadId, true);
+    const writeDataPoint = vi.fn();
+    await runInDurableObject(workspaceStub, (instance) => {
+      const target = instance as unknown as { env: Record<string, unknown>; sql: SqlStorage };
+      target.env = { ...target.env, OBSERVABILITY_EVENTS: { writeDataPoint } };
+      target.sql.exec(
+        "UPDATE thread_streaming_status SET updated_at = ? WHERE thread_id = ?",
+        Date.now() - 6 * 60 * 1000,
+        threadId,
+      );
+    });
+    await expect(runDurableObjectAlarm(workspaceStub)).resolves.toBe(true);
+    const points = writeDataPoint.mock.calls.map(([point]) => point as { blobs: string[]; doubles: number[] });
+    const expired = points.filter((point) => point.blobs[0] === "thread_running_lease_expired");
+    expect(expired).toHaveLength(1);
+    expect(expired[0].blobs.slice(1, 5)).toEqual(["warn", "workspace_do", "lease_sweep", "any_backend"]);
+    expect(expired[0].blobs[8]).toBe(threadId);
+    // double2: how long the row went without a heartbeat.
+    expect(expired[0].doubles[1]).toBeGreaterThanOrEqual(6 * 60 * 1000);
+  });
+
+  it("records a lease refresh that finds no running row, by its source", async () => {
+    const workspaceStub = await createWorkspaceStatusStub();
+    const writeDataPoint = vi.fn();
+    await runInDurableObject(workspaceStub, (instance) => {
+      const target = instance as unknown as { env: Record<string, unknown> };
+      target.env = { ...target.env, OBSERVABILITY_EVENTS: { writeDataPoint } };
+    });
+    const threadId = crypto.randomUUID();
+    await (workspaceStub as unknown as {
+      recordThreadStreaming(id: string, streaming: boolean, options: Record<string, unknown>): Promise<void>;
+    }).recordThreadStreaming(threadId, true, { refresh: true, source: "runtime_usage" });
+    const points = writeDataPoint.mock.calls.map(([point]) => point as { blobs: string[] });
+    const missed = points.filter((point) => point.blobs[0] === "thread_running_lease_refresh_missed");
+    expect(missed).toHaveLength(1);
+    expect(missed[0].blobs.slice(2, 5)).toEqual(["workspace_do", "lease_refresh", "runtime_usage"]);
+
+    // A refresh that renews a running row records nothing.
+    await workspaceStub.recordThreadStreaming(threadId, true);
+    writeDataPoint.mockClear();
+    await workspaceStub.recordThreadStreaming(threadId, true, { refresh: true });
+    expect(writeDataPoint).not.toHaveBeenCalled();
+  });
+
   it("sweeps an expired lease via the alarm and broadcasts idle", async () => {
     const workspaceStub = await createWorkspaceStatusStub();
     const threadId = crypto.randomUUID();
