@@ -19,6 +19,7 @@ import {
   type RuntimeTurnResult,
 } from "../../workers/main/src/agent-runtime/thread-runtime";
 import type { RuntimeThreadSeed } from "@/lib/use-runtime-thread";
+import { recordRuntimeSendFailure, recordRuntimeTokenMintFailure } from "../../workers/main/src/agent-runtime/runtime-thread-telemetry";
 import { normalizePreviewTabs } from "../../workers/main/src/chat-thread/preview-state";
 import { initialRuntimeRequestId, requireSameOriginJson, startErrorStillCurrent } from "@/lib/agent-runtime-shared";
 
@@ -121,6 +122,7 @@ export async function loadRuntimeThreadSeed(
           ([token, page]) => ({ token, page, error: null as string | null }),
           (error: unknown) => {
             console.error("[runtime-thread] failed to load the thread", error);
+            recordRuntimeTokenMintFailure(env, input, "page_seed", { error });
             return { token: null, page: null, error: "Can't reach the agent service. Try again in a moment." };
           },
         )
@@ -195,7 +197,9 @@ export async function startFirstRuntimeTurn(
       clientMessageId: initialRuntimeRequestId(input.context.threadId),
       source: "web",
     });
+    recordRuntimeSendFailure(env, input.context, "first_send", { result: turn });
   } catch (error) {
+    recordRuntimeSendFailure(env, input.context, "first_send", { error });
     turn = { status: "error", error: error instanceof Error ? error.message : "Failed to send message" };
   }
   if (turn.status !== "accepted") {
