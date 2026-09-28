@@ -163,7 +163,7 @@ export function filterContentForRenderMode(
     if (renderMode === "trace-only") {
       return isTraceContentBlock(block);
     }
-    return block.type === "text" || block.type === "error";
+    return block.type === "text" || block.type === "error" || block.type === "file";
   });
 }
 
@@ -224,7 +224,8 @@ export function buildFinalOutputMessageView(
       continue;
     }
 
-    if (block.type === "error") {
+    // A file the agent handed over is part of what it gives the user.
+    if (block.type === "error" || block.type === "file") {
       outputBlocks.push(block);
     }
   }

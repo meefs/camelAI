@@ -17,6 +17,7 @@ import {
   mintRuntimeBrowserToken,
   pinNewThreadToRuntime,
   runtimeAgentThreadKey,
+  threadScratchVolume,
   startRuntimeTurn,
 } from "../src/agent-runtime/thread-runtime";
 import { createOrg, createUser, type TestEnv } from "./test-helpers";
@@ -336,5 +337,30 @@ describe("the runtime prompt's two filesystems", () => {
     calls = fakeRuntime();
     await send(setup, "third", "cm_p3");
     expect(calls.some((call) => call.path.endsWith("/configuration"))).toBe(false);
+  });
+});
+
+describe("threadScratchVolume", () => {
+  it("finds the agent's /workspace volume once, then keeps it on the thread's row", async () => {
+    const setup = await runtimeThread();
+    fakeRuntime();
+    await send(setup, "hi", "cm_vol");
+    let calls = fakeRuntime({
+      "GET /v1/agents/agt_1": () => Response.json({ id: "agt_1", mounts: [{ volumeId: "vol_scratch", path: "/workspace", mode: "rw" }] }),
+    });
+    const row = (await setup.orgStub.getThreadRuntime(setup.threadId))!;
+    expect(await threadScratchVolume(runtimeEnv, setup.context, row)).toBe("vol_scratch");
+    expect(calls.filter((call) => call.path === "/v1/agents/agt_1")).toHaveLength(1);
+    const saved = (await setup.orgStub.getThreadRuntime(setup.threadId))!;
+    expect(saved.configured).toMatchObject({ scratchVolumeId: "vol_scratch", promptVersion: RUNTIME_PROMPT_VERSION });
+    calls = fakeRuntime();
+    expect(await threadScratchVolume(runtimeEnv, setup.context, saved)).toBe("vol_scratch");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("has none before the agent exists", async () => {
+    const setup = await runtimeThread();
+    const row = (await setup.orgStub.getThreadRuntime(setup.threadId))!;
+    expect(await threadScratchVolume(runtimeEnv, setup.context, row)).toBeNull();
   });
 });

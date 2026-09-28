@@ -71,6 +71,20 @@ export function requireSameOriginJson(request: Request): void {
   }
 }
 
+/** Where a runtime thread's scratch space is mounted in its agent (its default workspace volume). */
+export const SCRATCH_MOUNT = "/workspace";
+
+/**
+ * A path the agent sees under its scratch mount (`/workspace/out/chart.png`),
+ * as a path inside the volume (`/out/chart.png`); null for anything else.
+ */
+export function scratchVolumePath(path: string): string | null {
+  if (!path.startsWith(`${SCRATCH_MOUNT}/`) || [...path].some((char) => char.charCodeAt(0) < 0x20)) return null;
+  const inner = path.slice(SCRATCH_MOUNT.length);
+  if (inner.split("/").some((segment) => segment === ".." || segment === ".")) return null;
+  return inner.length > 1 ? inner : null;
+}
+
 /** The MCP server name chiridion's tools are served under in the runtime definition. */
 export const RUNTIME_TOOL_SERVER = "camel";
 export const RUNTIME_TOOL_PREFIX = `${RUNTIME_TOOL_SERVER}__`;

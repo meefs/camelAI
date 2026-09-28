@@ -15,7 +15,7 @@
  */
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import type { ContentBlock, ErrorBlock, Message, ToolResultBlock } from "@/types";
+import type { ContentBlock, ErrorBlock, FileBlock, Message, ToolResultBlock } from "@/types";
 import { localToolName, readableProviderError } from "@/lib/agent-runtime-shared";
 import {
   buildToolResultFromPiItem,
@@ -26,7 +26,12 @@ import { mergeLiveToolOutput } from "@/lib/use-pi-chat-stream";
 
 const STOPPED_BY_USER_TEXT = "Stopped by user";
 
-type Part = { type?: string; text?: string; thinking?: string; redacted?: boolean; thinkingSignature?: string; id?: string; name?: string; arguments?: unknown };
+type Part = {
+  type?: string; text?: string; thinking?: string; redacted?: boolean; thinkingSignature?: string;
+  id?: string; name?: string; arguments?: unknown;
+  /** A file reference (`type: "file"`): the path as the agent sees it, its size and type. */
+  path?: string; size?: number; contentType?: string;
+};
 type PiUser = {
   role: "user";
   content: string | Part[];
@@ -76,6 +81,49 @@ export function runtimeMessageId(index: number): string {
   return `rt:${index}`;
 }
 
+/** Where chiridion serves a thread's scratch file (routes/api/threads.$id.files.$.ts). */
+export function scratchFileHref(threadId: string, path: string): string {
+  const segments = path.split("/").filter(Boolean).map(encodeURIComponent).join("/");
+  return `/api/threads/${encodeURIComponent(threadId)}/files/${segments}`;
+}
+
+function fileBlock(threadId: string, file: { path: string; contentType?: unknown; size?: unknown; caption?: unknown }): FileBlock {
+  return {
+    type: "file",
+    path: file.path,
+    name: file.path.split("/").filter(Boolean).pop() ?? file.path,
+    href: scratchFileHref(threadId, file.path),
+    ...(typeof file.contentType === "string" && file.contentType ? { contentType: file.contentType } : {}),
+    ...(typeof file.size === "number" && Number.isFinite(file.size) ? { size: file.size } : {}),
+    ...(typeof file.caption === "string" && file.caption.trim() ? { caption: file.caption.trim() } : {}),
+  };
+}
+
+function isFilePart(part: unknown): part is Part & { path: string } {
+  return isRecord(part) && part.type === "file" && typeof part.path === "string" && part.path.length > 0;
+}
+
+/** A file a tool saved, as the line the model reads for it (not the reference's JSON). */
+function fileLine(part: Part & { path: string }): Part {
+  const size = typeof part.size === "number" ? `, ${part.size} bytes` : "";
+  return { type: "text", text: `[File ${part.path} (${part.contentType ?? "file"}${size})]` };
+}
+
+/** What present_file handed over: its result (or, failing that, its arguments). */
+function presentedFile(args: unknown, result: PiToolResult): { path: string; contentType?: unknown; size?: unknown; caption?: unknown } | null {
+  const details = isRecord(result.details) ? result.details : (() => {
+    try {
+      const parsed = JSON.parse(textOf(result.content)) as unknown;
+      return isRecord(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  })();
+  const path = typeof details.path === "string" ? details.path : isRecord(args) && typeof args.path === "string" ? args.path : "";
+  if (!path) return null;
+  return { path, contentType: details.contentType, size: details.size, caption: isRecord(args) ? args.caption : undefined };
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -100,7 +148,7 @@ function toolItem(id: string, name: unknown, args: unknown, result?: PiToolResul
     status: isError ? "failed" : "completed",
     isError,
     result: { content: result.content ?? [], details: result.details },
-    contentItems: result.content ?? [],
+    contentItems: (result.content ?? []).map((part) => (isFilePart(part) ? fileLine(part) : part)),
   };
 }
 
@@ -137,7 +185,7 @@ function toolCallResults(message: AssistantMessage, results: ReadonlyMap<string,
 }
 
 /** An assistant message's blocks, each tool call followed by its result when there is one. */
-function assistantBlocks(message: AssistantMessage, results: ReadonlyMap<string, PiToolResult>): ContentBlock[] {
+function assistantBlocks(message: AssistantMessage, results: ReadonlyMap<string, PiToolResult>, threadId: string): ContentBlock[] {
   const blocks: ContentBlock[] = [];
   for (const part of (message.content ?? []) as Part[]) {
     if (!part) continue;
@@ -153,6 +201,11 @@ function assistantBlocks(message: AssistantMessage, results: ReadonlyMap<string,
       const use = buildToolUseFromPiItem(item);
       blocks.push({ type: "tool_use", id: part.id, name: use?.name ?? String(item.tool), input: use?.input ?? {} });
       if (settled) blocks.push(toolResultBlock(part.id, item, settled));
+      // A file the agent handed over (present_file) shows after its call, as output.
+      if (settled && !settled.isError && item.tool === "present_file") {
+        const presented = presentedFile(part.arguments, settled);
+        if (presented) blocks.push(fileBlock(threadId, presented));
+      }
     }
   }
   if (message.stopReason === "aborted") {
@@ -161,6 +214,14 @@ function assistantBlocks(message: AssistantMessage, results: ReadonlyMap<string,
     blocks.push(errorBlock(message.errorMessage));
   }
   return blocks;
+}
+
+/** A user message's text, and its attached files as file blocks after it. */
+function userContent(threadId: string, content: string | Part[]): string | ContentBlock[] {
+  const files = Array.isArray(content) ? content.filter(isFilePart) : [];
+  if (files.length === 0) return textOf(content);
+  const text = textOf(content);
+  return [...(text ? [{ type: "text" as const, text }] : []), ...files.map((file) => fileBlock(threadId, file))];
 }
 
 function timestampOf(message: unknown): number | undefined {
@@ -272,15 +333,15 @@ export function piRender(input: PiRenderInput, memo?: PiRenderMemo): PiRenderRes
         id,
         thread_id: threadId,
         role: "user",
-        content: textOf(group.user.content),
+        content: userContent(threadId, group.user.content),
         created_at: at ?? 0,
         ...(group.user.from?.name ? { authorDisplayName: group.user.from.name } : {}),
         ...(group.clientMessageId ? { clientMessageId: group.clientMessageId } : {}),
         ...(typeof source === "string" && source ? { messageSource: source } : {}),
       };
     } else {
-      const blocks = group.assistants.flatMap((assistant) => assistantBlocks(assistant, results));
-      if (isStreaming && input.partial) blocks.push(...assistantBlocks(input.partial, results).filter((block) => block.type !== "error"));
+      const blocks = group.assistants.flatMap((assistant) => assistantBlocks(assistant, results, threadId));
+      if (isStreaming && input.partial) blocks.push(...assistantBlocks(input.partial, results, threadId).filter((block) => block.type !== "error"));
       const firstAt = timestampOf(group.assistants[0]) ?? (isStreaming ? timestampOf(input.partial) ?? Date.now() : 0);
       built = { id, thread_id: threadId, role: "assistant", content: blocks, created_at: firstAt };
       if (isStreaming) {
