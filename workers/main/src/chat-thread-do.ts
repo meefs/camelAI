@@ -396,6 +396,7 @@ import {
   type RuntimeModelRoute,
 } from "./agent-runtime/model-routes";
 import { HOSTED_KEY_SCOPE, ensureHostedKeyScope, hostedModelHeaders, syncOrgKeyScope } from "./agent-runtime/key-scopes";
+import { storedThreadModel } from "./agent-runtime/run-gates";
 
 // Pi tool-definition surface (executor-style tool list + Agent/Explore
 // subagent runner + subagent system prompt).
@@ -7633,61 +7634,12 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       const context: ChatContextState = { ...baseContext };
       this.chatContext = context;
       this.ctx.storage.kv.put(CHAT_CONTEXT_KEY, context);
-      const threadWorkspaceId =
-        thread && typeof thread === "object" && "workspace_id" in thread
-          ? (thread as { workspace_id?: unknown }).workspace_id
-          : null;
-      const effectiveLlmProviderRecord = getEffectiveLlmProviderConfig(
-        this.env,
+      const threadModel = storedThreadModel(this.env, {
+        thread: thread as { model?: unknown; workspace_id?: unknown } | null,
+        workspaceId: context.workspaceId,
         llmProviderRecord,
-      );
-      const customApi = getStoredCustomLlmProviderApi(effectiveLlmProviderRecord);
-      const customModelId = getStoredCustomLlmProviderModelId(effectiveLlmProviderRecord);
-      const awsRegion = getStoredBedrockAwsRegion(effectiveLlmProviderRecord);
-      const billingStatus = orgInfo?.billing_status ?? "inactive";
-      const totalCreditsCents =
-        (orgInfo?.billing_credit_purchase_total_cents ?? 0) +
-        (orgInfo?.billing_credit_grant_total_cents ?? 0);
-      const shouldDefaultToCamelCode = Boolean(
-        orgInfo &&
-          !isSelfhostRuntime(this.env) &&
-          !effectiveLlmProviderRecord &&
-          billingStatus !== "enterprise" &&
-          billingStatus !== "trialing" &&
-          billingStatus !== "active" &&
-          totalCreditsCents <= 0,
-      );
-      const storedThreadModel =
-        thread && threadWorkspaceId === context.workspaceId
-          ? (thread as { model?: unknown }).model
-          : undefined;
-      const selfhostRuntime = isSelfhostRuntime(this.env);
-      const threadModel =
-        storedThreadModel === CUSTOM_LLM_MODEL
-          ? normalizeLlmModel(storedThreadModel, effectiveLlmProviderRecord?.provider, {
-              customApi,
-              customModelId,
-            })
-          : storedThreadModel !== undefined
-            ? selfhostRuntime
-              ? normalizeLlmModel(
-                  storedThreadModel,
-                  effectiveLlmProviderRecord?.provider,
-                  {
-                    customApi,
-                    customModelId,
-                    awsRegion,
-                    allowCamelCode: false,
-                  },
-                )
-              : normalizeLlmModel(storedThreadModel)
-          : shouldDefaultToCamelCode
-            ? CAMEL_CODE_LLM_MODEL
-            : normalizeLlmModel(undefined, effectiveLlmProviderRecord?.provider, {
-                customApi,
-                customModelId,
-                awsRegion,
-              });
+        orgInfo,
+      });
       // Keep the in-memory model aligned with the durable thread before any
       // refresh rebuilds the tool surface.
       this.currentThreadModel = threadModel;

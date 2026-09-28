@@ -665,6 +665,8 @@ export type OrgChatWebSocketAccessResult =
       orgSlug: string;
       workspaceId: string;
       threadId: string;
+      /** The thread's runtime row: set for a thread that runs directly on the agent runtime. */
+      runtime?: ThreadRuntimeRecord | null;
     }
   | {
       ok: false;
@@ -9042,6 +9044,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       orgSlug: info.slug || info.id.slice(0, 5),
       workspaceId,
       threadId,
+      runtime: this.getThreadRuntime(threadId),
     };
   }
 

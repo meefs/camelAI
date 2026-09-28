@@ -1,0 +1,49 @@
+import type { ActionFunctionArgs } from "react-router";
+import { requestWorkspaceId, requireRuntimeThread } from "@/lib/runtime-threads.server";
+import { waitUntil } from "@/lib/wait-until";
+import { startRuntimeTurn } from "../../../workers/main/src/agent-runtime/thread-runtime";
+
+/**
+ * POST /api/threads/:id/messages {text, clientMessageId}: send a message to a
+ * runtime thread. Answers Chat.tsx's SendMessageResult shape
+ * ({status: "accepted" | "busy" | "error"}); a retry with the same
+ * clientMessageId is the same request.
+ */
+export async function action({ request, context, params }: ActionFunctionArgs) {
+  if (request.method !== "POST") {
+    return Response.json({ error: "Method not allowed" }, { status: 405 });
+  }
+  const body = (await request.json().catch(() => null)) as
+    | { text?: unknown; clientMessageId?: unknown; workspaceId?: unknown }
+    | null;
+  const text = typeof body?.text === "string" ? body.text : "";
+  const clientMessageId = typeof body?.clientMessageId === "string" ? body.clientMessageId.trim() : "";
+  if (!text.trim()) return Response.json({ status: "error", error: "Empty message" }, { status: 400 });
+  if (!clientMessageId || clientMessageId.length > 200) {
+    return Response.json({ status: "error", error: "clientMessageId required" }, { status: 400 });
+  }
+  const { env, context: threadContext, sender, row } = await requireRuntimeThread(
+    request,
+    context,
+    params.id,
+    requestWorkspaceId(request, body),
+  );
+  try {
+    const result = await startRuntimeTurn(env, {
+      context: threadContext,
+      row,
+      sender,
+      text,
+      clientMessageId,
+      source: "web",
+      waitUntil,
+    });
+    return Response.json(result);
+  } catch (error) {
+    console.error("[runtime-thread] send failed", error);
+    return Response.json(
+      { status: "error", error: error instanceof Error ? error.message : "Failed to send message" },
+      { status: 502 },
+    );
+  }
+}
