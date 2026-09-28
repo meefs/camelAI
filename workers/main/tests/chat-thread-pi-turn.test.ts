@@ -81,9 +81,9 @@ afterEach(() => {
 describe('primary Pi reasoning policy', () => {
   it.each([
     ['deepseek-v4-auto', 'high'],
-    ['gpt-5.6-luna', 'high'],
-    ['gpt-5.6-terra', 'medium'],
-    ['gpt-5.6-sol', 'medium'],
+    ['gpt-6-luna', 'high'],
+    ['gpt-6-sol', 'medium'],
+    ['gpt-5.6-terra-bedrock', 'medium'],
     ['sonnet', 'medium'],
     [undefined, 'medium'],
   ] as const)('maps %s to %s reasoning', (model, expected) => {
@@ -516,29 +516,36 @@ function createProjectToolFake({
 }
 
 describe('ChatThreadDO Pi turn handling', () => {
-  it('routes GPT-5.6 product models to OpenAI', () => {
+  it('routes GPT-6 product models to OpenAI, keeping Luna off nitro', () => {
     const mapping = new PiModelMapping();
-    expect(mapping.resolvePiModelReference('gpt-5.6-sol')).toMatchObject({
+    expect(mapping.resolvePiModelReference('gpt-6-sol')).toEqual({
       provider: 'openai',
-      modelId: 'gpt-5.6-sol',
+      modelId: 'gpt-6-sol',
+      hostedGatewayProvider: 'openrouter',
+      hostedModelId: 'openai/gpt-6-sol:nitro',
     });
-    expect(mapping.resolvePiModelReference('gpt-5.6-terra')).toMatchObject({
+    expect(mapping.resolvePiModelReference('gpt-6-luna')).toEqual({
       provider: 'openai',
-      modelId: 'gpt-5.6-terra',
+      modelId: 'gpt-6-luna',
+      hostedGatewayProvider: 'openrouter',
+      hostedModelId: 'openai/gpt-6-luna',
     });
-    expect(mapping.resolvePiModelReference('gpt-5.6-luna')).toMatchObject({
-      provider: 'openai',
-      modelId: 'gpt-5.6-luna',
-    });
+  });
+
+  it('routes retired GPT-5.6 ids to their GPT-6 replacements', () => {
+    const mapping = new PiModelMapping();
+    expect(mapping.resolvePiModelReference('gpt-5.6-sol')).toMatchObject({ modelId: 'gpt-6-sol' });
+    expect(mapping.resolvePiModelReference('gpt-5.6-terra')).toMatchObject({ modelId: 'gpt-6-sol' });
+    expect(mapping.resolvePiModelReference('gpt-5.6-luna')).toMatchObject({ modelId: 'gpt-6-luna' });
   });
 
   it('routes Bedrock product IDs to their provider model IDs', () => {
     const mapping = new PiModelMapping();
-    expect(mapping.resolvePiModelReference('gpt-5.6-sol-bedrock')).toMatchObject({
-      provider: 'openai',
-      modelId: 'gpt-5.6-sol',
-    });
     expect(mapping.resolvePiModelReference('gpt-5.6-terra-bedrock')).toMatchObject({
+      provider: 'openai',
+      modelId: 'gpt-5.6-terra',
+    });
+    expect(mapping.resolvePiModelReference('gpt-5.6-sol-bedrock')).toMatchObject({
       provider: 'openai',
       modelId: 'gpt-5.6-terra',
     });
@@ -553,6 +560,57 @@ describe('ChatThreadDO Pi turn handling', () => {
       'https://bedrock-mantle.us-west-2.api.aws/openai/v1',
     ]);
   });
+
+  it('routes the OpenRouter-hosted models to their current OpenRouter ids', () => {
+    const mapping = new PiModelMapping();
+    const openRouter = (modelId: string, hostedModelId: string) => ({
+      provider: 'openrouter',
+      modelId,
+      hostedGatewayProvider: 'openrouter',
+      hostedModelId,
+    });
+    expect(mapping.resolvePiModelReference('kimi-k3')).toEqual(
+      openRouter('moonshotai/kimi-k3', 'moonshotai/kimi-k3:nitro'),
+    );
+    expect(mapping.resolvePiModelReference('grok-4.7')).toEqual({
+      ...openRouter('x-ai/grok-4.7', 'x-ai/grok-4.7:nitro'),
+      api: 'openai-responses',
+    });
+    expect(mapping.resolvePiModelReference('glm-5.3')).toEqual(
+      openRouter('z-ai/glm-5.3', 'z-ai/glm-5.3:nitro'),
+    );
+    expect(mapping.resolvePiModelReference('glm-5.3-flash')).toEqual(
+      openRouter('z-ai/glm-5.3-flash', 'z-ai/glm-5.3-flash:nitro'),
+    );
+    expect(mapping.resolvePiModelReference('gemini-3.8-flash')).toEqual(
+      openRouter('google/gemini-3.8-flash', 'google/gemini-3.8-flash'),
+    );
+    expect(mapping.resolvePiModelReference('deepseek-v4.1-flash')).toEqual(
+      openRouter('deepseek/deepseek-v4.1-flash', 'deepseek/deepseek-v4.1-flash'),
+    );
+  });
+
+  it('routes retired OpenRouter-hosted ids to their replacements', () => {
+    const mapping = new PiModelMapping();
+    const cases: Record<string, string> = {
+      'kimi-k2.7-code': 'moonshotai/kimi-k3',
+      'kimi-k2.6': 'moonshotai/kimi-k3',
+      'moonshotai/kimi-latest': 'moonshotai/kimi-k3',
+      'grok-4.5': 'x-ai/grok-4.7',
+      'grok-4.3': 'x-ai/grok-4.7',
+      'x-ai/grok-latest': 'x-ai/grok-4.7',
+      'glm-5.2': 'z-ai/glm-5.3',
+      'gemini-3.5-flash': 'google/gemini-3.8-flash',
+      'gemini-3-flash-preview': 'google/gemini-3.8-flash',
+      'gemini-3.1-pro-preview': 'google/gemini-3.8-flash',
+      'deepseek-v4-pro': 'deepseek/deepseek-v4.1-flash',
+      'deepseek-v4-flash': 'deepseek/deepseek-v4.1-flash',
+    };
+    for (const [stored, modelId] of Object.entries(cases)) {
+      expect(mapping.resolvePiModelReference(stored).modelId, stored).toBe(modelId);
+    }
+  });
+
   function createPiEventFake() {
     const events: any[] = [];
     const activityRecords: any[] = [];
@@ -636,28 +694,56 @@ describe('ChatThreadDO Pi turn handling', () => {
     fake.broadcastChat = vi.fn();
   }
 
-  it('resolves Fable 5 requests to the Claude Fable 5 model', () => {
-    const result = new PiModelMapping().resolvePiModelReference('fable-5');
-
-    expect(result).toEqual({
-      provider: 'anthropic',
-      modelId: 'claude-fable-5',
-      hostedGatewayProvider: 'openrouter',
-      hostedModelId: 'anthropic/claude-fable-5:nitro',
-    });
-  });
-
-  it('resolves current and legacy Opus requests to Opus 5', () => {
+  it('resolves current and legacy Fable requests to Fable 5.1', () => {
     const mapping = new PiModelMapping();
     const expected = {
       provider: 'anthropic',
-      modelId: 'claude-opus-5',
+      modelId: 'claude-fable-5-1',
       hostedGatewayProvider: 'openrouter',
-      hostedModelId: 'anthropic/claude-opus-5',
+      hostedModelId: 'anthropic/claude-fable-5.1:nitro',
     };
 
+    expect(mapping.resolvePiModelReference('fable-5.1')).toEqual(expected);
+    expect(mapping.resolvePiModelReference('fable-5')).toEqual(expected);
+    expect(mapping.resolvePiModelReference('claude-fable-5')).toEqual(expected);
+  });
+
+  it('resolves current and legacy Opus requests to Opus 5.5', () => {
+    const mapping = new PiModelMapping();
+    const expected = {
+      provider: 'anthropic',
+      modelId: 'claude-opus-5-5',
+      hostedGatewayProvider: 'openrouter',
+      hostedModelId: 'anthropic/claude-opus-5.5',
+    };
+
+    expect(mapping.resolvePiModelReference('opus-5.5')).toEqual(expected);
     expect(mapping.resolvePiModelReference('opus-5')).toEqual(expected);
     expect(mapping.resolvePiModelReference('opus-4.8')).toEqual(expected);
+    expect(mapping.resolvePiModelReference('opus')).toEqual(expected);
+  });
+
+  it('keeps Sonnet 5 and Haiku 4.5 on their hosted nitro routes', () => {
+    const mapping = new PiModelMapping();
+    expect(mapping.resolvePiModelReference('sonnet')).toEqual({
+      provider: 'anthropic',
+      modelId: 'claude-sonnet-5',
+      hostedGatewayProvider: 'openrouter',
+      hostedModelId: 'anthropic/claude-sonnet-5:nitro',
+    });
+    expect(mapping.resolvePiModelReference('haiku')).toMatchObject({
+      modelId: 'claude-haiku-4-5-20251001',
+      hostedModelId: 'anthropic/claude-haiku-4.5:nitro',
+    });
+  });
+
+  it('maps new Claude ids to their Bedrock Mantle ids', () => {
+    const mapping = new PiModelMapping();
+    expect(mapping.bedrockClaudeModel('claude-opus-5-5')).toBe('anthropic.claude-opus-5-5');
+    expect(mapping.bedrockClaudeModel('claude-fable-5-1')).toBe('anthropic.claude-fable-5-1');
+    expect(mapping.bedrockClaudeModel('claude-opus-5')).toBe('anthropic.claude-opus-5-5');
+    expect(mapping.bedrockClaudeModel('claude-fable-5')).toBe('anthropic.claude-fable-5-1');
+    expect(mapping.bedrockClaudeModel('claude-sonnet-5')).toBe('anthropic.claude-sonnet-5');
   });
 
   it('preserves sentDuringStreaming metadata on parsed Pi user messages', () => {
@@ -1001,7 +1087,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(fake.piCurrentUsageProvider).toBe('openrouter');
   });
 
-  it('uses Fable metadata for hosted Fable 5 requests', async () => {
+  it('uses Fable 5.1 metadata for hosted retired Fable 5 requests', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.env = {
       CF_ACCOUNT_ID: 'acct_1',
@@ -1027,25 +1113,25 @@ describe('ChatThreadDO Pi turn handling', () => {
       getModel,
     );
 
-    expect(getModel).toHaveBeenCalledWith('anthropic', 'claude-fable-5');
+    expect(getModel).toHaveBeenCalledWith('anthropic', 'claude-fable-5-1');
     expect(model.model).toMatchObject({
-      id: 'anthropic/claude-fable-5:nitro',
+      id: 'anthropic/claude-fable-5.1:nitro',
       provider: 'cloudflare-ai-gateway',
       api: 'anthropic-messages',
       baseUrl: 'https://gateway.ai.cloudflare.com/v1/acct_1/gateway_1/openrouter',
-      name: 'Claude Fable 5',
+      name: 'Claude Fable 5.1',
       contextWindow: 1_000_000,
       maxTokens: 128_000,
       cost: {
         input: 10,
         output: 50,
-        cacheRead: 1,
+        cacheRead: 0.25,
         cacheWrite: 12.5,
       },
     });
     expect(model.apiKey).toBe('cf-token');
     expect(model.provider).toBe('anthropic');
-    expect(model.modelId).toBe('claude-fable-5');
+    expect(model.modelId).toBe('claude-fable-5-1');
     expect(model.billingSource).toBe('hosted');
     expect(model.usageProvider).toBe('openrouter');
     expect(fake.piCurrentUsageProvider).toBe('openrouter');
@@ -2089,7 +2175,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     );
 
     expect(model.model).toMatchObject({
-      id: 'openai/gpt-5.6-terra:nitro',
+      id: 'openai/gpt-6-sol:nitro',
       provider: 'cloudflare-ai-gateway',
       api: 'openai-responses',
       baseUrl: 'https://gateway.ai.cloudflare.com/v1/acct_1/gateway_1/openrouter',
@@ -2097,7 +2183,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(fake.piCurrentUsageProvider).toBe('openrouter');
   });
 
-  it('runs sponsored capability agents on hosted GPT-5.6 Luna without BYOK or credit charging', async () => {
+  it('runs sponsored capability agents on hosted GPT-6 Luna without BYOK or credit charging', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.env = {
       CF_ACCOUNT_ID: 'acct_1',
@@ -2118,9 +2204,9 @@ describe('ChatThreadDO Pi turn handling', () => {
     const model = await ChatThreadDO.prototype['resolvePiCapabilityModel'].call(
       fake,
       { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      'gpt-5.6-luna',
+      'gpt-6-luna',
       vi.fn(() => ({
-        id: 'gpt-5.6-luna',
+        id: 'gpt-6-luna',
         provider: 'openai',
         api: 'openai-responses',
         baseUrl: 'https://api.openai.com/v1',
@@ -2133,7 +2219,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       usageProvider: 'openrouter',
     });
     expect(model.model).toMatchObject({
-      id: 'openai/gpt-5.6-luna',
+      id: 'openai/gpt-6-luna',
       provider: 'cloudflare-ai-gateway',
       api: 'openai-responses',
     });
@@ -2164,7 +2250,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
       { CHIRIDION_MODEL: 'grok-4.5' },
       vi.fn(() => ({
-        id: 'x-ai/grok-4.5',
+        id: 'x-ai/grok-4.7',
         provider: 'openrouter',
         api: 'openai-completions',
         baseUrl: 'https://openrouter.ai/api/v1',
@@ -2172,7 +2258,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     );
 
     expect(model.model).toMatchObject({
-      id: 'x-ai/grok-4.5:nitro',
+      id: 'x-ai/grok-4.7:nitro',
       provider: 'cloudflare-ai-gateway',
       api: 'openai-responses',
       baseUrl: 'https://gateway.ai.cloudflare.com/v1/acct_1/gateway_1/openrouter',
@@ -2180,7 +2266,54 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(fake.piCurrentUsageProvider).toBe('openrouter');
   });
 
-  it('uses local Pi model metadata for Grok 4.5 when the upstream Pi catalog is missing it', async () => {
+  it.each([
+    ['opus-5.5', 'anthropic', 'claude-opus-5-5', 'anthropic/claude-opus-5.5', 'anthropic-messages', { input: 4, output: 20 }],
+    ['fable-5.1', 'anthropic', 'claude-fable-5-1', 'anthropic/claude-fable-5.1:nitro', 'anthropic-messages', { input: 10, output: 50 }],
+    ['gpt-6-sol', 'openai', 'gpt-6-sol', 'openai/gpt-6-sol:nitro', 'openai-responses', { input: 2, output: 10 }],
+    ['gpt-6-luna', 'openai', 'gpt-6-luna', 'openai/gpt-6-luna', 'openai-responses', { input: 0.1, output: 0.5 }],
+    ['kimi-k3', 'openrouter', 'moonshotai/kimi-k3', 'moonshotai/kimi-k3:nitro', 'openai-completions', { input: 3, output: 15 }],
+    ['grok-4.7', 'openrouter', 'x-ai/grok-4.7', 'x-ai/grok-4.7:nitro', 'openai-responses', { input: 1.6, output: 4.8 }],
+    ['glm-5.3-flash', 'openrouter', 'z-ai/glm-5.3-flash', 'z-ai/glm-5.3-flash:nitro', 'openai-completions', { input: 0.15, output: 0.5 }],
+    ['gemini-3.8-flash', 'openrouter', 'google/gemini-3.8-flash', 'google/gemini-3.8-flash', 'openai-completions', { input: 0.75, output: 3.75 }],
+    ['deepseek-v4.1-flash', 'openrouter', 'deepseek/deepseek-v4.1-flash', 'deepseek/deepseek-v4.1-flash', 'openai-completions', { input: 0.3, output: 1.2 }],
+  ] as const)(
+    'runs hosted %s from local Pi metadata when the upstream Pi catalog lags',
+    async (threadModel, provider, modelId, hostedId, api, cost) => {
+      const fake = Object.create(ChatThreadDO.prototype) as any;
+      fake.env = {
+        CF_ACCOUNT_ID: 'acct_1',
+        CF_GATEWAY_NAME: 'gateway_1',
+        AI_GATEWAY_AUTH_TOKEN: 'cf-token',
+      };
+      fake.chatContext = { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' };
+      fake.resolveCurrentByokCredentials = vi.fn(async () => null);
+      fake.checkHostedPiModelAccess = vi.fn(async () => ({
+        creditChargeable: true,
+        vllmPriority: '0',
+      }));
+
+      const getModel = vi.fn(() => undefined);
+      const model = await ChatThreadDO.prototype['resolvePiModel'].call(
+        fake,
+        { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
+        { CHIRIDION_MODEL: threadModel },
+        getModel,
+      );
+
+      expect(getModel).toHaveBeenCalledWith(provider, modelId);
+      expect(model.model).toMatchObject({
+        id: hostedId,
+        provider: 'cloudflare-ai-gateway',
+        api,
+        baseUrl: 'https://gateway.ai.cloudflare.com/v1/acct_1/gateway_1/openrouter',
+        cost: expect.objectContaining(cost),
+      });
+      expect(model.billingSource).toBe('hosted');
+      expect(model.usageProvider).toBe('openrouter');
+    },
+  );
+
+  it('uses local Pi model metadata for Grok 4.7 when the upstream Pi catalog is missing it', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.env = {
       CF_ACCOUNT_ID: 'acct_1',
@@ -2202,20 +2335,20 @@ describe('ChatThreadDO Pi turn handling', () => {
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
       { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      { CHIRIDION_MODEL: 'grok-4.5' },
+      { CHIRIDION_MODEL: 'grok-4.7' },
       getModel,
     );
 
-    expect(getModel).toHaveBeenCalledWith('openrouter', 'x-ai/grok-4.5');
+    expect(getModel).toHaveBeenCalledWith('openrouter', 'x-ai/grok-4.7');
     expect(model.model).toMatchObject({
-      id: 'x-ai/grok-4.5:nitro',
+      id: 'x-ai/grok-4.7:nitro',
       provider: 'cloudflare-ai-gateway',
       api: 'openai-responses',
       baseUrl: 'https://gateway.ai.cloudflare.com/v1/acct_1/gateway_1/openrouter',
       cost: {
-        input: 2,
-        output: 6,
-        cacheRead: 0.5,
+        input: 1.6,
+        output: 4.8,
+        cacheRead: 0.4,
         cacheWrite: 0,
       },
       contextWindow: 500000,
@@ -2223,7 +2356,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(model.model.headers).not.toHaveProperty('x-sticky-key');
     expect(model.apiKey).toBe('cf-token');
     expect(model.provider).toBe('openrouter');
-    expect(model.modelId).toBe('x-ai/grok-4.5');
+    expect(model.modelId).toBe('x-ai/grok-4.7');
     expect(model.billingSource).toBe('hosted');
     expect(model.usageProvider).toBe('openrouter');
     expect(fake.piCurrentUsageProvider).toBe('openrouter');
@@ -2462,7 +2595,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       'thread1',
       'deepseek-v4-auto',
       'user1',
-      'gpt-5.6-terra',
+      'gpt-6-sol',
     );
     expect(fake.currentThreadModel).toBe('deepseek-v4-auto');
     expect(fake.currentThreadModelUpdatedAt).toBe(1234);
@@ -2499,102 +2632,11 @@ describe('ChatThreadDO Pi turn handling', () => {
       'thread1',
       'deepseek-v4-auto',
       'user1',
-      'gpt-5.6-terra',
+      'gpt-6-sol',
     );
     expect(fake.currentThreadModel).toBe('gpt-5.5');
     expect(fake.modelFallbackNotice).toBeNull();
     expect(fake.syncAgentState).not.toHaveBeenCalled();
-  });
-
-  it('routes hosted deepseek-v4-pro through the AI Gateway dynamic fallback route', async () => {
-    const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.env = {
-      CF_ACCOUNT_ID: 'acct_1',
-      CF_GATEWAY_NAME: 'gateway_1',
-      AI_GATEWAY_AUTH_TOKEN: 'cf-token',
-    };
-    fake.chatContext = {
-      orgId: 'org1',
-      workspaceId: 'workspace1',
-      threadId: 'thread1',
-    };
-    fake.resolveCurrentByokCredentials = vi.fn(async () => null);
-    fake.checkHostedPiModelAccess = vi.fn(async () => ({
-      creditChargeable: true,
-      vllmPriority: '0',
-    }));
-
-    const getModel = vi.fn(() => ({
-      id: 'deepseek/deepseek-v4-pro',
-      provider: 'openrouter',
-      api: 'openai-completions',
-      baseUrl: 'https://openrouter.ai/api/v1',
-    }));
-    const model = await ChatThreadDO.prototype['resolvePiModel'].call(
-      fake,
-      { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      { CHIRIDION_MODEL: 'deepseek-v4-pro' },
-      getModel,
-    );
-
-    expect(getModel).toHaveBeenCalledWith('openrouter', 'deepseek/deepseek-v4-pro');
-    expect(model.model).toMatchObject({
-      id: 'dynamic/deepseek-v4-pro-fallback',
-      provider: 'cloudflare-ai-gateway',
-      api: 'openai-completions',
-      baseUrl: 'https://gateway.ai.cloudflare.com/v1/acct_1/gateway_1/compat',
-    });
-    expect(model.model.headers).toMatchObject({
-      'X-Chiridion-VLLM-Priority': '0',
-    });
-    expect(model.model.headers).not.toHaveProperty('x-sticky-key');
-    expect(model.model.compat).toMatchObject({ supportsReasoningEffort: true });
-    expect(model.model.thinkingLevelMap).toEqual({
-      minimal: 'xhigh',
-      low: 'xhigh',
-      medium: 'xhigh',
-      high: 'xhigh',
-      xhigh: 'xhigh',
-    });
-    expect(fake.piCurrentUsageProvider).toBe('compat');
-  });
-
-  it('keeps the native OpenRouter model id for deepseek-v4-pro under OpenRouter BYOK', async () => {
-    const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.env = {};
-    fake.resolveCurrentByokCredentials = vi.fn(async () => ({
-      provider: 'openrouter',
-      apiKey: 'sk-or-test',
-    }));
-    fake.checkHostedPiModelAccess = vi.fn(async () => {
-      throw new Error('hosted billing should not be checked for BYOK');
-    });
-
-    const model = await ChatThreadDO.prototype['resolvePiModel'].call(
-      fake,
-      { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      { CHIRIDION_MODEL: 'deepseek-v4-pro' },
-      vi.fn(() => ({
-        id: 'deepseek/deepseek-v4-pro',
-        provider: 'openrouter',
-        api: 'openai-completions',
-        baseUrl: 'https://openrouter.ai/api/v1',
-      })),
-    );
-
-    expect(model.model).toMatchObject({
-      id: 'deepseek/deepseek-v4-pro',
-      baseUrl: 'https://openrouter.ai/api/v1',
-    });
-    expect(model.apiKey).toBe('sk-or-test');
-    expect(model.billingSource).toBe('byok');
-    expect(model.model.thinkingLevelMap).not.toEqual({
-      minimal: 'xhigh',
-      low: 'xhigh',
-      medium: 'xhigh',
-      high: 'xhigh',
-      xhigh: 'xhigh',
-    });
   });
 
   it('keeps camelCode Luna on the hosted gateway fallback route instead of BYOK', async () => {
@@ -2641,61 +2683,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(fake.checkHostedPiModelAccess).toHaveBeenCalledOnce();
   });
 
-  it('routes hosted deepseek-v4-flash through the AI Gateway dynamic fallback route', async () => {
-    const fake = Object.create(ChatThreadDO.prototype) as any;
-    fake.env = {
-      CF_ACCOUNT_ID: 'acct_1',
-      CF_GATEWAY_NAME: 'gateway_1',
-      AI_GATEWAY_AUTH_TOKEN: 'cf-token',
-    };
-    fake.chatContext = {
-      orgId: 'org1',
-      workspaceId: 'workspace1',
-      threadId: 'thread1',
-    };
-    fake.resolveCurrentByokCredentials = vi.fn(async () => null);
-    fake.checkHostedPiModelAccess = vi.fn(async () => ({
-      creditChargeable: true,
-      vllmPriority: '0',
-    }));
-
-    const getModel = vi.fn(() => ({
-      id: 'deepseek/deepseek-v4-flash',
-      provider: 'openrouter',
-      api: 'openai-completions',
-      baseUrl: 'https://openrouter.ai/api/v1',
-    }));
-    const model = await ChatThreadDO.prototype['resolvePiModel'].call(
-      fake,
-      { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      { CHIRIDION_MODEL: 'deepseek-v4-flash' },
-      getModel,
-    );
-
-    expect(getModel).toHaveBeenCalledWith('openrouter', 'deepseek/deepseek-v4-flash');
-    expect(model.model).toMatchObject({
-      id: 'dynamic/deepseek-v4-flash-fallback',
-      provider: 'cloudflare-ai-gateway',
-      api: 'openai-completions',
-      baseUrl: 'https://gateway.ai.cloudflare.com/v1/acct_1/gateway_1/compat',
-    });
-    expect(model.model.headers).toMatchObject({
-      'x-sticky-key': 'chiridion:org1:workspace1:thread1',
-    });
-    expect(model.model.compat).toMatchObject({ supportsReasoningEffort: true });
-    expect(model.model.thinkingLevelMap).toEqual({
-      minimal: 'xhigh',
-      low: 'xhigh',
-      medium: 'xhigh',
-      high: 'xhigh',
-      xhigh: 'xhigh',
-    });
-    expect(model.model.contextWindow).toBe(220000);
-    expect(model.model.maxTokens).toBe(262144);
-    expect(fake.piCurrentUsageProvider).toBe('compat');
-  });
-
-  it('keeps the native OpenRouter model id for deepseek-v4-flash under OpenRouter BYOK', async () => {
+  it('runs retired DeepSeek V4 Flash threads on DeepSeek V4.1 Flash under OpenRouter BYOK', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.env = {};
     fake.resolveCurrentByokCredentials = vi.fn(async () => ({
@@ -2711,7 +2699,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
       { CHIRIDION_MODEL: 'deepseek-v4-flash' },
       vi.fn(() => ({
-        id: 'deepseek/deepseek-v4-flash',
+        id: 'deepseek/deepseek-v4.1-flash',
         provider: 'openrouter',
         api: 'openai-completions',
         baseUrl: 'https://openrouter.ai/api/v1',
@@ -2719,24 +2707,15 @@ describe('ChatThreadDO Pi turn handling', () => {
     );
 
     expect(model.model).toMatchObject({
-      id: 'deepseek/deepseek-v4-flash',
+      id: 'deepseek/deepseek-v4.1-flash',
       baseUrl: 'https://openrouter.ai/api/v1',
     });
     expect(model.apiKey).toBe('sk-or-test');
     expect(model.billingSource).toBe('byok');
-    // The forced-xhigh override is scoped to the hosted gateway model only, so
-    // BYOK OpenRouter keeps the upstream catalog reasoning map untouched.
-    expect(model.model.thinkingLevelMap).not.toEqual({
-      minimal: 'xhigh',
-      low: 'xhigh',
-      medium: 'xhigh',
-      high: 'xhigh',
-      xhigh: 'xhigh',
-    });
   });
 
-  it.each(['gemini-3.5-flash', 'gemini-3.1-pro-preview'])(
-    'uses local Pi model metadata for %s when the upstream Pi catalog is missing Gemini 3.5 Flash',
+  it.each(['gemini-3.8-flash', 'gemini-3.5-flash', 'gemini-3.1-pro-preview'])(
+    'uses local Pi model metadata for %s when the upstream Pi catalog is missing Gemini 3.8 Flash',
     async (requestedModel) => {
       const fake = Object.create(ChatThreadDO.prototype) as any;
       fake.env = {
@@ -2765,25 +2744,25 @@ describe('ChatThreadDO Pi turn handling', () => {
 
       expect(getModel).toHaveBeenCalledWith(
         'openrouter',
-        'google/gemini-3.5-flash',
+        'google/gemini-3.8-flash',
       );
       expect(model.model).toMatchObject({
-        id: 'google/gemini-3.5-flash',
+        id: 'google/gemini-3.8-flash',
         provider: 'cloudflare-ai-gateway',
         api: 'openai-completions',
         baseUrl: 'https://gateway.ai.cloudflare.com/v1/acct_1/gateway_1/openrouter',
         cost: {
-          input: 1.5,
-          output: 9,
-          cacheRead: 0.15,
-          cacheWrite: 0.08333333333333334,
+          input: 0.75,
+          output: 3.75,
+          cacheRead: 0.075,
+          cacheWrite: 0.041667,
         },
         contextWindow: 1048576,
         maxTokens: 65536,
       });
       expect(model.apiKey).toBe('cf-token');
       expect(model.provider).toBe('openrouter');
-      expect(model.modelId).toBe('google/gemini-3.5-flash');
+      expect(model.modelId).toBe('google/gemini-3.8-flash');
       expect(model.billingSource).toBe('hosted');
       expect(model.usageProvider).toBe('openrouter');
       expect(fake.piCurrentUsageProvider).toBe('openrouter');
@@ -2826,7 +2805,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(fake.checkHostedPiModelAccess).not.toHaveBeenCalled();
   });
 
-  it('uses OpenRouter BYOK with Fable 5 when requested', async () => {
+  it('uses OpenRouter BYOK with Fable 5.1 for a retired Fable 5 thread', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.env = {};
     fake.resolveCurrentByokCredentials = vi.fn(async () => ({
@@ -2842,7 +2821,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
       { CHIRIDION_MODEL: 'fable-5' },
       vi.fn(() => ({
-        id: 'claude-fable-5',
+        id: 'claude-fable-5-1',
         provider: 'anthropic',
         api: 'anthropic-messages',
         baseUrl: 'https://api.anthropic.com',
@@ -2850,7 +2829,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     );
 
     expect(model.model).toMatchObject({
-      id: 'anthropic/claude-fable-5:nitro',
+      id: 'anthropic/claude-fable-5.1:nitro',
       provider: 'anthropic',
       api: 'anthropic-messages',
       baseUrl: 'https://openrouter.ai/api',
@@ -3281,7 +3260,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     );
 
     expect(model.model).toMatchObject({
-      id: 'openai/gpt-5.6-terra:nitro',
+      id: 'openai/gpt-6-sol:nitro',
       provider: 'openai',
       api: 'openai-responses',
       baseUrl: 'https://openrouter.ai/api/v1',
@@ -3309,9 +3288,9 @@ describe('ChatThreadDO Pi turn handling', () => {
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
       { orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      { CHIRIDION_MODEL: 'gpt-5.6-terra' },
+      { CHIRIDION_MODEL: 'gpt-6-sol' },
       vi.fn(() => ({
-        id: 'gpt-5.6-terra',
+        id: 'gpt-6-sol',
         provider: 'openai',
         api: 'openai-responses',
         baseUrl: 'https://api.openai.com/v1',
@@ -3319,7 +3298,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     );
 
     expect(model.model).toMatchObject({
-      id: 'gpt-5.6-terra',
+      id: 'gpt-6-sol',
       provider: 'custom',
       api: 'openai-completions',
       baseUrl: 'https://custom.example/v1',
@@ -3405,9 +3384,9 @@ describe('ChatThreadDO Pi turn handling', () => {
       getModel,
     );
 
-    expect(getModel).toHaveBeenCalledWith('openai', 'gpt-5.6-terra');
+    expect(getModel).toHaveBeenCalledWith('openai', 'gpt-6-luna');
     expect(model.model).toMatchObject({
-      id: 'gpt-5.6-terra',
+      id: 'gpt-6-luna',
       provider: 'custom',
       api: 'openai-responses',
       baseUrl: 'https://custom.example/v1',
@@ -3445,7 +3424,7 @@ describe('ChatThreadDO Pi turn handling', () => {
       getModel,
     );
 
-    expect(getModel).toHaveBeenCalledWith('openai', 'gpt-5.6-terra');
+    expect(getModel).toHaveBeenCalledWith('openai', 'gpt-6-luna');
     expect(model.model).toMatchObject({
       id: 'pi-custom-model',
       provider: 'custom',
@@ -3555,7 +3534,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
       { provider: 'pi', orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      { CHIRIDION_MODEL: 'gpt-5.6-terra' },
+      { CHIRIDION_MODEL: 'gpt-5.6-terra-bedrock' },
       getModel,
     );
 
@@ -3587,11 +3566,11 @@ describe('ChatThreadDO Pi turn handling', () => {
     const model = await ChatThreadDO.prototype['resolvePiModel'].call(
       fake,
       { provider: 'pi', orgId: 'org1', workspaceId: 'workspace1', threadId: 'thread1' },
-      { CHIRIDION_MODEL: 'gpt-5.6-sol' },
+      { CHIRIDION_MODEL: 'gpt-5.6-terra-bedrock' },
       vi.fn((provider: string, id: string) => ({ id, provider, api: 'openai-responses' })),
     );
     expect(model.model).toMatchObject({
-      id: 'openai.gpt-5.6-sol',
+      id: 'openai.gpt-5.6-terra',
       provider: 'custom',
       api: 'openai-responses',
       baseUrl: 'https://bedrock-mantle.us-east-1.api.aws/openai/v1',
@@ -3599,7 +3578,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(fake.checkHostedPiModelAccess).not.toHaveBeenCalled();
   });
 
-  it('uses Mantle for BYOK Opus 5 when Pi catalog lags', async () => {
+  it('uses Mantle Opus 5.5 for BYOK retired Opus 5 requests when Pi catalog lags', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.env = {};
     fake.resolveCurrentByokCredentials = vi.fn(async () => ({
@@ -3619,13 +3598,13 @@ describe('ChatThreadDO Pi turn handling', () => {
       getModel,
     );
 
-    expect(getModel).toHaveBeenCalledWith('anthropic', 'claude-opus-5');
+    expect(getModel).toHaveBeenCalledWith('anthropic', 'claude-opus-5-5');
     expect(model.model).toMatchObject({
-      id: 'anthropic.claude-opus-5',
+      id: 'anthropic.claude-opus-5-5',
       provider: 'custom',
       api: 'anthropic-messages',
       baseUrl: 'https://bedrock-mantle.us-west-2.api.aws/anthropic',
-      name: 'Claude Opus 5',
+      name: 'Claude Opus 5.5',
       compat: {
         forceAdaptiveThinking: true,
         supportsTemperature: false,
@@ -3640,7 +3619,7 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(fake.checkHostedPiModelAccess).not.toHaveBeenCalled();
   });
 
-  it('uses Mantle Fable 5 for BYOK Fable requests when Pi catalog lags', async () => {
+  it('uses Mantle Fable 5.1 for BYOK retired Fable 5 requests when Pi catalog lags', async () => {
     const fake = Object.create(ChatThreadDO.prototype) as any;
     fake.env = {};
     fake.resolveCurrentByokCredentials = vi.fn(async () => ({
@@ -3660,13 +3639,13 @@ describe('ChatThreadDO Pi turn handling', () => {
       getModel,
     );
 
-    expect(getModel).toHaveBeenCalledWith('anthropic', 'claude-fable-5');
+    expect(getModel).toHaveBeenCalledWith('anthropic', 'claude-fable-5-1');
     expect(model.model).toMatchObject({
-      id: 'anthropic.claude-fable-5',
+      id: 'anthropic.claude-fable-5-1',
       provider: 'custom',
       api: 'anthropic-messages',
       baseUrl: 'https://bedrock-mantle.us-west-2.api.aws/anthropic',
-      name: 'Claude Fable 5',
+      name: 'Claude Fable 5.1',
       contextWindow: 1_000_000,
       maxTokens: 128_000,
     });
@@ -4811,9 +4790,10 @@ describe('ChatThreadDO Pi turn handling', () => {
   });
 
   it.each([
-    ['gemini-3.5-flash', 'google/gemini-3.5-flash'],
-    ['gemini-3-flash-preview', 'google/gemini-3-flash-preview'],
-    ['gemini-3.1-pro-preview', 'google/gemini-3.5-flash'],
+    ['gemini-3.8-flash', 'google/gemini-3.8-flash'],
+    ['gemini-3.5-flash', 'google/gemini-3.8-flash'],
+    ['gemini-3-flash-preview', 'google/gemini-3.8-flash'],
+    ['gemini-3.1-pro-preview', 'google/gemini-3.8-flash'],
   ])('routes %s through OpenRouter chat completions', (model, routeModel) => {
     const result = new PiModelMapping().resolvePiModelReference(model);
 
@@ -4837,18 +4817,6 @@ describe('ChatThreadDO Pi turn handling', () => {
     },
   );
 
-  it('resolves deepseek-v4-pro to the AI Gateway dynamic route with an OpenRouter lookup id', () => {
-    const result = new PiModelMapping().resolvePiModelReference('deepseek-v4-pro');
-
-    expect(result).toEqual({
-      provider: 'openrouter',
-      modelId: 'deepseek/deepseek-v4-pro',
-      hostedGatewayProvider: 'compat',
-      hostedModelId: 'dynamic/deepseek-v4-pro-fallback',
-      hostedReasoningEffort: 'xhigh',
-    });
-  });
-
   it('resolves the persisted camelCode id to the gateway Luna/Muse fallback route', () => {
     const result = new PiModelMapping().resolvePiModelReference('deepseek-v4-auto');
 
@@ -4861,27 +4829,6 @@ describe('ChatThreadDO Pi turn handling', () => {
       hostedModelId: 'dynamic/luna-muse-fallback',
       byokAllowed: false,
       api: 'openai-completions',
-    });
-  });
-
-  it('resolves deepseek-v4-flash to the AI Gateway dynamic route with an OpenRouter lookup id', () => {
-    const result = new PiModelMapping().resolvePiModelReference('deepseek-v4-flash');
-
-    expect(result).toEqual({
-      provider: 'openrouter',
-      modelId: 'deepseek/deepseek-v4-flash',
-      hostedGatewayProvider: 'compat',
-      hostedModelId: 'dynamic/deepseek-v4-flash-fallback',
-      hostedStickyRouting: true,
-      hostedReasoningEffort: 'xhigh',
-      hostedRequestProfile: {
-        name: 'deepseek-v4-flash-rtx',
-        contextWindow: 220_000,
-        maxTokens: 262_144,
-        reasoning: true,
-        supportsReasoningEffort: true,
-        thinkingFormat: 'openai',
-      },
     });
   });
 

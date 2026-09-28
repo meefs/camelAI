@@ -211,7 +211,7 @@ describe("selfhost ai binding", () => {
       Authorization: "Bearer openai-test-key",
     });
     expect(JSON.parse(String(init.body))).toMatchObject({
-      model: "gpt-5.6-luna",
+      model: "gpt-6-luna",
       max_output_tokens: 32,
       store: false,
       reasoning: { effort: "none" },
@@ -246,7 +246,7 @@ describe("selfhost ai binding", () => {
       "X-OpenRouter-Title": "camelAI",
     });
     expect(JSON.parse(String(init.body))).toMatchObject({
-      model: "deepseek/deepseek-v4-flash",
+      model: "openai/gpt-6-luna",
       max_tokens: 24,
       reasoning: { effort: "none" },
     });

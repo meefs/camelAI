@@ -69,7 +69,7 @@ Author evals with these guardrails:
 ## Run a matrix
 
 ```bash
-bun run test:eval:matrix -- --models sonnet,deepseek-v4-flash --evals do-backed-project-deploy-live --repeat 3
+bun run test:eval:matrix -- --models sonnet,gpt-6-luna --evals do-backed-project-deploy-live --repeat 3
 bun run test:eval:matrix -- --models deepseek-v4-auto --evals all --concurrency max
 ```
 

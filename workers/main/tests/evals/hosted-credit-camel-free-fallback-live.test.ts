@@ -29,7 +29,7 @@ type CreditFallbackEvalEnv = TestEnv & EvalModelEnv & EvalSignalEnv & {
 const testEnv = env as unknown as CreditFallbackEvalEnv;
 const maybeIt = testEnv.RUN_AGENT_EVALS === "1" ? it : it.skip;
 const SESSION_TIMEOUT_MS = getEvalTimeoutMs(testEnv, 180_000);
-const REQUESTED_MODEL = "gpt-5.6-sol";
+const REQUESTED_MODEL = "gpt-6-sol";
 const FALLBACK_MODEL = "deepseek-v4-auto";
 const RUBRIC = {
   version: 1,

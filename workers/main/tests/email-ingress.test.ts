@@ -283,7 +283,7 @@ describe('handleWorkspaceEmailIngress', () => {
       'Need help',
       'user-1',
       'Please help',
-      'sonnet',
+      'gpt-6-luna',
       expect.objectContaining({
         source: 'channel',
         channelKind: 'email',
@@ -361,7 +361,7 @@ describe('handleWorkspaceEmailIngress', () => {
       'Need help',
       'user-1',
       'Please help',
-      'sonnet',
+      'gpt-6-luna',
       expect.objectContaining({
         source: 'channel',
         channelKind: 'email',

@@ -11,8 +11,8 @@ import {
 const BASE_OPTIONS: ModelPickerOption[] = [
   MODEL_CATALOG[CAMEL_CODE_LLM_MODEL],
   MODEL_CATALOG.sonnet,
-  MODEL_CATALOG["gpt-5.6-sol"],
-  MODEL_CATALOG["grok-4.5"],
+  MODEL_CATALOG["gpt-6-sol"],
+  MODEL_CATALOG["grok-4.7"],
 ];
 
 describe("deriveHostedCreditPause", () => {
@@ -104,11 +104,11 @@ describe("deriveHostedCreditPause", () => {
       result.modelOptions.find((option) => option.id === "sonnet")?.locked,
     ).not.toBe(true);
     expect(
-      result.modelOptions.find((option) => option.id === "gpt-5.6-sol")
+      result.modelOptions.find((option) => option.id === "gpt-6-sol")
         ?.locked,
     ).not.toBe(true);
     expect(
-      result.modelOptions.find((option) => option.id === "grok-4.5"),
+      result.modelOptions.find((option) => option.id === "grok-4.7"),
     ).toMatchObject({
       locked: true,
       pausedReason: "included_credits_exhausted",
@@ -119,7 +119,7 @@ describe("deriveHostedCreditPause", () => {
     const result = deriveHostedCreditPause({
       modelOptions: [
         MODEL_CATALOG.sonnet,
-        MODEL_CATALOG["gpt-5.6-sol"],
+        MODEL_CATALOG["gpt-6-sol"],
       ],
       billingAccessMode: "subscription",
       llmProvider: null,
@@ -132,7 +132,7 @@ describe("deriveHostedCreditPause", () => {
 
     expect(result.modelOptions.map((entry) => entry.id)).toEqual([
       "sonnet",
-      "gpt-5.6-sol",
+      "gpt-6-sol",
     ]);
     expect(
       result.modelOptions
@@ -150,17 +150,17 @@ describe("deriveHostedCreditPause", () => {
   it("chooses the cheapest selectable model and preserves picker order for ties", () => {
     expect(
       findCheapestSelectableModel([
-        MODEL_CATALOG["gpt-5.6-sol"],
-        MODEL_CATALOG["gpt-5.6-terra"],
-        MODEL_CATALOG["gpt-5.6-luna"],
+        MODEL_CATALOG["gpt-6-sol"],
+        MODEL_CATALOG["gpt-6-luna"],
+        MODEL_CATALOG["glm-5.3-flash"],
       ])?.id,
-    ).toBe("gpt-5.6-luna");
+    ).toBe("gpt-6-luna");
     expect(
       findCheapestSelectableModel([
-        MODEL_CATALOG["gpt-5.6-luna"],
+        MODEL_CATALOG["gpt-6-luna"],
         MODEL_CATALOG.haiku,
       ])?.id,
-    ).toBe("gpt-5.6-luna");
+    ).toBe("gpt-6-luna");
   });
 
   it("prompts for camelCode when free-mode billing locks every custom model", () => {
@@ -201,7 +201,7 @@ describe("deriveHostedCreditPause", () => {
     const result = deriveHostedCreditPause({
       modelOptions: [
         MODEL_CATALOG.sonnet,
-        MODEL_CATALOG["gpt-5.6-sol"],
+        MODEL_CATALOG["gpt-6-sol"],
       ],
       billingAccessMode: "subscription",
       llmProvider: "anthropic",

@@ -23,12 +23,12 @@ import {
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 
 describe("buildBedrockPiModel", () => {
-  it("uses the suffix-free Opus 5 Mantle model with adaptive-thinking metadata", () => {
+  it("uses the suffix-free Opus 5.5 Mantle model with adaptive-thinking metadata", () => {
     expect(
-      buildBedrockPiModel("global.anthropic.claude-opus-5", "us-west-2"),
+      buildBedrockPiModel("global.anthropic.claude-opus-5-5", "us-west-2"),
     ).toMatchObject({
-      id: "anthropic.claude-opus-5",
-      name: "Claude Opus 5",
+      id: "anthropic.claude-opus-5-5",
+      name: "Claude Opus 5.5",
       api: "anthropic-messages",
       provider: "custom",
       baseUrl: "https://bedrock-mantle.us-west-2.api.aws/anthropic",
@@ -38,15 +38,27 @@ describe("buildBedrockPiModel", () => {
         supportsEagerToolInputStreaming: false,
       },
       thinkingLevelMap: { xhigh: "xhigh", max: "max" },
+      cost: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
       contextWindow: 1_000_000,
       maxTokens: 128_000,
     });
   });
 
-  it("upgrades legacy Opus Mantle IDs to Opus 5", () => {
+  it("upgrades legacy Opus Mantle IDs to Opus 5.5", () => {
     expect(buildBedrockPiModel("anthropic.claude-opus-4-8").id).toBe(
-      "anthropic.claude-opus-5",
+      "anthropic.claude-opus-5-5",
     );
+    expect(buildBedrockPiModel("anthropic.claude-opus-5").id).toBe(
+      "anthropic.claude-opus-5-5",
+    );
+  });
+
+  it("upgrades Fable Mantle IDs to Fable 5.1", () => {
+    expect(buildBedrockPiModel("anthropic.claude-fable-5")).toMatchObject({
+      id: "anthropic.claude-fable-5-1",
+      name: "Claude Fable 5.1",
+      cost: { input: 10, output: 50, cacheRead: 0.25, cacheWrite: 12.5 },
+    });
   });
 });
 
@@ -140,23 +152,33 @@ describe("normalizeLegacyModel (back-compat shim)", () => {
   });
 
   it("maps old friendly model names to their OpenRouter ids", () => {
-    expect(normalizeLegacyModel("gpt-5.5")).toBe("openai/gpt-5.6-terra");
-    expect(normalizeLegacyModel("openai/gpt-5.5")).toBe("openai/gpt-5.6-terra");
-    expect(normalizeLegacyModel("kimi-k2.6")).toBe("moonshotai/kimi-k2.7-code");
-    expect(normalizeLegacyModel("kimi-latest")).toBe("moonshotai/kimi-k2.7-code");
-    expect(normalizeLegacyModel("opus")).toBe("anthropic/claude-opus-5");
-    expect(normalizeLegacyModel("opus-4.7")).toBe("anthropic/claude-opus-5");
-    expect(normalizeLegacyModel("opus-4.8")).toBe("anthropic/claude-opus-5");
-    expect(normalizeLegacyModel("opus-5")).toBe("anthropic/claude-opus-5");
-    expect(normalizeLegacyModel("grok-4.3")).toBe("x-ai/grok-4.5");
-    expect(normalizeLegacyModel("x-ai/grok-4.3")).toBe("x-ai/grok-4.5");
-    expect(normalizeLegacyModel("grok-latest")).toBe("x-ai/grok-4.5");
-    expect(normalizeLegacyModel("grok-4.5")).toBe("x-ai/grok-4.5");
+    expect(normalizeLegacyModel("gpt-5.5")).toBe("openai/gpt-6-sol");
+    expect(normalizeLegacyModel("openai/gpt-5.5")).toBe("openai/gpt-6-sol");
+    expect(normalizeLegacyModel("kimi-k2.6")).toBe("moonshotai/kimi-k3");
+    expect(normalizeLegacyModel("kimi-latest")).toBe("moonshotai/kimi-k3");
+    expect(normalizeLegacyModel("kimi-k2.7-code")).toBe("moonshotai/kimi-k3");
+    expect(normalizeLegacyModel("kimi-k3")).toBe("moonshotai/kimi-k3");
+    expect(normalizeLegacyModel("opus")).toBe("anthropic/claude-opus-5.5");
+    expect(normalizeLegacyModel("opus-4.7")).toBe("anthropic/claude-opus-5.5");
+    expect(normalizeLegacyModel("opus-4.8")).toBe("anthropic/claude-opus-5.5");
+    expect(normalizeLegacyModel("opus-5")).toBe("anthropic/claude-opus-5.5");
+    expect(normalizeLegacyModel("opus-5.5")).toBe("anthropic/claude-opus-5.5");
+    expect(normalizeLegacyModel("fable-5")).toBe("anthropic/claude-fable-5.1");
+    expect(normalizeLegacyModel("fable-5.1")).toBe("anthropic/claude-fable-5.1");
+    expect(normalizeLegacyModel("grok-4.3")).toBe("x-ai/grok-4.7");
+    expect(normalizeLegacyModel("x-ai/grok-4.3")).toBe("x-ai/grok-4.7");
+    expect(normalizeLegacyModel("grok-latest")).toBe("x-ai/grok-4.7");
+    expect(normalizeLegacyModel("grok-4.5")).toBe("x-ai/grok-4.7");
+    expect(normalizeLegacyModel("grok-4.7")).toBe("x-ai/grok-4.7");
     expect(normalizeLegacyModel("glm-5.2")).toBe("z-ai/glm-5.3");
     expect(normalizeLegacyModel("z-ai/glm-5.2")).toBe("z-ai/glm-5.3");
     expect(normalizeLegacyModel("glm-5.3")).toBe("z-ai/glm-5.3");
+    expect(normalizeLegacyModel("glm-5.3-flash")).toBe("z-ai/glm-5.3-flash");
     expect(normalizeLegacyModel("glm-latest")).toBe("z-ai/glm-5.3");
-    expect(normalizeLegacyModel("gemini-3.5-flash")).toBe("google/gemini-3.5-flash");
+    expect(normalizeLegacyModel("gemini-3.5-flash")).toBe("google/gemini-3.8-flash");
+    expect(normalizeLegacyModel("gemini-3-flash-preview")).toBe("google/gemini-3.8-flash");
+    expect(normalizeLegacyModel("gemini-3.8-flash")).toBe("google/gemini-3.8-flash");
+    expect(normalizeLegacyModel("deepseek-v4.1-flash")).toBe("deepseek/deepseek-v4.1-flash");
   });
 
   it("passes current tier names, friendly ids, and OpenRouter ids through unchanged", () => {
@@ -166,11 +188,11 @@ describe("normalizeLegacyModel (back-compat shim)", () => {
     expect(normalizeLegacyModel("deepseek-v4-auto")).toBe("deepseek-v4-auto");
     expect(normalizeLegacyModel("deepseek-v4-flash")).toBe("deepseek-v4-flash");
     expect(normalizeLegacyModel("anthropic/claude-sonnet-4.6")).toBe("anthropic/claude-sonnet-4.6");
-    expect(normalizeLegacyModel(normalizeLegacyModel("gpt-5.5"))).toBe("openai/gpt-5.6-terra");
+    expect(normalizeLegacyModel(normalizeLegacyModel("gpt-5.5"))).toBe("openai/gpt-6-sol");
   });
 
   it("trims whitespace before matching", () => {
-    expect(normalizeLegacyModel("  gpt-5.5  ")).toBe("openai/gpt-5.6-terra");
+    expect(normalizeLegacyModel("  gpt-5.5  ")).toBe("openai/gpt-6-sol");
   });
 });
 
@@ -303,7 +325,7 @@ describe("resolveRouting", () => {
     expect(routing.awsRegion).toBe("us-east-1");
   });
 
-  it("routes Anthropic BYOK smart tier to Opus 5", async () => {
+  it("routes Anthropic BYOK smart tier to Opus 5.5", async () => {
     const encrypted = await encryptCredentials({ api_key: "anthropic-token" }, "secret");
     const routing = await resolveRouting(
       {
@@ -327,10 +349,10 @@ describe("resolveRouting", () => {
     );
 
     expect(routing.provider).toBe("anthropic");
-    expect(routing.model).toBe("anthropic/claude-opus-5");
+    expect(routing.model).toBe("anthropic/claude-opus-5-5");
   });
 
-  it("routes Bedrock BYOK smart tier to Opus 5", async () => {
+  it("routes Bedrock BYOK smart tier to Opus 5.5", async () => {
     const encrypted = await encryptCredentials({ bearer_token: "bedrock-token" }, "secret");
     const routing = await resolveRouting(
       {
@@ -354,7 +376,7 @@ describe("resolveRouting", () => {
     );
 
     expect(routing.provider).toBe("bedrock");
-    expect(routing.model).toBe("anthropic.claude-opus-5");
+    expect(routing.model).toBe("anthropic.claude-opus-5-5");
     expect(routing.awsRegion).toBe("us-east-1");
   });
 
@@ -383,6 +405,63 @@ describe("resolveRouting", () => {
 
     expect(routing.provider).toBe("bedrock");
     expect(routing.model).toBe("anthropic.claude-haiku-4-5");
+  });
+});
+
+describe("resolveRouting tier defaults", () => {
+  const hostedScope = () => ({
+    env: {
+      ORG: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({
+          getLlmProviderConfig: vi.fn(async () => null),
+        })),
+      } as never,
+    },
+    props: { orgId: "org1", workspaceId: "ws1" },
+    waitUntil: vi.fn(),
+  });
+
+  it("routes the hosted auto, fast and cheap tiers to GPT-6 Luna without nitro", async () => {
+    for (const tier of ["auto", "fast", "cheap"]) {
+      const routing = await resolveRouting(hostedScope(), tier);
+      expect(routing.gatewayProvider, tier).toBe("openrouter");
+      expect(routing.model, tier).toBe("openai/gpt-6-luna");
+    }
+    expect((await resolveRouting(hostedScope(), "smart")).model).toBe(
+      "anthropic/claude-sonnet-5:nitro",
+    );
+  });
+
+  it("defaults an empty pass-through model to GPT-6 Luna", async () => {
+    expect((await resolveRouting(hostedScope(), "")).model).toBe("openai/gpt-6-luna");
+  });
+
+  it("routes OpenAI BYOK tiers to GPT-6", async () => {
+    const encrypted = await encryptCredentials({ api_key: "openai-token" }, "secret");
+    const scope = (tier: string) => resolveRouting(
+      {
+        env: {
+          INTEGRATION_SECRET_KEY: "secret",
+          ORG: {
+            idFromName: vi.fn((id: string) => id),
+            get: vi.fn(() => ({
+              getLlmProviderConfig: vi.fn(async () => ({
+                provider: "openai",
+                config: JSON.stringify({}),
+                credentials_encrypted: encrypted,
+              })),
+            })),
+          } as never,
+        },
+        props: { orgId: "org1", workspaceId: "ws1" },
+        waitUntil: vi.fn(),
+      },
+      tier,
+    );
+    expect((await scope("smart")).model).toBe("openai/gpt-6-sol");
+    expect((await scope("auto")).model).toBe("openai/gpt-6-luna");
+    expect((await scope("cheap")).model).toBe("openai/gpt-6-luna");
   });
 });
 
@@ -782,6 +861,7 @@ describe("appendNitro", () => {
   });
 
   it("leaves Luna unsuffixed", () => {
+    expect(appendNitro("openai/gpt-6-luna")).toBe("openai/gpt-6-luna");
     expect(appendNitro("openai/gpt-5.6-luna")).toBe(
       "openai/gpt-5.6-luna",
     );

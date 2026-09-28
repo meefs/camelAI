@@ -41,10 +41,10 @@ describe('web model provider wiring', () => {
       userId,
       'Reply with pong'
     );
-    expect(thread.model).toBe('gpt-5.6-terra');
+    expect(thread.model).toBe('gpt-6-luna');
   });
 
-  it('creates standard hosted web threads on Anthropic and still allows explicit OpenAI models', async () => {
+  it('creates standard hosted web threads on GPT-6 Luna and still allows explicit models', async () => {
     const { userId } = await createUser(testEnv, testEmail(), 'password123', 'Hosted User');
     const { defaultWorkspaceId } = await createOrg(testEnv, 'Hosted Org', userId);
 
@@ -55,16 +55,16 @@ describe('web model provider wiring', () => {
       userId,
       'Reply with pong'
     );
-    expect(thread.model).toBe('sonnet');
+    expect(thread.model).toBe('gpt-6-luna');
     const openAiThread = await createThread(
       buildContext(testEnv) as never,
       defaultWorkspaceId,
       'Explicit OpenAI thread',
       userId,
       'Reply with pong',
-      'gpt-5.6-terra'
+      'sonnet'
     );
 
-    expect(openAiThread.model).toBe('gpt-5.6-terra');
+    expect(openAiThread.model).toBe('sonnet');
   });
 });

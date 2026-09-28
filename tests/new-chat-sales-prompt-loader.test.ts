@@ -263,13 +263,12 @@ describe('new chat loader sales prompt handling', () => {
       context: {},
     } as never);
     const interactive = await result.interactive;
-    expect(interactive.threadModel).toBe('gpt-5.6-terra');
+    expect(interactive.threadModel).toBe('gpt-6-luna');
     expect(interactive.llmProvider).toBe('openai');
     expect(interactive.allowedThreadModels).toEqual([
       'deepseek-v4-auto',
-      'gpt-5.6-sol',
-      'gpt-5.6-terra',
-      'gpt-5.6-luna',
+      'gpt-6-sol',
+      'gpt-6-luna',
     ]);
 
     consoleError.mockRestore();

@@ -285,7 +285,7 @@ export default function DevBillingPaywallPreviewRoute() {
       <UnlockPremiumModal
         open={unlockOpen}
         onOpenChange={setUnlockOpen}
-        triggerModel="gpt-5.6-sol"
+        triggerModel="gpt-6-sol"
         isOrgAdmin
         orgId="org_preview"
         onSeePlans={() => {

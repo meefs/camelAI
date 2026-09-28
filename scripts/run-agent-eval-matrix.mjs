@@ -11,10 +11,10 @@ import {
 } from "./lib/eval-concurrency.mjs";
 
 const DEFAULT_MODELS = [
+  "gpt-6-luna",
   "sonnet",
   "deepseek-v4-auto",
-  "deepseek-v4-pro",
-  "deepseek-v4-flash",
+  "deepseek-v4.1-flash",
 ];
 
 const DEFAULT_EVALS = [

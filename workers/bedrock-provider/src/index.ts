@@ -34,13 +34,13 @@ interface BedrockModelMetadata {
 
 const bedrockModels: BedrockModelMetadata[] = [
   {
-    id: 'claude-fable-5',
-    bedrockModelId: 'anthropic.claude-fable-5',
-    name: 'Claude Fable 5',
+    id: 'claude-fable-5-1',
+    bedrockModelId: 'anthropic.claude-fable-5-1',
+    name: 'Claude Fable 5.1',
     reasoning: true,
     thinkingLevelMap: { off: null, xhigh: 'xhigh' },
     input: ['text', 'image'],
-    cost: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
+    cost: { input: 10, output: 50, cacheRead: 0.25, cacheWrite: 12.5 },
     contextWindow: 1_000_000,
     maxTokens: 128_000,
   },
@@ -55,9 +55,9 @@ const bedrockModels: BedrockModelMetadata[] = [
     maxTokens: 128_000,
   },
   {
-    id: 'claude-opus-5',
-    bedrockModelId: 'anthropic.claude-opus-5',
-    name: 'Claude Opus 5',
+    id: 'claude-opus-5-5',
+    bedrockModelId: 'anthropic.claude-opus-5-5',
+    name: 'Claude Opus 5.5',
     reasoning: true,
     thinkingLevelMap: { xhigh: 'xhigh', max: 'max' },
     compat: {
@@ -66,7 +66,7 @@ const bedrockModels: BedrockModelMetadata[] = [
       supportsEagerToolInputStreaming: false,
     },
     input: ['text', 'image'],
-    cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+    cost: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
     contextWindow: 1_000_000,
     maxTokens: 128_000,
   },
@@ -96,20 +96,28 @@ const bedrockModelMap: Record<string, string> = {
   ...Object.fromEntries(bedrockModels.map((model) => [model.id, model.bedrockModelId])),
   ...Object.fromEntries(bedrockModels.map((model) => [model.bedrockModelId, model.bedrockModelId])),
   sonnet: 'anthropic.claude-sonnet-5',
-  'fable-5': 'anthropic.claude-fable-5',
-  'anthropic/claude-fable-5': 'anthropic.claude-fable-5',
-  'global.anthropic.claude-fable-5': 'anthropic.claude-fable-5',
+  'fable-5': 'anthropic.claude-fable-5-1',
+  'fable-5.1': 'anthropic.claude-fable-5-1',
+  'anthropic/claude-fable-5': 'anthropic.claude-fable-5-1',
+  'anthropic/claude-fable-5.1': 'anthropic.claude-fable-5-1',
+  'global.anthropic.claude-fable-5': 'anthropic.claude-fable-5-1',
+  'global.anthropic.claude-fable-5-1': 'anthropic.claude-fable-5-1',
+  'anthropic.claude-fable-5': 'anthropic.claude-fable-5-1',
   'anthropic/claude-sonnet-5': 'anthropic.claude-sonnet-5',
   'global.anthropic.claude-sonnet-5': 'anthropic.claude-sonnet-5',
-  opus: 'anthropic.claude-opus-5',
-  'opus-4.7': 'anthropic.claude-opus-5',
-  'opus-4.8': 'anthropic.claude-opus-5',
-  'opus-5': 'anthropic.claude-opus-5',
-  'anthropic/claude-opus-5': 'anthropic.claude-opus-5',
-  'global.anthropic.claude-opus-5': 'anthropic.claude-opus-5',
-  'anthropic/claude-opus-4.8': 'anthropic.claude-opus-5',
-  'anthropic/claude-opus-4-8': 'anthropic.claude-opus-5',
-  'global.anthropic.claude-opus-4-8': 'anthropic.claude-opus-5',
+  opus: 'anthropic.claude-opus-5-5',
+  'opus-4.7': 'anthropic.claude-opus-5-5',
+  'opus-4.8': 'anthropic.claude-opus-5-5',
+  'opus-5': 'anthropic.claude-opus-5-5',
+  'opus-5.5': 'anthropic.claude-opus-5-5',
+  'anthropic/claude-opus-5': 'anthropic.claude-opus-5-5',
+  'anthropic/claude-opus-5.5': 'anthropic.claude-opus-5-5',
+  'global.anthropic.claude-opus-5': 'anthropic.claude-opus-5-5',
+  'global.anthropic.claude-opus-5-5': 'anthropic.claude-opus-5-5',
+  'anthropic.claude-opus-5': 'anthropic.claude-opus-5-5',
+  'anthropic/claude-opus-4.8': 'anthropic.claude-opus-5-5',
+  'anthropic/claude-opus-4-8': 'anthropic.claude-opus-5-5',
+  'global.anthropic.claude-opus-4-8': 'anthropic.claude-opus-5-5',
   'anthropic/claude-haiku-4.5': 'anthropic.claude-haiku-4-5',
   'claude-haiku-4-5-20251001': 'anthropic.claude-haiku-4-5',
   'global.anthropic.claude-haiku-4-5-20251001-v1:0': 'anthropic.claude-haiku-4-5',
@@ -253,7 +261,7 @@ function mapToBedrockModel(model: string): string {
   if (direct) return direct;
 
   const normalized = model.toLowerCase();
-  if (normalized.includes('fable-5')) return 'anthropic.claude-fable-5';
+  if (normalized.includes('fable-5')) return 'anthropic.claude-fable-5-1';
   if (normalized.includes('sonnet-5')) return 'anthropic.claude-sonnet-5';
   if (
     normalized.includes('opus-5') ||
@@ -261,7 +269,7 @@ function mapToBedrockModel(model: string): string {
     normalized.includes('opus-4.8') ||
     normalized.includes('opus-4-7') ||
     normalized.includes('opus-4.7')
-  ) return 'anthropic.claude-opus-5';
+  ) return 'anthropic.claude-opus-5-5';
   if (normalized.includes('sonnet-4-6') || normalized.includes('sonnet-4.6')) return 'anthropic.claude-sonnet-4-6-v1';
   if (normalized.includes('haiku-4-5') || normalized.includes('haiku-4.5')) return 'anthropic.claude-haiku-4-5';
 

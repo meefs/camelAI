@@ -5,26 +5,50 @@
 // resolvePiRequestConfig, getCachedLlmProviderConfig, resolveCurrentByokCredentials)
 // remain on ChatThreadDO and call into a PiModelMapping instance.
 import {
+  DEFAULT_ANTHROPIC_MODEL,
   DEFAULT_OPENAI_MODEL,
-  DEFAULT_LLM_MODEL,
   getBedrockOpenAiModelRegions,
   normalizeLlmModel,
 } from "../../../src/lib/llm-provider-config";
 import type { PiHeaderValue, PiResolvedModelReference } from "./chat-thread-do";
 
-// This is the public client-side contract for the AWS RTX Flash pool. It is
-// mirrored by the router's /router/capabilities endpoint. The working limit
-// deliberately leaves room for the vLLM chat template and tool schemas.
-const DEEPSEEK_V4_FLASH_RTX_PROFILE = {
-  name: "deepseek-v4-flash-rtx" as const,
-  contextWindow: 220_000,
-  // This is the RTX service's real maximum output for an empty prompt. Pi's
-  // compaction reserve remains independently bounded; this must not become an
-  // artificial 32k generation limit for clients that need a longer response.
-  maxTokens: 262_144,
-  reasoning: true,
-  supportsReasoningEffort: true,
-  thinkingFormat: "openai" as const,
+// Retired product and provider ids, run as their closest current model.
+const RETIRED_PI_MODEL_IDS: Readonly<Record<string, string>> = {
+  opus: "opus-5.5",
+  "opus-4.7": "opus-5.5",
+  "opus-4.8": "opus-5.5",
+  "opus-5": "opus-5.5",
+  "fable-5": "fable-5.1",
+  "claude-fable-5": "fable-5.1",
+  "gpt-5.6-sol": "gpt-6-sol",
+  "gpt-5.6-terra": "gpt-6-sol",
+  "gpt-5.6-luna": "gpt-6-luna",
+  "gpt-5.6-sol-bedrock": "gpt-5.6-terra-bedrock",
+  "gpt-5.5": "gpt-6-sol",
+  "gpt-5.4": "gpt-6-sol",
+  "gpt-5.4-mini": "gpt-6-luna",
+  "kimi-k2.7-code": "kimi-k3",
+  "kimi-k2.6": "kimi-k3",
+  "kimi-latest": "kimi-k3",
+  "~moonshotai/kimi-latest": "kimi-k3",
+  "moonshotai/kimi-latest": "kimi-k3",
+  "moonshotai/kimi-k2.6": "kimi-k3",
+  "moonshotai/kimi-k2.7-code": "kimi-k3",
+  "grok-4.5": "grok-4.7",
+  "grok-4.3": "grok-4.7",
+  "grok-latest": "grok-4.7",
+  "x-ai/grok-4.5": "grok-4.7",
+  "x-ai/grok-4.3": "grok-4.7",
+  "x-ai/grok-latest": "grok-4.7",
+  "glm-5.2": "glm-5.3",
+  "glm-latest": "glm-5.3",
+  "z-ai/glm-5.2": "glm-5.3",
+  "z-ai/glm-latest": "glm-5.3",
+  "gemini-3.5-flash": "gemini-3.8-flash",
+  "gemini-3-flash-preview": "gemini-3.8-flash",
+  "gemini-3.1-pro-preview": "gemini-3.8-flash",
+  "deepseek-v4-pro": "deepseek-v4.1-flash",
+  "deepseek-v4-flash": "deepseek-v4.1-flash",
 };
 
 export class PiModelMapping {
@@ -55,47 +79,31 @@ export class PiModelMapping {
     switch (normalizedModelId) {
       case "haiku":
         return claudeReference("claude-haiku-4-5-20251001");
-      case "opus":
-      case "opus-4.7":
-      case "opus-4.8":
-      case "opus-5":
-        return claudeReference("claude-opus-5");
-      case "fable-5":
-        return claudeReference("claude-fable-5");
+      case "opus-5.5":
+        return claudeReference("claude-opus-5-5");
+      case "fable-5.1":
+        return claudeReference("claude-fable-5-1");
       case "sonnet":
         return claudeReference("claude-sonnet-5");
-      case "gpt-5.6-sol":
-      case "gpt-5.6-terra":
-      case "gpt-5.6-luna":
+      case "gpt-6-sol":
+      case "gpt-6-luna":
         return openAiReference(normalizedModelId);
-      case "gpt-5.6-sol-bedrock":
-        return openAiReference("gpt-5.6-sol");
       case "gpt-5.6-terra-bedrock":
         return openAiReference("gpt-5.6-terra");
       case "custom":
         return openAiReference(DEFAULT_OPENAI_MODEL);
-      case "kimi-k2.7-code":
-        return openRouterReference("moonshotai/kimi-k2.7-code");
-      case "grok-4.5":
-        return openRouterResponsesReference("x-ai/grok-4.5");
+      case "kimi-k3":
+        return openRouterReference("moonshotai/kimi-k3");
+      case "grok-4.7":
+        return openRouterResponsesReference("x-ai/grok-4.7");
       case "glm-5.3":
         return openRouterReference("z-ai/glm-5.3");
-      case "gemini-3.5-flash":
-        return openRouterReference("google/gemini-3.5-flash");
-      case "gemini-3-flash-preview":
-        return openRouterReference("google/gemini-3-flash-preview");
-      case "gemini-3.1-pro-preview":
-        return openRouterReference("google/gemini-3.5-flash");
-      case "deepseek-v4-pro":
-        // Hosted traffic goes through the AI Gateway dynamic route so Gateway
-        // can try Azure first and fall back to OpenRouter; BYOK OpenRouter uses
-        // the native OpenRouter Pro id from `modelId`.
-        return {
-          ...openRouterReference("deepseek/deepseek-v4-pro"),
-          hostedGatewayProvider: "compat",
-          hostedModelId: "dynamic/deepseek-v4-pro-fallback",
-          hostedReasoningEffort: "xhigh",
-        };
+      case "glm-5.3-flash":
+        return openRouterReference("z-ai/glm-5.3-flash");
+      case "gemini-3.8-flash":
+        return openRouterReference("google/gemini-3.8-flash");
+      case "deepseek-v4.1-flash":
+        return openRouterReference("deepseek/deepseek-v4.1-flash");
       case "deepseek-v4-auto":
         // Keep the persisted/public camelCode id stable while its hosted
         // backend uses the existing Luna-over-OpenRouter route. This lets old
@@ -116,15 +124,6 @@ export class PiModelMapping {
           hostedGatewayProvider: "compat",
           hostedModelId: "dynamic/luna-muse-fallback",
         };
-      case "deepseek-v4-flash":
-        return {
-          ...openRouterReference("deepseek/deepseek-v4-flash"),
-          hostedGatewayProvider: "compat",
-          hostedModelId: "dynamic/deepseek-v4-flash-fallback",
-          hostedStickyRouting: true,
-          hostedReasoningEffort: "xhigh",
-          hostedRequestProfile: DEEPSEEK_V4_FLASH_RTX_PROFILE,
-        };
       default:
         if (normalizedModelId.includes("/")) {
           return openRouterReference(normalizedModelId);
@@ -134,38 +133,8 @@ export class PiModelMapping {
   }
 
   normalizePiModelId(modelId: string): string {
-    const trimmed = modelId.trim();
-    const normalized = trimmed;
-    const lower = normalized.toLowerCase();
-    if (lower === "claude-fable-5") {
-      return "fable-5";
-    }
-    if (
-      lower === "kimi-k2.6" ||
-      lower === "kimi-latest" ||
-      lower === "~moonshotai/kimi-latest" ||
-      lower === "moonshotai/kimi-latest" ||
-      lower === "moonshotai/kimi-k2.6"
-    ) {
-      return "kimi-k2.7-code";
-    }
-    if (
-      lower === "grok-4.3" ||
-      lower === "grok-latest" ||
-      lower === "x-ai/grok-4.3" ||
-      lower === "x-ai/grok-latest"
-    ) {
-      return "grok-4.5";
-    }
-    if (
-      lower === "glm-5.2" ||
-      lower === "glm-latest" ||
-      lower === "z-ai/glm-5.2" ||
-      lower === "z-ai/glm-latest"
-    ) {
-      return "glm-5.3";
-    }
-    return normalized;
+    const normalized = modelId.trim();
+    return RETIRED_PI_MODEL_IDS[normalized.toLowerCase()] ?? normalized;
   }
 
   openRouterAttributionHeaders(): Record<string, string> {
@@ -203,7 +172,7 @@ export class PiModelMapping {
     });
     if (model === "custom" && customModelId?.trim()) {
       const lookupModel =
-        api === "anthropic-messages" ? DEFAULT_LLM_MODEL : DEFAULT_OPENAI_MODEL;
+        api === "anthropic-messages" ? DEFAULT_ANTHROPIC_MODEL : DEFAULT_OPENAI_MODEL;
       const lookupReference = this.resolvePiModelReference(lookupModel);
       return {
         provider: lookupReference.provider,
@@ -223,15 +192,19 @@ export class PiModelMapping {
     switch (model.trim().toLowerCase()) {
       case "sonnet":
         return "anthropic/claude-sonnet-5";
+      case "fable-5.1":
       case "fable-5":
+      case "claude-fable-5-1":
       case "claude-fable-5":
-        return "anthropic/claude-fable-5";
+        return "anthropic/claude-fable-5.1";
       case "haiku":
         return "anthropic/claude-haiku-4.5";
       case "opus":
       case "opus-4.7":
       case "opus-4.8":
       case "opus-5":
+      case "opus-5.5":
+      case "claude-opus-5-5":
       case "claude-opus-5":
       case "claude-opus-4-8":
       case "claude-opus-4.8":
@@ -239,7 +212,7 @@ export class PiModelMapping {
       case "claude-opus-4.7":
       case "claude-opus-4-6":
       case "claude-opus-4.6":
-        return "anthropic/claude-opus-5";
+        return "anthropic/claude-opus-5.5";
       case "claude-sonnet-5":
         return "anthropic/claude-sonnet-5";
       case "claude-sonnet-4-6":
@@ -272,9 +245,10 @@ export class PiModelMapping {
     const lower = trimmed.toLowerCase();
     if (
       lower === "openai/gpt-5.6-luna" ||
+      lower === "openai/gpt-6-luna" ||
       lower.startsWith("dynamic/") ||
       lower.startsWith("google/gemini-") ||
-      lower.startsWith("deepseek/deepseek-v4-") ||
+      lower.startsWith("deepseek/deepseek-v4") ||
       lower.startsWith("anthropic/claude-opus-") ||
       lower.endsWith(":nitro")
     ) {
@@ -291,14 +265,15 @@ export class PiModelMapping {
     switch (modelId) {
       case "claude-haiku-4-5-20251001":
         return "anthropic.claude-haiku-4-5";
+      case "claude-opus-5-5":
       case "claude-opus-5":
-        return "anthropic.claude-opus-5";
-      case "claude-fable-5":
-        return "anthropic.claude-fable-5";
       case "claude-opus-4-6":
       case "claude-opus-4-7":
       case "claude-opus-4-8":
-        return "anthropic.claude-opus-5";
+        return "anthropic.claude-opus-5-5";
+      case "claude-fable-5-1":
+      case "claude-fable-5":
+        return "anthropic.claude-fable-5-1";
       case "claude-sonnet-5":
         return "anthropic.claude-sonnet-5";
       case "claude-sonnet-4-6":

@@ -627,22 +627,19 @@ export type LlmProvider = "anthropic" | "bedrock" | "custom" | "openai" | "openr
 export type LlmModel =
   | "haiku"
   | "sonnet"
-  | "fable-5"
-  | "opus-5"
-  | "gpt-5.6-sol"
-  | "gpt-5.6-terra"
-  | "gpt-5.6-luna"
-  | "gpt-5.6-sol-bedrock"
+  | "fable-5.1"
+  | "opus-5.5"
+  | "gpt-6-sol"
+  | "gpt-6-luna"
   | "gpt-5.6-terra-bedrock"
   | "custom"
-  | "kimi-k2.7-code"
-  | "grok-4.5"
+  | "kimi-k3"
+  | "grok-4.7"
   | "glm-5.3"
-  | "gemini-3.5-flash"
-  | "gemini-3-flash-preview"
-  | "deepseek-v4-pro"
+  | "glm-5.3-flash"
+  | "gemini-3.8-flash"
   | "deepseek-v4-auto"
-  | "deepseek-v4-flash";
+  | "deepseek-v4.1-flash";
 
 export interface ModelPickerModelConfig {
   id: LlmModel;

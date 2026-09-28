@@ -31,7 +31,7 @@ function renderModal({
 
 describe("UnlockPremiumModal", () => {
   it("keeps the methods in their static groups and marks OpenAI for GPT triggers", () => {
-    renderModal({ triggerModel: "gpt-5.6-sol", isOrgAdmin: true });
+    renderModal({ triggerModel: "gpt-6-sol", isOrgAdmin: true });
 
     const camelAiTag = screen.getByText("Pay through camelAI");
     const existingPlanTag = screen.getByText("Use what you already pay for");
@@ -81,7 +81,7 @@ describe("UnlockPremiumModal", () => {
     );
   });
 
-  it.each(["sonnet", "grok-4.5"] satisfies LlmModel[])(
+  it.each(["sonnet", "grok-4.7"] satisfies LlmModel[])(
     "does not show the OpenAI value badge for %s",
     (triggerModel) => {
       renderModal({ triggerModel, isOrgAdmin: true });

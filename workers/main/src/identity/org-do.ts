@@ -49,11 +49,12 @@ import type {
   ThreadCompletionSummaryStatus,
 } from "../../../../src/types";
 import {
-  DEFAULT_LLM_MODEL,
+  getDefaultLlmModel,
+  getStoredBedrockAwsRegion,
   getStoredCustomLlmProviderApi,
   getStoredCustomLlmProviderModelId,
   isLlmModel,
-  normalizeLlmModel,
+  replaceRetiredLlmModel,
   resolveStoredLlmModel,
   type LlmProviderConfigRecord,
 } from "../../../../src/lib/llm-provider-config";
@@ -272,14 +273,32 @@ function clampRetryAtMs(retryAtMs: number, nowMs: number): number {
   return Math.max(min, Math.min(max, Math.floor(retryAtMs)));
 }
 
-function normalizeThreadModelForStorage(model: LlmModel | undefined): LlmModel {
+// Threads from before the model column ran on Sonnet, the default then. The
+// column backfill keeps that model rather than whatever the default is now.
+const LEGACY_THREAD_MODEL: LlmModel = "sonnet";
+
+function normalizeThreadModelForStorage(
+  model: LlmModel | string | undefined,
+  llmProviderConfig: LlmProviderConfigRecord | null,
+): LlmModel {
   // Provider-specific models have already been validated by the caller. Do not
   // normalize them without provider context here: that would collapse Bedrock
-  // model ids (and the custom marker) back to the platform Sonnet default.
+  // model ids (and the custom marker) back to the platform default.
   if (isLlmModel(model)) {
     return model;
   }
-  return normalizeLlmModel(model);
+  const provider = llmProviderConfig?.provider;
+  // A retired model maps to its replacement; only a missing one takes the
+  // default, and that default must be one the org's keys can run.
+  const replacement = model ? replaceRetiredLlmModel(model, provider) : null;
+  if (isLlmModel(replacement)) {
+    return replacement;
+  }
+  return getDefaultLlmModel(provider, {
+    customApi: getStoredCustomLlmProviderApi(llmProviderConfig),
+    customModelId: getStoredCustomLlmProviderModelId(llmProviderConfig),
+    awsRegion: getStoredBedrockAwsRegion(llmProviderConfig),
+  });
 }
 
 function parseThreadChannelKinds(
@@ -1725,12 +1744,12 @@ export class OrgDO extends DurableObject<DOEnv> {
     if (version < 21) {
       try {
         this.sql.exec(
-          `ALTER TABLE threads ADD COLUMN model TEXT NOT NULL DEFAULT '${DEFAULT_LLM_MODEL}'`,
+          `ALTER TABLE threads ADD COLUMN model TEXT NOT NULL DEFAULT '${LEGACY_THREAD_MODEL}'`,
         );
       } catch {}
       try {
         this.sql.exec(
-          `UPDATE threads SET model = '${DEFAULT_LLM_MODEL}' WHERE model IS NULL OR model = ''`,
+          `UPDATE threads SET model = '${LEGACY_THREAD_MODEL}' WHERE model IS NULL OR model = ''`,
         );
       } catch {}
     }
@@ -2537,12 +2556,12 @@ export class OrgDO extends DurableObject<DOEnv> {
       if (!names.has("model")) {
         try {
           this.sql.exec(
-            `ALTER TABLE threads ADD COLUMN model TEXT NOT NULL DEFAULT '${DEFAULT_LLM_MODEL}'`,
+            `ALTER TABLE threads ADD COLUMN model TEXT NOT NULL DEFAULT '${LEGACY_THREAD_MODEL}'`,
           );
         } catch {}
         try {
           this.sql.exec(
-            `UPDATE threads SET model = '${DEFAULT_LLM_MODEL}' WHERE model IS NULL OR model = ''`,
+            `UPDATE threads SET model = '${LEGACY_THREAD_MODEL}' WHERE model IS NULL OR model = ''`,
           );
         } catch {}
       }
@@ -8014,7 +8033,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     const msg = normalizedUserMessage;
     const lastUserMessage = normalizedUserMessage;
     const lastUserMessageAt = lastUserMessage ? now : null;
-    const normalizedModel = normalizeThreadModelForStorage(model);
+    const normalizedModel = normalizeThreadModelForStorage(model, this.getLlmProviderConfig());
     const source = options.source?.trim() || "web";
     const channelKind = options.channelKind?.trim() || null;
     const normalizedChannelKind = normalizeChannelIndicatorKind(channelKind);
@@ -8232,7 +8251,7 @@ export class OrgDO extends DurableObject<DOEnv> {
           workspace_id TEXT NOT NULL,
           title TEXT NOT NULL,
           created_by TEXT NOT NULL,
-          model TEXT NOT NULL DEFAULT '${DEFAULT_LLM_MODEL}',
+          model TEXT NOT NULL DEFAULT '${LEGACY_THREAD_MODEL}',
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL,
           source TEXT NOT NULL DEFAULT 'web',
@@ -8379,7 +8398,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     ) {
       return null;
     }
-    const normalizedModel = normalizeThreadModelForStorage(model);
+    const normalizedModel = normalizeThreadModelForStorage(model, this.getLlmProviderConfig());
     if (normalizedModel === existing.model) {
       return existing;
     }
@@ -8482,8 +8501,8 @@ export class OrgDO extends DurableObject<DOEnv> {
     if (!existing) return null;
     const normalizedModel =
       updates.model !== undefined
-        ? normalizeThreadModelForStorage(updates.model)
-        : normalizeThreadModelForStorage(existing.model);
+        ? normalizeThreadModelForStorage(updates.model, this.getLlmProviderConfig())
+        : normalizeThreadModelForStorage(existing.model, this.getLlmProviderConfig());
     const shouldPersistModel =
       updates.model !== undefined || normalizedModel !== existing.model;
     const now = Date.now();

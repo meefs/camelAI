@@ -4,6 +4,7 @@ import {
   DEFAULT_OPENAI_MODEL,
   DEFAULT_OPENROUTER_MODEL,
   buildPublicLlmProviderConfig,
+  DEFAULT_ANTHROPIC_MODEL,
   DEFAULT_LLM_MODEL,
   getDefaultLlmModel,
   getBedrockOpenAiModelRegions,
@@ -13,28 +14,32 @@ import {
   isLlmModelAllowedForNewThread,
   normalizeLlmModel,
   parseStoredLlmProviderConfig,
+  resolveStoredLlmModel,
   stringifyStoredLlmProviderConfig,
+  LLM_MODEL_OPTIONS,
 } from "../../../src/lib/llm-provider-config";
+import { ALL_LLM_MODELS } from "../../../src/lib/model-catalog";
+import { LlmModelSchema } from "../src/routes/admin/schemas";
+
+const ALL_LLM_MODELS_FROM_OPTIONS = LLM_MODEL_OPTIONS.map((option) => option.value);
 
 const CAMEL_CODE_MODEL = "deepseek-v4-auto" as const;
 
 const OPENAI_COMPATIBLE_MODELS = [
-  "gpt-5.6-sol",
-  "gpt-5.6-terra",
-  "gpt-5.6-luna",
-  "gemini-3.5-flash",
-  "gemini-3-flash-preview",
-  "deepseek-v4-pro",
+  "gpt-6-sol",
+  "gpt-6-luna",
+  "gemini-3.8-flash",
   CAMEL_CODE_MODEL,
-  "deepseek-v4-flash",
-  "kimi-k2.7-code",
-  "grok-4.5",
+  "deepseek-v4.1-flash",
+  "kimi-k3",
+  "grok-4.7",
   "glm-5.3",
+  "glm-5.3-flash",
 ] as const;
 
 const ANTHROPIC_MODELS = [
-  "opus-5",
-  "fable-5",
+  "opus-5.5",
+  "fable-5.1",
   "sonnet",
   "haiku",
 ] as const;
@@ -46,28 +51,15 @@ const PINNED_HOSTED_MODELS = [
 ] as const;
 
 const OPENROUTER_ONLY_MODELS = [
-  "gemini-3.5-flash",
-  "gemini-3-flash-preview",
-  "deepseek-v4-pro",
-  "deepseek-v4-flash",
-  "kimi-k2.7-code",
-  "grok-4.5",
+  "gemini-3.8-flash",
+  "deepseek-v4.1-flash",
+  "kimi-k3",
+  "grok-4.7",
   "glm-5.3",
+  "glm-5.3-flash",
 ] as const;
 
-const OPENROUTER_OPENAI_COMPATIBLE_MODELS = [
-  "gpt-5.6-sol",
-  "gpt-5.6-terra",
-  "gpt-5.6-luna",
-  "gemini-3.5-flash",
-  "gemini-3-flash-preview",
-  "deepseek-v4-pro",
-  CAMEL_CODE_MODEL,
-  "deepseek-v4-flash",
-  "kimi-k2.7-code",
-  "grok-4.5",
-  "glm-5.3",
-] as const;
+const OPENROUTER_OPENAI_COMPATIBLE_MODELS = OPENAI_COMPATIBLE_MODELS;
 
 const PINNED_OPENROUTER_MODELS = [
   CAMEL_CODE_MODEL,
@@ -78,18 +70,24 @@ const PINNED_OPENROUTER_MODELS = [
 const CAMELAI_HOSTED_ONLY_MODELS = [CAMEL_CODE_MODEL] as const;
 
 const BEDROCK_OPENAI_MODELS = [
-  "gpt-5.6-sol-bedrock",
   "gpt-5.6-terra-bedrock",
 ] as const;
 
 describe("llm provider config helpers", () => {
-  it("defaults missing thread model to sonnet", () => {
-    expect(normalizeLlmModel(undefined)).toBe(DEFAULT_LLM_MODEL);
-    expect(normalizeLlmModel(undefined, "openai")).toBe(DEFAULT_OPENAI_MODEL);
-    expect(normalizeLlmModel(undefined, "openrouter")).toBe(DEFAULT_OPENROUTER_MODEL);
-    expect(getDefaultLlmModel("anthropic")).toBe(DEFAULT_LLM_MODEL);
-    expect(getDefaultLlmModel("openai")).toBe(DEFAULT_OPENAI_MODEL);
-    expect(getDefaultLlmModel("openrouter")).toBe(DEFAULT_OPENROUTER_MODEL);
+  it("defaults missing thread models to GPT-6 Luna wherever the org can run it", () => {
+    expect(DEFAULT_LLM_MODEL).toBe("gpt-6-luna");
+    expect(DEFAULT_OPENAI_MODEL).toBe("gpt-6-luna");
+    expect(DEFAULT_OPENROUTER_MODEL).toBe("gpt-6-luna");
+    expect(DEFAULT_ANTHROPIC_MODEL).toBe("sonnet");
+    expect(normalizeLlmModel(undefined)).toBe("gpt-6-luna");
+    expect(normalizeLlmModel(undefined, "openai")).toBe("gpt-6-luna");
+    expect(normalizeLlmModel(undefined, "openrouter")).toBe("gpt-6-luna");
+    expect(getDefaultLlmModel()).toBe("gpt-6-luna");
+    expect(getDefaultLlmModel("openai")).toBe("gpt-6-luna");
+    expect(getDefaultLlmModel("openrouter")).toBe("gpt-6-luna");
+    // Keys that cannot run Luna keep the closest default their provider has.
+    expect(getDefaultLlmModel("anthropic")).toBe("sonnet");
+    expect(normalizeLlmModel(undefined, "anthropic")).toBe("sonnet");
     expect(
       getDefaultLlmModel("bedrock", { awsRegion: "us-east-2" }),
     ).toBe("gpt-5.6-terra-bedrock");
@@ -101,10 +99,10 @@ describe("llm provider config helpers", () => {
     ).toEqual(["us-east-2", "us-east-1", "us-west-2"]);
     expect(
       getDefaultLlmModel("custom", { customApi: "openai-responses" }),
-    ).toBe(DEFAULT_OPENAI_MODEL);
+    ).toBe("gpt-6-luna");
     expect(
       getDefaultLlmModel("custom", { customApi: "anthropic-messages" }),
-    ).toBe(DEFAULT_LLM_MODEL);
+    ).toBe("sonnet");
     expect(
       getDefaultLlmModel("custom", {
         customApi: "openai-responses",
@@ -114,15 +112,78 @@ describe("llm provider config helpers", () => {
     expect(parseStoredLlmProviderConfig("{}")).toEqual({});
   });
 
+  it("keeps explicitly stored models instead of moving them to the new default", () => {
+    expect(normalizeLlmModel("sonnet")).toBe("sonnet");
+    expect(normalizeLlmModel("sonnet", "openrouter")).toBe("sonnet");
+    expect(normalizeLlmModel("haiku", "anthropic")).toBe("haiku");
+    expect(normalizeLlmModel("gpt-6-sol", "openai")).toBe("gpt-6-sol");
+    expect(normalizeLlmModel("glm-5.3")).toBe("glm-5.3");
+    expect(normalizeLlmModel("gpt-5.6-terra-bedrock", "bedrock")).toBe(
+      "gpt-5.6-terra-bedrock",
+    );
+  });
+
+  it("maps retired models to their closest replacement", () => {
+    const replacements: Record<string, string> = {
+      opus: "opus-5.5",
+      "opus-4.7": "opus-5.5",
+      "opus-4.8": "opus-5.5",
+      "opus-5": "opus-5.5",
+      "fable-5": "fable-5.1",
+      "gpt-5.6-sol": "gpt-6-sol",
+      "gpt-5.6-terra": "gpt-6-sol",
+      "gpt-5.6-luna": "gpt-6-luna",
+      "gpt-5.5": "gpt-6-sol",
+      "gpt-5.4": "gpt-6-sol",
+      "gpt-5.4-mini": "gpt-6-luna",
+      "gemini-3.1-pro-preview": "gemini-3.8-flash",
+      "gemini-3.5-flash": "gemini-3.8-flash",
+      "gemini-3-flash-preview": "gemini-3.8-flash",
+      "deepseek-v4-pro": "deepseek-v4.1-flash",
+      "deepseek-v4-flash": "deepseek-v4.1-flash",
+      "kimi-k2.6": "kimi-k3",
+      "kimi-latest": "kimi-k3",
+      "kimi-k2.7-code": "kimi-k3",
+      "grok-4.3": "grok-4.7",
+      "grok-latest": "grok-4.7",
+      "grok-4.5": "grok-4.7",
+      "glm-5.2": "glm-5.3",
+      "glm-latest": "glm-5.3",
+    };
+    for (const [stored, replacement] of Object.entries(replacements)) {
+      expect(isLlmModel(stored), stored).toBe(false);
+      expect(resolveStoredLlmModel(stored), stored).toBe(replacement);
+    }
+    expect(normalizeLlmModel("glm-5.2", "openrouter")).toBe("glm-5.3");
+    expect(normalizeLlmModel("opus-5", "anthropic")).toBe("opus-5.5");
+    expect(normalizeLlmModel("fable-5", "bedrock")).toBe("fable-5.1");
+    expect(normalizeLlmModel("gpt-5.6-terra", "openai")).toBe("gpt-6-sol");
+    expect(normalizeLlmModel("gpt-5.6-luna", "openai")).toBe("gpt-6-luna");
+    // Bedrock has no GPT-6 Sol or Luna; its OpenAI threads land on Terra.
+    for (const stored of [
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+      "gpt-5.6-luna",
+      "gpt-5.6-sol-bedrock",
+      "gpt-5.5",
+      "gpt-5.4",
+      "gpt-5.5-bedrock",
+      "gpt-5.4-bedrock",
+    ]) {
+      expect(normalizeLlmModel(stored, "bedrock"), stored).toBe(
+        "gpt-5.6-terra-bedrock",
+      );
+    }
+  });
+
   it("returns provider-specific model options", () => {
     expect(getLlmModelOptions("anthropic").map((option) => option.value)).toEqual([
       ...ANTHROPIC_MODELS,
       CAMEL_CODE_MODEL,
     ]);
     expect(getLlmModelOptions("openai").map((option) => option.value)).toEqual([
-      "gpt-5.6-sol",
-      "gpt-5.6-terra",
-      "gpt-5.6-luna",
+      "gpt-6-sol",
+      "gpt-6-luna",
       CAMEL_CODE_MODEL,
     ]);
     expect(getLlmModelOptions("openrouter").map((option) => option.value)).toEqual([
@@ -138,9 +199,8 @@ describe("llm provider config helpers", () => {
         (option) => option.value,
       ),
     ).toEqual([
-      "gpt-5.6-sol",
-      "gpt-5.6-terra",
-      "gpt-5.6-luna",
+      "gpt-6-sol",
+      "gpt-6-luna",
       CAMEL_CODE_MODEL,
     ]);
     expect(
@@ -157,21 +217,6 @@ describe("llm provider config helpers", () => {
     for (const model of OPENAI_COMPATIBLE_MODELS) {
       expect(isLlmModel(model)).toBe(true);
     }
-    expect(isLlmModel("gemini-3.1-pro-preview")).toBe(false);
-    expect(isLlmModel("fable-5")).toBe(true);
-    expect(normalizeLlmModel("gemini-3.1-pro-preview")).toBe(
-      "gemini-3.5-flash",
-    );
-    expect(normalizeLlmModel("fable-5")).toBe("fable-5");
-    expect(normalizeLlmModel("kimi-k2.6")).toBe("kimi-k2.7-code");
-    expect(normalizeLlmModel("kimi-latest")).toBe("kimi-k2.7-code");
-    expect(isLlmModel("glm-5.2")).toBe(false);
-    expect(normalizeLlmModel("glm-5.2")).toBe("glm-5.3");
-    expect(normalizeLlmModel("glm-5.2", "openrouter")).toBe("glm-5.3");
-    expect(normalizeLlmModel("glm-latest")).toBe("glm-5.3");
-    expect(normalizeLlmModel("opus")).toBe("opus-5");
-    expect(normalizeLlmModel("opus-4.7")).toBe("opus-5");
-    expect(normalizeLlmModel("opus-4.8")).toBe("opus-5");
     expect(normalizeLlmModel("deepseek-v4-auto")).toBe("deepseek-v4-auto");
     expect(normalizeLlmModel("deepseek-v4-auto", "openrouter")).toBe(
       CAMEL_CODE_MODEL,
@@ -181,7 +226,7 @@ describe("llm provider config helpers", () => {
     ).toBe(DEFAULT_OPENAI_MODEL);
     expect(
       normalizeLlmModel("gpt-5.4", "custom", { customApi: "anthropic-messages" }),
-    ).toBe(DEFAULT_LLM_MODEL);
+    ).toBe(DEFAULT_ANTHROPIC_MODEL);
     expect(
       normalizeLlmModel(undefined, "custom", {
         customApi: "openai-completions",
@@ -197,9 +242,8 @@ describe("llm provider config helpers", () => {
       }).map((option) => option.value),
     ).toEqual([
       CAMEL_CODE_MODEL,
-      "gpt-5.6-sol",
-      "gpt-5.6-terra",
-      "gpt-5.6-luna",
+      "gpt-6-sol",
+      "gpt-6-luna",
     ]);
     expect(
       getVisibleLlmModelOptions().map((option) => option.value),
@@ -289,9 +333,8 @@ describe("llm provider config helpers", () => {
       ),
     ).toEqual([
       CAMEL_CODE_MODEL,
-      "gpt-5.6-sol",
-      "gpt-5.6-terra",
-      "gpt-5.6-luna",
+      "gpt-6-sol",
+      "gpt-6-luna",
     ]);
     expect(
       getVisibleLlmModelOptions(null, { orgProvider: "openrouter" }).map(
@@ -313,7 +356,7 @@ describe("llm provider config helpers", () => {
 
   it("validates new thread models against provider policy", () => {
     expect(
-      isLlmModelAllowedForNewThread("gpt-5.6-terra", null),
+      isLlmModelAllowedForNewThread("gpt-6-sol", null),
     ).toBe(true);
     expect(
       isLlmModelAllowedForNewThread("sonnet", null),
@@ -430,5 +473,14 @@ describe("llm provider config helpers", () => {
       created_at: 100,
       updated_at: 200,
     });
+  });
+});
+
+describe("admin model enum", () => {
+  it("accepts exactly the current model list", () => {
+    expect([...LlmModelSchema.options].sort()).toEqual([...ALL_LLM_MODELS].sort());
+    expect([...LlmModelSchema.options].sort()).toEqual(
+      [...ALL_LLM_MODELS_FROM_OPTIONS].sort(),
+    );
   });
 });

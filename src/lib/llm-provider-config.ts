@@ -5,25 +5,56 @@ import type {
 } from "../types";
 import { decryptCredentials } from "./integration-crypto";
 
-export const DEFAULT_LLM_MODEL: LlmModel = "sonnet";
-export const DEFAULT_OPENAI_MODEL: LlmModel = "gpt-5.6-terra";
-export const DEFAULT_OPENROUTER_MODEL: LlmModel = "kimi-k2.7-code";
+// Only unset models fall back to these; stored thread models and configured
+// picker defaults keep their explicit choice.
+export const DEFAULT_LLM_MODEL: LlmModel = "gpt-6-luna";
+export const DEFAULT_OPENAI_MODEL: LlmModel = "gpt-6-luna";
+export const DEFAULT_OPENROUTER_MODEL: LlmModel = "gpt-6-luna";
+/** The default for keys that cannot run Luna (Anthropic, Claude-only Bedrock). */
+export const DEFAULT_ANTHROPIC_MODEL: LlmModel = "sonnet";
 export const CUSTOM_LLM_MODEL: LlmModel = "custom";
 export const THREAD_MODEL_LOCK_MESSAGE =
   "This thread is locked to its original model. Start a new thread to use a different model.";
 
+// Retired models, read as their closest current replacement.
 const STORED_LLM_MODEL_REPLACEMENTS: Readonly<Record<string, LlmModel>> = {
-  "gemini-3.1-pro-preview": "gemini-3.5-flash",
-  "kimi-k2.6": "kimi-k2.7-code",
-  "kimi-latest": "kimi-k2.7-code",
-  "grok-4.3": "grok-4.5",
-  "grok-latest": "grok-4.5",
+  "gemini-3.1-pro-preview": "gemini-3.8-flash",
+  "gemini-3.5-flash": "gemini-3.8-flash",
+  "gemini-3-flash-preview": "gemini-3.8-flash",
+  "deepseek-v4-pro": "deepseek-v4.1-flash",
+  "deepseek-v4-flash": "deepseek-v4.1-flash",
+  "kimi-k2.6": "kimi-k3",
+  "kimi-latest": "kimi-k3",
+  "kimi-k2.7-code": "kimi-k3",
+  "grok-4.3": "grok-4.7",
+  "grok-latest": "grok-4.7",
+  "grok-4.5": "grok-4.7",
   "glm-5.2": "glm-5.3",
   "glm-latest": "glm-5.3",
-  opus: "opus-5",
-  "opus-4.7": "opus-5",
-  "opus-4.8": "opus-5",
+  opus: "opus-5.5",
+  "opus-4.7": "opus-5.5",
+  "opus-4.8": "opus-5.5",
+  "opus-5": "opus-5.5",
+  "fable-5": "fable-5.1",
+  "gpt-5.6-sol": "gpt-6-sol",
+  "gpt-5.6-terra": "gpt-6-sol",
+  "gpt-5.6-luna": "gpt-6-luna",
+  "gpt-5.5": "gpt-6-sol",
+  "gpt-5.4": "gpt-6-sol",
+  "gpt-5.4-mini": "gpt-6-luna",
 };
+
+// Bedrock has no GPT-6 Sol or Luna, so its retired OpenAI models land on Terra.
+const STORED_BEDROCK_OPENAI_MODELS = new Set([
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+  "gpt-5.6-sol-bedrock",
+  "gpt-5.5",
+  "gpt-5.4",
+  "gpt-5.5-bedrock",
+  "gpt-5.4-bedrock",
+]);
 
 // When adding a model here, also add it to the picker catalog at
 // src/lib/model-catalog.ts and the pricing table at src/lib/usage-pricing.ts.
@@ -33,19 +64,19 @@ export const ANTHROPIC_LLM_MODEL_OPTIONS: ReadonlyArray<{
   description: string;
 }> = [
   {
-    value: "opus-5",
-    label: "Opus 5",
+    value: "opus-5.5",
+    label: "Opus 5.5",
     description: "Flagship coding model",
   },
   {
-    value: "fable-5",
-    label: "Fable 5",
+    value: "fable-5.1",
+    label: "Fable 5.1",
     description: "Highest-capability Claude model",
   },
   {
     value: "sonnet",
     label: "Sonnet 5",
-    description: "Default and recommended",
+    description: "Balanced Claude model",
   },
   { value: "haiku", label: "Haiku 4.5", description: "Faster and cheaper" },
 ];
@@ -56,24 +87,14 @@ export const OPENAI_COMPATIBLE_LLM_MODEL_OPTIONS: ReadonlyArray<{
   description: string;
 }> = [
   {
-    value: "gpt-5.6-sol",
-    label: "GPT-5.6 Sol",
-    description: "Highest-capability OpenAI model",
+    value: "gpt-6-sol",
+    label: "GPT-6 Sol",
+    description: "High-capability OpenAI model",
   },
   {
-    value: "gpt-5.6-terra",
-    label: "GPT-5.6 Terra",
-    description: "Default balanced OpenAI model",
-  },
-  {
-    value: "gpt-5.6-luna",
-    label: "GPT-5.6 Luna",
-    description: "Efficient high-volume OpenAI reasoning model",
-  },
-  {
-    value: "gpt-5.6-sol-bedrock",
-    label: "GPT-5.6 Sol Bedrock",
-    description: "GPT-5.6 Sol through Amazon Bedrock",
+    value: "gpt-6-luna",
+    label: "GPT-6 Luna",
+    description: "Default fast OpenAI reasoning model",
   },
   {
     value: "gpt-5.6-terra-bedrock",
@@ -81,19 +102,9 @@ export const OPENAI_COMPATIBLE_LLM_MODEL_OPTIONS: ReadonlyArray<{
     description: "GPT-5.6 Terra through Amazon Bedrock",
   },
   {
-    value: "gemini-3.5-flash",
-    label: "Gemini 3.5 Flash",
+    value: "gemini-3.8-flash",
+    label: "Gemini 3.8 Flash",
     description: "OpenRouter/camelAI hosted fast high-intelligence coding model",
-  },
-  {
-    value: "gemini-3-flash-preview",
-    label: "Gemini 3 Flash Preview",
-    description: "OpenRouter/camelAI hosted fast reasoning model",
-  },
-  {
-    value: "deepseek-v4-pro",
-    label: "DeepSeek V4 Pro",
-    description: "OpenRouter/camelAI hosted flagship reasoning model",
   },
   {
     value: "deepseek-v4-auto",
@@ -101,24 +112,29 @@ export const OPENAI_COMPATIBLE_LLM_MODEL_OPTIONS: ReadonlyArray<{
     description: "camelAI hosted model with automatic routing",
   },
   {
-    value: "deepseek-v4-flash",
-    label: "DeepSeek V4 Flash",
+    value: "deepseek-v4.1-flash",
+    label: "DeepSeek V4.1 Flash",
     description: "OpenRouter/camelAI hosted faster and cheaper model",
   },
   {
-    value: "kimi-k2.7-code",
-    label: "Kimi K2.7 Code",
-    description: "OpenRouter/camelAI hosted model",
+    value: "kimi-k3",
+    label: "Kimi K3",
+    description: "OpenRouter/camelAI hosted open-weight flagship model",
   },
   {
-    value: "grok-4.5",
-    label: "Grok 4.5",
+    value: "grok-4.7",
+    label: "Grok 4.7",
     description: "OpenRouter/camelAI hosted model",
   },
   {
     value: "glm-5.3",
     label: "GLM 5.3",
     description: "OpenRouter/camelAI hosted model",
+  },
+  {
+    value: "glm-5.3-flash",
+    label: "GLM 5.3 Flash",
+    description: "OpenRouter/camelAI hosted fast and cheap model",
   },
 ];
 
@@ -145,13 +161,12 @@ export const LLM_MODEL_OPTIONS: ReadonlyArray<{
 ];
 
 const OPENROUTER_ONLY_MODELS = new Set<LlmModel>([
-  "kimi-k2.7-code",
-  "grok-4.5",
+  "kimi-k3",
+  "grok-4.7",
   "glm-5.3",
-  "gemini-3.5-flash",
-  "gemini-3-flash-preview",
-  "deepseek-v4-pro",
-  "deepseek-v4-flash",
+  "glm-5.3-flash",
+  "gemini-3.8-flash",
+  "deepseek-v4.1-flash",
 ]);
 
 const CAMELAI_HOSTED_ONLY_MODELS = new Set<LlmModel>([
@@ -185,12 +200,10 @@ function sortVisibleLlmModelOptions<
 }
 
 const BEDROCK_ONLY_OPENAI_MODELS = new Set<LlmModel>([
-  "gpt-5.6-sol-bedrock",
   "gpt-5.6-terra-bedrock",
 ]);
 
 export const BEDROCK_OPENAI_MODEL_REGIONS: Readonly<Record<string, readonly string[]>> = {
-  "gpt-5.6-sol-bedrock": ["us-east-1", "us-east-2"],
   "gpt-5.6-terra-bedrock": ["us-east-1", "us-east-2", "us-west-2"],
 };
 
@@ -257,6 +270,13 @@ export function getDefaultLlmModel(
   }
   if (orgProvider === "custom" && isOpenAiCompatibleCustomApi(options?.customApi)) {
     return DEFAULT_OPENAI_MODEL;
+  }
+  if (
+    orgProvider === "anthropic" ||
+    orgProvider === "bedrock" ||
+    orgProvider === "custom" && options?.customApi === "anthropic-messages"
+  ) {
+    return DEFAULT_ANTHROPIC_MODEL;
   }
   return DEFAULT_LLM_MODEL;
 }
@@ -457,6 +477,22 @@ export function normalizeLlmModel(
     getDefaultLlmModel(orgProvider, options);
 }
 
+/** A retired model id's closest replacement; any other value is returned as is. */
+export function replaceRetiredLlmModel(
+  value: string,
+  orgProvider?: string | null,
+): string {
+  if (
+    orgProvider === "bedrock" && STORED_BEDROCK_OPENAI_MODELS.has(value) ||
+    value === "gpt-5.6-sol-bedrock" ||
+    value === "gpt-5.5-bedrock" ||
+    value === "gpt-5.4-bedrock"
+  ) {
+    return "gpt-5.6-terra-bedrock";
+  }
+  return STORED_LLM_MODEL_REPLACEMENTS[value] ?? value;
+}
+
 export function resolveStoredLlmModel(
   value: unknown,
   orgProvider?: string | null,
@@ -464,20 +500,7 @@ export function resolveStoredLlmModel(
 ): LlmModel | null {
   if (typeof value !== "string") return null;
 
-  let replacement = STORED_LLM_MODEL_REPLACEMENTS[value] ?? value;
-  if (value === "gpt-5.6-sol" && orgProvider === "bedrock") {
-    replacement = "gpt-5.6-sol-bedrock";
-  } else if (value === "gpt-5.6-terra" && orgProvider === "bedrock") {
-    replacement = "gpt-5.6-terra-bedrock";
-  } else if (value === "gpt-5.5" || value === "gpt-5.4") {
-    replacement = orgProvider === "bedrock"
-      ? "gpt-5.6-terra-bedrock"
-      : DEFAULT_OPENAI_MODEL;
-  } else if (value === "gpt-5.5-bedrock" || value === "gpt-5.4-bedrock") {
-    replacement = "gpt-5.6-terra-bedrock";
-  } else if (value === "gpt-5.4-mini") {
-    replacement = DEFAULT_OPENAI_MODEL;
-  }
+  const replacement = replaceRetiredLlmModel(value, orgProvider);
 
   return isLlmModel(replacement) &&
       isLlmModelAllowedForOrgProvider(replacement, orgProvider, options)

@@ -11,6 +11,8 @@ import { describe, it, expect, vi } from 'vitest';
 import { env } from 'cloudflare:test';
 import { createNewSession, type SessionData } from '../src/session-kv';
 import { getAppIndexDatabase } from '../src/app-index-db';
+import { encryptCredentials } from '../../../src/lib/integration-crypto';
+import { stringifyStoredLlmProviderConfig } from '../../../src/lib/llm-provider-config';
 import {
   createUser,
   getUserByEmail,
@@ -278,6 +280,25 @@ describe('Auth flow (full-stack with DOs)', () => {
   });
 
   describe('Thread creation', () => {
+    it.each([
+      ['anthropic', {}, 'sonnet'],
+      ['bedrock', { aws_region: 'us-east-1' }, 'gpt-5.6-terra-bedrock'],
+      ['openai', {}, 'gpt-6-luna'],
+    ] as const)('defaults a new thread to a model the %s key can run', async (provider, config, expected) => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password123', 'BYOK Thread Owner');
+      const { org, defaultWorkspaceId } = await createOrg(testEnv, 'BYOK Thread Org', userId);
+      const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+      const encrypted = await encryptCredentials(
+        provider === 'bedrock' ? { bearer_token: 'bedrock-test' } : { api_key: 'key-test' },
+        testEnv.INTEGRATION_SECRET_KEY ?? 'test-secret',
+      );
+      await orgStub.setLlmProviderConfig(provider, encrypted, stringifyStoredLlmProviderConfig(config), userId);
+
+      const thread = await orgStub.createThread(defaultWorkspaceId, 'BYOK thread', userId);
+      expect(thread.model).toBe(expected);
+    });
+
     it('stores explicit fallback titles without setting first_user_message', async () => {
       const email = testEmail();
       const { userId } = await createUser(testEnv, email, 'password123', 'Thread Owner');
@@ -291,12 +312,12 @@ describe('Auth flow (full-stack with DOs)', () => {
       expect(thread.first_user_message).toBeNull();
       expect(thread.last_user_message).toBeNull();
       expect(thread.last_user_message_at).toBeNull();
-      expect(thread.model).toBe('sonnet');
+      expect(thread.model).toBe('gpt-6-luna');
       expect(stored?.title).toBe('Working on my-todo-app');
       expect(stored?.first_user_message).toBeNull();
       expect(stored?.last_user_message).toBeNull();
       expect(stored?.last_user_message_at).toBeNull();
-      expect(stored?.model).toBe('sonnet');
+      expect(stored?.model).toBe('gpt-6-luna');
       expect(stored?.last_assistant_summary_status).toBeNull();
     });
 
@@ -372,23 +393,33 @@ describe('Auth flow (full-stack with DOs)', () => {
       const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Legacy Thread Org', userId);
       const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
 
+      const legacyThread = await orgStub.createThread(
+        defaultWorkspaceId,
+        'Legacy thread',
+        userId,
+        'before models',
+      );
       await orgStub.downgradeThreadSchemaForTest();
       await orgStub.remigrate();
+
+      // Rows from before the model column ran on Sonnet; a later default must
+      // not move them.
+      expect((await orgStub.getThread(legacyThread.id))?.model).toBe('sonnet');
 
       const thread = await orgStub.createThread(
         defaultWorkspaceId,
         'Recovered thread',
         userId,
         'hello',
-        'gpt-5.6-terra'
+        'gpt-6-sol'
       );
-      expect(thread.model).toBe('gpt-5.6-terra');
+      expect(thread.model).toBe('gpt-6-sol');
       expect(thread.first_user_message).toBe('hello');
       expect(thread.last_user_message).toBe('hello');
       expect(thread.last_user_message_at).toEqual(expect.any(Number));
 
       const stored = await orgStub.getThread(thread.id);
-      expect(stored?.model).toBe('gpt-5.6-terra');
+      expect(stored?.model).toBe('gpt-6-sol');
       expect(stored?.first_user_message).toBe('hello');
       expect(stored?.last_user_message).toBe('hello');
       expect(stored?.last_user_message_at).toEqual(expect.any(Number));
@@ -839,8 +870,8 @@ describe('Auth flow (full-stack with DOs)', () => {
       const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Thread Org', userId);
       const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
 
-      const thread = await orgStub.createThread(defaultWorkspaceId, 'Model thread', userId, undefined, 'opus-5');
-      expect(thread.model).toBe('opus-5');
+      const thread = await orgStub.createThread(defaultWorkspaceId, 'Model thread', userId, undefined, 'opus-5.5');
+      expect(thread.model).toBe('opus-5.5');
 
       const updated = await orgStub.updateThreadModel(thread.id, 'sonnet', userId);
       expect(updated?.model).toBe('sonnet');
@@ -967,16 +998,16 @@ describe('Auth flow (full-stack with DOs)', () => {
       const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Thread Org', userId);
       const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
 
-      const thread = await orgStub.createThread(defaultWorkspaceId, 'Model thread', userId, undefined, 'opus-5');
-      const updated = await orgStub.updateThreadModel(thread.id, 'gpt-5.6-terra', userId);
+      const thread = await orgStub.createThread(defaultWorkspaceId, 'Model thread', userId, undefined, 'opus-5.5');
+      const updated = await orgStub.updateThreadModel(thread.id, 'gpt-6-sol', userId);
 
-      expect(updated?.model).toBe('gpt-5.6-terra');
+      expect(updated?.model).toBe('gpt-6-sol');
 
       const stored = await orgStub.getThread(thread.id);
-      expect(stored?.model).toBe('gpt-5.6-terra');
+      expect(stored?.model).toBe('gpt-6-sol');
     });
 
-    it('preserves Bedrock-only models when creating and updating threads', async () => {
+    it('preserves Bedrock-only models and maps retired ones when creating and updating threads', async () => {
       const email = testEmail();
       const { userId } = await createUser(testEnv, email, 'password123', 'Thread Owner');
       const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Thread Org', userId);
@@ -993,13 +1024,13 @@ describe('Auth flow (full-stack with DOs)', () => {
 
       const updated = await orgStub.updateThreadModel(
         thread.id,
-        'gpt-5.6-sol-bedrock',
+        'gpt-5.6-sol-bedrock' as never,
         userId,
       );
-      expect(updated?.model).toBe('gpt-5.6-sol-bedrock');
+      expect(updated?.model).toBe('gpt-5.6-terra-bedrock');
 
       const stored = await orgStub.getThread(thread.id);
-      expect(stored?.model).toBe('gpt-5.6-sol-bedrock');
+      expect(stored?.model).toBe('gpt-5.6-terra-bedrock');
     });
 
     it('maps retired OpenAI models when creating a thread', async () => {
@@ -1016,9 +1047,9 @@ describe('Auth flow (full-stack with DOs)', () => {
         'gpt-5.4',
       );
 
-      expect(thread.model).toBe('gpt-5.6-terra');
+      expect(thread.model).toBe('gpt-6-sol');
       const stored = await orgStub.getThread(thread.id);
-      expect(stored?.model).toBe('gpt-5.6-terra');
+      expect(stored?.model).toBe('gpt-6-sol');
     });
 
     it('preserves the custom provider model marker when creating a thread', async () => {
@@ -1053,11 +1084,11 @@ describe('Auth flow (full-stack with DOs)', () => {
       const updated = await orgStub.updateThreadModel(thread.id, 'custom', userId);
 
       expect(updated?.model).toBe('custom');
-      expect(updated?.model_history).toBe(JSON.stringify(['sonnet', 'custom']));
+      expect(updated?.model_history).toBe(JSON.stringify(['gpt-6-luna', 'custom']));
 
       const stored = await orgStub.getThread(thread.id);
       expect(stored?.model).toBe('custom');
-      expect(stored?.model_history).toBe(JSON.stringify(['sonnet', 'custom']));
+      expect(stored?.model_history).toBe(JSON.stringify(['gpt-6-luna', 'custom']));
     });
   });
 
