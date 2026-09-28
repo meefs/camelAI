@@ -22,7 +22,6 @@ const CURRENT_MODELS: Array<{
   { id: 'opus-5.5', label: 'Opus 5.5', providerLogo: 'claude', providerOrder: 0, modelOrder: 0, pricingKey: 'claude-opus-5-5', cost: '$$$$' },
   { id: 'fable-5.1', label: 'Fable 5.1', providerLogo: 'claude', providerOrder: 0, modelOrder: 1, pricingKey: 'claude-fable-5-1', cost: '$$$$$' },
   { id: 'sonnet', label: 'Sonnet 5', providerLogo: 'claude', providerOrder: 0, modelOrder: 2, pricingKey: 'claude-sonnet-5', cost: '$$$' },
-  { id: 'haiku', label: 'Haiku 4.5', providerLogo: 'claude', providerOrder: 0, modelOrder: 3, pricingKey: 'claude-haiku-4-5-20251001', cost: '$$' },
   { id: 'gpt-6-sol', label: 'GPT-6 Sol', providerLogo: 'openai', providerOrder: 1, modelOrder: 0, pricingKey: 'gpt-6-sol', cost: '$$$' },
   { id: 'gpt-6-luna', label: 'GPT-6 Luna', providerLogo: 'openai', providerOrder: 1, modelOrder: 1, pricingKey: 'gpt-6-luna', cost: '$' },
   { id: 'gpt-5.6-terra-bedrock', label: 'GPT-5.6 Terra Bedrock', providerLogo: 'openai', providerOrder: 1, modelOrder: 2, pricingKey: 'gpt-5.6-terra', cost: '$$$' },
@@ -36,6 +35,7 @@ const CURRENT_MODELS: Array<{
 ];
 
 const RETIRED_MODELS = [
+  'haiku',
   'opus',
   'opus-4.7',
   'opus-5',
@@ -96,7 +96,7 @@ describe('MODEL_CATALOG', () => {
   it('uses Claude product logos for Anthropic-family models', () => {
     expect(MODEL_CATALOG['opus-5.5'].providerLogo).toBe('claude');
     expect(MODEL_CATALOG.sonnet.providerLogo).toBe('claude');
-    expect(MODEL_CATALOG.haiku.providerLogo).toBe('claude');
+    expect(MODEL_CATALOG['fable-5.1'].providerLogo).toBe('claude');
   });
 
   it('has pricing key mappings for every supported model', () => {
@@ -243,7 +243,6 @@ describe('MODEL_CATALOG', () => {
       'opus-5.5',
       'fable-5.1',
       'sonnet',
-      'haiku',
       'gpt-6-sol',
       'gpt-6-luna',
       'gemini-3.8-flash',

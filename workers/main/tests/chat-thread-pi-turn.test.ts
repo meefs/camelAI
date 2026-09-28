@@ -723,18 +723,16 @@ describe('ChatThreadDO Pi turn handling', () => {
     expect(mapping.resolvePiModelReference('opus')).toEqual(expected);
   });
 
-  it('keeps Sonnet 5 and Haiku 4.5 on their hosted nitro routes', () => {
+  it('keeps Sonnet 5 on its hosted nitro route and runs retired Haiku threads on it', () => {
     const mapping = new PiModelMapping();
-    expect(mapping.resolvePiModelReference('sonnet')).toEqual({
+    const sonnet = {
       provider: 'anthropic',
       modelId: 'claude-sonnet-5',
       hostedGatewayProvider: 'openrouter',
       hostedModelId: 'anthropic/claude-sonnet-5:nitro',
-    });
-    expect(mapping.resolvePiModelReference('haiku')).toMatchObject({
-      modelId: 'claude-haiku-4-5-20251001',
-      hostedModelId: 'anthropic/claude-haiku-4.5:nitro',
-    });
+    };
+    expect(mapping.resolvePiModelReference('sonnet')).toEqual(sonnet);
+    expect(mapping.resolvePiModelReference('haiku')).toEqual(sonnet);
   });
 
   it('maps new Claude ids to their Bedrock Mantle ids', () => {

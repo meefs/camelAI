@@ -59,14 +59,14 @@ const TIER_MODELS: Readonly<Record<ProviderKind, Readonly<Record<TierName, strin
     smart: "gpt-6-sol",
   },
   anthropic: {
-    cheap: "claude-haiku-4-5-20251001",
-    fast: "claude-haiku-4-5-20251001",
+    cheap: "claude-sonnet-5",
+    fast: "claude-sonnet-5",
     auto: "claude-sonnet-5",
     smart: "claude-opus-5-5",
   },
   bedrock: {
-    cheap: "anthropic.claude-haiku-4-5",
-    fast: "anthropic.claude-haiku-4-5",
+    cheap: "anthropic.claude-sonnet-5",
+    fast: "anthropic.claude-sonnet-5",
     auto: "anthropic.claude-sonnet-5",
     smart: "anthropic.claude-opus-5-5",
   },

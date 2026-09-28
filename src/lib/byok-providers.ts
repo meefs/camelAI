@@ -58,7 +58,7 @@ export const BYOK_PROVIDERS: Record<OnboardingByokProvider, ByokProviderMeta> =
       settingsLinkLabel: "Open Anthropic API settings",
       requiresRegion: false,
       description:
-        "Anthropic gives you direct access to the Claude family — Sonnet, Opus, and Haiku.",
+        "Anthropic gives you direct access to the Claude family — Sonnet, Opus, and Fable.",
       steps: [
         "Create an Anthropic Console account",
         "Add a payment method and load credits",

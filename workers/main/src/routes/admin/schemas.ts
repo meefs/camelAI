@@ -161,7 +161,6 @@ export const UpdateUserCreditsBodySchema = z.object({
 });
 
 export const LlmModelSchema = z.enum([
-  "haiku",
   "sonnet",
   "opus-5.5",
   "fable-5.1",

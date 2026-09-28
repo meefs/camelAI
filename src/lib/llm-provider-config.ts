@@ -42,6 +42,8 @@ const STORED_LLM_MODEL_REPLACEMENTS: Readonly<Record<string, LlmModel>> = {
   "gpt-5.5": "gpt-6-sol",
   "gpt-5.4": "gpt-6-sol",
   "gpt-5.4-mini": "gpt-6-luna",
+  // Sonnet runs on every key that could run Haiku, including Claude-only ones.
+  haiku: "sonnet",
 };
 
 // Bedrock has no GPT-6 Sol or Luna, so its retired OpenAI models land on Terra.
@@ -78,7 +80,6 @@ export const ANTHROPIC_LLM_MODEL_OPTIONS: ReadonlyArray<{
     label: "Sonnet 5",
     description: "Balanced Claude model",
   },
-  { value: "haiku", label: "Haiku 4.5", description: "Faster and cheaper" },
 ];
 
 export const OPENAI_COMPATIBLE_LLM_MODEL_OPTIONS: ReadonlyArray<{

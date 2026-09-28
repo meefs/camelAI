@@ -15,7 +15,7 @@ function makeThread(
   return {
     id,
     title: id,
-    model: "haiku",
+    model: "gpt-6-luna",
     updated_at: 1,
     status: "idle",
     membership,

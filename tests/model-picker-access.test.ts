@@ -158,7 +158,7 @@ describe("deriveHostedCreditPause", () => {
     expect(
       findCheapestSelectableModel([
         MODEL_CATALOG["gpt-6-luna"],
-        MODEL_CATALOG.haiku,
+        MODEL_CATALOG.sonnet,
       ])?.id,
     ).toBe("gpt-6-luna");
   });

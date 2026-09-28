@@ -380,7 +380,7 @@ describe("resolveRouting", () => {
     expect(routing.awsRegion).toBe("us-east-1");
   });
 
-  it("routes Bedrock BYOK cheap tier to the priced Haiku family id", async () => {
+  it("routes Bedrock BYOK cheap tier to Sonnet 5 now that Haiku is retired", async () => {
     const encrypted = await encryptCredentials({ bearer_token: "bedrock-token" }, "secret");
     const routing = await resolveRouting(
       {
@@ -404,7 +404,7 @@ describe("resolveRouting", () => {
     );
 
     expect(routing.provider).toBe("bedrock");
-    expect(routing.model).toBe("anthropic.claude-haiku-4-5");
+    expect(routing.model).toBe("anthropic.claude-sonnet-5");
   });
 });
 
@@ -789,7 +789,7 @@ describe("executeVirtualAiRun", () => {
       content: [],
       api: "anthropic-messages",
       provider: "custom",
-      model: "anthropic.claude-haiku-4-5",
+      model: "anthropic.claude-sonnet-5",
       usage: {
         input: 100,
         output: 5,
@@ -839,7 +839,7 @@ describe("executeVirtualAiRun", () => {
     expect(recordUsage).toHaveBeenCalledWith(expect.objectContaining({
       user_id: "user1",
       provider: "bedrock",
-      model: "anthropic.claude-haiku-4-5",
+      model: "anthropic.claude-sonnet-5",
       usage_kind: "llm",
       usage_surface: "virtual_ai",
       input_tokens: 100,

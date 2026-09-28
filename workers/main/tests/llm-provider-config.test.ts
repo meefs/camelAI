@@ -41,7 +41,6 @@ const ANTHROPIC_MODELS = [
   "opus-5.5",
   "fable-5.1",
   "sonnet",
-  "haiku",
 ] as const;
 
 const PINNED_HOSTED_MODELS = [
@@ -115,7 +114,6 @@ describe("llm provider config helpers", () => {
   it("keeps explicitly stored models instead of moving them to the new default", () => {
     expect(normalizeLlmModel("sonnet")).toBe("sonnet");
     expect(normalizeLlmModel("sonnet", "openrouter")).toBe("sonnet");
-    expect(normalizeLlmModel("haiku", "anthropic")).toBe("haiku");
     expect(normalizeLlmModel("gpt-6-sol", "openai")).toBe("gpt-6-sol");
     expect(normalizeLlmModel("glm-5.3")).toBe("glm-5.3");
     expect(normalizeLlmModel("gpt-5.6-terra-bedrock", "bedrock")).toBe(
@@ -149,12 +147,15 @@ describe("llm provider config helpers", () => {
       "grok-4.5": "grok-4.7",
       "glm-5.2": "glm-5.3",
       "glm-latest": "glm-5.3",
+      haiku: "sonnet",
     };
     for (const [stored, replacement] of Object.entries(replacements)) {
       expect(isLlmModel(stored), stored).toBe(false);
       expect(resolveStoredLlmModel(stored), stored).toBe(replacement);
     }
     expect(normalizeLlmModel("glm-5.2", "openrouter")).toBe("glm-5.3");
+    expect(normalizeLlmModel("haiku", "anthropic")).toBe("sonnet");
+    expect(normalizeLlmModel("haiku", "bedrock")).toBe("sonnet");
     expect(normalizeLlmModel("opus-5", "anthropic")).toBe("opus-5.5");
     expect(normalizeLlmModel("fable-5", "bedrock")).toBe("fable-5.1");
     expect(normalizeLlmModel("gpt-5.6-terra", "openai")).toBe("gpt-6-sol");
@@ -412,7 +413,7 @@ describe("llm provider config helpers", () => {
     }
     expect(
       isLlmModelAllowedForNewThread("haiku", "openrouter"),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("round-trips explicit region values", () => {

@@ -14,6 +14,7 @@ import type { PiHeaderValue, PiResolvedModelReference } from "./chat-thread-do";
 
 // Retired product and provider ids, run as their closest current model.
 const RETIRED_PI_MODEL_IDS: Readonly<Record<string, string>> = {
+  haiku: "sonnet",
   opus: "opus-5.5",
   "opus-4.7": "opus-5.5",
   "opus-4.8": "opus-5.5",
@@ -77,8 +78,6 @@ export class PiModelMapping {
       hostedModelId: this.openRouterNitroModel(`openai/${resolvedModelId}`),
     });
     switch (normalizedModelId) {
-      case "haiku":
-        return claudeReference("claude-haiku-4-5-20251001");
       case "opus-5.5":
         return claudeReference("claude-opus-5-5");
       case "fable-5.1":
@@ -197,8 +196,6 @@ export class PiModelMapping {
       case "claude-fable-5-1":
       case "claude-fable-5":
         return "anthropic/claude-fable-5.1";
-      case "haiku":
-        return "anthropic/claude-haiku-4.5";
       case "opus":
       case "opus-4.7":
       case "opus-4.8":
