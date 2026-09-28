@@ -25,6 +25,7 @@ import { runtimeAgentThreadKey, runtimeHistoryPage } from "../agent-runtime/thre
 import { verifyStandardWebhook } from "../agent-runtime/webhooks.js";
 import { recordRuntimeUsage, type RuntimeUsageRecorded } from "../agent-runtime/usage.js";
 import { extractThreadCompletionSummarySource } from "../../../../src/lib/thread-completion-summary-generation.server";
+import { recordErrorEvent, recordObservabilityEvent } from "../observability.js";
 
 /** Event ids already handled are kept this long: past the runtime's 3 days of retries. */
 const SEEN_TTL_SECONDS = 4 * 24 * 60 * 60;
@@ -177,8 +178,31 @@ export async function handleAgentRuntimeEventsRequest(
   }
   if (await env.APP_KV.get(seenKey(event.id))) return new Response(null, { status: 204 });
   // A failure here answers 500, so the runtime delivers the event again.
-  const handled = await handleRuntimeEvent(env, event, waitUntil);
-  if (!handled) console.warn("[agent-runtime-events] event for no known runtime thread", { id: event.id, type: event.type });
+  let handled: boolean;
+  try {
+    handled = await handleRuntimeEvent(env, event, waitUntil);
+  } catch (error) {
+    recordErrorEvent(env, {
+      event: "runtime_event_handler_failed",
+      component: "agent_runtime_events",
+      operation: event.type,
+      status: "failed",
+      requestId: event.id,
+      error,
+    });
+    throw error;
+  }
+  if (!handled) {
+    console.warn("[agent-runtime-events] event for no known runtime thread", { id: event.id, type: event.type });
+    recordObservabilityEvent(env, {
+      event: "runtime_event_unknown_thread",
+      severity: "warn",
+      component: "agent_runtime_events",
+      operation: event.type,
+      status: "unknown_thread",
+      requestId: event.id,
+    });
+  }
   await env.APP_KV.put(seenKey(event.id), "1", { expirationTtl: SEEN_TTL_SECONDS });
   return new Response(null, { status: 204 });
 }
