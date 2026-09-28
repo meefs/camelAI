@@ -34,11 +34,12 @@ vi.mock("@/components/message-bubble", async () => {
 });
 
 type WatcherState = Record<string, unknown> & { messages: unknown[]; indexes: number[] };
-const watchers: Array<{ state: WatcherState; emit(patch: Partial<WatcherState>): void }> = [];
+const watchers: Array<{ state: WatcherState; emit(patch: Partial<WatcherState>, event?: Record<string, unknown>): void }> = [];
 vi.mock("@/lib/vendor/agent-runtime-watch", () => ({
-  watchAgent: (options: { onChange?: (state: WatcherState) => void }) => {
+  watchAgent: (options: { onChange?: (state: WatcherState) => void; onEvent?: (event: unknown) => void }) => {
     const state: WatcherState = { messages: [], indexes: [], partial: null, progress: new Map(), running: false, pendingInputs: [], lastOutcome: null, hasOlder: false, transport: null, connected: true };
-    watchers.push({ state, emit: (patch) => { Object.assign(state, patch); options.onChange?.(state); } });
+    // As the watcher does: state takes the event in, then onEvent, then onChange.
+    watchers.push({ state, emit: (patch, event) => { Object.assign(state, patch); if (event) options.onEvent?.(event); options.onChange?.(state); } });
     return { state, loadOlder: async () => false, close: () => {} };
   },
 }));
@@ -148,5 +149,45 @@ describe("sending on a runtime thread", () => {
     expect(probe.mounts.get("rt:3") ?? 0).toBeLessThanOrEqual(1);
     // Settled rows did not re-render on every event.
     expect(probe.renders.get("first answer")).toBeLessThanOrEqual(2);
+  });
+
+  it("ends a reply without an extra row: the turn's tail streams until the run ends", async () => {
+    const callbacks = { current: { onOpen: vi.fn(), onStateUpdate: vi.fn() } };
+    const hook = renderHook(() => useRuntimeThread({ threadId: "t1", workspaceId: "w1", seed, enabled: true, callbacks }));
+    await waitFor(() => expect(watchers).toHaveLength(1));
+    const view = render(<Transcript live={hook.result.current.chat} optimistic={[]} />);
+    const statuses: string[] = [];
+    const rowIds = new Set<string>();
+    const step = async (patch: Partial<WatcherState>, event: Record<string, unknown> | undefined, settled: () => boolean) => {
+      act(() => watchers[0].emit(patch, event));
+      await waitFor(() => expect(settled()).toBe(true));
+      view.rerender(<Transcript live={hook.result.current.chat} optimistic={[]} />);
+      statuses.push(hook.result.current.chat.status);
+      for (const message of hook.result.current.chat.messages) rowIds.add(message.id);
+    };
+    const base = history.map((entry) => entry.message);
+    const echoed = { role: "user", content: [{ type: "text", text: "second question" }], timestamp: Date.now(), requestId: "client_x" };
+    const answer = { role: "assistant", content: [{ type: "text", text: "second answer" }], stopReason: "stop", timestamp: Date.now() };
+    const chat = () => hook.result.current.chat;
+
+    // The runtime's real order for one reply.
+    await step({ running: true }, { type: "agent_start" }, () => chat().isStreaming);
+    await step({ running: true }, { type: "turn_opened", index: 2 }, () => chat().isStreaming);
+    await step({ messages: [...base, echoed], indexes: [0, 1, 2] }, { type: "message_end", message: echoed }, () => chat().messages.length >= 3);
+    await step({ partial: answer }, { type: "message_update" }, () => JSON.stringify(chat().messages.at(-1)?.content).includes("second answer"));
+    // The final message ends while the run is still running...
+    await step({ messages: [...base, echoed, answer], indexes: [0, 1, 2, 3], partial: null }, { type: "message_end", message: answer }, () => chat().messages.length >= 4);
+    // ...until agent_end.
+    await step({ running: false }, { type: "agent_end" }, () => !chat().isStreaming);
+
+    // No empty turn after the answer, ever.
+    expect([...rowIds]).not.toContain("rt:4");
+    expect(probe.mounts.get("second answer")).toBe(1);
+    // submitted → streaming → ready, without going back.
+    const order = ["submitted", "streaming", "ready"];
+    const ranks = statuses.map((status) => order.indexOf(status));
+    expect(ranks).toEqual(ranks.toSorted((a, b) => a - b));
+    expect(statuses.at(-1)).toBe("ready");
+    expect(statuses).toContain("streaming");
   });
 });
