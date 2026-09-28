@@ -17,6 +17,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ContentBlock, ErrorBlock, FileBlock, Message, ToolResultBlock } from "@/types";
 import { localToolName, readableProviderError } from "@/lib/agent-runtime-shared";
+import { parseUploadRefs } from "@/lib/chat-attachment-refs";
 import {
   buildToolResultFromPiItem,
   buildToolUseFromPiItem,
@@ -219,9 +220,13 @@ function assistantBlocks(message: AssistantMessage, results: ReadonlyMap<string,
 
 /** A user message's text, and its attached files as file blocks after it. */
 function userContent(threadId: string, content: string | Part[]): string | ContentBlock[] {
-  const files = Array.isArray(content) ? content.filter(isFilePart) : [];
-  if (files.length === 0) return textOf(content);
   const text = textOf(content);
+  // Uploads stay in R2 and are also attached (uploads/<request>/): the text's
+  // references already show them, so their runtime copies are not shown again.
+  const uploadsShown = parseUploadRefs(text).refs.length > 0;
+  const files = (Array.isArray(content) ? content.filter(isFilePart) : [])
+    .filter((file) => !(uploadsShown && file.path.startsWith("/workspace/uploads/")));
+  if (files.length === 0) return text;
   return [...(text ? [{ type: "text" as const, text }] : []), ...files.map((file) => fileBlock(threadId, file))];
 }
 

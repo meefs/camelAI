@@ -14,7 +14,9 @@ import type { ThreadRuntimeRecord } from "../identity/org-do";
 import { ChatThreadMetadata, type ChatThreadMetadataEnv } from "../chat-thread/metadata";
 import { RUNTIME_PROMPT_VERSION, runtimeConfigured } from "../chat-thread/runtime-agent";
 import { isOrgBanned } from "../ban-list";
-import { injectFileSafetyMessage } from "../file-safety";
+import { injectFileSafetyMessage, isUnsafeUploadPath } from "../file-safety";
+import { parseUploadRefs } from "../../../../src/lib/chat-attachment-refs";
+import { buildWorkspaceScopedR2Key } from "../../../../src/lib/workspace-r2-paths";
 import { applyMentionContext } from "../mention-context";
 import { WorkspaceFilesystemClient } from "../workspace-filesystem-do";
 import { HOSTED_KEY_SCOPE } from "./key-scopes";
@@ -104,6 +106,61 @@ function orgStub(env: ChatEnv, orgId: string) {
     }): Promise<ThreadRuntimeRecord | null>;
     getWorkspaceIntegrations(workspaceId: string): Promise<Parameters<typeof applyMentionContext>[1]["integrations"]>;
   };
+}
+
+/** At most this many uploads are attached to one message (the runtime's limit), and each at most this large. */
+const MAX_ATTACHMENTS = 20;
+const MAX_ATTACHMENT_BYTES = 256 * 1024 * 1024;
+
+/**
+ * The uploads a message references (`(user uploaded file to uploads/…)`), which
+ * stay in R2 as their home, streamed to the agent as attachments of this
+ * request as well: the runtime shows images and PDFs to the model natively and
+ * names the rest. Best effort: a file that is unsafe, missing, too large or
+ * fails to upload is only referenced, as before. Retries rewrite the same
+ * paths (uploads/<requestId>/<name>).
+ */
+async function attachUploads(
+  env: ChatEnv,
+  context: ChatContextState,
+  agentId: string,
+  requestId: string,
+  text: string,
+): Promise<Array<{ path: string }>> {
+  const refs = parseUploadRefs(text).refs.filter((ref) => ref.kind === "user_upload").slice(0, MAX_ATTACHMENTS);
+  const files: Array<{ path: string }> = [];
+  for (const ref of refs) {
+    if (isUnsafeUploadPath(ref.filename)) continue;
+    try {
+      const object = await env.R2_BUCKET.get(buildWorkspaceScopedR2Key(context.orgId, context.workspaceId, `user-uploads/${ref.filename}`));
+      if (!object) continue;
+      if (object.size > MAX_ATTACHMENT_BYTES) {
+        await object.body.cancel();
+        continue;
+      }
+      const response = await fetch(
+        `${runtimeUrl(env)}/v1/agents/${encodeURIComponent(agentId)}/uploads/${encodeURIComponent(requestId)}/${encodeURIComponent(ref.originalName)}`,
+        {
+          method: "PUT",
+          headers: {
+            Authorization: `Bearer ${env.AGENT_RUNTIME_API_TOKEN ?? ""}`,
+            "Content-Type": object.httpMetadata?.contentType || "application/octet-stream",
+            "Content-Length": String(object.size),
+          },
+          body: object.body,
+        },
+      );
+      const saved = await response.json().catch(() => null) as { path?: unknown } | null;
+      if (!response.ok || typeof saved?.path !== "string") {
+        console.warn("[runtime-thread] could not attach an upload", { status: response.status, file: ref.filename });
+        continue;
+      }
+      files.push({ path: saved.path });
+    } catch (error) {
+      console.warn("[runtime-thread] could not attach an upload", { file: ref.filename, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  return files;
 }
 
 /** The user's text as the model gets it: the file-safety notice and @-mention context, when they apply. */
@@ -310,10 +367,13 @@ export async function startRuntimeTurn(
   }
   const agentId = await ensureConfiguredAgent(env, context, input.row, run, input.clientMessageId);
   const name = resolveMessageAuthorDisplayName(sender.userName, sender.userEmail);
+  // The message's uploads, attached as runtime files too (native images and PDFs).
+  const files = await attachUploads(env, context, agentId, input.clientMessageId, text);
   let request: { id?: unknown };
   try {
     request = await runtimeApi(env, "POST", `/v1/agents/${encodeURIComponent(agentId)}/prompt`, {
       text: await modelText(env, context, text),
+      ...(files.length > 0 ? { files } : {}),
       from: { id: sender.userId, ...(name ? { name: name.slice(0, 200) } : {}) },
       actor: sender.userId,
       // Echoed on the user message: the page matches its optimistic bubble by it.

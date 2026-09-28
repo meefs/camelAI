@@ -170,6 +170,20 @@ describe("piRender and scratch files", () => {
     ]);
   });
 
+  it("shows an upload once: by its R2 reference when the text has one, not also by its runtime attachment", () => {
+    const message = {
+      role: "user",
+      timestamp: 1,
+      content: [
+        { type: "text", text: "see (user uploaded file to uploads/q3-1790000000000-ab12cd.pdf)" },
+        { type: "file", path: "/workspace/uploads/cm_1/q3.pdf", volume: "v", version: 1, size: 10, contentType: "application/pdf", chunks: [] },
+        { type: "file", path: "/workspace/notes.md", volume: "v", version: 1, size: 3, contentType: "text/markdown", chunks: [] },
+      ],
+    } as unknown as AgentMessage;
+    const content = render([message]).messages[0].content as ContentBlock[];
+    expect(content.filter((block) => block.type === "file").map((block) => (block as { path: string }).path)).toEqual(["/workspace/notes.md"]);
+  });
+
   it("puts a file the agent presented after its call, with its caption, in the turn's output", () => {
     const { messages } = render([
       user("chart please", 1),
