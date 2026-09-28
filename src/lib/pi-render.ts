@@ -27,7 +27,16 @@ import { mergeLiveToolOutput } from "@/lib/use-pi-chat-stream";
 const STOPPED_BY_USER_TEXT = "Stopped by user";
 
 type Part = { type?: string; text?: string; thinking?: string; redacted?: boolean; thinkingSignature?: string; id?: string; name?: string; arguments?: unknown };
-type PiUser = { role: "user"; content: string | Part[]; timestamp?: number; from?: { id?: string; name?: string; username?: string } };
+type PiUser = {
+  role: "user";
+  content: string | Part[];
+  timestamp?: number;
+  from?: { id?: string; name?: string; username?: string };
+  /** The request that sent it: chiridion's client message id. */
+  requestId?: string;
+  /** What chiridion recorded with it (runtimeMessageMetadata): its source among others. */
+  metadata?: Record<string, string>;
+};
 type PiToolResult = {
   role: "toolResult";
   toolCallId: string;
@@ -181,7 +190,10 @@ export function piRender(input: PiRenderInput): PiRenderResult {
       closeTurn(lastAssistantAt);
       const user = message as unknown as PiUser;
       lastUserAt = timestampOf(user);
-      const clientMessageId = input.clientMessageIds?.get(index);
+      const clientMessageId = typeof user.requestId === "string" && user.requestId
+        ? user.requestId
+        : input.clientMessageIds?.get(index);
+      const source = user.metadata?.source;
       view.push({
         id: runtimeMessageId(index),
         thread_id: threadId,
@@ -190,6 +202,7 @@ export function piRender(input: PiRenderInput): PiRenderResult {
         created_at: lastUserAt ?? 0,
         ...(user.from?.name ? { authorDisplayName: user.from.name } : {}),
         ...(clientMessageId ? { clientMessageId } : {}),
+        ...(typeof source === "string" && source ? { messageSource: source } : {}),
       });
       return;
     }

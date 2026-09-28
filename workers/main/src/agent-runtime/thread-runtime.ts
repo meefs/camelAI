@@ -123,6 +123,28 @@ async function modelText(env: ChatEnv, context: ChatContextState, text: string):
   return applyMentionContext(safe, { integrations, projects }).content;
 }
 
+/**
+ * What chiridion records on a runtime thread's user message (runtime
+ * `metadata`, never shown to the model): its source, and the thread it
+ * belongs to, so the run's webhook events route without a lookup.
+ */
+export function runtimeMessageMetadata(context: ChatContextState, source: string): Record<string, string> {
+  return { source, org: context.orgId, workspace: context.workspaceId, thread: context.threadId };
+}
+
+/** Where a runtime agent's thread is, by agent id: for events of runs no chiridion message started. */
+export function runtimeAgentThreadKey(agentId: string): string {
+  return `agent-runtime:thread-of:${agentId}`;
+}
+
+async function rememberAgentThread(env: ChatEnv, agentId: string, context: ChatContextState): Promise<void> {
+  await env.APP_KV.put(runtimeAgentThreadKey(agentId), JSON.stringify({
+    org: context.orgId,
+    workspace: context.workspaceId,
+    thread: context.threadId,
+  })).catch((error: unknown) => console.error("[runtime-thread] failed to remember an agent's thread", error));
+}
+
 /** The runtime's agent id for a provisioning key (its `agentId(tenant, key)`), to find an agent it already made. */
 async function provisionedAgentId(tenant: string, key: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${tenant}:${key}`));
@@ -291,11 +313,13 @@ export async function startRuntimeTurn(
       text: await modelText(env, context, text),
       from: { id: sender.userId, ...(name ? { name: name.slice(0, 200) } : {}) },
       actor: sender.userId,
+      // Echoed on the user message: the page matches its optimistic bubble by it.
       requestId: input.clientMessageId,
-      // Once the runtime takes them: `whileRunning: "steer"` (join a running
-      // turn instead of queueing the next one) and `metadata: {source}`. The
-      // runtime then echoes `requestId` on the user message, and the page
-      // matches its bubble by it instead of by text.
+      // A message sent while a turn runs joins it, as in the DO's chat; with
+      // none running it starts one.
+      whileRunning: "steer",
+      // On the message and on the run's webhook events (routes/agent-runtime-events.ts).
+      metadata: runtimeMessageMetadata(context, input.source ?? "web"),
     }) as { id?: unknown };
   } catch (error) {
     if (error instanceof RuntimeApiError && error.status === 429) {
@@ -303,9 +327,10 @@ export async function startRuntimeTurn(
     }
     throw error;
   }
-  // Running/idle in the sidebar and end-of-turn work wait for the runtime's
-  // webhook (PUT /v1/webhook: run.started, run.completed, run.failed,
-  // input.requested, input.resolved); nothing sets them here.
+  // Running/idle in the sidebar and end-of-turn work come from the runtime's
+  // run events (routes/agent-runtime-events.ts), for every run however started;
+  // runs no message of ours started (a resume after an input) find the thread here.
+  input.waitUntil(rememberAgentThread(env, agentId, context));
   input.waitUntil(
     threadMetadata(env, context, input.waitUntil).updateThreadMetadataForUserMessage(text, input.source ?? "web").catch((error) => {
       console.error("[runtime-thread] failed to update thread metadata after a user message", error);

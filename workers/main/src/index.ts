@@ -31,6 +31,7 @@ import { handleAdminMcp } from './routes/admin-mcp.js';
 import { handleAgentMcp } from './routes/agent-mcp.js';
 import { handleAgentRuntimeLlm } from './routes/agent-runtime-llm.js';
 import { handleAgentRuntimeUsage } from './routes/agent-runtime-usage.js';
+import { handleAgentRuntimeEvents } from './routes/agent-runtime-events.js';
 import { handleOAuthStart, handleOAuthCallback } from './routes/oauth.js';
 import {
   handleSlackOAuthStart,
@@ -209,6 +210,7 @@ const routes: Route[] = [
   { method: 'POST', path: /^\/agent-runtime\/llm\/openai-codex\/.+$/, handler: handleAgentRuntimeLlm },
   // The runtime's usage webhook (Standard Webhooks signature)
   { method: 'POST', path: /^\/agent-runtime\/usage$/, handler: handleAgentRuntimeUsage },
+  { method: 'POST', path: /^\/agent-runtime\/events$/, handler: handleAgentRuntimeEvents },
 
   // Stripe billing webhook
   { method: 'POST', path: /^\/api\/billing\/stripe\/webhook$/, handler: handleStripeWebhook },

@@ -1,0 +1,155 @@
+/**
+ * The runtime's run and input events for runtime threads (POST
+ * /agent-runtime/events): signed envelopes, deduplicated by id, that mark the
+ * thread running and idle and record its completion or failure.
+ *
+ * Run with: bun run test:workers
+ */
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { env } from "cloudflare:test";
+import { handleAgentRuntimeEventsRequest } from "../src/routes/agent-runtime-events";
+import { runtimeAgentThreadKey } from "../src/agent-runtime/thread-runtime";
+import type { Env } from "../src/types";
+import { createOrg, createUser, type TestEnv } from "./test-helpers";
+
+const testEnv = env as unknown as TestEnv;
+const KEY = new Uint8Array(32).map((_, index) => index + 7);
+const SECRET = `whsec_${btoa(String.fromCharCode(...KEY))}`;
+const RUNTIME = "https://runtime.test";
+
+async function sign(id: string, timestamp: number, body: string) {
+  const cryptoKey = await crypto.subtle.importKey("raw", KEY, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const signature = new Uint8Array(await crypto.subtle.sign("HMAC", cryptoKey, new TextEncoder().encode(`${id}.${timestamp}.${body}`)));
+  return `v1,${btoa(String.fromCharCode(...signature))}`;
+}
+
+async function delivery(event: Record<string, unknown>, signature?: string) {
+  const body = JSON.stringify(event);
+  const timestamp = Math.floor(Date.now() / 1000);
+  return new Request("https://camel.test/agent-runtime/events", {
+    method: "POST",
+    headers: {
+      "webhook-id": String(event.id),
+      "webhook-timestamp": String(timestamp),
+      "webhook-signature": signature ?? await sign(String(event.id), timestamp, body),
+      "content-type": "application/json",
+    },
+    body,
+  });
+}
+
+const email = () => `rt-evt-${Date.now()}-${Math.random().toString(36).slice(2)}@example.com`;
+
+async function setup() {
+  const { userId } = await createUser(testEnv, email(), "password123", "Evt User");
+  const { org, defaultWorkspaceId } = await createOrg(testEnv, "Evt Org", userId);
+  const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+  const thread = await orgStub.createThread(defaultWorkspaceId as string, "Runtime thread", userId);
+  const agentId = `client_${crypto.randomUUID().replaceAll("-", "")}`;
+  await orgStub.setThreadRuntimeAgent(thread.id, { agentId, model: "m", keyScope: null });
+  const streaming = vi.fn(async () => {});
+  const runEnv = {
+    ...(testEnv as unknown as Env),
+    AGENT_RUNTIME_URL: RUNTIME,
+    AGENT_RUNTIME_API_TOKEN: "operator",
+    AGENT_RUNTIME_EVENTS_WEBHOOK_SECRET: SECRET,
+    WORKSPACE: { idFromName: (name: string) => name, get: () => ({ recordThreadStreaming: streaming }) },
+  } as unknown as Env;
+  const metadata = { source: "web", org: org.id, workspace: defaultWorkspaceId as string, thread: thread.id };
+  return { orgStub, threadId: thread.id, workspaceId: defaultWorkspaceId as string, orgId: org.id, agentId, runEnv, streaming, metadata };
+}
+
+async function deliver(runEnv: Env, event: Record<string, unknown>, signature?: string) {
+  const pending: Promise<unknown>[] = [];
+  const response = await handleAgentRuntimeEventsRequest(await delivery(event, signature), runEnv, (promise) => { pending.push(promise); });
+  await Promise.allSettled(pending);
+  return response;
+}
+
+const eventId = () => `evt_${crypto.randomUUID().replaceAll("-", "").slice(0, 24)}`;
+
+afterEach(() => vi.restoreAllMocks());
+
+describe("POST /agent-runtime/events", () => {
+  it("refuses unsigned or wrongly signed deliveries, and answers 503 without a secret", async () => {
+    const { runEnv, agentId, metadata } = await setup();
+    const event = { id: eventId(), type: "run.started", created: 1, data: { agentId, requestId: "r", method: "prompt", metadata } };
+    expect((await deliver(runEnv, event, "v1,AAAA")).status).toBe(401);
+    expect((await deliver({ ...runEnv, AGENT_RUNTIME_EVENTS_WEBHOOK_SECRET: "" } as Env, event)).status).toBe(503);
+  });
+
+  it("marks the thread running when a run starts, once per event id", async () => {
+    const { runEnv, agentId, metadata, workspaceId, threadId, streaming } = await setup();
+    const event = { id: eventId(), type: "run.started", created: Math.floor(Date.now() / 1000), data: { agentId, requestId: "r1", method: "prompt", metadata } };
+    expect((await deliver(runEnv, event)).status).toBe(204);
+    expect(streaming).toHaveBeenCalledWith(threadId, true, undefined);
+    expect(workspaceId).toBeTruthy();
+    expect((await deliver(runEnv, event)).status).toBe(204);
+    expect(streaming).toHaveBeenCalledTimes(1);
+  });
+
+  it("finds the thread of a run no message of ours started, by its agent", async () => {
+    const { runEnv, agentId, metadata, threadId, streaming } = await setup();
+    await testEnv.APP_KV.put(runtimeAgentThreadKey(agentId), JSON.stringify({ org: metadata.org, workspace: metadata.workspace, thread: metadata.thread }));
+    await deliver(runEnv, { id: eventId(), type: "run.started", created: 1, data: { agentId, requestId: "resume1", method: "resume" } });
+    expect(streaming).toHaveBeenCalledWith(threadId, true, undefined);
+  });
+
+  it("records a completed run: idle, completion time, and the reply read for its summary", async () => {
+    const { runEnv, agentId, metadata, threadId, orgStub, streaming } = await setup();
+    const reads: string[] = [];
+    const original = globalThis.fetch;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.origin !== RUNTIME) return original(input, init);
+      reads.push(`${url.pathname}${url.search}`);
+      return Response.json({ entries: [{ index: 3, message: { role: "assistant", content: [{ type: "text", text: "Deployed the dashboard." }] } }], next: null });
+    });
+    const created = Math.floor(Date.now() / 1000);
+    const response = await deliver(runEnv, {
+      id: eventId(), type: "run.completed", created,
+      data: { agentId, requestId: "r2", method: "prompt", metadata, replyIndex: 3, messageCount: 4, usage: null },
+    });
+    expect(response.status).toBe(204);
+    expect(reads).toEqual([`/v1/agents/${agentId}/history?limit=1&before=4`]);
+    expect(streaming).toHaveBeenCalledWith(threadId, false, expect.objectContaining({ clearOnlyIfRunning: true }));
+    const thread = await orgStub.getThread(threadId);
+    expect(thread?.last_assistant_completed_at).toBeGreaterThanOrEqual(created * 1000);
+  });
+
+  it("records a failed run's error on the thread", async () => {
+    const { runEnv, agentId, metadata, threadId, orgStub } = await setup();
+    await deliver(runEnv, {
+      id: eventId(), type: "run.failed", created: Math.floor(Date.now() / 1000),
+      data: { agentId, requestId: "r3", method: "prompt", metadata, error: "Provider unavailable", usage: null },
+    });
+    const thread = await orgStub.getThread(threadId);
+    expect(thread?.last_chat_error_message).toBe("Provider unavailable");
+    expect(thread?.chat_error_count).toBe(1);
+  });
+
+  it("only clears running for a turn that waits on input, and ignores a steered message's end", async () => {
+    const { runEnv, agentId, metadata, threadId, orgStub, streaming } = await setup();
+    await deliver(runEnv, {
+      id: eventId(), type: "run.completed", created: Math.floor(Date.now() / 1000),
+      data: { agentId, requestId: "r4", method: "prompt", metadata, stopped: "input_required", inputIds: ["in_1"] },
+    });
+    expect(streaming).toHaveBeenCalledWith(threadId, false, { clearOnlyIfRunning: true });
+    expect((await orgStub.getThread(threadId))?.last_assistant_completed_at ?? null).toBeNull();
+    streaming.mockClear();
+    await deliver(runEnv, {
+      id: eventId(), type: "run.completed", created: 1,
+      data: { agentId, requestId: "r5", method: "prompt", metadata, steeredInto: "r1" },
+    });
+    expect(streaming).not.toHaveBeenCalled();
+  });
+
+  it("acknowledges events for agents that are not the thread's, without acting", async () => {
+    const { runEnv, metadata, streaming } = await setup();
+    const response = await deliver(runEnv, {
+      id: eventId(), type: "run.started", created: 1, data: { agentId: "client_other", requestId: "r", method: "prompt", metadata },
+    });
+    expect(response.status).toBe(204);
+    expect(streaming).not.toHaveBeenCalled();
+  });
+});
