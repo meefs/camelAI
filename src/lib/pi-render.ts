@@ -154,12 +154,21 @@ function toolItem(id: string, name: unknown, args: unknown, result?: PiToolResul
   };
 }
 
-function toolResultBlock(id: string, item: PiThreadItem, result: PiToolResult): ToolResultBlock {
+/**
+ * A direct tool's result the runtime cut for the model ends with
+ * `[Result cut at … The whole result is in /workspace/tool-results/<call>.txt: read it in parts.]`.
+ */
+const CUT_RESULT = /\[Result cut at [\d,]+ of [\d,]+ characters\. The whole result(?: \([^)]*\))? is in (\/workspace\/tool-results\/[^\s:\]]+): read it in parts\.\]\s*$/;
+
+function toolResultBlock(id: string, item: PiThreadItem, result: PiToolResult, threadId: string): ToolResultBlock {
   // The status rides the call's input; the result's text is the tool's own.
   const { status: _status, ...withoutStatus } = item;
   const built = buildToolResultFromPiItem(withoutStatus as PiThreadItem);
   const isError = result.isError === true || built?.isError === true;
-  const details = built?.details ?? (isRecord(result.details) ? result.details : undefined);
+  const cut = CUT_RESULT.exec(textOf(result.content));
+  const fullResult = cut ? { path: cut[1], href: scratchFileHref(threadId, cut[1]) } : undefined;
+  const found = built?.details ?? (isRecord(result.details) ? result.details : undefined);
+  const details = fullResult ? { ...found, fullResult } : found;
   return {
     type: "tool_result",
     tool_use_id: id,
@@ -202,7 +211,7 @@ function assistantBlocks(message: AssistantMessage, results: ReadonlyMap<string,
       const item = toolItem(part.id, part.name, part.arguments, settled);
       const use = buildToolUseFromPiItem(item);
       blocks.push({ type: "tool_use", id: part.id, name: use?.name ?? String(item.tool), input: use?.input ?? {} });
-      if (settled) blocks.push(toolResultBlock(part.id, item, settled));
+      if (settled) blocks.push(toolResultBlock(part.id, item, settled, threadId));
       // A file the agent handed over (present_file) shows after its call, as output.
       if (settled && !settled.isError && item.tool === "present_file") {
         const presented = presentedFile(part.arguments, settled);
