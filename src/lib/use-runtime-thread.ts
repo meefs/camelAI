@@ -12,13 +12,13 @@
  * messages projected by pi-render. Agent state (pending question, todos,
  * errors, preview) is derived here and handed to Chat's `onStateUpdate`.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { UIMessage } from "ai";
 import type { Message, PreviewTarget } from "@/types";
 import { localToolName, runtimeInputQuestions, type RuntimeInput } from "@/lib/agent-runtime-shared";
-import { latestRuntimeTodos, piRender } from "@/lib/pi-render";
+import { latestRuntimeTodos, piRender, type PiRenderMemo } from "@/lib/pi-render";
 import { getPreviewTabId } from "@/components/preview-panel/preview-utils";
 import { watchAgent, type AgentView, type Watcher } from "@/lib/vendor/agent-runtime-watch";
 import { stripSystemMessageTags } from "@/lib/turn-utils";
@@ -168,6 +168,8 @@ export function useRuntimeThread(options: {
   const [view, setView] = useState<View>(() => seedView(seed));
   const [agentId, setAgentId] = useState<string | null>(seed?.agentId ?? null);
   const [submittedAt, setSubmittedAt] = useState<number | null>(null);
+  /** Bumped when this tab sends: the view places a starting turn after messages on their way. */
+  const [sends, countSend] = useReducer((count: number) => count + 1, 0);
   const [preview, setPreview] = useState(() => ({
     tabs: seed?.previewTabs ?? [],
     activeTabId: seed?.activeTabId ?? null,
@@ -329,8 +331,15 @@ export function useRuntimeThread(options: {
     });
   }, [view, seed]);
 
-  const rendered = useMemo(
-    () => piRender({
+  // Rows that did not change keep their objects between events (see PiRenderMemo).
+  const renderMemoRef = useRef<PiRenderMemo>(new Map());
+  const rendered = useMemo(() => {
+    const echoed = new Set<string>(clientMessageIds.values());
+    for (const message of view.messages) {
+      const requestId = (message as { requestId?: unknown }).requestId;
+      if (typeof requestId === "string") echoed.add(requestId);
+    }
+    return piRender({
       threadId: threadId ?? "",
       messages: view.messages,
       indexes: view.indexes,
@@ -338,9 +347,10 @@ export function useRuntimeThread(options: {
       progress: view.progress,
       running: view.running,
       clientMessageIds,
-    }),
-    [threadId, view, clientMessageIds],
-  );
+      pendingSends: sentRef.current.filter((sent) => !echoed.has(sent.clientMessageId)).length,
+    }, renderMemoRef.current);
+    // `sends` changes when sentRef does.
+  }, [threadId, view, clientMessageIds, sends]);
 
   // Inputs the chat cannot ask (forms with fields) are cancelled, as the DO did, so the turn goes on.
   useEffect(() => {
@@ -416,6 +426,7 @@ export function useRuntimeThread(options: {
             sentAt: Date.now(),
             afterIndex: known.length > 0 ? known[known.length - 1] : -1,
           });
+          countSend();
         }
         const sent = await postJson(`${base}/messages${query}`, { text, clientMessageId });
         // The runtime or the network failed: a transport failure to Chat, which

@@ -103,8 +103,8 @@ describe("useRuntimeThread", () => {
       partial: { role: "assistant", content: [{ type: "text", text: "more" }], stopReason: "stop", timestamp: 3 },
     }));
     await waitFor(() => expect(result.current.chat.isStreaming).toBe(true));
-    // The response streams into the turn its user message opened.
-    expect(result.current.chat.streamingMessageId).toBe("rt:1");
+    // A response after a finished answer is a new turn (a run no message of ours started).
+    expect(result.current.chat.streamingMessageId).toBe("rt:2");
   });
 
   it("sends through the route, and matches the message that comes back to the client's id", async () => {
@@ -124,7 +124,7 @@ describe("useRuntimeThread", () => {
       indexes: [0, 1, 2],
       running: true,
     }));
-    await waitFor(() => expect(result.current.chat.messages.find((message) => message.id === "rt:2")?.clientMessageId).toBe("cm_1"));
+    await waitFor(() => expect(result.current.chat.messages.some((message) => message.id === "cm_1" && message.clientMessageId === "cm_1")).toBe(true));
     expect(result.current.chat.status).toBe("streaming");
   });
 
@@ -182,7 +182,7 @@ describe("useRuntimeThread", () => {
       messages: [...seed.page!.entries.map((entry) => entry.message), { role: "user", content: [{ type: "text", text: modelText }], timestamp: Date.now() }],
       indexes: [0, 1, 2],
     }));
-    await waitFor(() => expect(result.current.chat.messages.find((message) => message.id === "rt:2")?.clientMessageId).toBe("cm_m"));
+    await waitFor(() => expect(result.current.chat.messages.some((message) => message.id === "cm_m" && message.clientMessageId === "cm_m")).toBe(true));
   });
 
   it("matches by the echoed requestId, and keeps one entry for a retried send", async () => {
@@ -201,7 +201,7 @@ describe("useRuntimeThread", () => {
       ],
       indexes: [0, 1, 2, 3],
     }));
-    await waitFor(() => expect(result.current.chat.messages.find((message) => message.id === "rt:2")?.clientMessageId).toBe("cm_r"));
+    await waitFor(() => expect(result.current.chat.messages.some((message) => message.id === "cm_r" && message.clientMessageId === "cm_r")).toBe(true));
     expect(result.current.chat.messages.find((message) => message.id === "rt:3")?.clientMessageId).toBeUndefined();
   });
 
@@ -219,7 +219,7 @@ describe("useRuntimeThread", () => {
       ],
       indexes: [0, 1, 2],
     }));
-    await waitFor(() => expect(result.current.chat.messages.find((message) => message.id === "rt:2")?.clientMessageId).toBe("cm_theirs"));
+    await waitFor(() => expect(result.current.chat.messages.some((message) => message.id === "cm_theirs" && message.clientMessageId === "cm_theirs")).toBe(true));
   });
 
   it("turns a failed send into a transport failure, so Chat resends it under the same id", async () => {

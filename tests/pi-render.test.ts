@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { latestRuntimeTodos, piRender } from "@/lib/pi-render";
+import { latestRuntimeTodos, piRender, type PiRenderMemo } from "@/lib/pi-render";
 import type { ContentBlock, ToolResultBlock, ToolUseBlock } from "@/types";
 
 const usage = { input: 1000, output: 10, cacheRead: 500, cacheWrite: 0, totalTokens: 1510, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
@@ -94,7 +94,8 @@ describe("piRender", () => {
       indexes: [10, 11, 12],
       clientMessageIds: new Map([[12, "cm_2"]]),
     });
-    expect(messages.map((message) => message.id)).toEqual(["rt:10", "rt:11", "rt:12"]);
+    // A user message this tab sent keeps the id of its optimistic bubble.
+    expect(messages.map((message) => message.id)).toEqual(["rt:10", "rt:11", "cm_2"]);
     expect(messages[2].clientMessageId).toBe("cm_2");
     expect(messages[0].clientMessageId).toBeUndefined();
   });
@@ -105,6 +106,46 @@ describe("piRender and the runtime's message metadata", () => {
     const message = { role: "user", content: "Deploy", timestamp: 1, requestId: "client_1_ab", metadata: { source: "slack", thread: "t1" } } as unknown as AgentMessage;
     const { messages } = render([message]);
     expect(messages[0]).toMatchObject({ clientMessageId: "client_1_ab", messageSource: "slack" });
+  });
+});
+
+describe("piRender while a message is sent", () => {
+  const history = [user("q1", 1), assistant([{ type: "text", text: "a1" }], 2)];
+
+  it("does not make the previous answer the streaming turn when a run starts before its message", () => {
+    const waiting = render(history, { running: true, pendingSends: 1 });
+    expect(waiting.streamingMessageId).toBeNull();
+    expect(waiting.messages.map((message) => message.id)).toEqual(["rt:0", "rt:1"]);
+    expect(waiting.messages[1].isStreaming).toBeUndefined();
+    // Another run (not ours) after a finished answer is a new turn.
+    expect(render(history, { running: true }).streamingMessageId).toBe("rt:2");
+  });
+
+  it("keeps a turn that goes on (it called tools) as the streaming one", () => {
+    const midTurn = [
+      user("q", 1),
+      assistant([{ type: "toolCall", id: "c1", name: "js_exec", arguments: {} }], 2, { stopReason: "toolUse" }),
+      toolResult("c1", "js_exec", "ok", 3),
+    ];
+    expect(render(midTurn, { running: true }).streamingMessageId).toBe("rt:1");
+    const partial = { role: "assistant", content: [{ type: "text", text: "more" }], stopReason: "stop", timestamp: 4 } as unknown as AssistantMessage;
+    // A steer on its way does not move the response streaming now.
+    expect(render(midTurn, { running: true, partial, pendingSends: 1 }).streamingMessageId).toBe("rt:1");
+  });
+
+  it("returns the same objects for rows whose messages did not change", () => {
+    const memo: PiRenderMemo = new Map();
+    const call = assistant([{ type: "toolCall", id: "c1", name: "js_exec", arguments: {} }], 2, { stopReason: "toolUse" });
+    const messages = [...history, call];
+    const a = piRender({ threadId: "t1", messages, indexes: [0, 1, 2], partial: null, running: false }, memo);
+    const b = piRender({ threadId: "t1", messages, indexes: [0, 1, 2], partial: null, running: false }, memo);
+    expect(b.messages[0]).toBe(a.messages[0]);
+    expect(b.messages[1]).toBe(a.messages[1]);
+    // A tool result arriving rebuilds only its turn.
+    const withResult = [...messages, toolResult("c1", "js_exec", "2", 4)];
+    const c = piRender({ threadId: "t1", messages: withResult, indexes: [0, 1, 2, 3], partial: null, running: false }, memo);
+    expect(c.messages[0]).toBe(a.messages[0]);
+    expect(c.messages[1]).not.toBe(a.messages[1]);
   });
 });
 

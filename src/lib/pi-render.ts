@@ -59,6 +59,8 @@ export interface PiRenderInput {
   running: boolean;
   /** The client message id each user message was sent with, by its history index (known only for this tab's sends). */
   clientMessageIds?: ReadonlyMap<number, string>;
+  /** This tab's messages sent and not in the history yet: a turn that starts now follows them. */
+  pendingSends?: number;
 }
 
 export interface PiRenderResult {
@@ -125,6 +127,13 @@ function errorBlock(message: string): ErrorBlock {
   return { type: "error", error: readableProviderError(message) };
 }
 
+/** The results of an assistant message's tool calls, in order (undefined where there is none yet). */
+function toolCallResults(message: AssistantMessage, results: ReadonlyMap<string, PiToolResult>): Array<PiToolResult | undefined> {
+  return ((message.content ?? []) as Part[])
+    .filter((part) => part?.type === "toolCall" && typeof part.id === "string")
+    .map((part) => results.get(part.id as string));
+}
+
 /** An assistant message's blocks, each tool call followed by its result when there is one. */
 function assistantBlocks(message: AssistantMessage, results: ReadonlyMap<string, PiToolResult>): ContentBlock[] {
   const blocks: ContentBlock[] = [];
@@ -157,8 +166,25 @@ function timestampOf(message: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+/**
+ * What piRender built last time, by message id, with what it was built from:
+ * a message whose sources are the same objects is the same object again, so
+ * rows that did not change do not re-render on every streamed event.
+ */
+export type PiRenderMemo = Map<string, { sources: readonly unknown[]; message: Message }>;
+
+function sameSources(left: readonly unknown[], right: readonly unknown[]): boolean {
+  return left.length === right.length && left.every((source, at) => source === right[at]);
+}
+
+/** Whether a turn's last response hands off to tools (the turn goes on), rather than ending it. */
+function continuesTurn(message: unknown): boolean {
+  const last = message as { role?: string; stopReason?: string } | undefined;
+  return last?.role === "toolResult" || (last?.role === "assistant" && last.stopReason === "toolUse");
+}
+
 /** Project a runtime thread's messages onto the chat's view model. */
-export function piRender(input: PiRenderInput): PiRenderResult {
+export function piRender(input: PiRenderInput, memo?: PiRenderMemo): PiRenderResult {
   const { threadId, messages, indexes } = input;
   const results = new Map<string, PiToolResult>();
   for (const message of messages) {
@@ -168,76 +194,107 @@ export function piRender(input: PiRenderInput): PiRenderResult {
     }
   }
 
-  const view: Message[] = [];
-  let turn: { message: Message; blocks: ContentBlock[]; startedAt: number | undefined } | null = null;
+  type Group =
+    | { kind: "user"; index: number; user: PiUser; clientMessageId: string | undefined }
+    | { kind: "turn"; index: number; assistants: AssistantMessage[]; lastUserAt: number | undefined };
+  const groups: Group[] = [];
   let lastUserAt: number | undefined;
-  const closeTurn = (settledAt: number | undefined) => {
-    if (!turn) return;
-    turn.message.content = turn.blocks;
-    if (settledAt !== undefined) {
-      turn.message.completedAtMs = settledAt;
-      if (lastUserAt !== undefined && settledAt >= lastUserAt) turn.message.turnDurationMs = settledAt - lastUserAt;
-    }
-    view.push(turn.message);
-    turn = null;
-  };
-  let lastAssistantAt: number | undefined;
-
+  let open: Extract<Group, { kind: "turn" }> | null = null;
   messages.forEach((message, position) => {
     const index = indexes[position] ?? position;
     const role = (message as { role?: string }).role;
     if (role === "user") {
-      closeTurn(lastAssistantAt);
+      open = null;
       const user = message as unknown as PiUser;
       lastUserAt = timestampOf(user);
       const clientMessageId = typeof user.requestId === "string" && user.requestId
         ? user.requestId
         : input.clientMessageIds?.get(index);
-      const source = user.metadata?.source;
-      view.push({
-        id: runtimeMessageId(index),
-        thread_id: threadId,
-        role: "user",
-        content: textOf(user.content),
-        created_at: lastUserAt ?? 0,
-        ...(user.from?.name ? { authorDisplayName: user.from.name } : {}),
-        ...(clientMessageId ? { clientMessageId } : {}),
-        ...(typeof source === "string" && source ? { messageSource: source } : {}),
-      });
+      groups.push({ kind: "user", index, user, clientMessageId });
       return;
     }
     if (role !== "assistant") return;
-    const assistant = message as unknown as AssistantMessage;
-    lastAssistantAt = timestampOf(assistant);
-    if (!turn) {
-      turn = {
-        message: { id: runtimeMessageId(index), thread_id: threadId, role: "assistant", content: [], created_at: lastAssistantAt ?? 0 },
-        blocks: [],
-        startedAt: lastAssistantAt,
-      };
+    if (!open) {
+      open = { kind: "turn", index, assistants: [], lastUserAt };
+      groups.push(open);
     }
-    turn.blocks.push(...assistantBlocks(assistant, results));
+    open.assistants.push(message as unknown as AssistantMessage);
   });
 
-  let streamingMessageId: string | null = null;
+  // The turn streaming now: the open one when it goes on (its last response
+  // called tools), else a new one, at the index its first message will take
+  // (after this tab's messages still on their way). A run can start before its
+  // message arrives; the answer before it is not the one streaming.
+  let streaming: Extract<Group, { kind: "turn" }> | null = null;
   if (input.partial || input.running) {
-    const nextIndex = indexes.length > 0 ? indexes[indexes.length - 1] + 1 : 0;
-    if (!turn) {
-      // The turn has not finished a message yet: it takes the index its first one will.
-      turn = {
-        message: { id: runtimeMessageId(nextIndex), thread_id: threadId, role: "assistant", content: [], created_at: timestampOf(input.partial) ?? Date.now() },
-        blocks: [],
-        startedAt: undefined,
-      };
+    const lastMessage = messages[messages.length - 1];
+    const lastGroup = groups[groups.length - 1];
+    // A response streaming now into a turn that goes on is that turn's, even
+    // with a message of ours on its way (it steers the turn after this step).
+    if (lastGroup?.kind === "turn" && continuesTurn(lastMessage) && (input.partial || !input.pendingSends)) {
+      streaming = lastGroup;
+    } else if (input.partial || !input.pendingSends) {
+      const nextIndex = (indexes.length > 0 ? indexes[indexes.length - 1] + 1 : 0) + (input.pendingSends ?? 0);
+      streaming = { kind: "turn", index: nextIndex, assistants: [], lastUserAt };
+      groups.push(streaming);
     }
-    if (input.partial) turn.blocks.push(...assistantBlocks(input.partial, results).filter((block) => block.type !== "error"));
-    const current: { message: Message; blocks: ContentBlock[] } = turn;
-    current.message.isStreaming = true;
-    streamingMessageId = current.message.id;
-    closeTurn(undefined);
-  } else {
-    closeTurn(lastAssistantAt);
+    // Else the run answers a message of ours not here yet: its (empty) turn
+    // waits for it, so it cannot land above the optimistic bubble, which Chat
+    // adds after the transcript. Chat shows the send as submitted meanwhile.
   }
+
+  const view: Message[] = [];
+  const nextMemo: PiRenderMemo = new Map();
+  for (const group of groups) {
+    const id = group.kind === "user" && group.clientMessageId ? group.clientMessageId : runtimeMessageId(group.index);
+    const isStreaming = group === streaming;
+    const sources: unknown[] = group.kind === "user"
+      ? [group.user, group.clientMessageId]
+      : [...group.assistants, ...group.assistants.flatMap((assistant) => toolCallResults(assistant, results))];
+    const previous = memo?.get(id);
+    if (!isStreaming && previous && sameSources(previous.sources, sources)) {
+      view.push(previous.message);
+      nextMemo.set(id, previous);
+      continue;
+    }
+    let built: Message;
+    if (group.kind === "user") {
+      const source = group.user.metadata?.source;
+      const at = timestampOf(group.user);
+      built = {
+        // The client's id when it sent it: the optimistic bubble's, so its row stays.
+        id,
+        thread_id: threadId,
+        role: "user",
+        content: textOf(group.user.content),
+        created_at: at ?? 0,
+        ...(group.user.from?.name ? { authorDisplayName: group.user.from.name } : {}),
+        ...(group.clientMessageId ? { clientMessageId: group.clientMessageId } : {}),
+        ...(typeof source === "string" && source ? { messageSource: source } : {}),
+      };
+    } else {
+      const blocks = group.assistants.flatMap((assistant) => assistantBlocks(assistant, results));
+      if (isStreaming && input.partial) blocks.push(...assistantBlocks(input.partial, results).filter((block) => block.type !== "error"));
+      const firstAt = timestampOf(group.assistants[0]) ?? (isStreaming ? timestampOf(input.partial) ?? Date.now() : 0);
+      built = { id, thread_id: threadId, role: "assistant", content: blocks, created_at: firstAt };
+      if (isStreaming) {
+        built.isStreaming = true;
+      } else {
+        const settledAt = timestampOf(group.assistants[group.assistants.length - 1]);
+        if (settledAt !== undefined) {
+          built.completedAtMs = settledAt;
+          if (group.lastUserAt !== undefined && settledAt >= group.lastUserAt) built.turnDurationMs = settledAt - group.lastUserAt;
+        }
+      }
+    }
+    view.push(built);
+    if (!isStreaming) nextMemo.set(id, { sources, message: built });
+  }
+  if (memo) {
+    memo.clear();
+    for (const [id, entry] of nextMemo) memo.set(id, entry);
+  }
+  const streamingMessageId = streaming ? runtimeMessageId(streaming.index) : null;
 
   if (input.progress && input.progress.size > 0 && streamingMessageId) {
     const live = new Map<string, string>();
