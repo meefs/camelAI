@@ -12,7 +12,7 @@ import { runtimeDirectThreadsEnabled as directThreadsEnabled, type RuntimeInputA
 import type { ChatContextState, ChatEnv } from "../chat-thread/types";
 import type { ThreadRuntimeRecord } from "../identity/org-do";
 import { ChatThreadMetadata, type ChatThreadMetadataEnv } from "../chat-thread/metadata";
-import { runtimeConfigured } from "../chat-thread/runtime-agent";
+import { RUNTIME_PROMPT_VERSION, runtimeConfigured } from "../chat-thread/runtime-agent";
 import { isOrgBanned } from "../ban-list";
 import { injectFileSafetyMessage } from "../file-safety";
 import { applyMentionContext } from "../mention-context";
@@ -240,7 +240,7 @@ async function ensureConfiguredAgent(
         agentId,
         model: run.model,
         keyScope: run.keyScope,
-        configured: { thinkingLevel: run.thinkingLevel, spendLimitUsd: run.spendLimitUsd },
+        configured: { thinkingLevel: run.thinkingLevel, spendLimitUsd: run.spendLimitUsd, promptVersion: RUNTIME_PROMPT_VERSION },
       });
       return agentId;
     }
@@ -252,13 +252,15 @@ async function ensureConfiguredAgent(
   const scopeChanged = stale || (row.keyScope ?? null) !== run.keyScope;
   const lastLimit = (row.configured?.spendLimitUsd as number | null | undefined) ?? null;
   const setLimit = !running && (stale || run.spendLimitUsd !== null || lastLimit !== null);
-  if (!modelChanged && !scopeChanged && !setLimit) return agentId;
+  // Instructions from an earlier version (or none recorded): send the current ones.
+  const promptChanged = stale || row.configured?.promptVersion !== RUNTIME_PROMPT_VERSION;
+  if (!modelChanged && !scopeChanged && !setLimit && !promptChanged) return agentId;
   await runtimeApi(env, "PATCH", `/v1/agents/${encodeURIComponent(agentId)}/configuration`, {
     requestId: `run_${crypto.randomUUID()}`,
     ...(setLimit ? { spendLimit: run.spendLimitUsd === null ? null : { usd: run.spendLimitUsd } } : {}),
     ...(modelChanged ? { model: run.model, thinkingLevel: run.thinkingLevel } : {}),
     ...(scopeChanged ? { keyScope: run.keyScope, modelHeaders: run.modelHeaders } : {}),
-    ...(stale ? { systemPromptAppend: runtimeSystemPromptAppend(env, context) } : {}),
+    ...(promptChanged ? { systemPromptAppend: runtimeSystemPromptAppend(env, context) } : {}),
   });
   await org.setThreadRuntimeAgent(context.threadId, {
     agentId,
@@ -267,6 +269,7 @@ async function ensureConfiguredAgent(
     configured: {
       thinkingLevel: modelChanged ? run.thinkingLevel : row.configured?.thinkingLevel ?? run.thinkingLevel,
       spendLimitUsd: setLimit ? run.spendLimitUsd : lastLimit,
+      promptVersion: RUNTIME_PROMPT_VERSION,
     },
   });
   return agentId;
