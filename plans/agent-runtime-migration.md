@@ -31,7 +31,7 @@ browser ─WS/poll─ ChatThreadDO ──POST prompt/steer/abort──> runtime 
                      │                                             └─ OrgDO, WorkspaceFilesystemDO, sandboxes, R2
                      └── runtimeProviderRequest ── /agent-runtime/llm/openai-codex/* <── Codex calls only (same JWT)
 runtime ──model calls, key scope keys──> providers / AI Gateway
-runtime ──usage webhook (Standard Webhooks)──> /agent-runtime/usage (Worker) ── OrgDO usage_log
+runtime ──usage.recorded webhook events (Standard Webhooks)──> /agent-runtime/events (Worker) ── OrgDO usage_log
 ```
 
 ## 1. The MCP server (built)
@@ -85,7 +85,8 @@ runtime ──usage webhook (Standard Webhooks)──> /agent-runtime/usage (Wor
   - adapter: `AGENT_RUNTIME_API_TOKEN` (operator token, a secret) and
     `AGENT_RUNTIME_DEFINITION`; with `AGENT_RUNTIME_TENANT` they turn the
     runtime on (§6);
-  - `AGENT_RUNTIME_WEBHOOK_SECRET`: the usage webhook's signing secret.
+  - `AGENT_RUNTIME_EVENTS_WEBHOOK_SECRET`: the signing secret of the webhook
+    endpoint for run, input and usage events.
 - **SDK dependency.** `@camelai/agent-runtime@^0.5.0` from npm (`./server`, `./testing`).
 - **Tests.** `bun run test:workers -- agent-mcp` (`testRuntime()` signs real
   tokens). They cover:
@@ -401,9 +402,11 @@ flush, then the webhook), so a message sent right after a turn is gated on
 spend that may not yet include that turn. The overshoot is bounded by what one
 run can spend inside that lag, and the next run's gate sees it.
 
-**Usage webhook** (`routes/agent-runtime-usage.ts`, `POST /agent-runtime/usage`):
-Standard Webhooks signature under `AGENT_RUNTIME_WEBHOOK_SECRET` (`whsec_…`,
-five-minute tolerance, any of several signatures). Each event becomes one
+**Usage events** (`usage.recorded` on `POST /agent-runtime/events`,
+`agent-runtime/usage.ts`; the legacy `/v1/usage-webhook` and its
+`/agent-runtime/usage` receiver are gone): Standard Webhooks signature under
+`AGENT_RUNTIME_EVENTS_WEBHOOK_SECRET` (`whsec_…`, five-minute tolerance, any of
+several signatures). Each event becomes one
 usage_log row in the org of its `context`, as `actor ?? subject`, source
 `agent_runtime`, source_id the event id (so a redelivery inserts nothing).
 The runtime's `amazon-bedrock` is recorded as `bedrock` (chiridion's pricing
@@ -411,8 +414,8 @@ name). A subject equal to the agent id (the runtime's stand-in when an agent
 has none) is no user. The hosted scope is billed as hosted and credit-chargeable unless the model is
 the free tier's or the org is enterprise; an org scope and the Codex endpoint
 are BYOK. A provider-reported cost is stored as reported, a catalog cost as
-estimated. Events for another tenant, or without an org, are acknowledged and
-logged, not billed.
+estimated. Events without an org are acknowledged and logged, not billed (an
+endpoint's secret is its tenant's, so every signed event is the tenant's own).
 
 **Codex forwarder** (`agent-runtime/codex-forwarder.ts`,
 `POST /agent-runtime/llm/openai-codex/codex/responses`): the identity token from
@@ -491,7 +494,8 @@ bypass. It prints no secret and is safe to re-run.
   `camelai/agent-runtime/operator-token/chiridion-staging`), `billing: "none"`,
   a modest `maxAgents`, and
   `"modelEndpoints": {"chiridion": {"baseUrl": "https://staging.camelai.dev/agent-runtime/llm"}}`
-  (Codex only). Its usage webhook is `https://staging.camelai.dev/agent-runtime/usage`.
+  (Codex only). Its webhook endpoint `https://staging.camelai.dev/agent-runtime/events`
+  receives the run, input and `usage.recorded` events (`scripts/agent-runtime-webhook.sh`).
   chiridion creates the `hosted` and `org_<id>` key scopes itself.
 - One definition, made with that tenant's token:
   `{"name": "camelai-thread", "model": "openrouter/anthropic/claude-sonnet-5:nitro", "builtins": ["web_fetch", "web_search", "ask_user"], "fileTools": false,
@@ -500,14 +504,14 @@ bypass. It prints no secret and is safe to re-run.
 
 **Chiridion staging config**
 - Secrets `AGENT_RUNTIME_API_TOKEN` (the tenant's operator token) and
-  `AGENT_RUNTIME_WEBHOOK_SECRET` (the usage webhook's `whsec_…`).
+  `AGENT_RUNTIME_EVENTS_WEBHOOK_SECRET` (the webhook endpoint's `whsec_…`).
 - Vars in `wrangler.staging.jsonc`: `AGENT_RUNTIME_TENANT=chiridion-staging`,
   `AGENT_RUNTIME_DEFINITION=def_…` (`AGENT_RUNTIME_URL` defaults to
   agents.camelai.dev). Once they are deployed with the secrets, every new
   thread with a runtime route runs on the runtime.
 - Cloudflare Access: staging is behind Access, which would block the runtime.
   Bypass `/mcp/agent`, `/agent-runtime/llm/openai-codex` and
-  `/agent-runtime/usage` only; each refuses anything without a valid runtime
+  `/agent-runtime/events` only; each refuses anything without a valid runtime
   token or webhook signature.
 
 **Check**
