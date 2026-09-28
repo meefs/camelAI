@@ -30,7 +30,6 @@ import {
 import { handleAdminMcp } from './routes/admin-mcp.js';
 import { handleAgentMcp } from './routes/agent-mcp.js';
 import { handleAgentRuntimeLlm } from './routes/agent-runtime-llm.js';
-import { handleAgentRuntimeUsage } from './routes/agent-runtime-usage.js';
 import { handleAgentRuntimeEvents } from './routes/agent-runtime-events.js';
 import { handleOAuthStart, handleOAuthCallback } from './routes/oauth.js';
 import {
@@ -208,8 +207,7 @@ const routes: Route[] = [
   { method: 'ALL', path: /^\/mcp\/agent$/, handler: handleAgentMcp },
   // The runtime's Codex calls: the one model route chiridion still forwards (same token)
   { method: 'POST', path: /^\/agent-runtime\/llm\/openai-codex\/.+$/, handler: handleAgentRuntimeLlm },
-  // The runtime's usage webhook (Standard Webhooks signature)
-  { method: 'POST', path: /^\/agent-runtime\/usage$/, handler: handleAgentRuntimeUsage },
+  // The runtime's webhook events: runs, inputs and usage (Standard Webhooks signature)
   { method: 'POST', path: /^\/agent-runtime\/events$/, handler: handleAgentRuntimeEvents },
 
   // Stripe billing webhook

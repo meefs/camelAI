@@ -10,6 +10,8 @@
  *   error) is recorded on the thread, and its summary generated, as
  *   ChatThreadDO does at a turn's end.
  * - input.requested / input.resolved: nothing yet (the page reads inputs live).
+ * - usage.recorded: a model response's usage, recorded in the org's usage_log
+ *   (agent-runtime/usage.ts).
  *
  * A run's thread comes from the metadata chiridion put on the message that
  * started it (runtimeMessageMetadata), else from the agent's remembered thread.
@@ -20,7 +22,8 @@ import type { ThreadRuntimeRecord } from "../identity/org-do.js";
 import { ChatThreadMetadata, type ChatThreadMetadataEnv } from "../chat-thread/metadata.js";
 import { recordWorkspaceThreadStreaming } from "../thread-status.js";
 import { runtimeAgentThreadKey, runtimeHistoryPage } from "../agent-runtime/thread-runtime.js";
-import { verifyStandardWebhook } from "./agent-runtime-usage.js";
+import { verifyStandardWebhook } from "../agent-runtime/webhooks.js";
+import { recordRuntimeUsage, type RuntimeUsageRecorded } from "../agent-runtime/usage.js";
 import { extractThreadCompletionSummarySource } from "../../../../src/lib/thread-completion-summary-generation.server";
 
 /** Event ids already handled are kept this long: past the runtime's 3 days of retries. */
@@ -100,6 +103,9 @@ export async function handleRuntimeEvent(
   waitUntil: (promise: Promise<unknown>) => void,
 ): Promise<boolean> {
   const { data } = event;
+  if (event.type === "usage.recorded") {
+    return recordRuntimeUsage(env, event.id, data as unknown as RuntimeUsageRecorded);
+  }
   if (!event.type.startsWith("run.")) return true;
   const agentId = text(data.agentId);
   const ref = await threadOf(env, data);

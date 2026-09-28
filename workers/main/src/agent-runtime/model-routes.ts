@@ -4,7 +4,7 @@
  *
  * - `scope`: the runtime calls the provider itself, with a normal Pi model id
  *   and the keys of a key scope (`hosted`, or the org's `org_<id>`), and
- *   reports usage back by webhook (routes/agent-runtime-usage.ts);
+ *   reports usage back as `usage.recorded` webhook events (agent-runtime/usage.ts);
  * - `codex`: the org's ChatGPT subscription, which only chiridion can
  *   authenticate: `chiridion/openai-codex/<model>` through chiridion's
  *   forwarder (agent-runtime/codex-forwarder.ts);
