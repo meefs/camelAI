@@ -227,8 +227,9 @@ export async function startRuntimeTurn(
       actor: sender.userId,
       requestId: input.clientMessageId,
       // Once the runtime takes them: `whileRunning: "steer"` (join a running
-      // turn instead of queueing the next one) and `meta: {source,
-      // clientMessageId}` (the page then matches its bubble by id, not text).
+      // turn instead of queueing the next one) and `metadata: {source}`. The
+      // runtime then echoes `requestId` on the user message, and the page
+      // matches its bubble by it instead of by text.
     }) as { id?: unknown };
   } catch (error) {
     if (error instanceof RuntimeApiError && error.status === 429) {
@@ -237,7 +238,8 @@ export async function startRuntimeTurn(
     throw error;
   }
   // Running/idle in the sidebar and end-of-turn work wait for the runtime's
-  // lifecycle webhook (run.started / run.finished); nothing sets them here.
+  // webhook (PUT /v1/webhook: run.started, run.completed, run.failed,
+  // input.requested, input.resolved); nothing sets them here.
   input.waitUntil(
     threadMetadata(env, context, input.waitUntil).updateThreadMetadataForUserMessage(text, input.source ?? "web").catch((error) => {
       console.error("[runtime-thread] failed to update thread metadata after a user message", error);

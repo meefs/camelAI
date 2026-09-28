@@ -242,9 +242,9 @@ export function useRuntimeThread(options: {
     return () => window.clearTimeout(timer);
   }, [enabled, threadId, callbacks]);
 
-  // Match this tab's sends to the user messages they became (the runtime does
-  // not return the client's id on the message yet), so optimistic bubbles give
-  // way to them.
+  // Match this tab's sends to the user messages they became, so optimistic
+  // bubbles give way to them. By text until the runtime echoes `requestId`
+  // (the client's message id) on user messages; then by that.
   useEffect(() => {
     if (sentRef.current.length === 0) return;
     let changed = false;
