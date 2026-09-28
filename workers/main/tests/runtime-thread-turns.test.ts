@@ -10,6 +10,7 @@ import { env } from "cloudflare:test";
 import { encryptCredentials } from "../../../src/lib/integration-crypto";
 import { stringifyStoredLlmProviderConfig } from "../../../src/lib/llm-provider-config";
 import type { ChatEnv } from "../src/chat-thread/types";
+import { RUNTIME_PROMPT_VERSION } from "../src/chat-thread/runtime-agent";
 import {
   abortRuntimeThread,
   answerRuntimeInput,
@@ -255,7 +256,7 @@ describe("spend limits and retries on an existing agent", () => {
     fakeRuntime();
     await send(setup, "first", "cm_first");
     const row = (await setup.orgStub.getThreadRuntime(setup.threadId))!;
-    await setup.orgStub.setThreadRuntimeAgent(setup.threadId, { agentId: row.agentId!, model: row.model, keyScope: row.keyScope, configured: { spendLimitUsd: limit } });
+    await setup.orgStub.setThreadRuntimeAgent(setup.threadId, { agentId: row.agentId!, model: row.model, keyScope: row.keyScope, configured: { spendLimitUsd: limit, promptVersion: RUNTIME_PROMPT_VERSION } });
     return setup;
   }
 
@@ -305,5 +306,35 @@ describe("agent creation conflicts", () => {
     expect(configure.body).toMatchObject({ model: expect.stringMatching(/^anthropic\//), keyScope: `org_${setup.context.orgId}`, spendLimit: null });
     expect(configure.body.systemPromptAppend).toContain("camelAI tools on this runtime");
     expect(await setup.orgStub.getThreadRuntime(setup.threadId)).toMatchObject({ agentId: adopted });
+  });
+});
+
+describe("the runtime prompt's two filesystems", () => {
+  it("tells the model /workspace is this thread's scratch and camelAI's workspace is durable, without forbidding fs", async () => {
+    const setup = await runtimeThread();
+    const calls = fakeRuntime();
+    await send(setup, "hello", "cm_prompt");
+    const append: string = calls.find((call) => call.path === "/v1/agents")!.body.systemPromptAppend;
+    expect(append).toContain("/workspace is this conversation's scratch space");
+    expect(append).toContain("fs in js_exec");
+    expect(append).toContain("only when the user asks");
+    expect(append).not.toMatch(/not fs\b/);
+    expect(await setup.orgStub.getThreadRuntime(setup.threadId)).toMatchObject({ configured: { promptVersion: RUNTIME_PROMPT_VERSION } });
+  });
+
+  it("sends the prompt again, once, to an agent configured with an earlier version", async () => {
+    const setup = await runtimeThread();
+    fakeRuntime();
+    await send(setup, "first", "cm_p1");
+    const row = (await setup.orgStub.getThreadRuntime(setup.threadId))!;
+    await setup.orgStub.setThreadRuntimeAgent(setup.threadId, { agentId: row.agentId!, model: row.model, keyScope: row.keyScope, configured: { thinkingLevel: "medium", spendLimitUsd: null } });
+    let calls = fakeRuntime();
+    await send(setup, "second", "cm_p2");
+    const configure = calls.find((call) => call.path.endsWith("/configuration"))!;
+    expect(configure.body.systemPromptAppend).toContain("/workspace is this conversation's scratch space");
+    expect(configure.body).not.toHaveProperty("model");
+    calls = fakeRuntime();
+    await send(setup, "third", "cm_p3");
+    expect(calls.some((call) => call.path.endsWith("/configuration"))).toBe(false);
   });
 });
