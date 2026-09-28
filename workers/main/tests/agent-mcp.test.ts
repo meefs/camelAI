@@ -40,6 +40,13 @@ function setup(options: { access?: typeof allowed; result?: Envelope } = {}) {
 }
 
 describe("agent MCP", () => {
+  it("answers 503 without a runtime tenant to check tokens against", async () => {
+    const env = { AGENT_RUNTIME_URL: rt.url } as unknown as Env;
+    const handler = agentMcpHandler(env, vi.fn<ToolsFactory>(), { fetch: rt.fetch });
+    const list = { jsonrpc: "2.0", id: 1, method: "tools/list" };
+    expect((await handler(await rt.request(MCP_URL, list, ALICE))).status).toBe(503);
+  });
+
   it("rejects requests without a valid runtime token", async () => {
     const { handler, validate } = setup();
     const list = { jsonrpc: "2.0", id: 1, method: "tools/list" };
@@ -121,8 +128,8 @@ describe("agent MCP", () => {
     expect(denied.tools).not.toHaveBeenCalled();
 
     const { handler, validate, tools } = setup();
-    expect(await rt.callTool(handler, MCP_URL, "list_projects", {}, { ...ALICE, tenant: "someone-else" }))
-      .toMatchObject({ isError: true });
+    // The SDK refuses another tenant's token before any tool runs.
+    await expect(rt.callTool(handler, MCP_URL, "list_projects", {}, { ...ALICE, tenant: "someone-else" })).rejects.toThrow();
     expect(await rt.callTool(handler, MCP_URL, "list_projects", {}, { ...ALICE, context: { org: "org1", workspace: "ws1" } }))
       .toMatchObject({ isError: true });
     expect(validate).not.toHaveBeenCalled();

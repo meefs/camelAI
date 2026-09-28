@@ -9,7 +9,8 @@ export interface RuntimeApiEnv {
 }
 
 export class RuntimeApiError extends Error {
-  constructor(message: string, readonly status: number) {
+  /** The runtime's error `code` (e.g. IDEMPOTENCY_CONFLICT): stable, where the message is not. */
+  constructor(message: string, readonly status: number, readonly code: string | null = null) {
     super(message);
     this.name = "RuntimeApiError";
   }
@@ -47,7 +48,10 @@ export async function runtimeApi(
     const message = parsed && typeof parsed === "object" && typeof (parsed as { error?: unknown }).error === "string"
       ? (parsed as { error: string }).error
       : text.slice(0, 500);
-    throw new RuntimeApiError(`Agent runtime ${method} ${path.split("?")[0]}: HTTP ${response.status} ${message}`, response.status);
+    const code = parsed && typeof parsed === "object" && typeof (parsed as { code?: unknown }).code === "string"
+      ? (parsed as { code: string }).code
+      : null;
+    throw new RuntimeApiError(`Agent runtime ${method} ${path.split("?")[0]}: HTTP ${response.status} ${message}`, response.status, code);
   }
   return parsed;
 }

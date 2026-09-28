@@ -242,7 +242,8 @@ async function createThreadAgent(
     if (typeof created?.id !== "string") throw new Error("Agent runtime returned no agent id");
     return { agentId: created.id, adopted: false };
   } catch (error) {
-    if (!(error instanceof RuntimeApiError && error.status === 409 && /different configuration/i.test(error.message))) throw error;
+    // The key made an agent before, with a configuration since changed.
+    if (!(error instanceof RuntimeApiError && error.code === "IDEMPOTENCY_CONFLICT")) throw error;
     const tenant = env.AGENT_RUNTIME_TENANT?.trim() ?? "";
     const byKey = await provisionedAgentId(tenant, key);
     const found = await runtimeApi(env, "GET", `/v1/agents/${encodeURIComponent(byKey)}`).then(() => byKey, () => null)

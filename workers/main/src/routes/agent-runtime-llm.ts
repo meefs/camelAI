@@ -39,11 +39,14 @@ export async function handleAgentRuntimeLlmRequest(
   const match = /^\/agent-runtime\/llm\/([a-z0-9-]+)\/(.+)$/.exec(url.pathname);
   if (!match) return error(404, "Not found", "not_found");
   const [, provider, path] = match;
+  const tenant = env.AGENT_RUNTIME_TENANT?.trim();
+  if (!tenant) return error(503, "The agent runtime is not configured", "not_configured");
   const token = req.headers.get(AGENT_RUNTIME_IDENTITY_HEADER)?.trim();
   if (!token) return error(401, `No ${AGENT_RUNTIME_IDENTITY_HEADER} token`, "invalid_token");
   let identity: Awaited<ReturnType<typeof verifyRuntimeToken>>;
   try {
     identity = await verifyRuntimeToken(token, {
+      tenant,
       runtime: env.AGENT_RUNTIME_URL || DEFAULT_RUNTIME,
       audience: audience(env, req),
       ...(options.fetch ? { fetch: options.fetch } : {}),

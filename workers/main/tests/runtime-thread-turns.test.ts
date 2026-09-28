@@ -308,7 +308,7 @@ describe("agent creation conflicts", () => {
     const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(tenantKey));
     const adopted = `client_${[...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("").slice(0, 40)}`;
     const calls = fakeRuntime({
-      "POST /v1/agents": () => Response.json({ error: "Idempotency key reused with different configuration" }, { status: 409 }),
+      "POST /v1/agents": () => Response.json({ error: "This Idempotency-Key was sent with another request: a key is for one method, path and body", code: "IDEMPOTENCY_CONFLICT" }, { status: 409 }),
       [`GET /v1/agents/${adopted}`]: () => Response.json({ id: adopted }),
     });
     expect(await send(setup, "hello", "cm_adopt")).toMatchObject({ status: "accepted", agentId: adopted });

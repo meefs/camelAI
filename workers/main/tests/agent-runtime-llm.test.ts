@@ -46,6 +46,12 @@ async function post(env: Env, audience: string, identity: TestIdentity = ALICE) 
 }
 
 describe("agent runtime inference proxy", () => {
+  it("answers 503 without a runtime tenant to check tokens against", async () => {
+    const { env, completion } = setup();
+    expect((await post({ ...env, AGENT_RUNTIME_TENANT: "" } as Env, BASE)).status).toBe(503);
+    expect(completion).not.toHaveBeenCalled();
+  });
+
   it("runs the call in the thread's DO as the acting user", async () => {
     const { env, completion } = setup();
     const response = await post(env, BASE);
@@ -61,7 +67,7 @@ describe("agent runtime inference proxy", () => {
     const { env, completion } = setup();
     expect((await post(env, "https://camel.test/mcp/agent")).status).toBe(401);
     expect((await post(env, URL_)).status).toBe(401);
-    expect((await post(env, BASE, { ...ALICE, tenant: "other" })).status).toBe(403);
+    expect((await post(env, BASE, { ...ALICE, tenant: "other" })).status).toBe(401);
     const denied = setup(false);
     expect((await post(denied.env, BASE)).status).toBe(403);
     const unsigned = await handleAgentRuntimeLlmRequest(new Request(URL_, { method: "POST", body: "{}" }), env, { fetch: rt.fetch });

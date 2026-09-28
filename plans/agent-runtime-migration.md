@@ -87,7 +87,7 @@ runtime ──usage.recorded webhook events (Standard Webhooks)──> /agent-ru
     runtime on (§6);
   - `AGENT_RUNTIME_EVENTS_WEBHOOK_SECRET`: the signing secret of the webhook
     endpoint for run, input and usage events.
-- **SDK dependency.** `@camelai/agent-runtime@^0.5.0` from npm (`./server`, `./testing`).
+- **SDK dependency.** `@camelai/agent-runtime@^0.9.0` from npm (`./server`, `./testing`, and `./watch` in the browser).
 - **Tests.** `bun run test:workers -- agent-mcp` (`testRuntime()` signs real
   tokens). They cover:
   - bad, expired, wrong-audience and wrong-issuer tokens;
