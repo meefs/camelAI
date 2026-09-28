@@ -20,7 +20,7 @@ import type { Message, PreviewTarget } from "@/types";
 import { localToolName, runtimeInputQuestions, type RuntimeInput } from "@/lib/agent-runtime-shared";
 import { latestRuntimeTodos, piRender, type PiRenderMemo } from "@/lib/pi-render";
 import { getPreviewTabId } from "@/components/preview-panel/preview-utils";
-import { watchAgent, type AgentView, type Watcher } from "@/lib/vendor/agent-runtime-watch";
+import { watchAgent, type AgentView, type Watcher } from "@camelai/agent-runtime/watch";
 import { stripSystemMessageTags } from "@/lib/turn-utils";
 import { toast } from "sonner";
 
@@ -81,7 +81,11 @@ const EMPTY_UI_MESSAGES: UIMessage[] = [];
 const SUBMITTED_WINDOW_MS = 60_000;
 const RECONNECT_DELAY_MS = 1_000;
 
-type View = Pick<AgentView, "messages" | "indexes" | "partial" | "running" | "pendingInputs" | "lastOutcome" | "hasOlder"> & {
+// The watcher's messages are Pi's (the SDK declares its own structural copy
+// of them); the view keeps Pi's types for pi-render.
+type View = Pick<AgentView, "indexes" | "running" | "pendingInputs" | "lastOutcome" | "hasOlder"> & {
+  messages: AgentMessage[];
+  partial: AssistantMessage | null;
   progress: Map<string, unknown>;
 };
 
@@ -101,7 +105,7 @@ function seedView(seed: RuntimeThreadSeed | null | undefined): View {
 
 function snapshot(state: AgentView): View {
   return {
-    messages: [...state.messages],
+    messages: [...state.messages] as AgentMessage[],
     indexes: [...state.indexes],
     partial: state.partial as AssistantMessage | null,
     progress: new Map(state.progress),
@@ -216,12 +220,26 @@ export function useRuntimeThread(options: {
     let cancelled = false;
     let frame: number | null = null;
     let latest: AgentView | null = null;
+    let restart: number | null = null;
+    let restartDelay = RECONNECT_DELAY_MS;
     const flush = () => {
       frame = null;
       if (!cancelled && latest) setView(snapshot(latest));
     };
-    const start = async () => {
-      const initial = seed?.token && seed.agentId === agentId && seed.url && (seed.expiresAt ?? 0) - Date.now() > 60_000
+    const rewatch = () => {
+      if (restart !== null || cancelled) return;
+      restart = window.setTimeout(() => {
+        restart = null;
+        if (cancelled) return;
+        start(true).then(() => { restartDelay = RECONNECT_DELAY_MS; }, (error) => {
+          console.warn("[runtime-thread] could not watch the agent again", error);
+          rewatch();
+        });
+      }, restartDelay);
+      restartDelay = Math.min(restartDelay * 2, 30_000);
+    };
+    const start = async (fresh = false) => {
+      const initial = !fresh && seed?.token && seed.agentId === agentId && seed.url && (seed.expiresAt ?? 0) - Date.now() > 60_000
         ? { token: seed.token, expiresAt: seed.expiresAt ?? undefined, url: seed.url }
         : await getToken();
       if (cancelled) return;
@@ -236,6 +254,13 @@ export function useRuntimeThread(options: {
           else if (event?.type === "agent_end") runStartRef.current = undefined;
         },
         onChange: (state) => {
+          // The watcher stops when its token cannot be renewed: watch again
+          // with a new one, backing off while the token route keeps failing.
+          if (state.expired) {
+            watcherRef.current?.close();
+            rewatch();
+            return;
+          }
           latest = state;
           // Deltas arrive per token: render at most once a frame.
           if (frame === null) frame = requestAnimationFrame(flush);
@@ -247,6 +272,7 @@ export function useRuntimeThread(options: {
     return () => {
       cancelled = true;
       if (frame !== null) cancelAnimationFrame(frame);
+      if (restart !== null) window.clearTimeout(restart);
       watcherRef.current?.close();
       watcherRef.current = null;
     };

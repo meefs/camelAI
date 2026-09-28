@@ -12,11 +12,12 @@ type FakeState = {
   hasOlder: boolean;
   transport: null;
   connected: boolean;
+  expired?: boolean;
 };
 
 const watchers: Array<{ options: any; state: FakeState; emit(patch: Partial<FakeState>): void; closed: boolean; loadOlder: ReturnType<typeof vi.fn> }> = [];
 
-vi.mock("@/lib/vendor/agent-runtime-watch", () => ({
+vi.mock("@camelai/agent-runtime/watch", () => ({
   watchAgent: (options: any) => {
     const state: FakeState = { messages: [], indexes: [], partial: null, progress: new Map(), running: false, pendingInputs: [], lastOutcome: null, hasOlder: false, transport: null, connected: true };
     const watcher = {
@@ -105,6 +106,16 @@ describe("useRuntimeThread", () => {
     await waitFor(() => expect(result.current.chat.isStreaming).toBe(true));
     // A response after a finished answer is a new turn (a run no message of ours started).
     expect(result.current.chat.streamingMessageId).toBe("rt:2");
+  });
+
+  it("watches again with a new token once the watcher stops on an expired token", async () => {
+    responses["/api/threads/t1/token"] = { token: "abt_new", expiresAt: Date.now() + 900_000, url: "https://agents.test", agentId: "agt_1" };
+    mount();
+    await waitFor(() => expect(watchers).toHaveLength(1));
+    act(() => watchers[0].emit({ expired: true, connected: false }));
+    await waitFor(() => expect(watchers).toHaveLength(2), { timeout: 3_000 });
+    expect(watchers[0].closed).toBe(true);
+    expect(watchers[1].options).toMatchObject({ agentId: "agt_1", token: "abt_new" });
   });
 
   it("sends through the route, and matches the message that comes back to the client's id", async () => {
