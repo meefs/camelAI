@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { env } from "cloudflare:test";
 import { encryptCredentials } from "../../../src/lib/integration-crypto";
 import { stringifyStoredLlmProviderConfig } from "../../../src/lib/llm-provider-config";
+import { buildWorkspaceScopedR2Key } from "../../../src/lib/workspace-r2-paths";
 import type { ChatEnv } from "../src/chat-thread/types";
 import { RUNTIME_PROMPT_VERSION } from "../src/chat-thread/runtime-agent";
 import {
@@ -32,7 +33,7 @@ const runtimeEnv = {
   AGENT_RUNTIME_DEFINITION: "def_test",
 } as ChatEnv;
 
-type Call = { method: string; path: string; body: any; headers: Headers };
+type Call = { method: string; path: string; body: any; raw?: string; headers: Headers };
 
 function fakeRuntime(responses: Record<string, (call: Call) => Response> = {}) {
   const calls: Call[] = [];
@@ -40,11 +41,15 @@ function fakeRuntime(responses: Record<string, (call: Call) => Response> = {}) {
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(input instanceof Request ? input.url : String(input));
     if (url.origin !== RUNTIME) return original(input, init);
+    const headers = new Headers(init?.headers);
+    const json = (headers.get("content-type") ?? "").includes("json");
+    const raw = init?.body !== undefined && init?.body !== null && !json ? await new Response(init.body as BodyInit).text() : undefined;
     const call = {
       method: init?.method ?? "GET",
       path: `${url.pathname}${url.search}`,
-      body: init?.body ? JSON.parse(String(init.body)) : undefined,
-      headers: new Headers(init?.headers),
+      body: init?.body && json ? JSON.parse(String(init.body)) : undefined,
+      raw,
+      headers,
     };
     calls.push(call);
     const key = `${call.method} ${url.pathname}`;
@@ -54,6 +59,10 @@ function fakeRuntime(responses: Record<string, (call: Call) => Response> = {}) {
     if (key.endsWith("/configuration")) return Response.json({ id: call.body.requestId, method: "configure", state: "running", fingerprint: "f" }, { status: 202 });
     if (key.endsWith("/browser-tokens")) return Response.json({ token: "abt_1", expiresAt: 1_900_000_000_000, agentId: "agt_1", url: "https://agents.test" }, { status: 201 });
     if (key.endsWith("/abort")) return Response.json({ aborted: true });
+    if (call.method === "PUT" && url.pathname.includes("/uploads/")) {
+      const [requestId, name] = url.pathname.split("/uploads/")[1].split("/").map(decodeURIComponent);
+      return Response.json({ path: `/workspace/uploads/${requestId}/${name}`, version: 1, size: raw?.length ?? 0, updatedAt: 1, contentType: headers.get("content-type") ?? "" }, { status: 201 });
+    }
     // An idle agent that has never seen the request.
     if (call.method === "GET" && url.pathname.endsWith("/state")) return Response.json({ cursor: 1, requests: [] });
     if (call.method === "GET" && url.pathname.includes("/requests/")) return Response.json({ error: "Unknown request" }, { status: 404 });
@@ -362,5 +371,50 @@ describe("threadScratchVolume", () => {
     const setup = await runtimeThread();
     const row = (await setup.orgStub.getThreadRuntime(setup.threadId))!;
     expect(await threadScratchVolume(runtimeEnv, setup.context, row)).toBeNull();
+  });
+});
+
+describe("uploads attached to the runtime message", () => {
+  async function upload(setup: Awaited<ReturnType<typeof runtimeThread>>, filename: string, body: string, contentType: string) {
+    await testEnv.R2_BUCKET.put(buildWorkspaceScopedR2Key(setup.context.orgId, setup.context.workspaceId, `user-uploads/${filename}`), body, { httpMetadata: { contentType } });
+  }
+  const uploadRoute = (call: Call) => call.method === "PUT" && call.path.includes("/uploads/");
+
+  it("streams the message's uploads from R2 to the agent and attaches them, keeping the R2 reference in the text", async () => {
+    const setup = await runtimeThread();
+    await upload(setup, "q3-1790000000000-ab12cd.pdf", "%PDF-1.7", "application/pdf");
+    await upload(setup, "chart-1790000000001-ef34gh.png", "png-bytes", "image/png");
+    const calls = fakeRuntime();
+    const text = "Compare these (user uploaded file to uploads/q3-1790000000000-ab12cd.pdf) (user uploaded file to uploads/chart-1790000000001-ef34gh.png)";
+    const result = await send(setup, text, "cm_up");
+    expect(result).toMatchObject({ status: "accepted" });
+    const uploads = calls.filter(uploadRoute);
+    expect(uploads.map((call) => call.path)).toEqual([
+      "/v1/agents/agt_1/uploads/cm_up/q3.pdf",
+      "/v1/agents/agt_1/uploads/cm_up/chart.png",
+    ]);
+    expect(uploads[0].headers.get("content-type")).toBe("application/pdf");
+    expect(uploads[0].raw).toBe("%PDF-1.7");
+    // The agent exists before its uploads, and they come before the message.
+    const order = calls.map((call) => call.path);
+    expect(order.indexOf("/v1/agents")).toBeLessThan(order.indexOf(uploads[0].path));
+    expect(order.indexOf(uploads[1].path)).toBeLessThan(order.findIndex((path) => path.endsWith("/prompt")));
+    const prompt = calls.find((call) => call.path.endsWith("/prompt"))!;
+    expect(prompt.body.files).toEqual([{ path: "/workspace/uploads/cm_up/q3.pdf" }, { path: "/workspace/uploads/cm_up/chart.png" }]);
+    expect(prompt.body.text).toContain("(user uploaded file to uploads/q3-1790000000000-ab12cd.pdf)");
+  });
+
+  it("leaves out unsafe, missing and failed uploads, and still sends the message", async () => {
+    const setup = await runtimeThread();
+    await upload(setup, "tool-1790000000000-ab12cd.exe", "MZ", "application/octet-stream");
+    const calls = fakeRuntime({
+      "PUT /v1/agents/agt_1/uploads/cm_bad/notes.txt": () => Response.json({ error: "boom" }, { status: 500 }),
+    });
+    await upload(setup, "notes-1790000000002-zz99yy.txt", "hi", "text/plain");
+    const text = "(user uploaded file to uploads/tool-1790000000000-ab12cd.exe) (user uploaded file to uploads/gone-1790000000003-aa11bb.csv) (user uploaded file to uploads/notes-1790000000002-zz99yy.txt)";
+    expect(await send(setup, text, "cm_bad")).toMatchObject({ status: "accepted" });
+    expect(calls.filter(uploadRoute).map((call) => call.path)).toEqual(["/v1/agents/agt_1/uploads/cm_bad/notes.txt"]);
+    const prompt = calls.find((call) => call.path.endsWith("/prompt"))!;
+    expect(prompt.body).not.toHaveProperty("files");
   });
 });
