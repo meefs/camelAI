@@ -31,6 +31,8 @@ export interface RuntimeThreadSeed {
   page: { entries: Array<{ index: number; message: unknown }>; next: number | null } | null;
   previewTabs: PreviewTarget[];
   activeTabId: string | null;
+  /** The first message was refused before any agent ran (limits, credits, a ban): shown as a turn error. */
+  startError?: { id: string; error: string } | null;
 }
 
 /** The slice of Chat.tsx's agent connection a runtime thread answers. */
@@ -340,6 +342,10 @@ export function useRuntimeThread(options: {
     if (!lastError && view.lastOutcome?.error) {
       lastError = { id: `rt-outcome:${view.lastOutcome.id}`, error: view.lastOutcome.error, billingSource: null, provider: null, status: null, errorType: null };
     }
+    // Until the thread's agent exists, the refusal of its first message.
+    if (!lastError && !agentId && seed?.startError) {
+      lastError = { id: seed.startError.id, error: seed.startError.error, billingSource: null, provider: null, status: null, errorType: null };
+    }
     return {
       previewTabs: preview.tabs,
       previewActiveTabId: preview.activeTabId,
@@ -352,7 +358,7 @@ export function useRuntimeThread(options: {
       lastError,
       modelFallbackNotice: fallbackNotice ?? null,
     };
-  }, [view, preview, fallbackNotice]);
+  }, [view, preview, fallbackNotice, agentId, seed]);
 
   // Deltas re-derive the state every frame; hand it on only when it changed.
   const lastStateRef = useRef<string | null>(null);

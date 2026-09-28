@@ -109,7 +109,7 @@ export async function loadRuntimeThreadSeed(
     getThreadUiState(threadId: string): Promise<{ preview: Record<string, unknown> | null } | null>;
   };
   const agentId = input.row.agentId;
-  const [uiState, reads] = await Promise.all([
+  const [uiState, reads, startError] = await Promise.all([
     org.getThreadUiState(input.threadId).catch(() => null),
     agentId
       ? Promise.all([
@@ -123,6 +123,8 @@ export async function loadRuntimeThreadSeed(
           },
         )
       : Promise.resolve({ token: null, page: null, error: null }),
+    // No agent yet: the first message never reached one. Its refusal, if any.
+    agentId ? Promise.resolve(null) : runtimeStartError(org, input.threadId),
   ]);
   const preview = uiState?.preview ?? null;
   const previewTabs = Array.isArray(preview?.tabs) ? (preview.tabs as PreviewTarget[]) : [];
@@ -136,9 +138,23 @@ export async function loadRuntimeThreadSeed(
       page: reads.page ? { entries: reads.page.entries, next: reads.page.next } : null,
       previewTabs,
       activeTabId,
+      startError,
     },
     error: reads.error,
   };
+}
+
+/** Why a runtime thread's first message was refused (recorded by startFirstRuntimeTurn), or null. */
+async function runtimeStartError(
+  org: unknown,
+  threadId: string,
+): Promise<RuntimeThreadSeed["startError"]> {
+  const thread = await (org as { getThread(id: string): Promise<{ last_chat_error_at?: number | null; last_chat_error_message?: string | null } | null> })
+    .getThread(threadId)
+    .catch(() => null);
+  const message = thread?.last_chat_error_message?.trim();
+  if (!message) return null;
+  return { id: `rt-start:${thread?.last_chat_error_at ?? 0}`, error: message };
 }
 
 /**
@@ -166,9 +182,28 @@ export async function startFirstRuntimeTurn(
     waitUntil(promise: Promise<unknown>): void;
   },
 ): Promise<RuntimeTurnResult> {
-  return await startRuntimeTurn(getEnv(loadContext) as unknown as ChatEnv, {
-    ...input,
-    clientMessageId: `initial:${input.context.threadId}`,
-    source: "web",
-  });
+  const env = getEnv(loadContext) as unknown as ChatEnv;
+  let turn: RuntimeTurnResult;
+  try {
+    turn = await startRuntimeTurn(env, {
+      ...input,
+      clientMessageId: `initial:${input.context.threadId}`,
+      source: "web",
+    });
+  } catch (error) {
+    turn = { status: "error", error: error instanceof Error ? error.message : "Failed to send message" };
+  }
+  if (turn.status !== "accepted") {
+    // Nobody is on the page yet: keep the refusal on the thread, where its
+    // page reads it (loadRuntimeThreadSeed) and shows it as the DO path does.
+    await env.ORG.get(env.ORG.idFromName(input.context.orgId))
+      .recordThreadError(input.context.threadId, {
+        message: turn.error,
+        source: "agent_runtime_start",
+        errorKind: turn.code ?? turn.status,
+        userId: input.sender.userId,
+      })
+      .catch((error: unknown) => console.error("[runtime-thread] failed to record a refused first message", error));
+  }
+  return turn;
 }

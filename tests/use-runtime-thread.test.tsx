@@ -155,6 +155,15 @@ describe("useRuntimeThread", () => {
     expect(fetchCalls.at(-1)).toMatchObject({ url: "/api/threads/t1/stop?workspaceId=w1", method: "POST" });
   });
 
+  it("shows a refused first message as the turn's error until the thread has an agent", async () => {
+    const refused = { ...seed, agentId: null, token: null, url: null, expiresAt: null, page: null, startError: { id: "rt-start:5", error: "LLM usage limit reached." } };
+    const { callbacks } = mount(refused);
+    await waitFor(() => expect(callbacks.current.onStateUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      lastError: expect.objectContaining({ id: "rt-start:5", error: "LLM usage limit reached." }),
+    })));
+    expect(watchers).toHaveLength(0);
+  });
+
   it("opens the preview a set_preview result names while the page watches", async () => {
     const { callbacks } = mount();
     await waitFor(() => expect(watchers).toHaveLength(1));
