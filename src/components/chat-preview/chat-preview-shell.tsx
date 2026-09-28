@@ -74,8 +74,12 @@ export function coercePreviewTarget(value: unknown): PreviewTarget | null {
       (record.source !== "workspace" &&
         record.source !== "project" &&
         record.source !== "upload" &&
-        record.source !== "output")
+        record.source !== "output" &&
+        record.source !== "scratch")
     ) {
+      return null;
+    }
+    if (record.source === "scratch" && typeof record.threadId !== "string") {
       return null;
     }
     const project =
@@ -91,6 +95,7 @@ export function coercePreviewTarget(value: unknown): PreviewTarget | null {
       workspaceId: record.workspaceId,
       path: record.path,
       project,
+      ...(record.source === "scratch" ? { threadId: record.threadId as string } : {}),
       filename:
         typeof record.filename === "string" ? record.filename : undefined,
       contentType:

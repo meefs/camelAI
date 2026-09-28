@@ -93,6 +93,7 @@ function fileBlock(threadId: string, file: { path: string; contentType?: unknown
     path: file.path,
     name: file.path.split("/").filter(Boolean).pop() ?? file.path,
     href: scratchFileHref(threadId, file.path),
+    threadId,
     ...(typeof file.contentType === "string" && file.contentType ? { contentType: file.contentType } : {}),
     ...(typeof file.size === "number" && Number.isFinite(file.size) ? { size: file.size } : {}),
     ...(typeof file.caption === "string" && file.caption.trim() ? { caption: file.caption.trim() } : {}),

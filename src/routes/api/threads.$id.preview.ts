@@ -30,7 +30,7 @@ export async function action({ request, context, params }: ActionFunctionArgs) {
   const org = env.ORG.get(env.ORG.idFromName(threadContext.orgId)) as unknown as Pick<OrgDO, "setThreadUiState">;
   // Tabs render as iframes and links: keep only well-formed targets, and
   // files only from this thread's workspace.
-  const preview = normalizePreviewTabs(body?.tabs, body?.activeTabId, threadContext.workspaceId);
+  const preview = normalizePreviewTabs(body?.tabs, body?.activeTabId, threadContext.workspaceId, threadContext.threadId);
   const saved = await org.setThreadUiState(threadContext.threadId, preview);
   return Response.json({ previewVersion: saved?.previewVersion ?? null });
 }

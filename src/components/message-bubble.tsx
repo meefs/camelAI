@@ -19,6 +19,7 @@ import { memo } from 'react';
 import type { ReactNode } from 'react';
 import { useAuthData } from '@/hooks/use-auth-data';
 import { FilePreviewChip } from '@/components/chat-file-preview';
+import { SaveScratchFileButton } from '@/components/chat-file-preview/save-scratch-file-button';
 import { CollapsibleUserMessage } from '@/components/collapsible-user-message';
 import { ChannelLogo } from '@/components/chat/channel-logo';
 import {
@@ -385,15 +386,31 @@ export function ContentBlockRenderer({
         kind: 'other',
         key: `file-${index}`,
         node: (
-          <div className="flex flex-col gap-1">
+          <div className="flex flex-col items-start gap-1">
             <FilePreviewChip
               filename={block.name}
               previewUrl={block.href}
               contentType={block.contentType}
               fileSize={block.size}
+              previewTarget={
+                block.threadId && workspaceId
+                  ? {
+                      kind: 'file',
+                      source: 'scratch',
+                      workspaceId,
+                      threadId: block.threadId,
+                      path: block.path,
+                      filename: block.name,
+                      contentType: block.contentType,
+                    }
+                  : undefined
+              }
             />
             {block.caption ? (
               <p className="text-xs text-muted-foreground">{block.caption}</p>
+            ) : null}
+            {block.threadId ? (
+              <SaveScratchFileButton threadId={block.threadId} path={block.path} workspaceId={workspaceId} />
             ) : null}
           </div>
         ),

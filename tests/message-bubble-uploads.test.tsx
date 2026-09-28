@@ -140,6 +140,7 @@ describe('MessageBubble scratch files', () => {
     path: `/workspace/out/${name}`,
     name,
     href: `/api/threads/thread-1/files/workspace/out/${name}`,
+    threadId: 'thread-1',
     contentType: 'image/png',
     size: 900,
     caption: 'Q3 revenue',
@@ -157,5 +158,6 @@ describe('MessageBubble scratch files', () => {
     render(<MessageBubble message={reply} copiedId={null} onCopy={vi.fn()} renderMode="final-text-only" />);
     expect(screen.getByTestId('file-preview-chip').textContent).toBe('chart.png');
     expect(screen.getByText('Q3 revenue')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Save to workspace' })).toBeTruthy();
   });
 });

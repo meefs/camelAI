@@ -540,3 +540,14 @@ export async function fetchScratchFile(
     },
   });
 }
+
+/** A short-lived link to a scratch file, which the runtime serves without a token (for import_file). */
+export async function scratchFileLink(env: ChatEnv, volumeId: string, volumePath: string, expiresIn = 60): Promise<string> {
+  const link = await runtimeApi(env, "POST", `/v1/volumes/${encodeURIComponent(volumeId)}/links`, {
+    path: volumePath,
+    method: "GET",
+    expiresIn,
+  }) as { url?: unknown };
+  if (typeof link?.url !== "string") throw new Error("Agent runtime returned no link");
+  return link.url;
+}

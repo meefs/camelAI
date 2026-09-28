@@ -320,6 +320,9 @@ export function assertNotBase64IntoBinaryFile(path: string, content: string): vo
   );
 }
 const CODE_MODE_R2_MAX_TEXT_OBJECT_BYTES = 10 * 1024 * 1024;
+/** The largest scratch file import_file copies into the workspace (a volume file is at most 256 MiB). */
+const IMPORT_FILE_MAX_BYTES = 64 * 1024 * 1024;
+
 const JS_EXEC_EXCLUDED_TOOL_NAMES = new Set([
   // This tool waits for human input and can outlive js_exec's short sandbox
   // timeout. Keep it as a top-level Pi tool so the agent sees the submission.
@@ -334,6 +337,9 @@ const JS_EXEC_EXCLUDED_TOOL_NAMES = new Set([
   // Backing tool for env.WORKSPACE.*. Keep the user-facing runtime facade in
   // tools.help(), not the implementation detail.
   "workspace_info",
+  // Copies a runtime thread's scratch file (served over MCP only); ChatThreadDO
+  // threads have no scratch space.
+  "import_file",
 ]);
 
 export function clampCodeModeInteger(value: unknown, fallback: number, min: number, max: number): number {
@@ -820,6 +826,18 @@ const CODE_MODE_TOOL_REGISTRY: CodeModeToolRegistration[] = [
       deleteSource: Type.Optional(Type.Boolean({
         description: "Delete the source after all destination writes succeed. Defaults to false.",
       })),
+    }, { additionalProperties: false }),
+    { category: "workspace", sideEffect: true },
+  ),
+  codeModeTool(
+    "import_file",
+    "Save a file from this conversation's scratch space (/workspace) into the camelAI workspace, only when the user asks to keep it. Pass the scratch file as source: { \"$file\": \"/workspace/...\" } (the runtime fills in a link), and where to save it as destination: { location, path, project? }. Arguments: { source, destination }.",
+    Type.Object({
+      source: Type.String({
+        format: "uri",
+        description: "The scratch file, as { \"$file\": \"/workspace/<path>\" }; the runtime replaces it with a link to the file.",
+      }),
+      destination: MOVE_ENDPOINT_PARAMETERS,
     }, { additionalProperties: false }),
     { category: "workspace", sideEffect: true },
   ),
@@ -3382,6 +3400,56 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     };
   }
 
+  /**
+   * import_file: copy a runtime thread's scratch file into the workspace. The
+   * runtime turns the model's `{"$file": "/workspace/..."}` into a signed link
+   * to that file (its /v1/links route), the only source this reads.
+   */
+  private async importFile(args: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (this.ctx?.props?.directRuntime !== true) {
+      throw new Error("import_file is for runtime threads, whose scratch files live at /workspace");
+    }
+    const runtimeOrigin = new URL((this.env as { AGENT_RUNTIME_URL?: string }).AGENT_RUNTIME_URL || "https://agents.camelai.dev").origin;
+    let source: URL | null = null;
+    try {
+      source = typeof args.source === "string" ? new URL(args.source) : null;
+    } catch {
+      source = null;
+    }
+    if (!source || source.origin !== runtimeOrigin || !source.pathname.startsWith("/v1/links/")) {
+      throw new Error('source must be a scratch file, passed as { "$file": "/workspace/<path>" }');
+    }
+    const destination = this.normalizeMoveEndpoint(args.destination, "destination");
+    if (destination.location === "r2") {
+      this.resolveCodeModeR2Path(destination as unknown as Record<string, unknown>, { requireWritable: true });
+    }
+    const response = await fetch(source.toString());
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw new Error(`Could not read the scratch file (HTTP ${response.status}); its link may have expired, so pass { "$file": … } again`);
+    }
+    const declared = Number(response.headers.get("content-length") ?? 0);
+    if (declared > IMPORT_FILE_MAX_BYTES) {
+      await response.body?.cancel();
+      throw new Error(`The file is too large to import (${declared} bytes; at most ${IMPORT_FILE_MAX_BYTES})`);
+    }
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.byteLength > IMPORT_FILE_MAX_BYTES) {
+      throw new Error(`The file is too large to import (${bytes.byteLength} bytes; at most ${IMPORT_FILE_MAX_BYTES})`);
+    }
+    const contentType = destination.contentType ?? response.headers.get("content-type")?.split(";")[0]?.trim() ?? undefined;
+    const written = await this.writeMoveDestinationFile(destination, destination.path, bytes, contentType || undefined);
+    const text = `Saved ${written.bytes} bytes to ${destination.location} ${written.path}`;
+    return {
+      text,
+      content: [{ type: "text", text }],
+      details: {
+        destination: { location: destination.location, path: written.path, project: destination.project ?? null },
+        bytes: written.bytes,
+      },
+    };
+  }
+
   private async getAppUrl(script: WorkerScript): Promise<string> {
     let appHostname = "camelai.dev";
     const workerBaseUrl = (this.env as { WORKER_BASE_URL?: string }).WORKER_BASE_URL;
@@ -3663,6 +3731,9 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
 
         case "move":
           return this.moveFile(args);
+
+        case "import_file":
+          return this.importFile(args);
 
         case "list_projects":
           return (await this.workspaceFs.listProjects()).map(projectForAgent);

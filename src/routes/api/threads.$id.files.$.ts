@@ -1,6 +1,13 @@
 import type { LoaderFunctionArgs } from "react-router";
 import { requestWorkspaceId, requireRuntimeThread } from "@/lib/runtime-threads.server";
 import { getMimeType, shouldDisplayInline } from "@/lib/file-content-headers";
+import { FULL_TEXT_PREVIEW_BYTE_LIMIT } from "@/lib/file-preview-limits";
+import {
+  BinaryTextPreviewError,
+  FullTextPreviewTooLargeError,
+  normalizeTextPreviewMaxLines,
+  readTextPreviewFromStream,
+} from "./text-preview-stream";
 import { scratchVolumePath } from "@/lib/agent-runtime-shared";
 import { fetchScratchFile, threadScratchVolume } from "../../../workers/main/src/agent-runtime/thread-runtime";
 
@@ -41,7 +48,31 @@ export async function loader({ request, context, params }: LoaderFunctionArgs) {
   }
   const filename = volumePath.split("/").pop() || "file";
   const contentType = getMimeType(filename);
-  const download = new URL(request.url).searchParams.get("download") === "1";
+  const query = new URL(request.url).searchParams;
+  const text = query.get("text");
+  if (text === "initial" || text === "full") {
+    // The preview's text view, as the workspace text-preview route answers it.
+    const size = Number(upstream.headers.get("content-length") ?? "") || undefined;
+    if (text === "full" && size !== undefined && size > FULL_TEXT_PREVIEW_BYTE_LIMIT) {
+      await upstream.body?.cancel();
+      return Response.json({ error: new FullTextPreviewTooLargeError().message }, { status: 413 });
+    }
+    try {
+      const preview = await readTextPreviewFromStream(upstream.body!, {
+        mode: text,
+        maxLines: normalizeTextPreviewMaxLines(query.get("maxLines")),
+        contentType,
+        path: shown,
+        size,
+      });
+      return Response.json(preview, { headers: { "Cache-Control": "private, no-store" } });
+    } catch (error) {
+      if (error instanceof BinaryTextPreviewError) return Response.json({ error: error.message }, { status: 415 });
+      if (error instanceof FullTextPreviewTooLargeError) return Response.json({ error: error.message }, { status: 413 });
+      throw error;
+    }
+  }
+  const download = query.get("download") === "1";
   const inline = !download && shouldDisplayInline(contentType);
   const headers = new Headers({
     "Content-Type": contentType,

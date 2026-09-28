@@ -140,3 +140,15 @@ describe("POST /api/threads/:id/messages failures", () => {
     expect(await response.json()).toMatchObject({ status: "error" });
   });
 });
+
+describe("normalizePreviewTabs and scratch files", () => {
+  it("keeps a scratch tab only for its own thread, under /workspace", () => {
+    const own = { kind: "file", source: "scratch", workspaceId: "ws1", threadId: "t1", path: "/workspace/out/r.html" };
+    const other = { ...own, threadId: "t2" };
+    const outside = { ...own, path: "/etc/passwd" };
+    const noThread = { kind: "file", source: "scratch", workspaceId: "ws1", path: "/workspace/x" };
+    const result = normalizePreviewTabs([own, other, outside, noThread], null, "ws1", "t1");
+    expect(result.tabs).toEqual([expect.objectContaining({ source: "scratch", threadId: "t1", path: "/workspace/out/r.html" })]);
+    expect(normalizePreviewTabs([own], null, "ws1").tabs).toEqual([]);
+  });
+});

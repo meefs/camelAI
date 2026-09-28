@@ -5,9 +5,16 @@ export { PREVIEW_INITIAL_MAX_LINES };
 
 export interface FilePreviewUrlDescriptor {
   workspaceId: string;
-  source: 'workspace' | 'project' | 'upload' | 'output';
+  source: 'workspace' | 'project' | 'upload' | 'output' | 'scratch';
   path: string;
   project?: string;
+  /** A runtime thread's scratch file: served by the thread's files route. */
+  threadId?: string;
+}
+
+/** Where a runtime thread serves a scratch file (`/workspace/...`). */
+function scratchFileRoute(descriptor: FilePreviewUrlDescriptor): string {
+  return `/api/threads/${encodeURIComponent(descriptor.threadId ?? '')}/files/${encodePathSegments(descriptor.path.replace(/^\/+/, ''))}`;
 }
 
 export function encodePathSegments(path: string) {
@@ -18,6 +25,7 @@ export function encodePathSegments(path: string) {
 }
 
 export function buildRawFilePreviewRoute(descriptor: FilePreviewUrlDescriptor): string {
+  if (descriptor.source === 'scratch') return scratchFileRoute(descriptor);
   const normalizedPath = descriptor.path.replace(/^\/+/, '');
   const encodedPath = encodePathSegments(normalizedPath);
   if (descriptor.source === 'project') {
@@ -36,6 +44,14 @@ export function buildTextPreviewUrls(
   opts: { refreshKey?: number; maxLines?: number } = {}
 ): { initialUrl: string; fullUrl: string } {
   const buildUrl = (mode: 'initial' | 'full') => {
+    if (descriptor.source === 'scratch') {
+      const params = new URLSearchParams({ text: mode });
+      if (mode === 'initial') {
+        params.set('maxLines', String(opts.maxLines ?? PREVIEW_INITIAL_MAX_LINES));
+        if (typeof opts.refreshKey === 'number') params.set('v', String(opts.refreshKey));
+      }
+      return `${scratchFileRoute(descriptor)}?${params.toString()}`;
+    }
     const params = new URLSearchParams({
       source: descriptor.source,
       path: descriptor.path,
@@ -67,5 +83,6 @@ export function getFilePreviewUrlDescriptor(
     source: target.source,
     path: target.path,
     project: target.project,
+    ...(target.threadId ? { threadId: target.threadId } : {}),
   };
 }

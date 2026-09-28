@@ -23,7 +23,7 @@ export function getPreviewTabId(target: PreviewTarget): string {
   if (target.kind === "runtime_artifact") {
     return `artifact:${target.artifact.id}`;
   }
-  return `file:${target.workspaceId}:${target.source}:${target.project ?? ""}:${target.path}`;
+  return `file:${target.workspaceId}:${target.source}:${target.project ?? target.threadId ?? ""}:${target.path}`;
 }
 
 export function normalizePreviewTarget(
@@ -58,8 +58,14 @@ export function normalizePreviewTarget(
       source !== "workspace" &&
       source !== "project" &&
       source !== "upload" &&
-      source !== "output"
+      source !== "output" &&
+      source !== "scratch"
     ) {
+      return null;
+    }
+    // A runtime thread's scratch file: always with its thread, under /workspace/.
+    const threadId = source === "scratch" && typeof target.threadId === "string" ? target.threadId.trim() : "";
+    if (source === "scratch" && (!threadId || typeof target.path !== "string" || !target.path.startsWith("/workspace/"))) {
       return null;
     }
 
@@ -85,6 +91,7 @@ export function normalizePreviewTarget(
       workspaceId,
       path,
       project,
+      ...(threadId ? { threadId } : {}),
       filename:
         typeof target.filename === "string"
           ? target.filename.trim()
@@ -111,6 +118,7 @@ export function normalizePreviewTabs(
   tabs: unknown,
   activeTabId: unknown,
   workspaceId: string,
+  threadId?: string,
 ): { tabs: PreviewTarget[]; activeTabId: string | null } {
   const byId = new Map<string, PreviewTarget>();
   for (const tab of Array.isArray(tabs) ? tabs : []) {
@@ -121,6 +129,8 @@ export function normalizePreviewTabs(
       continue;
     }
     if (!normalized || (normalized.kind === "file" && normalized.workspaceId !== workspaceId)) continue;
+    // Scratch files only of this thread.
+    if (normalized.kind === "file" && normalized.source === "scratch" && normalized.threadId !== threadId) continue;
     const id = getPreviewTabId(normalized);
     if (!byId.has(id) && byId.size >= MAX_PREVIEW_TABS) continue;
     byId.set(id, normalized);
