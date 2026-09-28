@@ -64,6 +64,8 @@ import {
   listGroupsForMove,
 } from "@/lib/chat-groups.server";
 import { readThreadMessages } from "@/lib/chat-history.server";
+import type { RuntimeThreadSeed } from "@/lib/use-runtime-thread";
+import type { ThreadRuntimeRecord } from "../../workers/main/src/identity/org-do";
 import Chat from "@/components/Chat";
 import { ChatTabBar } from "@/components/chat-tab-bar";
 import { ChatLoadingSkeleton } from "@/components/chat/chat-loading";
@@ -294,6 +296,8 @@ interface ChatData {
   todos: TodoItem[];
   previewTabs: PreviewTarget[];
   activeTabId: string | null;
+  /** A thread on the agent runtime: what the browser watches it from (no DO). */
+  runtime?: RuntimeThreadSeed | null;
 }
 
 type ChatDataValue = ChatData | Promise<ChatData>;
@@ -307,6 +311,19 @@ const EMPTY_CHAT_DATA: ChatData = {
   previewTabs: [],
   activeTabId: null,
 };
+
+/**
+ * Which backend each thread this tab has loaded runs on: a runtime thread
+ * never connects to ChatThreadDO, so a thread whose backend is not known yet
+ * waits for its loader before connecting.
+ */
+const threadBackends = new Map<string, "runtime" | "do">();
+function rememberThreadBackend(threadId: string, backend: "runtime" | "do") {
+  threadBackends.set(threadId, backend);
+}
+function knownThreadBackend(threadId: string): "runtime" | "do" | undefined {
+  return threadBackends.get(threadId);
+}
 
 function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
   return typeof (value as Promise<T>).then === "function";
@@ -462,8 +479,28 @@ async function buildChatData(
     // that useAgentChat mounts. Admin-readonly leaves it off (renders pi_core).
     loadUiMessages: boolean;
     skipBanCheck?: boolean;
+    /** The thread's runtime row: its page loads from the runtime, not the DO. */
+    runtime?: ThreadRuntimeRecord | null;
+    userId?: string | null;
   },
 ): Promise<ChatData> {
+  if (options.runtime && options.userId) {
+    // Loaded on demand: the runtime client reaches Worker-only modules.
+    const { loadRuntimeThreadSeed } = await import("@/lib/runtime-threads.server");
+    const { seed, error } = await loadRuntimeThreadSeed(getEnv(context) as never, {
+      orgId: options.orgId,
+      threadId,
+      userId: options.userId,
+      row: options.runtime,
+    });
+    return {
+      ...EMPTY_CHAT_DATA,
+      messagesError: error,
+      previewTabs: seed.previewTabs,
+      activeTabId: seed.activeTabId,
+      runtime: seed,
+    };
+  }
   const previewDataPromise = (async () => {
     const previewStateRaw = await chatDO
       .getThreadPreviewState(context, threadId)
@@ -764,6 +801,14 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   const threadPromise = chatDO.getThread(context, params.id, workspaceId, {
     orgId: authContext.currentOrg.id,
   });
+  // A thread on the agent runtime loads from the runtime; this decides which
+  // path the page takes before anything connects.
+  const runtimePromise = chatDO
+    .getThreadRuntime(context, params.id, authContext.currentOrg.id)
+    .catch((error: unknown) => {
+      console.error("Failed to read the thread's runtime row:", error);
+      return null;
+    });
   const pickerStatePromise = chatDO
     .getWorkspaceModelPickerState(context, workspaceId, {
       orgId: authContext.currentOrg.id,
@@ -784,10 +829,12 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     billingOverview,
     thread,
     pickerState,
+    runtime,
   ] = await Promise.all([
     billingOverviewPromise,
     threadPromise,
     pickerStatePromise,
+    runtimePromise,
   ]);
   const devCreditStatus = getDevBillingCreditStatus(url.searchParams);
   const pausedPickerState = pickerState
@@ -872,6 +919,8 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
         workspaceId,
         loadLegacyMessages: false,
         loadUiMessages: true,
+        runtime,
+        userId: actingUserId,
       })
         .then((resolvedChatData) => {
           recordChatThreadRouteLoaderStage(
@@ -994,6 +1043,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     activeGroupId: url.searchParams.get("group")?.trim() || null,
     moveChatGroups,
     chatDataSeed,
+    runtimeThread: Boolean(runtime),
   };
 }
 
@@ -1026,6 +1076,7 @@ export default function ChatPage() {
     activeGroupId,
     moveChatGroups = [],
     chatDataSeed = EMPTY_CHAT_DATA,
+    runtimeThread = false,
   } = useLoaderData<typeof loader>();
   const {
     chatData: resolvedChatData,
@@ -1106,6 +1157,15 @@ export default function ChatPage() {
       ? modelForDisplay(activeThreadSummary.model)
       : threadModel;
   const displayAllowedThreadModels = allowedThreadModels;
+  // A thread switched to in the tab bar before its loader answers connects
+  // once its backend is known (remembered from an earlier load, or this one's).
+  const loaderBackend = runtimeThread ? "runtime" : "do";
+  const displayBackend = isDisplayingLoaderThread
+    ? loaderBackend
+    : (displayThreadId && knownThreadBackend(displayThreadId)) || "pending";
+  useEffect(() => {
+    if (threadId) rememberThreadBackend(threadId, loaderBackend);
+  }, [threadId, loaderBackend]);
   const cachedSnapshot = displayThreadId ? getSnapshot(displayThreadId) : null;
   const shouldUseCachedSnapshot = Boolean(
     cachedSnapshot && (!isDisplayingLoaderThread || isLoadingChatData),
@@ -1354,7 +1414,7 @@ export default function ChatPage() {
         ) : null}
         <div className="flex min-h-0 flex-1 flex-col">
           <Chat
-            key={displayThreadId}
+            key={`${displayThreadId}:${displayBackend}`}
             threadId={displayThreadId}
             workspaceId={workspaceId}
             chatGroupId={liveActiveChatGroup?.id ?? resolvedActiveGroupId}
@@ -1387,6 +1447,8 @@ export default function ChatPage() {
             recentModelScope={recentModelScope}
             isLoadingMessages={isLoadingDisplayMessages}
             readOnly={readOnly}
+            backend={displayBackend}
+            runtimeSeed={isDisplayingLoaderThread ? resolvedChatData.runtime ?? null : null}
           />
         </div>
       </div>

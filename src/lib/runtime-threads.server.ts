@@ -10,7 +10,13 @@ import { getEnv } from "@/lib/cloudflare.server";
 import { getAuthEnv } from "@/lib/auth-helpers";
 import type { ChatContextState, ChatEnv } from "../../workers/main/src/chat-thread/types";
 import type { OrgChatWebSocketAccessResult, ThreadRuntimeRecord } from "../../workers/main/src/identity/org-do";
-import type { RuntimeThreadSender } from "../../workers/main/src/agent-runtime/thread-runtime";
+import {
+  mintRuntimeBrowserToken,
+  runtimeHistoryPage,
+  type RuntimeThreadSender,
+} from "../../workers/main/src/agent-runtime/thread-runtime";
+import type { RuntimeThreadSeed } from "@/lib/use-runtime-thread";
+import type { PreviewTarget } from "@/types";
 
 export interface RuntimeThreadAccess {
   env: ChatEnv;
@@ -85,4 +91,49 @@ export function requestWorkspaceId(request: Request, body?: unknown): string | n
   if (fromQuery?.trim()) return fromQuery.trim();
   const fromBody = body && typeof body === "object" ? (body as { workspaceId?: unknown }).workspaceId : undefined;
   return typeof fromBody === "string" && fromBody.trim() ? fromBody.trim() : null;
+}
+
+/**
+ * What a runtime thread's page loads server-side for first paint, with no
+ * DO: its saved preview tabs, and (once it has an agent) a browser token and
+ * the newest page of history, read in parallel.
+ */
+export async function loadRuntimeThreadSeed(
+  env: ChatEnv,
+  input: { orgId: string; threadId: string; userId: string; row: ThreadRuntimeRecord },
+): Promise<{ seed: RuntimeThreadSeed; error: string | null }> {
+  const org = env.ORG.get(env.ORG.idFromName(input.orgId)) as unknown as {
+    getThreadUiState(threadId: string): Promise<{ preview: Record<string, unknown> | null } | null>;
+  };
+  const agentId = input.row.agentId;
+  const [uiState, reads] = await Promise.all([
+    org.getThreadUiState(input.threadId).catch(() => null),
+    agentId
+      ? Promise.all([
+          mintRuntimeBrowserToken(env, { ...input.row, agentId }, input.userId),
+          runtimeHistoryPage(env, agentId, { limit: 50 }),
+        ]).then(
+          ([token, page]) => ({ token, page, error: null as string | null }),
+          (error: unknown) => {
+            console.error("[runtime-thread] failed to load the thread", error);
+            return { token: null, page: null, error: "Can't reach the agent service. Try again in a moment." };
+          },
+        )
+      : Promise.resolve({ token: null, page: null, error: null }),
+  ]);
+  const preview = uiState?.preview ?? null;
+  const previewTabs = Array.isArray(preview?.tabs) ? (preview.tabs as PreviewTarget[]) : [];
+  const activeTabId = typeof preview?.activeTabId === "string" ? preview.activeTabId : null;
+  return {
+    seed: {
+      agentId,
+      token: reads.token?.token ?? null,
+      expiresAt: reads.token?.expiresAt ?? null,
+      url: reads.token?.url ?? null,
+      page: reads.page ? { entries: reads.page.entries, next: reads.page.next } : null,
+      previewTabs,
+      activeTabId,
+    },
+    error: reads.error,
+  };
 }

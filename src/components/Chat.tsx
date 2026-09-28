@@ -171,6 +171,11 @@ import {
   type SseAgentMessageEvent,
 } from "@/lib/sse-agent-client";
 import { useSseAgent } from "@/lib/use-sse-agent";
+import {
+  useRuntimeThread,
+  type RuntimeThreadCallbacks,
+  type RuntimeThreadSeed,
+} from "@/lib/use-runtime-thread";
 import { type AppUrlInput, getAppUrl, getAppIframeUrl } from "@/lib/app-url";
 import {
   collectProjectReferencesFromMessages,
@@ -386,6 +391,13 @@ interface ChatBaseProps {
    * whatever the loader/broadcast says instead).
    */
   bridgedStreamingMessageId?: string | null;
+  /**
+   * Where the thread runs: "runtime" reads the hosted agent runtime directly
+   * (no ChatThreadDO); "pending" waits, unconnected, until the loader says.
+   */
+  backend?: "do" | "runtime" | "pending";
+  /** A runtime thread's first-paint data from the loader. */
+  runtimeSeed?: RuntimeThreadSeed | null;
 }
 
 interface ChatWelcomeData {
@@ -752,6 +764,8 @@ export default function Chat({
   projects,
   onSnapshotChange,
   bridgedStreamingMessageId,
+  backend = "do",
+  runtimeSeed = null,
   welcomeData,
 }: ChatProps) {
   const threadModel =
@@ -876,7 +890,9 @@ export default function Chat({
   const [pendingMessages, setPendingMessagesState] = useState<Message[]>([]);
   const [currentTodos, setCurrentTodos] = useState<TodoItem[]>(initialTodos);
 
-  const agentEnabled = !readOnly && Boolean(threadId && resolvedWorkspaceId);
+  const agentEnabled =
+    !readOnly && backend !== "pending" && Boolean(threadId && resolvedWorkspaceId);
+  const runtimeBackend = backend === "runtime";
   // The transport's lifecycle callbacks reference many callbacks defined later in
   // the component; stable wrappers read them from a ref so the connection can
   // mount here, ahead of the render-history projection that depends on it.
@@ -902,7 +918,7 @@ export default function Chat({
   const agentSocket = useSseAgent<ChatAgentState>({
     agent: "chat-thread",
     name: threadId ?? "disabled",
-    enabled: agentEnabled,
+    enabled: agentEnabled && !runtimeBackend,
     query: {
       threadId: threadId ?? null,
       workspaceId: resolvedWorkspaceId ?? null,
@@ -915,11 +931,24 @@ export default function Chat({
       agentCallbacksRef.current.onConnectionError(error),
     onStateUpdate: (state) => agentCallbacksRef.current.onStateUpdate(state),
   });
-  const piChat = usePiChatStream({
+  const doChat = usePiChatStream({
     agent: agentSocket,
     threadId,
     initialUiMessages: stableInitialUiMessages,
   });
+  // A runtime thread answers the same two seams (the connection's calls and
+  // the transcript stream) from the runtime's watcher.
+  const runtimeThread = useRuntimeThread({
+    threadId,
+    workspaceId: resolvedWorkspaceId,
+    seed: runtimeSeed,
+    enabled: agentEnabled && runtimeBackend,
+    callbacks: agentCallbacksRef as unknown as {
+      current: RuntimeThreadCallbacks;
+    },
+  });
+  const piChat = runtimeBackend ? runtimeThread.chat : doChat;
+  const runtimeLoadOlder = runtimeThread.loadOlder;
   const piChatRef = useRef(piChat);
   piChatRef.current = piChat;
   const [archivedUiMessages, setArchivedUiMessages] = useState<UIMessage[]>([]);
@@ -951,6 +980,12 @@ export default function Chat({
       setOlderMessagesCursor(olderUiMessagesCursor);
     }
   }, [olderUiMessagesCursor]);
+  // A runtime thread pages its history through the watcher; the cursor only
+  // says whether there is an older page.
+  const runtimeHasOlder = runtimeThread.hasOlder;
+  useEffect(() => {
+    if (runtimeBackend) setOlderMessagesCursor(runtimeHasOlder ? "runtime" : null);
+  }, [runtimeBackend, runtimeHasOlder]);
   useLayoutEffect(() => {
     const nextResident = piChat.uiMessages;
     // Some hook versions briefly expose an empty live list before applying the
@@ -1772,6 +1807,28 @@ export default function Chat({
   const loadOlderMessages = useCallback(async () => {
     const cursor = olderMessagesCursor;
     if (!cursor || isLoadingOlderMessages) return;
+    if (runtimeBackend) {
+      // The watcher reads the older page straight from the runtime.
+      setIsLoadingOlderMessages(true);
+      setOlderMessagesError(null);
+      const container = scrollContainerRef.current;
+      if (container) {
+        olderPageScrollAnchorRef.current = {
+          scrollHeight: container.scrollHeight,
+          scrollTop: container.scrollTop,
+        };
+      }
+      try {
+        await runtimeLoadOlder();
+      } catch (error) {
+        console.error("Failed to load earlier chat messages:", error);
+        olderPageScrollAnchorRef.current = null;
+        setOlderMessagesError("Could not load earlier messages.");
+      } finally {
+        setIsLoadingOlderMessages(false);
+      }
+      return;
+    }
     const requestGeneration = renderHistoryGenerationRef.current;
 
     setIsLoadingOlderMessages(true);
@@ -1842,7 +1899,13 @@ export default function Chat({
         setIsLoadingOlderMessages(false);
       }
     }
-  }, [agentSocket, isLoadingOlderMessages, olderMessagesCursor]);
+  }, [
+    agentSocket,
+    isLoadingOlderMessages,
+    olderMessagesCursor,
+    runtimeBackend,
+    runtimeLoadOlder,
+  ]);
 
   useLayoutEffect(() => {
     const anchor = olderPageScrollAnchorRef.current;
@@ -1851,7 +1914,7 @@ export default function Chat({
     olderPageScrollAnchorRef.current = null;
     container.scrollTop =
       anchor.scrollTop + (container.scrollHeight - anchor.scrollHeight);
-  }, [archivedUiMessages]);
+  }, [archivedUiMessages, runtimeBackend ? piChat.messages : null]);
 
   const optimisticallyClearedConnectionSetupRequestIdRef = useRef<
     string | null
@@ -3423,11 +3486,12 @@ export default function Chat({
   ]);
 
   useEffect(() => {
-    chatAgentRef.current = agentEnabled ? agentSocket : null;
+    const client = runtimeBackend ? runtimeThread.client : agentSocket;
+    chatAgentRef.current = agentEnabled ? client : null;
     return () => {
-      if (chatAgentRef.current === agentSocket) chatAgentRef.current = null;
+      if (chatAgentRef.current === client) chatAgentRef.current = null;
     };
-  }, [agentEnabled, agentSocket]);
+  }, [agentEnabled, agentSocket, runtimeBackend, runtimeThread.client]);
 
   useLayoutEffect(() => {
     setReady(false);

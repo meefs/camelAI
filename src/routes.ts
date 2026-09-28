@@ -220,6 +220,7 @@ export default [
     "routes/api/threads.$id.inputs.$inputId.ts",
   ),
   route("api/threads/:id/stop", "routes/api/threads.$id.stop.ts"),
+  route("api/threads/:id/preview", "routes/api/threads.$id.preview.ts"),
   route("api/dev/sent-emails", "routes/api/dev.sent-emails.ts"),
   route("api/dev/sent-emails/:id", "routes/api/dev.sent-emails.$id.ts"),
   route(

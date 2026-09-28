@@ -20,6 +20,8 @@ const ensureGroupForThreadMock = vi.fn();
 const getGroupForWorkspaceMock = vi.fn();
 const listGroupsForMoveMock = vi.fn();
 const loadWorkspaceMentionSourcesMock = vi.fn();
+const getThreadRuntimeMock = vi.fn(async () => null as unknown);
+const loadRuntimeThreadSeedMock = vi.fn();
 
 vi.mock('@/lib/auth.server', () => ({
   requireSuperuser: requireSuperuserMock,
@@ -43,10 +45,15 @@ vi.mock('@/lib/auth-do.server', () => ({
 vi.mock('@/lib/chat-do.server', () => ({
   applyHostedCreditPause: (state: unknown) => state,
   getThread: getThreadMock,
+  getThreadRuntime: getThreadRuntimeMock,
   getThreadPreviewState: getThreadPreviewStateMock,
   getTodoState: getTodoStateMock,
   getUiMessagePage: getUiMessagesMock,
   getWorkspaceModelPickerState: getWorkspaceModelPickerStateMock,
+}));
+
+vi.mock('@/lib/runtime-threads.server', () => ({
+  loadRuntimeThreadSeed: loadRuntimeThreadSeedMock,
 }));
 
 vi.mock('@/lib/auth-do', () => ({
@@ -295,6 +302,37 @@ describe('chat loader workspace mismatch handling', () => {
       previewTabs: [],
       activeTabId: null,
     });
+  });
+
+  it('loads a runtime thread from the runtime, without the thread DO', async () => {
+    requireAuthContextMock.mockResolvedValue({
+      currentWorkspace: { id: 'ws_active' },
+      currentOrg: { id: 'org_active', slug: 'acme' },
+      orgs: [{ org_id: 'org_active', role: 'admin' }],
+      user: { id: 'user_1' },
+    });
+    getThreadMock.mockResolvedValue({ id: 'thread_rt', workspace_id: 'ws_active', title: 'Runtime Thread' });
+    const row = { threadId: 'thread_rt', agentId: 'agt_1', model: 'm', keyScope: 'hosted', configured: null, createdAt: 1, updatedAt: 1 };
+    getThreadRuntimeMock.mockResolvedValueOnce(row);
+    const seed = {
+      agentId: 'agt_1', token: 'abt', expiresAt: 2, url: 'https://agents.test',
+      page: { entries: [], next: null }, previewTabs: [], activeTabId: null,
+    };
+    loadRuntimeThreadSeedMock.mockResolvedValue({ seed, error: null });
+
+    const result = await loader({
+      request: new Request('https://camelai.com/chat/thread_rt'),
+      context: {},
+      params: { id: 'thread_rt' },
+    } as never);
+
+    expect(result.runtimeThread).toBe(true);
+    expect(await result.chatData).toMatchObject({ runtime: seed, initialUiMessages: [], messagesError: null });
+    expect(loadRuntimeThreadSeedMock).toHaveBeenCalledWith(expect.anything(), {
+      orgId: 'org_active', threadId: 'thread_rt', userId: 'user_1', row,
+    });
+    expect(getUiMessagesMock).not.toHaveBeenCalled();
+    expect(getTodoStateMock).not.toHaveBeenCalled();
   });
 
   it('preserves billing overview failures instead of exposing unpaused models', async () => {
