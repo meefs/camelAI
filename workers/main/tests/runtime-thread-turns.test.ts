@@ -15,6 +15,7 @@ import {
   answerRuntimeInput,
   mintRuntimeBrowserToken,
   pinNewThreadToRuntime,
+  runtimeAgentThreadKey,
   startRuntimeTurn,
 } from "../src/agent-runtime/thread-runtime";
 import { createOrg, createUser, type TestEnv } from "./test-helpers";
@@ -125,6 +126,12 @@ describe("startRuntimeTurn", () => {
       from: { id: setup.sender.userId, name: "Runtime Sender" },
       actor: setup.sender.userId,
       requestId: "cm_1",
+      whileRunning: "steer",
+      metadata: { source: "web", org: setup.context.orgId, workspace: setup.context.workspaceId, thread: setup.threadId },
+    });
+    // Runs no message started (a resume) find the thread by the agent.
+    expect(await testEnv.APP_KV.get(runtimeAgentThreadKey("agt_1"), "json")).toEqual({
+      org: setup.context.orgId, workspace: setup.context.workspaceId, thread: setup.threadId,
     });
     // The org's key scope was synced before the run.
     expect(calls.some((call) => call.path.startsWith(`/v1/key-scopes/org_${setup.context.orgId}/providers/anthropic`))).toBe(true);

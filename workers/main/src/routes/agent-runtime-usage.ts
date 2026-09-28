@@ -11,6 +11,7 @@
 import type { Env, RouteContext } from "../types.js";
 import { FREE_TIER_RUNTIME_MODEL, RUNTIME_MODEL_ENDPOINT } from "../agent-runtime/model-routes.js";
 import { HOSTED_KEY_SCOPE } from "../agent-runtime/key-scopes.js";
+import { recordWorkspaceThreadStreaming } from "../thread-status.js";
 
 const TOLERANCE_SECONDS = 5 * 60;
 
@@ -147,7 +148,13 @@ export async function handleAgentRuntimeUsageRequest(req: Request, env: Env): Pr
     const org = env.ORG.get(env.ORG.idFromName(orgId));
     const info = await org.getInfo();
     // Idempotent by (source, source_id): a redelivery finds the row and inserts nothing.
-    await org.recordUsage(usageRowFor(event, info));
+    const row = usageRowFor(event, info);
+    await org.recordUsage(row);
+    // A model response means the run is still going: renew the thread's
+    // running lease (5 minutes), which only ChatThreadDO heartbeats otherwise.
+    // Refresh-only, so a late event never marks a finished thread running.
+    await recordWorkspaceThreadStreaming(env, row.workspace_id, row.thread_id, true, { refresh: true })
+      .catch((error) => console.warn("[agent-runtime-usage] could not renew the thread's running lease", error));
   }
   return new Response(null, { status: 204 });
 }

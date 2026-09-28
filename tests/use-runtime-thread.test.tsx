@@ -205,6 +205,23 @@ describe("useRuntimeThread", () => {
     expect(result.current.chat.messages.find((message) => message.id === "rt:3")?.clientMessageId).toBeUndefined();
   });
 
+  it("never takes a message that names another send's request as this tab's", async () => {
+    responses["/api/threads/t1/messages"] = { status: "accepted", requestId: "cm_mine", agentId: "agt_1", fallback: null };
+    const { result } = mount();
+    await waitFor(() => expect(watchers).toHaveLength(1));
+    await act(async () => {
+      await result.current.client.call("sendMessage", ["same words", "cm_mine"]);
+    });
+    act(() => watchers[0].emit({
+      messages: [
+        ...seed.page!.entries.map((entry) => entry.message),
+        { role: "user", content: [{ type: "text", text: "same words" }], requestId: "cm_theirs", timestamp: Date.now() },
+      ],
+      indexes: [0, 1, 2],
+    }));
+    await waitFor(() => expect(result.current.chat.messages.find((message) => message.id === "rt:2")?.clientMessageId).toBe("cm_theirs"));
+  });
+
   it("turns a failed send into a transport failure, so Chat resends it under the same id", async () => {
     responses["/api/threads/t1/messages"] = { error: "socket hang up", retryable: true };
     statuses["/api/threads/t1/messages"] = 503;

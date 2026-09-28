@@ -251,10 +251,11 @@ export function useRuntimeThread(options: {
   }, [enabled, threadId, callbacks]);
 
   // Match this tab's sends to the user messages they became, so optimistic
-  // bubbles give way to them: by the `requestId` the runtime echoes on the
-  // message where it does; else by the text the user typed (without the
-  // model-only context and @-mention annotations the model's copy carries);
-  // else, the first user message that arrived after the send.
+  // bubbles give way to them. The runtime echoes each message's `requestId`
+  // (our client message id), which pi-render carries onto the message; only
+  // messages recorded before it did are matched here, by the text the user
+  // typed (without the model-only context and @-mention annotations the
+  // model's copy carries), else as the first user message after the send.
   useEffect(() => {
     if (sentRef.current.length === 0) return;
     let changed = false;
@@ -273,8 +274,12 @@ export function useRuntimeThread(options: {
     const rest: typeof unmatched = [];
     for (const entry of unmatched) {
       const requestId = (entry.message as { requestId?: unknown }).requestId;
-      const byId = typeof requestId === "string" ? sentRef.current.findIndex((sent) => sent.clientMessageId === requestId) : -1;
-      if (byId >= 0) { take(entry.index, byId); continue; }
+      if (typeof requestId === "string" && requestId) {
+        // It names its own send (pi-render uses it); done with ours if it is one.
+        const byId = sentRef.current.findIndex((sent) => sent.clientMessageId === requestId);
+        if (byId >= 0) sentRef.current.splice(byId, 1);
+        continue;
+      }
       const text = comparableText(userText(entry.message));
       const byText = sentRef.current.findIndex((sent) => entry.index > sent.afterIndex && (text === sent.text || text.endsWith(sent.text)));
       if (byText >= 0) take(entry.index, byText);

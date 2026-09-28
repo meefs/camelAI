@@ -100,6 +100,14 @@ describe("piRender", () => {
   });
 });
 
+describe("piRender and the runtime's message metadata", () => {
+  it("gives a user message its echoed requestId as the client id, and its source", () => {
+    const message = { role: "user", content: "Deploy", timestamp: 1, requestId: "client_1_ab", metadata: { source: "slack", thread: "t1" } } as unknown as AgentMessage;
+    const { messages } = render([message]);
+    expect(messages[0]).toMatchObject({ clientMessageId: "client_1_ab", messageSource: "slack" });
+  });
+});
+
 describe("runtime thread derivations", () => {
   it("reads the latest todo list from the transcript", () => {
     expect(latestRuntimeTodos([user("x", 1)])).toBeNull();
