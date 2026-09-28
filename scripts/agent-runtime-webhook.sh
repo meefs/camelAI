@@ -6,8 +6,10 @@
 #
 #   scripts/agent-runtime-webhook.sh register staging|prod
 #     Register the endpoint for every event chiridion handles, and store its
-#     signing secret as the worker's AGENT_RUNTIME_EVENTS_WEBHOOK_SECRET. Run
-#     it once per deployment: each run makes another endpoint.
+#     signing secret as the worker's AGENT_RUNTIME_EVENTS_WEBHOOK_SECRET. It
+#     refuses when the tenant already has an endpoint for that URL: every
+#     endpoint gets every event, so a second one would double them. Production
+#     is registered by prod-activate.sh; this is for another deployment.
 #
 #   scripts/agent-runtime-webhook.sh subscribe-usage staging|prod
 #     Move usage off the legacy usage webhook: add usage.recorded to the
@@ -36,7 +38,7 @@ case "$target" in
     ;;
   prod)
     ENDPOINT_URL="${ENDPOINT_URL:-https://camelai.dev/agent-runtime/events}"
-    TOKEN_SECRET_ID="${TOKEN_SECRET_ID:-camelai/agent-runtime/operator-token/chiridion}"
+    TOKEN_SECRET_ID="${TOKEN_SECRET_ID:-camelai/agent-runtime/operator-token/chiridion-prod}"
     WORKER_NAME="chiridion-app"
     ;;
   *) usage ;;
@@ -63,6 +65,8 @@ runtime() {
 
 case "$action" in
   register)
+    existing="$(runtime GET /v1/webhooks | jq -r --arg url "$ENDPOINT_URL" '[.[] | select(.url == $url) | .id] | join(", ")')"
+    [ -z "$existing" ] || { echo "The tenant already has an endpoint for $ENDPOINT_URL ($existing); not registering another" >&2; exit 1; }
     response="$(runtime POST /v1/webhooks "$(jq -n --arg url "$ENDPOINT_URL" --arg target "$target" --argjson events "$EVENTS" \
       '{url: $url, events: $events, description: "chiridion \($target): runtime threads (runs, inputs, usage)"}')")" \
       || { echo "Registering the endpoint failed: $(printf '%s' "$response" | jq -r '.error // .' 2>/dev/null)" >&2; exit 1; }
