@@ -14,6 +14,7 @@ import {
   abortRuntimeThread,
   answerRuntimeInput,
   mintRuntimeBrowserToken,
+  pinNewThreadToRuntime,
   startRuntimeTurn,
 } from "../src/agent-runtime/thread-runtime";
 import { createOrg, createUser, type TestEnv } from "./test-helpers";
@@ -204,5 +205,34 @@ describe("runtime thread reads and writes", () => {
     calls = fakeRuntime();
     await abortRuntimeThread(runtimeEnv, "agt_1");
     expect(calls[0]).toMatchObject({ method: "POST", path: "/v1/agents/agt_1/abort" });
+  });
+});
+
+describe("pinNewThreadToRuntime", () => {
+  it("pins a new thread only where direct runtime threads are on", async () => {
+    const setup = await runtimeThread();
+    const thread = await setup.orgStub.createThread(setup.context.workspaceId, "Fresh", setup.sender.userId);
+    const context = { ...setup.context, threadId: thread.id };
+    expect(await pinNewThreadToRuntime(runtimeEnv, context)).toBeNull();
+    expect(await setup.orgStub.getThreadRuntime(thread.id)).toBeNull();
+
+    const pinned = await pinNewThreadToRuntime({ ...runtimeEnv, AGENT_RUNTIME_DIRECT_THREADS: "1" } as ChatEnv, context);
+    expect(pinned).toMatchObject({ threadId: thread.id, agentId: null });
+    expect(await setup.orgStub.getThreadRuntime(thread.id)).toMatchObject({ threadId: thread.id });
+  });
+
+  it("leaves a thread whose model has no runtime route on ChatThreadDO", async () => {
+    const setup = await runtimeThread();
+    const encrypted = await encryptCredentials({ api_key: "sk-custom" }, testEnv.INTEGRATION_SECRET_KEY ?? "test-secret");
+    await setup.orgStub.setLlmProviderConfig(
+      "custom",
+      encrypted,
+      stringifyStoredLlmProviderConfig({ custom_base_url: "https://llm.example.test/v1", custom_api: "openai-completions", custom_model_id: "house-model" }),
+      setup.sender.userId,
+    );
+    const thread = await setup.orgStub.createThread(setup.context.workspaceId, "Custom", setup.sender.userId);
+    const context = { ...setup.context, threadId: thread.id };
+    expect(await pinNewThreadToRuntime({ ...runtimeEnv, AGENT_RUNTIME_DIRECT_THREADS: "1" } as ChatEnv, context)).toBeNull();
+    expect(await setup.orgStub.getThreadRuntime(thread.id)).toBeNull();
   });
 });

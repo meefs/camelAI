@@ -62,10 +62,40 @@ export function runtimeThreadsEnabled(env: Partial<ChatEnv>): boolean {
   return runtimeConfigured(env as Parameters<typeof runtimeConfigured>[0]);
 }
 
+/**
+ * Whether new web threads run directly on the runtime here: the runtime
+ * tenant is configured and AGENT_RUNTIME_DIRECT_THREADS is on (staging first).
+ */
+export function runtimeDirectThreadsEnabled(env: Partial<ChatEnv>): boolean {
+  return runtimeThreadsEnabled(env) && env.AGENT_RUNTIME_DIRECT_THREADS?.trim() === "1";
+}
+
+/**
+ * Pin a new thread to the runtime, when direct threads are on here and its
+ * model has a runtime route (custom endpoints and self-host providers stay on
+ * ChatThreadDO). The row is the thread's backend from then on. Null: it runs
+ * on ChatThreadDO.
+ */
+export async function pinNewThreadToRuntime(env: ChatEnv, context: ChatContextState): Promise<ThreadRuntimeRecord | null> {
+  if (!runtimeDirectThreadsEnabled(env)) return null;
+  let route: Awaited<ReturnType<typeof resolveThreadRuntimeRoute>>["route"];
+  try {
+    ({ route } = await resolveThreadRuntimeRoute(env, context));
+  } catch (error) {
+    console.warn("[runtime-thread] new thread stays on ChatThreadDO: its model did not resolve", error);
+    return null;
+  }
+  if (!route) return null;
+  const org = orgStub(env, context.orgId);
+  if (!await org.pinThreadRuntime(context.threadId)) return null;
+  return await org.getThreadRuntime(context.threadId);
+}
+
 function orgStub(env: ChatEnv, orgId: string) {
   return env.ORG.get(env.ORG.idFromName(orgId)) as unknown as {
     getThread(id: string): Promise<{ created_by?: string | null } | null>;
     getThreadRuntime(threadId: string): Promise<ThreadRuntimeRecord | null>;
+    pinThreadRuntime(threadId: string): Promise<boolean>;
     setThreadRuntimeAgent(threadId: string, update: {
       agentId: string;
       model: string | null;

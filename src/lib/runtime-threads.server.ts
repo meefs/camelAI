@@ -12,8 +12,11 @@ import type { ChatContextState, ChatEnv } from "../../workers/main/src/chat-thre
 import type { OrgChatWebSocketAccessResult, ThreadRuntimeRecord } from "../../workers/main/src/identity/org-do";
 import {
   mintRuntimeBrowserToken,
+  pinNewThreadToRuntime,
   runtimeHistoryPage,
+  startRuntimeTurn,
   type RuntimeThreadSender,
+  type RuntimeTurnResult,
 } from "../../workers/main/src/agent-runtime/thread-runtime";
 import type { RuntimeThreadSeed } from "@/lib/use-runtime-thread";
 import type { PreviewTarget } from "@/types";
@@ -136,4 +139,36 @@ export async function loadRuntimeThreadSeed(
     },
     error: reads.error,
   };
+}
+
+/**
+ * A new web thread, just created: pinned to the runtime when this deployment
+ * runs new threads there and its model can. Null: it runs on ChatThreadDO.
+ */
+export async function pinNewWebThread(
+  loadContext: AppLoadContext,
+  context: ChatContextState,
+): Promise<ThreadRuntimeRecord | null> {
+  return await pinNewThreadToRuntime(getEnv(loadContext) as unknown as ChatEnv, context);
+}
+
+/**
+ * A new runtime thread's first message, sent before the page redirects to it
+ * (so the page finds the agent and the message on its first read).
+ */
+export async function startFirstRuntimeTurn(
+  loadContext: AppLoadContext,
+  input: {
+    context: ChatContextState;
+    row: ThreadRuntimeRecord;
+    sender: RuntimeThreadSender;
+    text: string;
+    waitUntil(promise: Promise<unknown>): void;
+  },
+): Promise<RuntimeTurnResult> {
+  return await startRuntimeTurn(getEnv(loadContext) as unknown as ChatEnv, {
+    ...input,
+    clientMessageId: `initial:${input.context.threadId}`,
+    source: "web",
+  });
 }
