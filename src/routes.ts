@@ -212,6 +212,15 @@ export default [
     "api/threads/:id/mark-viewed",
     "routes/api/threads.$id.mark-viewed.ts",
   ),
+  // Threads on the hosted agent runtime (plans/runtime-threads-direct.md).
+  route("api/threads/:id/token", "routes/api/threads.$id.token.ts"),
+  route("api/threads/:id/messages", "routes/api/threads.$id.messages.ts"),
+  route(
+    "api/threads/:id/inputs/:inputId",
+    "routes/api/threads.$id.inputs.$inputId.ts",
+  ),
+  route("api/threads/:id/stop", "routes/api/threads.$id.stop.ts"),
+  route("api/threads/:id/preview", "routes/api/threads.$id.preview.ts"),
   route("api/dev/sent-emails", "routes/api/dev.sent-emails.ts"),
   route("api/dev/sent-emails/:id", "routes/api/dev.sent-emails.$id.ts"),
   route(

@@ -10,6 +10,7 @@
 import { RuntimeTokenError, verifyRuntimeToken } from "@camelai/agent-runtime/server";
 import type { Env, RouteContext } from "../types.js";
 import { authorizeRuntimeIdentity } from "./agent-mcp.js";
+import { forwardRuntimeThreadCodexCall } from "../agent-runtime/thread-runtime.js";
 
 export const AGENT_RUNTIME_LLM_BASE_PATH = "/agent-runtime/llm";
 export const AGENT_RUNTIME_IDENTITY_HEADER = "X-Agent-Runtime-Identity";
@@ -53,6 +54,23 @@ export async function handleAgentRuntimeLlmRequest(
   }
   const props = await authorizeRuntimeIdentity(env, identity);
   if ("error" in props) return error(403, props.error, "forbidden");
+  const caller = {
+    orgId: props.orgId,
+    workspaceId: props.workspaceId,
+    threadId: props.threadId ?? "",
+    userId: props.userId ?? "",
+  };
+  if (props.directRuntime) {
+    // A runtime thread has no ChatThreadDO: the Worker forwards the call itself.
+    return forwardRuntimeThreadCodexCall(env, {
+      provider,
+      path,
+      search: url.search,
+      method: req.method,
+      headers: [...req.headers],
+      body: req.method === "GET" || req.method === "HEAD" ? null : await req.arrayBuffer(),
+    }, caller);
+  }
   const stub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(props.threadId ?? "")) as unknown as {
     runtimeProviderRequest(
       request: { provider: string; path: string; search: string; method: string; headers: [string, string][]; body: ArrayBuffer | null },
@@ -69,12 +87,7 @@ export async function handleAgentRuntimeLlmRequest(
       // Bytes, untouched: a Codex body arrives zstd-compressed.
       body: req.method === "GET" || req.method === "HEAD" ? null : await req.arrayBuffer(),
     },
-    {
-      orgId: props.orgId,
-      workspaceId: props.workspaceId,
-      threadId: props.threadId ?? "",
-      userId: props.userId ?? "",
-    },
+    caller,
   );
 }
 

@@ -105,6 +105,15 @@ describe("agent MCP", () => {
     expect(result).toEqual({ content: [{ type: "text", text: '{"projects":["a"]}' }], structuredContent: { projects: ["a"] } });
   });
 
+  it("tells the tools when the thread runs on the runtime without a ChatThreadDO", async () => {
+    const runtime = { threadId: "thread1", agentId: "agt_1", model: "m", keyScope: null, configured: null, createdAt: 1, updatedAt: 1 };
+    const { handler, tools } = setup({
+      access: (_user, workspaceId, threadId) => ({ ...allowed(_user, workspaceId, threadId), runtime }) as Access,
+    });
+    await rt.callTool(handler, MCP_URL, "list_projects", {}, ALICE);
+    expect(tools).toHaveBeenCalledWith(expect.objectContaining({ threadId: "thread1", directRuntime: true }));
+  });
+
   it("refuses callers OrgDO does not admit, other tenants, and agents without a thread", async () => {
     const denied = setup({ access: () => ({ ok: false, reason: "forbidden" }) });
     expect(await rt.callTool(denied.handler, MCP_URL, "list_projects", {}, ALICE))

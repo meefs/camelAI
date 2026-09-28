@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { syncOrgKeyScope, type KeyScopeEnv } from "../agent-runtime/key-scopes";
+import { RuntimeApiError, runtimeApi } from "../agent-runtime/runtime-api";
 import type { DOEnv } from "./env";
 import {
   WorkspaceDO,
@@ -93,6 +94,8 @@ import { usageCost, usageInteger, usageText } from "./usage";
 import { generateEmailHandle } from "../../../../src/lib/workspace-email";
 import type { EmailHandleDO } from "../email-handle-registry";
 import type { WorkspaceIntegrationDefinitionRecord } from "../../../../src/lib/integration-definition";
+import { getPreviewTabId } from "../chat-thread/preview-state";
+import type { PreviewTarget } from "../chat-thread/types";
 import {
   getCustomDomain as getOrgCustomDomain,
   removeCustomDomain as removeOrgCustomDomain,
@@ -575,6 +578,66 @@ export interface CreateThreadOptions {
   channelMessageId?: string | null;
 }
 
+/** A direct runtime thread (plans/runtime-threads-direct.md): its agent, once created, and the configuration last applied. */
+export interface ThreadRuntimeRecord {
+  threadId: string;
+  agentId: string | null;
+  /** The runtime model id last configured on the agent. */
+  model: string | null;
+  /** The key scope last configured on the agent (`hosted`, `org_<id>`), or null. */
+  keyScope: string | null;
+  /** The rest of the configuration last applied (thinking level, model headers, …). */
+  configured: Record<string, unknown> | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ThreadRuntimeAgentUpdate {
+  agentId: string;
+  model: string | null;
+  keyScope: string | null;
+  configured?: Record<string, unknown> | null;
+}
+
+export interface ThreadUiStateRecord {
+  threadId: string;
+  preview: Record<string, unknown> | null;
+  previewVersion: number;
+  updatedAt: number;
+}
+
+type ThreadRuntimeRow = {
+  thread_id: string;
+  agent_id: string | null;
+  model: string | null;
+  key_scope: string | null;
+  configured_json: string | null;
+  created_at: number;
+  updated_at: number;
+};
+
+function parseJsonObject(text: string | null): Record<string, unknown> | null {
+  if (!text) return null;
+  try {
+    const value = JSON.parse(text) as unknown;
+    return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
+function threadRuntimeRecord(row: ThreadRuntimeRow): ThreadRuntimeRecord {
+  return {
+    threadId: row.thread_id,
+    agentId: row.agent_id,
+    model: row.model,
+    keyScope: row.key_scope,
+    configured: parseJsonObject(row.configured_json),
+    createdAt: Number(row.created_at) || 0,
+    updatedAt: Number(row.updated_at) || 0,
+  };
+}
+
 export interface RecordThreadErrorInput {
   message: string;
   source?: string | null;
@@ -605,6 +668,8 @@ export type OrgChatWebSocketAccessResult =
       orgSlug: string;
       workspaceId: string;
       threadId: string;
+      /** The thread's runtime row: set for a thread that runs directly on the agent runtime. */
+      runtime?: ThreadRuntimeRecord | null;
     }
   | {
       ok: false;
@@ -2164,7 +2229,32 @@ export class OrgDO extends DurableObject<DOEnv> {
       `);
     }
 
-    const CURRENT_SCHEMA_VERSION = 52;
+    if (version < 53) {
+      // Threads that run directly on the hosted agent runtime
+      // (plans/runtime-threads-direct.md): a row pins the thread to the
+      // runtime and names its agent once created. No transcript lives here.
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS thread_runtime (
+          thread_id TEXT PRIMARY KEY,
+          agent_id TEXT,
+          model TEXT,
+          key_scope TEXT,
+          configured_json TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      `);
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS thread_ui_state (
+          thread_id TEXT PRIMARY KEY,
+          preview_json TEXT,
+          preview_version INTEGER NOT NULL DEFAULT 0,
+          updated_at INTEGER NOT NULL
+        )
+      `);
+    }
+
+    const CURRENT_SCHEMA_VERSION = 53;
     if (version < CURRENT_SCHEMA_VERSION) {
       this.ctx.storage.kv.put("schemaVersion", CURRENT_SCHEMA_VERSION);
     }
@@ -7592,6 +7682,8 @@ export class OrgDO extends DurableObject<DOEnv> {
     this.sql.exec("DELETE FROM audit_log");
     this.sql.exec("DELETE FROM worker_scripts");
     this.sql.exec("DELETE FROM threads");
+    this.sql.exec("DELETE FROM thread_runtime");
+    this.sql.exec("DELETE FROM thread_ui_state");
     this.sql.exec("DELETE FROM proxy_usage");
     this.sql.exec("DELETE FROM openai_subscription");
 
@@ -8472,7 +8564,10 @@ export class OrgDO extends DurableObject<DOEnv> {
   deleteThread(id: string, actorId?: string): boolean {
     const existing = this.getThread(id);
     if (!existing) return false;
+    const agentId = this.getThreadRuntime(id)?.agentId;
     this.sql.exec("DELETE FROM threads WHERE id = ?", id);
+    this.sql.exec("DELETE FROM thread_runtime WHERE thread_id = ?", id);
+    this.sql.exec("DELETE FROM thread_ui_state WHERE thread_id = ?", id);
     if (actorId) {
       this.log("thread_deleted", actorId, id, {
         workspace_id: existing.workspace_id,
@@ -8482,7 +8577,151 @@ export class OrgDO extends DurableObject<DOEnv> {
       type: "thread_delete",
       payload: { id, workspace_id: existing.workspace_id },
     });
+    // A runtime thread's transcript lives only on its agent: delete it too.
+    const runtimeEnv = this.env as unknown as KeyScopeEnv;
+    if (agentId && runtimeEnv.AGENT_RUNTIME_API_TOKEN) {
+      this.ctx.waitUntil(
+        runtimeApi(runtimeEnv, "DELETE", `/v1/agents/${encodeURIComponent(agentId)}`).catch((error) => {
+          if (error instanceof RuntimeApiError && error.status === 404) return;
+          console.error("[OrgDO] failed to delete a deleted thread's runtime agent", {
+            threadId: id,
+            agentId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }),
+      );
+    }
     return true;
+  }
+
+  /**
+   * A direct runtime thread's row (plans/runtime-threads-direct.md), or null
+   * for a thread that runs on ChatThreadDO.
+   */
+  getThreadRuntime(threadId: string): ThreadRuntimeRecord | null {
+    const row = this.sql
+      .exec<ThreadRuntimeRow>(
+        "SELECT thread_id, agent_id, model, key_scope, configured_json, created_at, updated_at FROM thread_runtime WHERE thread_id = ?",
+        threadId,
+      )
+      .toArray()[0];
+    return row ? threadRuntimeRecord(row) : null;
+  }
+
+  /**
+   * Pin a thread to the runtime (before it has an agent). Idempotent; false
+   * when the thread does not exist.
+   */
+  pinThreadRuntime(threadId: string): boolean {
+    if (!this.getThread(threadId)) return false;
+    const now = Date.now();
+    this.sql.exec(
+      "INSERT OR IGNORE INTO thread_runtime (thread_id, created_at, updated_at) VALUES (?, ?, ?)",
+      threadId,
+      now,
+      now,
+    );
+    return true;
+  }
+
+  /**
+   * Record the thread's runtime agent and the configuration last applied to
+   * it (model, key scope, and the rest as JSON). Pins the thread if it was
+   * not yet; null when the thread does not exist.
+   */
+  setThreadRuntimeAgent(threadId: string, update: ThreadRuntimeAgentUpdate): ThreadRuntimeRecord | null {
+    if (!this.getThread(threadId)) return null;
+    const now = Date.now();
+    this.sql.exec(
+      `INSERT INTO thread_runtime (thread_id, agent_id, model, key_scope, configured_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(thread_id) DO UPDATE SET
+         agent_id = excluded.agent_id,
+         model = excluded.model,
+         key_scope = excluded.key_scope,
+         configured_json = excluded.configured_json,
+         updated_at = excluded.updated_at`,
+      threadId,
+      update.agentId,
+      update.model,
+      update.keyScope,
+      update.configured === undefined || update.configured === null ? null : JSON.stringify(update.configured),
+      now,
+      now,
+    );
+    return this.getThreadRuntime(threadId);
+  }
+
+  /** A direct runtime thread's preview tabs, or null when none were saved. */
+  getThreadUiState(threadId: string): ThreadUiStateRecord | null {
+    const row = this.sql
+      .exec<{ thread_id: string; preview_json: string | null; preview_version: number; updated_at: number }>(
+        "SELECT thread_id, preview_json, preview_version, updated_at FROM thread_ui_state WHERE thread_id = ?",
+        threadId,
+      )
+      .toArray()[0];
+    if (!row) return null;
+    return {
+      threadId: row.thread_id,
+      preview: parseJsonObject(row.preview_json),
+      previewVersion: Number(row.preview_version) || 0,
+      updatedAt: Number(row.updated_at) || 0,
+    };
+  }
+
+  /**
+   * Save a direct runtime thread's preview tabs and bump their version.
+   * With `expectedVersion`, only when it is still the saved version (null when
+   * it is not, or the thread does not exist).
+   */
+  setThreadUiState(
+    threadId: string,
+    preview: Record<string, unknown> | null,
+    expectedVersion?: number,
+  ): ThreadUiStateRecord | null {
+    if (!this.getThread(threadId)) return null;
+    const current = this.getThreadUiState(threadId);
+    if (expectedVersion !== undefined && (current?.previewVersion ?? 0) !== expectedVersion) return null;
+    const now = Date.now();
+    const version = (current?.previewVersion ?? 0) + 1;
+    this.sql.exec(
+      `INSERT INTO thread_ui_state (thread_id, preview_json, preview_version, updated_at)
+         VALUES (?, ?, ?, ?)
+       ON CONFLICT(thread_id) DO UPDATE SET
+         preview_json = excluded.preview_json,
+         preview_version = excluded.preview_version,
+         updated_at = excluded.updated_at`,
+      threadId,
+      preview === null ? null : JSON.stringify(preview),
+      version,
+      now,
+    );
+    return { threadId, preview, previewVersion: version, updatedAt: now };
+  }
+
+  /**
+   * A runtime thread's agent opened a preview (set_preview): add or replace
+   * its tab and make it active, as ChatThreadDO.setPreviewTarget does.
+   */
+  upsertThreadPreviewTarget(threadId: string, target: PreviewTarget): ThreadUiStateRecord | null {
+    const current = this.getThreadUiState(threadId)?.preview ?? null;
+    const tabs = Array.isArray(current?.tabs) ? (current.tabs as PreviewTarget[]) : [];
+    const id = getPreviewTabId(target);
+    const next = tabs.some((tab) => getPreviewTabId(tab) === id)
+      ? tabs.map((tab) => (getPreviewTabId(tab) === id ? target : tab))
+      : [...tabs, target];
+    return this.setThreadUiState(threadId, { tabs: next, activeTabId: id });
+  }
+
+  /** An app's visibility changed: update it on a runtime thread's open app tabs. */
+  setThreadPreviewAppVisibility(threadId: string, scriptName: string, isPublic: boolean): ThreadUiStateRecord | null {
+    const current = this.getThreadUiState(threadId)?.preview ?? null;
+    const tabs = Array.isArray(current?.tabs) ? (current.tabs as PreviewTarget[]) : [];
+    if (!tabs.some((tab) => tab.kind === "app" && tab.scriptName === scriptName && tab.isPublic !== isPublic)) return null;
+    return this.setThreadUiState(threadId, {
+      ...current,
+      tabs: tabs.map((tab) => (tab.kind === "app" && tab.scriptName === scriptName ? { ...tab, isPublic } : tab)),
+    });
   }
 
   /**
@@ -8848,6 +9087,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       orgSlug: info.slug || info.id.slice(0, 5),
       workspaceId,
       threadId,
+      runtime: this.getThreadRuntime(threadId),
     };
   }
 

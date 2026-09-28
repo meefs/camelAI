@@ -127,6 +127,12 @@ export interface CodeModeToolsProps {
   preconfirmed?: boolean;
   /** Explicitly false for main-agent js_exec; Research opts in to web tools. */
   allowWebTools?: boolean;
+  /**
+   * The thread runs directly on the agent runtime (a thread_runtime row) and
+   * has no ChatThreadDO: thread UI state goes to OrgDO or the tool's result,
+   * never to the DO (plans/runtime-threads-direct.md §4.4).
+   */
+  directRuntime?: boolean;
 }
 
 class DestructiveConfirmationRequired extends Error {
@@ -2424,7 +2430,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
    */
   private async streamProjectBuildProgress(message: string): Promise<void> {
     const parentToolUseId = this.ctx?.props?.parentToolUseId?.trim();
-    if (!parentToolUseId) return;
+    if (!parentToolUseId || this.directRuntime) return;
     try {
       await (this.chatThreadStub as unknown as {
         streamToolProgress(parentToolUseId: string, delta: string): Promise<void>;
@@ -2561,9 +2567,15 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     return this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(workspaceId));
   }
 
+  /** The thread runs on the agent runtime, with no ChatThreadDO. */
+  private get directRuntime(): boolean {
+    return this.ctx?.props?.directRuntime === true;
+  }
+
   private get chatThreadStub(): DurableObjectStub<ChatThreadDO> {
     const { threadId } = this.ctx.props;
     if (!threadId) throw new Error("This tool requires chat thread scope");
+    if (this.directRuntime) throw new Error("This tool is not available on this thread");
     return this.env.CHAT_THREAD.get(this.env.CHAT_THREAD.idFromName(threadId));
   }
 
@@ -3728,6 +3740,8 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     result?: unknown,
     error?: unknown,
   ): Promise<void> {
+    // Verified-work state lives in ChatThreadDO's prompt; runtime threads have none.
+    if (this.directRuntime) return;
     const parentToolUseId = this.ctx?.props?.parentToolUseId?.trim();
     const directToolUseId = typeof args.toolUseId === "string" ? args.toolUseId.trim() : "";
     const threadId = this.ctx?.props?.threadId?.trim();
@@ -3763,7 +3777,8 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   ): Promise<void> {
     const props = this.ctx?.props;
     const threadId = props?.threadId?.trim();
-    if (!threadId) return;
+    // Project activity is kept per ChatThreadDO; runtime threads have none yet.
+    if (!threadId || this.directRuntime) return;
 
     try {
       let projectName = '';
@@ -3857,7 +3872,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     const props = this.ctx?.props;
     const parentToolUseId = props?.parentToolUseId?.trim();
     const threadId = props?.threadId?.trim();
-    if (!parentToolUseId || !threadId) return;
+    if (!parentToolUseId || !threadId || this.directRuntime) return;
     const artifact = this.buildCodeModeArtifact(name, args, result, error);
     if (!artifact) return;
     await (this.chatThreadStub as unknown as {
@@ -4018,7 +4033,8 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
           ? args.items
           : [],
     );
-    await this.chatThreadStub.setTodoState(todos);
+    // A runtime thread's page reads its todos from this call.
+    if (!this.directRuntime) await this.chatThreadStub.setTodoState(todos);
     return { success: true, todos };
   }
 
@@ -4057,7 +4073,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
           ? args.is_public
           : script.is_public,
       };
-      await this.chatThreadStub.setPreviewTarget(target);
+      await this.recordPreviewTarget(target);
       return { success: true, target, app: { name: scriptName, url: await this.getAppUrl(script), is_public: target.isPublic } };
     }
     const location = typeof args.location === "string" ? args.location.trim() : "";
@@ -4099,8 +4115,22 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       throw new Error(`project is required when previewing a project file`);
     }
     await this.assertPreviewFileReadable(target);
-    await this.chatThreadStub.setPreviewTarget(target);
+    await this.recordPreviewTarget(target);
     return { success: true, target };
+  }
+
+  /**
+   * Open a preview tab for the thread: on its ChatThreadDO, or for a runtime
+   * thread in OrgDO (its page opens the tab from this call's result live).
+   */
+  private async recordPreviewTarget(target: PreviewTarget): Promise<void> {
+    if (!this.directRuntime) {
+      await this.chatThreadStub.setPreviewTarget(target);
+      return;
+    }
+    const threadId = this.ctx.props.threadId;
+    if (!threadId) throw new Error("This tool requires chat thread scope");
+    await this.orgStub.upsertThreadPreviewTarget(threadId, target);
   }
 
   private async assertPreviewFileReadable(target: Extract<PreviewTarget, { kind: "file" }>): Promise<void> {
@@ -4237,7 +4267,11 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       this.ctx.props.userId || "system",
     );
     if (!updated) return { success: false, error: `Failed to update app '${scriptName}'` };
-    await this.chatThreadStub.setPreviewAppVisibility(scriptName, updated.is_public);
+    if (this.directRuntime) {
+      if (this.ctx.props.threadId) await this.orgStub.setThreadPreviewAppVisibility(this.ctx.props.threadId, scriptName, updated.is_public);
+    } else {
+      await this.chatThreadStub.setPreviewAppVisibility(scriptName, updated.is_public);
+    }
     return {
       success: true,
       app: {
@@ -4472,6 +4506,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   /** The thread's scheduled-run outcome, recorded on its ChatThreadDO (which validates it). */
   private async reportAutomationOutcome(args: Record<string, unknown>): Promise<Record<string, unknown>> {
     if (!this.ctx.props.threadId) throw new Error("report_automation_outcome requires chat thread scope");
+    if (this.directRuntime) throw new Error("report_automation_outcome is only for scheduled automation runs");
     const stub = this.chatThreadStub as unknown as {
       recordAutomationOutcome(status: unknown, summary: unknown): Promise<{ status: string; text: string }>;
     };
@@ -4910,8 +4945,11 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
       orgStub: this.orgStub,
       workspaceId: this.ctx.props.workspaceId,
       userId: this.ctx.props.userId,
-      promptConnectionSetup: (input) =>
-        (this.chatThreadStub as unknown as {
+      // A runtime thread has no chat form: the MCP server sends the user to
+      // the connections page through the runtime instead.
+      promptConnectionSetup: (input) => this.directRuntime
+        ? Promise.resolve({ requestId: "", cancelled: true })
+        : (this.chatThreadStub as unknown as {
           promptConnectionSetup(input: {
             integrationId?: string;
             integrationType: string;

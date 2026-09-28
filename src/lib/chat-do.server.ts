@@ -18,6 +18,7 @@ import {
   generateThreadTitleWithOpenAI,
 } from "./thread-title-generation.server";
 import { OrgDO, type OrgThread } from "../../workers/main/src/auth";
+import type { ThreadRuntimeRecord } from "../../workers/main/src/identity/org-do";
 import { WorkspaceDO } from "../../workers/main/src/workspace";
 import {
   CAMEL_CODE_LLM_MODEL,
@@ -840,6 +841,19 @@ export async function setThreadFirstUserMessage(
   const thread = await orgStub.setThreadFirstUserMessage(id, firstUserMessage);
   if (!thread) return null;
   return toThread(env, thread);
+}
+
+/**
+ * A thread's row on the hosted agent runtime (plans/runtime-threads-direct.md),
+ * or null for a thread that runs on ChatThreadDO.
+ */
+export async function getThreadRuntime(
+  context: AppLoadContext,
+  threadId: string,
+  orgId: string,
+): Promise<ThreadRuntimeRecord | null> {
+  const env = getEnv(context);
+  return await env.ORG.get(env.ORG.idFromName(orgId)).getThreadRuntime(threadId);
 }
 
 export async function deleteThread(

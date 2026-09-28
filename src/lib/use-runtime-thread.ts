@@ -1,0 +1,453 @@
+/**
+ * A thread that runs directly on the hosted agent runtime, in the browser
+ * (plans/runtime-threads-direct.md §5.2). The runtime SDK's watcher reads the
+ * agent itself (SSE, then long polls) with a browser token chiridion mints;
+ * writes go through chiridion's routes (/api/threads/:id/{messages,inputs,stop,
+ * preview}). No ChatThreadDO, no UIMessage.
+ *
+ * To keep Chat.tsx's machinery (send recovery, optimistic bubbles, question
+ * card, preview panel) unchanged, the hook answers the same two seams the DO
+ * path does: a `client` shaped like the agent connection (`call(method)`), and
+ * a `chat` shaped like usePiChatStream's result, whose `messages` are the Pi
+ * messages projected by pi-render. Agent state (pending question, todos,
+ * errors, preview) is derived here and handed to Chat's `onStateUpdate`.
+ */
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { UIMessage } from "ai";
+import type { Message, PreviewTarget } from "@/types";
+import { localToolName, runtimeInputQuestions, type RuntimeInput } from "@/lib/agent-runtime-shared";
+import { latestRuntimeTodos, piRender } from "@/lib/pi-render";
+import { getPreviewTabId } from "@/components/preview-panel/preview-utils";
+import { watchAgent, type AgentView, type Watcher } from "@/lib/vendor/agent-runtime-watch";
+
+/** What the loader read server-side for first paint: a token, and the newest page of history. */
+export interface RuntimeThreadSeed {
+  agentId: string | null;
+  token: string | null;
+  expiresAt: number | null;
+  url: string | null;
+  page: { entries: Array<{ index: number; message: unknown }>; next: number | null } | null;
+  previewTabs: PreviewTarget[];
+  activeTabId: string | null;
+  /** The first message was refused before any agent ran (limits, credits, a ban): shown as a turn error. */
+  startError?: { id: string; error: string } | null;
+}
+
+/** The slice of Chat.tsx's agent connection a runtime thread answers. */
+export interface RuntimeThreadClient {
+  readyState: number;
+  readonly transport: "websocket" | "poll";
+  send(data: string): void;
+  reconnect(): void;
+  call<T = unknown>(method: string, args?: unknown[], options?: { timeout?: number }): Promise<T>;
+}
+
+export interface RuntimeThreadChat {
+  messages: Message[];
+  uiMessages: UIMessage[];
+  status: "ready" | "submitted" | "streaming";
+  isStreaming: boolean;
+  isStallClamped: boolean;
+  streamingMessageId: string | null;
+  setUiMessages(messages: UIMessage[]): void;
+}
+
+export interface RuntimeThreadState {
+  previewTabs: PreviewTarget[];
+  previewActiveTabId: string | null;
+  previewVersion: number;
+  previewRefreshTabId: string | null;
+  currentTodos: unknown[];
+  contextUsedPercent: number | null;
+  pendingQuestion: { questionId: string; questions: unknown[] } | null;
+  connectionSetupPrompt: null;
+  lastError: { id: string; error: string; billingSource: null; provider: null; status: null; errorType: null } | null;
+  modelFallbackNotice?: { id: string; fromModel: string; toModel: string; reason: "hosted_credits_exhausted" | "hosted_subscription_unavailable"; createdAt: number } | null;
+}
+
+export interface RuntimeThreadCallbacks {
+  onOpen(): void;
+  onStateUpdate(state: RuntimeThreadState): void;
+}
+
+const OPEN = 1;
+const CLOSED = 3;
+const EMPTY_UI_MESSAGES: UIMessage[] = [];
+/** How long a sent message counts as "submitted" without its run appearing on the stream. */
+const SUBMITTED_WINDOW_MS = 60_000;
+const RECONNECT_DELAY_MS = 1_000;
+
+type View = Pick<AgentView, "messages" | "indexes" | "partial" | "running" | "pendingInputs" | "lastOutcome" | "hasOlder"> & {
+  progress: Map<string, unknown>;
+};
+
+function seedView(seed: RuntimeThreadSeed | null | undefined): View {
+  const entries = [...(seed?.page?.entries ?? [])].sort((a, b) => a.index - b.index);
+  return {
+    messages: entries.map((entry) => entry.message as AgentMessage),
+    indexes: entries.map((entry) => entry.index),
+    partial: null,
+    progress: new Map(),
+    running: false,
+    pendingInputs: [],
+    lastOutcome: null,
+    hasOlder: Boolean(seed?.page?.next),
+  };
+}
+
+function snapshot(state: AgentView): View {
+  return {
+    messages: [...state.messages],
+    indexes: [...state.indexes],
+    partial: state.partial as AssistantMessage | null,
+    progress: new Map(state.progress),
+    running: state.running,
+    pendingInputs: [...state.pendingInputs],
+    lastOutcome: state.lastOutcome,
+    hasOlder: state.hasOlder,
+  };
+}
+
+function userText(message: AgentMessage): string {
+  const content = (message as { content?: unknown }).content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.map((part) => (part && typeof part === "object" && (part as { type?: unknown }).type === "text" ? String((part as { text?: unknown }).text ?? "") : "")).join("");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+async function postJson(url: string, body?: unknown): Promise<{ ok: boolean; status: number; data: any }> {
+  const response = await fetch(url, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const data = await response.json().catch(() => null);
+  return { ok: response.ok, status: response.status, data };
+}
+
+/**
+ * A preview target a set_preview result opened (its structured result's
+ * `target`), for results that arrive while the page watches.
+ */
+function previewTargetOf(message: AgentMessage): PreviewTarget | null {
+  const result = message as { role?: string; toolName?: string; details?: unknown; isError?: boolean };
+  if (result.role !== "toolResult" || result.isError) return null;
+  if (localToolName(result.toolName) !== "set_preview") return null;
+  const target = isRecord(result.details) ? result.details.target : undefined;
+  return isRecord(target) && typeof target.kind === "string" ? target as unknown as PreviewTarget : null;
+}
+
+export function useRuntimeThread(options: {
+  threadId: string | undefined;
+  workspaceId: string | null | undefined;
+  seed: RuntimeThreadSeed | null | undefined;
+  enabled: boolean;
+  callbacks: { current: RuntimeThreadCallbacks };
+}): {
+  client: RuntimeThreadClient;
+  chat: RuntimeThreadChat;
+  hasOlder: boolean;
+  loadOlder(): Promise<boolean>;
+} {
+  const { threadId, workspaceId, seed, enabled, callbacks } = options;
+  const [view, setView] = useState<View>(() => seedView(seed));
+  const [agentId, setAgentId] = useState<string | null>(seed?.agentId ?? null);
+  const [submittedAt, setSubmittedAt] = useState<number | null>(null);
+  const [preview, setPreview] = useState(() => ({
+    tabs: seed?.previewTabs ?? [],
+    activeTabId: seed?.activeTabId ?? null,
+    version: 0,
+    refreshTabId: null as string | null,
+  }));
+  const [fallbackNotice, setFallbackNotice] = useState<RuntimeThreadState["modelFallbackNotice"]>(null);
+  const watcherRef = useRef<Watcher | null>(null);
+  /** Messages this tab sent and has not seen come back, oldest first. */
+  const sentRef = useRef<Array<{ clientMessageId: string; text: string }>>([]);
+  /** The client message id of each user message this tab matched to its send, by history index. */
+  const [clientMessageIds, setClientMessageIds] = useState<ReadonlyMap<number, string>>(() => new Map());
+  /** Indexes already on screen at load: their errors and preview results are history, not news. */
+  const knownIndexesRef = useRef<Set<number> | null>(null);
+  const cancelledInputsRef = useRef<Set<string>>(new Set());
+  const query = workspaceId ? `?workspaceId=${encodeURIComponent(workspaceId)}` : "";
+  const base = threadId ? `/api/threads/${encodeURIComponent(threadId)}` : "";
+
+  // The loader's seed can resolve after mount (deferred data): take it once.
+  const seededRef = useRef(Boolean(seed));
+  useEffect(() => {
+    if (!seed || seededRef.current) return;
+    seededRef.current = true;
+    setView(seedView(seed));
+    setAgentId((current) => current ?? seed.agentId);
+    setPreview((current) => current.tabs.length > 0 ? current : { tabs: seed.previewTabs, activeTabId: seed.activeTabId, version: current.version + 1, refreshTabId: null });
+  }, [seed]);
+
+  const getToken = useCallback(async () => {
+    const minted = await postJson(`${base}/token${query}`);
+    if (!minted.ok) throw Object.assign(new Error(minted.data?.error ?? `token: HTTP ${minted.status}`), { status: minted.status });
+    return minted.data as { token: string; expiresAt: number; url: string; agentId: string };
+  }, [base, query]);
+
+  // Watch the agent once it exists; its first send creates it.
+  useEffect(() => {
+    if (!enabled || !threadId || !agentId) return;
+    let cancelled = false;
+    let frame: number | null = null;
+    let latest: AgentView | null = null;
+    const flush = () => {
+      frame = null;
+      if (!cancelled && latest) setView(snapshot(latest));
+    };
+    const start = async () => {
+      const initial = seed?.token && seed.agentId === agentId && seed.url && (seed.expiresAt ?? 0) - Date.now() > 60_000
+        ? { token: seed.token, expiresAt: seed.expiresAt ?? undefined, url: seed.url }
+        : await getToken();
+      if (cancelled) return;
+      watcherRef.current = watchAgent({
+        url: initial.url,
+        agentId,
+        token: initial.token,
+        expiresAt: initial.expiresAt ?? undefined,
+        getToken,
+        onChange: (state) => {
+          latest = state;
+          // Deltas arrive per token: render at most once a frame.
+          if (frame === null) frame = requestAnimationFrame(flush);
+        },
+        onError: (error) => console.warn("[runtime-thread] watcher", error.message),
+      });
+    };
+    start().catch((error) => console.error("[runtime-thread] could not watch the agent", error));
+    return () => {
+      cancelled = true;
+      if (frame !== null) cancelAnimationFrame(frame);
+      watcherRef.current?.close();
+      watcherRef.current = null;
+    };
+    // The seed is read once, when the watcher starts.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, threadId, agentId, getToken]);
+
+  // Sends are HTTP: the thread is ready as soon as it mounts (after Chat has
+  // installed this client, so a queued send flushes through it).
+  useEffect(() => {
+    if (!enabled || !threadId) return;
+    const timer = window.setTimeout(() => callbacks.current.onOpen(), 0);
+    return () => window.clearTimeout(timer);
+  }, [enabled, threadId, callbacks]);
+
+  // Match this tab's sends to the user messages they became, so optimistic
+  // bubbles give way to them. By text until the runtime echoes `requestId`
+  // (the client's message id) on user messages; then by that.
+  useEffect(() => {
+    if (sentRef.current.length === 0) return;
+    let changed = false;
+    const next = new Map(clientMessageIds);
+    const matched = new Set(next.values());
+    view.messages.forEach((message, position) => {
+      const index = view.indexes[position];
+      if ((message as { role?: string }).role !== "user" || next.has(index)) return;
+      const text = userText(message).trim();
+      const at = sentRef.current.findIndex((sent) => !matched.has(sent.clientMessageId) && text.endsWith(sent.text.trim()));
+      if (at < 0) return;
+      const [sent] = sentRef.current.splice(at, 1);
+      next.set(index, sent.clientMessageId);
+      matched.add(sent.clientMessageId);
+      changed = true;
+    });
+    if (changed) setClientMessageIds(next);
+  }, [view, clientMessageIds]);
+
+  useEffect(() => {
+    if (view.running || view.lastOutcome) setSubmittedAt(null);
+  }, [view.running, view.lastOutcome]);
+  useEffect(() => {
+    if (submittedAt === null) return;
+    const timer = window.setTimeout(() => setSubmittedAt(null), SUBMITTED_WINDOW_MS);
+    return () => window.clearTimeout(timer);
+  }, [submittedAt]);
+
+  // A set_preview the agent runs while the page watches opens its tab.
+  useEffect(() => {
+    if (knownIndexesRef.current === null) {
+      if (view.messages.length === 0 && !seed) return;
+      knownIndexesRef.current = new Set(view.indexes);
+      return;
+    }
+    const known = knownIndexesRef.current;
+    let opened: PreviewTarget | null = null;
+    view.messages.forEach((message, position) => {
+      const index = view.indexes[position];
+      if (known.has(index)) return;
+      known.add(index);
+      opened = previewTargetOf(message) ?? opened;
+    });
+    if (!opened) return;
+    const target: PreviewTarget = opened;
+    const id = getPreviewTabId(target);
+    setPreview((current) => {
+      const tabs = current.tabs.some((tab) => getPreviewTabId(tab) === id)
+        ? current.tabs.map((tab) => (getPreviewTabId(tab) === id ? target : tab))
+        : [...current.tabs, target];
+      return { tabs, activeTabId: id, version: current.version + 1, refreshTabId: current.activeTabId === id ? id : null };
+    });
+  }, [view, seed]);
+
+  const rendered = useMemo(
+    () => piRender({
+      threadId: threadId ?? "",
+      messages: view.messages,
+      indexes: view.indexes,
+      partial: view.partial,
+      progress: view.progress,
+      running: view.running,
+      clientMessageIds,
+    }),
+    [threadId, view, clientMessageIds],
+  );
+
+  // Inputs the chat cannot ask (forms with fields) are cancelled, as the DO did, so the turn goes on.
+  useEffect(() => {
+    if (!enabled) return;
+    for (const input of view.pendingInputs as RuntimeInput[]) {
+      if (runtimeInputQuestions(input) || cancelledInputsRef.current.has(input.id)) continue;
+      cancelledInputsRef.current.add(input.id);
+      void postJson(`${base}/inputs/${encodeURIComponent(input.id)}${query}`, { action: "cancel" });
+    }
+  }, [enabled, view.pendingInputs, base, query]);
+
+  // The agent state Chat.tsx's panels read, derived from the transcript and the stream.
+  const agentState = useMemo<RuntimeThreadState>(() => {
+    const question = (view.pendingInputs as RuntimeInput[])
+      .map((input) => ({ input, card: runtimeInputQuestions(input) }))
+      .find((entry) => entry.card);
+    const known = knownIndexesRef.current;
+    let lastError: RuntimeThreadState["lastError"] = null;
+    for (let position = view.messages.length - 1; position >= 0; position--) {
+      const message = view.messages[position] as { role?: string; stopReason?: string; errorMessage?: string };
+      if (message.role === "user") break;
+      if (message.role === "assistant" && message.stopReason === "error" && message.errorMessage) {
+        const index = view.indexes[position];
+        if (!known || known.has(index)) break;
+        lastError = { id: `rt-error:${index}`, error: message.errorMessage, billingSource: null, provider: null, status: null, errorType: null };
+        break;
+      }
+    }
+    if (!lastError && view.lastOutcome?.error) {
+      lastError = { id: `rt-outcome:${view.lastOutcome.id}`, error: view.lastOutcome.error, billingSource: null, provider: null, status: null, errorType: null };
+    }
+    // Until the thread's agent exists, the refusal of its first message.
+    if (!lastError && !agentId && seed?.startError) {
+      lastError = { id: seed.startError.id, error: seed.startError.error, billingSource: null, provider: null, status: null, errorType: null };
+    }
+    return {
+      previewTabs: preview.tabs,
+      previewActiveTabId: preview.activeTabId,
+      previewVersion: preview.version,
+      previewRefreshTabId: preview.refreshTabId,
+      currentTodos: latestRuntimeTodos(view.messages) ?? [],
+      contextUsedPercent: null,
+      pendingQuestion: question ? { questionId: question.input.id, questions: question.card!.questions } : null,
+      connectionSetupPrompt: null,
+      lastError,
+      modelFallbackNotice: fallbackNotice ?? null,
+    };
+  }, [view, preview, fallbackNotice, agentId, seed]);
+
+  // Deltas re-derive the state every frame; hand it on only when it changed.
+  const lastStateRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!enabled) return;
+    const key = JSON.stringify(agentState);
+    if (key === lastStateRef.current) return;
+    lastStateRef.current = key;
+    callbacks.current.onStateUpdate(agentState);
+  }, [enabled, agentState, callbacks]);
+
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  const call = useCallback(async (method: string, args: unknown[] = []): Promise<any> => {
+    if (!base) throw new Error("No thread");
+    switch (method) {
+      case "sendMessage": {
+        const [text, clientMessageId] = args as [string, string];
+        sentRef.current.push({ clientMessageId, text });
+        const sent = await postJson(`${base}/messages${query}`, { text, clientMessageId });
+        const result = isRecord(sent.data) ? sent.data : { status: "error", error: `HTTP ${sent.status}` };
+        if (result.status === "accepted") {
+          setSubmittedAt(Date.now());
+          if (typeof result.agentId === "string") setAgentId((current) => current ?? (result.agentId as string));
+          const fallback = result.fallback as { fromModel: string; toModel: string; reason: "hosted_credits_exhausted" | "hosted_subscription_unavailable" } | null;
+          if (fallback) setFallbackNotice({ id: `rt-fallback:${clientMessageId}`, ...fallback, createdAt: Date.now() });
+        } else {
+          sentRef.current = sentRef.current.filter((entry) => entry.clientMessageId !== clientMessageId);
+        }
+        return result;
+      }
+      case "requestStop":
+        await postJson(`${base}/stop${query}`);
+        return undefined;
+      case "answerQuestion": {
+        const [questionId, answers] = args as [string, Record<string, unknown>];
+        const input = (viewRef.current.pendingInputs as RuntimeInput[]).find((entry) => entry.id === questionId);
+        const card = input ? runtimeInputQuestions(input) : null;
+        if (!card) return undefined;
+        await postJson(`${base}/inputs/${encodeURIComponent(questionId)}${query}`, card.answer(answers));
+        return undefined;
+      }
+      case "setPreviewTabsState": {
+        const [tabs, activeTabId] = args as [PreviewTarget[], string | null];
+        setPreview((current) => ({ tabs, activeTabId, version: current.version + 1, refreshTabId: null }));
+        await fetch(`${base}/preview${query}`, {
+          method: "PUT",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ tabs, activeTabId }),
+        }).catch(() => undefined);
+        return undefined;
+      }
+      // The next send configures the agent with the thread's model.
+      case "refreshModel":
+        return undefined;
+      default:
+        throw new Error(`${method} is not available on runtime threads`);
+    }
+  }, [base, query]);
+
+  const client = useMemo<RuntimeThreadClient>(() => ({
+    readyState: enabled ? OPEN : CLOSED,
+    transport: "poll",
+    send: () => {},
+    // A send whose response was lost: open again after a pause, which resends
+    // Chat's queued messages under the same ids (the runtime deduplicates them).
+    reconnect: () => {
+      window.setTimeout(() => callbacks.current.onOpen(), RECONNECT_DELAY_MS);
+    },
+    call: call as RuntimeThreadClient["call"],
+  }), [enabled, call, callbacks]);
+
+  const streaming = view.running || view.partial !== null;
+  const chat = useMemo<RuntimeThreadChat>(() => ({
+    messages: rendered.messages,
+    uiMessages: EMPTY_UI_MESSAGES,
+    status: streaming ? "streaming" : submittedAt !== null ? "submitted" : "ready",
+    isStreaming: streaming,
+    isStallClamped: false,
+    streamingMessageId: rendered.streamingMessageId,
+    setUiMessages: () => {},
+  }), [rendered, streaming, submittedAt]);
+
+  const loadOlder = useCallback(async () => {
+    const watcher = watcherRef.current;
+    if (!watcher) return false;
+    return await watcher.loadOlder();
+  }, []);
+
+  return { client, chat, hasOlder: view.hasOlder, loadOlder };
+}

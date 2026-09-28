@@ -755,6 +755,25 @@ export async function action({ request, context }: Route.ActionArgs) {
         },
       );
 
+      // Where the thread runs: on the hosted agent runtime directly (no
+      // ChatThreadDO) when this deployment runs new threads there and the
+      // thread's model can, else on ChatThreadDO.
+      const runtimeThreads = await import("@/lib/runtime-threads.server");
+      const threadContext = {
+        threadId: thread.id,
+        workspaceId,
+        orgId,
+        userId,
+        userName: session.user_name ?? null,
+        userEmail: session.user_email ?? null,
+      };
+      const runtimeRow = await runtimeThreads
+        .pinNewWebThread(context, threadContext)
+        .catch((error: unknown) => {
+          console.error("Failed to pin a new thread to the agent runtime:", error);
+          return null;
+        });
+
       // Set preview apps if provided (for "chat with this app" flow)
       if (previewAppsRaw) {
         const previewStartedAt = Date.now();
@@ -762,11 +781,17 @@ export async function action({ request, context }: Route.ActionArgs) {
         if (previewApps.length > 0) {
           const scriptName = previewApps[0];
           const script = await getWorkerScript(authEnv, orgId, scriptName);
-          await chatDO.setThreadPreviewTarget(context, thread.id, {
-            kind: "app",
+          const target = {
+            kind: "app" as const,
             scriptName,
             isPublic: script?.is_public ?? false,
-          });
+          };
+          if (runtimeRow) {
+            await env.ORG.get(env.ORG.idFromName(orgId))
+              .upsertThreadPreviewTarget(thread.id, target);
+          } else {
+            await chatDO.setThreadPreviewTarget(context, thread.id, target);
+          }
         }
         recordChatCreateThreadStage(
           env,
@@ -781,8 +806,9 @@ export async function action({ request, context }: Route.ActionArgs) {
         );
       }
 
-      // Generate title in background if we have a first message
-      if (firstMessage) {
+      // Generate title in background if we have a first message (a runtime
+      // thread's first send generates it).
+      if (firstMessage && !runtimeRow) {
         waitUntil(
           chatDO.generateThreadTitle(
             context,
@@ -869,7 +895,46 @@ export async function action({ request, context }: Route.ActionArgs) {
         },
       );
 
-      if (shouldStartAndRedirect && firstMessage) {
+      if (shouldStartAndRedirect && firstMessage && runtimeRow) {
+        // Sent before the redirect, so the thread page finds the agent and the
+        // message on its first read.
+        const initialStartStartedAt = Date.now();
+        try {
+          const turn = await runtimeThreads.startFirstRuntimeTurn(context, {
+            context: threadContext,
+            row: runtimeRow,
+            sender: {
+              userId,
+              userName: session.user_name ?? null,
+              userEmail: session.user_email ?? null,
+            },
+            text: firstMessage,
+            waitUntil,
+          });
+          recordChatCreateThreadStage(
+            env,
+            traceContext,
+            traceIds,
+            "initial_message_start_completed",
+            initialStartStartedAt,
+            { model: thread.model, status: turn.status, size: firstMessage.length },
+          );
+          if (turn.status !== "accepted") {
+            console.error("Failed to start initial runtime message:", turn.error);
+          }
+        } catch (error) {
+          console.error("Failed to start initial runtime message:", error);
+          recordChatCreateThreadError(
+            env,
+            traceContext,
+            traceIds,
+            "initial_message_start_completed",
+            initialStartStartedAt,
+            error,
+            { model: thread.model, size: firstMessage.length },
+          );
+        }
+      } else if (shouldStartAndRedirect && firstMessage) {
         const initialStartStartedAt = Date.now();
         const chatThreadStub = env.CHAT_THREAD.get(
           env.CHAT_THREAD.idFromName(thread.id),

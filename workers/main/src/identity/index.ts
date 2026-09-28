@@ -43,6 +43,9 @@ export type {
 export type {
   OrgAuthContextBootstrap,
   OrgChatWebSocketAccessResult,
+  ThreadRuntimeRecord,
+  ThreadRuntimeAgentUpdate,
+  ThreadUiStateRecord,
   CheckUserLlmUsageAccessInput,
   LlmModelPricingInput,
   LlmPricingResponse,
