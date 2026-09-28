@@ -100,6 +100,8 @@ describe("usageRowFor", () => {
 describe("handleAgentRuntimeUsageRequest", () => {
   function fakeEnv() {
     const recordUsage = vi.fn(async () => ({ id: 1, cost_usd: 0, inserted: true }));
+    const recordThreadStreaming = vi.fn(async () => {});
+    const workspaces: string[] = [];
     const env = {
       AGENT_RUNTIME_WEBHOOK_SECRET: SECRET,
       AGENT_RUNTIME_TENANT: "chiridion",
@@ -107,9 +109,27 @@ describe("handleAgentRuntimeUsageRequest", () => {
         idFromName: (name: string) => name,
         get: () => ({ getInfo: async () => ({ billing_status: "active" }), recordUsage }),
       },
+      WORKSPACE: {
+        idFromName: (name: string) => name,
+        get: (id: string) => { workspaces.push(id); return { recordThreadStreaming }; },
+      },
     } as unknown as Env;
-    return { env, recordUsage };
+    return { env, recordUsage, recordThreadStreaming, workspaces };
   }
+
+  it("renews the thread's running lease, refresh-only, so a long run keeps showing as running", async () => {
+    const { env, recordThreadStreaming, workspaces } = fakeEnv();
+    await handleAgentRuntimeUsageRequest(await webhook(JSON.stringify(event)), env);
+    expect(workspaces).toEqual(["ws1"]);
+    expect(recordThreadStreaming).toHaveBeenCalledWith("t1", true, { refresh: true });
+  });
+
+  it("still records usage when the lease cannot be renewed", async () => {
+    const { env, recordUsage, recordThreadStreaming } = fakeEnv();
+    recordThreadStreaming.mockRejectedValueOnce(new Error("WorkspaceDO overloaded"));
+    expect((await handleAgentRuntimeUsageRequest(await webhook(JSON.stringify(event)), env)).status).toBe(204);
+    expect(recordUsage).toHaveBeenCalled();
+  });
 
   it("records a signed event in the org of its context", async () => {
     const { env, recordUsage } = fakeEnv();
