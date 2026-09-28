@@ -354,8 +354,14 @@ export function useRuntimeThread(options: {
     };
   }, [view, preview, fallbackNotice]);
 
+  // Deltas re-derive the state every frame; hand it on only when it changed.
+  const lastStateRef = useRef<string | null>(null);
   useEffect(() => {
-    if (enabled) callbacks.current.onStateUpdate(agentState);
+    if (!enabled) return;
+    const key = JSON.stringify(agentState);
+    if (key === lastStateRef.current) return;
+    lastStateRef.current = key;
+    callbacks.current.onStateUpdate(agentState);
   }, [enabled, agentState, callbacks]);
 
   const viewRef = useRef(view);
