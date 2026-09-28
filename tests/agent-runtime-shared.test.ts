@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+import { normalizePreviewTabs } from "../workers/main/src/chat-thread/preview-state";
 import {
   RUNTIME_REQUEST_ID,
+  requireSameOriginJson,
   initialRuntimeRequestId,
   runtimeDirectThreadsEnabled,
   startErrorStillCurrent,
@@ -48,12 +50,14 @@ describe("startErrorStillCurrent", () => {
   });
 });
 
+const requireRuntimeThreadMock = vi.fn(async () => { throw new Error("must not reach access checks"); });
 vi.mock("@/lib/runtime-threads.server", () => ({
   requestWorkspaceId: () => null,
-  requireRuntimeThread: vi.fn(async () => { throw new Error("must not reach access checks"); }),
+  requireRuntimeThread: requireRuntimeThreadMock,
 }));
 vi.mock("@/lib/wait-until", () => ({ waitUntil: vi.fn() }));
-vi.mock("../workers/main/src/agent-runtime/thread-runtime", () => ({ startRuntimeTurn: vi.fn() }));
+const startRuntimeTurnMock = vi.fn();
+vi.mock("../workers/main/src/agent-runtime/thread-runtime", () => ({ startRuntimeTurn: startRuntimeTurnMock }));
 
 describe("POST /api/threads/:id/messages", () => {
   it("refuses a client message id the runtime would refuse", async () => {
@@ -68,5 +72,71 @@ describe("POST /api/threads/:id/messages", () => {
       params: { id: "t1" },
     } as never) as Response;
     expect(response.status).toBe(400);
+  });
+});
+
+describe("requireSameOriginJson", () => {
+  const request = (headers: Record<string, string>, method = "POST") => new Request("https://camelai.test/api/threads/t/stop", { method, headers });
+  const status = (fn: () => void) => { try { fn(); return 200; } catch (error) { return (error as Response).status; } };
+  it("lets this origin's JSON writes through", () => {
+    expect(status(() => requireSameOriginJson(request({ "content-type": "application/json", "sec-fetch-site": "same-origin" })))).toBe(200);
+    expect(status(() => requireSameOriginJson(request({ "content-type": "application/json; charset=utf-8" })))).toBe(200);
+  });
+  it("refuses other sites, including same-site user apps, and non-JSON writes", () => {
+    expect(status(() => requireSameOriginJson(request({ "content-type": "application/json", "sec-fetch-site": "same-site" })))).toBe(403);
+    expect(status(() => requireSameOriginJson(request({ "content-type": "application/json", "sec-fetch-site": "cross-site" })))).toBe(403);
+    expect(status(() => requireSameOriginJson(request({ "content-type": "application/x-www-form-urlencoded" })))).toBe(415);
+    expect(status(() => requireSameOriginJson(request({})))).toBe(415);
+  });
+});
+
+describe("normalizePreviewTabs", () => {
+  it("keeps well-formed tabs from the thread's workspace, bounded, with a real active tab", () => {
+    const result = normalizePreviewTabs([
+      { kind: "app", scriptName: "shop\"><script>", isPublic: true },
+      { kind: "app", scriptName: 42 },
+      { kind: "file", source: "workspace", workspaceId: "other", path: "/a.md" },
+      { kind: "file", source: "workspace", workspaceId: "ws1", path: "/b.md" },
+      { kind: "file", source: "workspace", workspaceId: "ws1", path: "/../etc" },
+      "junk",
+      null,
+    ], "app:nope", "ws1");
+    expect(result.tabs).toEqual([
+      { kind: "app", scriptName: "shop___script_", isPublic: true },
+      { kind: "file", source: "workspace", workspaceId: "ws1", path: "/b.md", project: undefined, filename: undefined, contentType: undefined },
+    ]);
+    expect(result.activeTabId).toBe("app:shop___script_");
+    const many = Array.from({ length: 50 }, (_, index) => ({ kind: "app", scriptName: `app${index}` }));
+    expect(normalizePreviewTabs(many, null, "ws1").tabs).toHaveLength(32);
+  });
+});
+
+describe("POST /api/threads/:id/messages failures", () => {
+  const post = async () => {
+    const { action } = await import("@/routes/api/threads.$id.messages");
+    return await action({
+      request: new Request("https://camelai.test/api/threads/t1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: "hi", clientMessageId: "client_1_abc" }),
+      }),
+      context: {},
+      params: { id: "t1" },
+    } as never) as Response;
+  };
+  it("asks for a retry under the same id when the runtime or network fails", async () => {
+    requireRuntimeThreadMock.mockResolvedValueOnce({ env: {}, context: {}, sender: {}, row: {} } as never);
+    startRuntimeTurnMock.mockRejectedValueOnce(new Error("socket hang up"));
+    const response = await post();
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ retryable: true });
+  });
+  it("reports the runtime's refusal of the request as final", async () => {
+    const { RuntimeApiError } = await import("../workers/main/src/agent-runtime/runtime-api");
+    requireRuntimeThreadMock.mockResolvedValueOnce({ env: {}, context: {}, sender: {}, row: {} } as never);
+    startRuntimeTurnMock.mockRejectedValueOnce(new RuntimeApiError("Agent runtime POST /prompt: HTTP 400 bad", 400));
+    const response = await post();
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ status: "error" });
   });
 });

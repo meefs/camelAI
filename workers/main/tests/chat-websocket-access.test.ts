@@ -128,6 +128,23 @@ describe('requireChatWebSocketAccess', () => {
     expect(access.error.status).toBe(403);
   });
 
+  it('refuses the DO transport for a thread that runs on the agent runtime', async () => {
+    const { env } = buildEnv({
+      orgStub: {
+        validateChatWebSocketAccess: vi.fn().mockResolvedValue({
+          ok: true,
+          orgId: 'org',
+          orgSlug: 'org',
+          workspaceId: URL_WORKSPACE_ID,
+          threadId: THREAD_ID,
+          runtime: { threadId: THREAD_ID, agentId: 'agt_1' },
+        }),
+      },
+    });
+    const access = await requireChatWebSocketAccess(await buildRequest(), env, THREAD_ID, URL_WORKSPACE_ID);
+    expect('error' in access && access.error.status).toBe(409);
+  });
+
   it.each([
     ['org_not_found', 404, 'Workspace not found'],
     ['workspace_not_found', 404, 'Workspace not found'],

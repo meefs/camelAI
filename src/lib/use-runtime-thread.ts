@@ -21,6 +21,8 @@ import { localToolName, runtimeInputQuestions, type RuntimeInput } from "@/lib/a
 import { latestRuntimeTodos, piRender } from "@/lib/pi-render";
 import { getPreviewTabId } from "@/components/preview-panel/preview-utils";
 import { watchAgent, type AgentView, type Watcher } from "@/lib/vendor/agent-runtime-watch";
+import { stripSystemMessageTags } from "@/lib/turn-utils";
+import { toast } from "sonner";
 
 /** What the loader read server-side for first paint: a token, and the newest page of history. */
 export interface RuntimeThreadSeed {
@@ -117,6 +119,11 @@ function userText(message: AgentMessage): string {
   return content.map((part) => (part && typeof part === "object" && (part as { type?: unknown }).type === "text" ? String((part as { text?: unknown }).text ?? "") : "")).join("");
 }
 
+/** A user message's text as typed: without model-only context blocks or @-mention annotations. */
+function comparableText(text: string): string {
+  return stripSystemMessageTags(text).replace(/\s+/g, " ").trim();
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -125,8 +132,9 @@ async function postJson(url: string, body?: unknown): Promise<{ ok: boolean; sta
   const response = await fetch(url, {
     method: "POST",
     credentials: "same-origin",
-    headers: body === undefined ? undefined : { "Content-Type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
+    // Always JSON: the routes refuse anything else (cross-site request forgery).
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body ?? {}),
   });
   const data = await response.json().catch(() => null);
   return { ok: response.ok, status: response.status, data };
@@ -169,7 +177,7 @@ export function useRuntimeThread(options: {
   const [fallbackNotice, setFallbackNotice] = useState<RuntimeThreadState["modelFallbackNotice"]>(null);
   const watcherRef = useRef<Watcher | null>(null);
   /** Messages this tab sent and has not seen come back, oldest first. */
-  const sentRef = useRef<Array<{ clientMessageId: string; text: string }>>([]);
+  const sentRef = useRef<Array<{ clientMessageId: string; text: string; sentAt: number; afterIndex: number }>>([]);
   /** The client message id of each user message this tab matched to its send, by history index. */
   const [clientMessageIds, setClientMessageIds] = useState<ReadonlyMap<number, string>>(() => new Map());
   /** Indexes already on screen at load: their errors and preview results are history, not news. */
@@ -243,24 +251,41 @@ export function useRuntimeThread(options: {
   }, [enabled, threadId, callbacks]);
 
   // Match this tab's sends to the user messages they became, so optimistic
-  // bubbles give way to them. By text until the runtime echoes `requestId`
-  // (the client's message id) on user messages; then by that.
+  // bubbles give way to them: by the `requestId` the runtime echoes on the
+  // message where it does; else by the text the user typed (without the
+  // model-only context and @-mention annotations the model's copy carries);
+  // else, the first user message that arrived after the send.
   useEffect(() => {
     if (sentRef.current.length === 0) return;
     let changed = false;
     const next = new Map(clientMessageIds);
-    const matched = new Set(next.values());
-    view.messages.forEach((message, position) => {
-      const index = view.indexes[position];
-      if ((message as { role?: string }).role !== "user" || next.has(index)) return;
-      const text = userText(message).trim();
-      const at = sentRef.current.findIndex((sent) => !matched.has(sent.clientMessageId) && text.endsWith(sent.text.trim()));
-      if (at < 0) return;
+    const take = (index: number, at: number) => {
       const [sent] = sentRef.current.splice(at, 1);
       next.set(index, sent.clientMessageId);
-      matched.add(sent.clientMessageId);
       changed = true;
+    };
+    // Only messages that arrived after the oldest pending send can be it.
+    const after = Math.min(...sentRef.current.map((sent) => sent.afterIndex));
+    const unmatched = view.messages.flatMap((message, position) => {
+      const index = view.indexes[position];
+      return (message as { role?: string }).role === "user" && index > after && !next.has(index) ? [{ message, index }] : [];
     });
+    const rest: typeof unmatched = [];
+    for (const entry of unmatched) {
+      const requestId = (entry.message as { requestId?: unknown }).requestId;
+      const byId = typeof requestId === "string" ? sentRef.current.findIndex((sent) => sent.clientMessageId === requestId) : -1;
+      if (byId >= 0) { take(entry.index, byId); continue; }
+      const text = comparableText(userText(entry.message));
+      const byText = sentRef.current.findIndex((sent) => entry.index > sent.afterIndex && (text === sent.text || text.endsWith(sent.text)));
+      if (byText >= 0) take(entry.index, byText);
+      else rest.push(entry);
+    }
+    for (const entry of rest) {
+      if (sentRef.current.length === 0) break;
+      const at = (entry.message as { timestamp?: unknown }).timestamp;
+      const oldest = sentRef.current[0];
+      if (entry.index > oldest.afterIndex && typeof at === "number" && at >= oldest.sentAt - 2_000) take(entry.index, 0);
+    }
     if (changed) setClientMessageIds(next);
   }, [view, clientMessageIds]);
 
@@ -377,9 +402,23 @@ export function useRuntimeThread(options: {
     switch (method) {
       case "sendMessage": {
         const [text, clientMessageId] = args as [string, string];
-        sentRef.current.push({ clientMessageId, text });
+        // A retry of the same message keeps its one entry.
+        if (!sentRef.current.some((entry) => entry.clientMessageId === clientMessageId)) {
+          const known = viewRef.current.indexes;
+          sentRef.current.push({
+            clientMessageId,
+            text: comparableText(text),
+            sentAt: Date.now(),
+            afterIndex: known.length > 0 ? known[known.length - 1] : -1,
+          });
+        }
         const sent = await postJson(`${base}/messages${query}`, { text, clientMessageId });
-        const result = isRecord(sent.data) ? sent.data : { status: "error", error: `HTTP ${sent.status}` };
+        // The runtime or the network failed: a transport failure to Chat, which
+        // resends under the same id (the runtime deduplicates it).
+        if (sent.status >= 500 || !isRecord(sent.data)) {
+          throw new Error(isRecord(sent.data) && typeof sent.data.error === "string" ? sent.data.error : `HTTP ${sent.status}`);
+        }
+        const result = sent.data;
         if (result.status === "accepted") {
           setSubmittedAt(Date.now());
           if (typeof result.agentId === "string") setAgentId((current) => current ?? (result.agentId as string));
@@ -398,7 +437,13 @@ export function useRuntimeThread(options: {
         const input = (viewRef.current.pendingInputs as RuntimeInput[]).find((entry) => entry.id === questionId);
         const card = input ? runtimeInputQuestions(input) : null;
         if (!card) return undefined;
-        await postJson(`${base}/inputs/${encodeURIComponent(questionId)}${query}`, card.answer(answers));
+        const answered = await postJson(`${base}/inputs/${encodeURIComponent(questionId)}${query}`, card.answer(answers));
+        // Only the turn's actor (or the input's audience) may answer: say so.
+        if (!answered.ok) {
+          toast.error(answered.status === 403
+            ? "Only the person who started this turn can answer this question."
+            : typeof answered.data?.error === "string" ? answered.data.error : "Could not send your answer.");
+        }
         return undefined;
       }
       case "setPreviewTabsState": {

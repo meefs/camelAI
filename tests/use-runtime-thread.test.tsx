@@ -34,15 +34,21 @@ vi.mock("@/lib/vendor/agent-runtime-watch", () => ({
   },
 }));
 
+const toastError = vi.fn();
+vi.mock("sonner", () => ({ toast: { error: (...args: unknown[]) => toastError(...args) } }));
+
 import { useRuntimeThread, type RuntimeThreadSeed } from "@/lib/use-runtime-thread";
 
 const fetchCalls: Array<{ url: string; method: string; body: any }> = [];
 let responses: Record<string, unknown> = {};
+let statuses: Record<string, number> = {};
 
 beforeEach(() => {
   watchers.length = 0;
   fetchCalls.length = 0;
   responses = {};
+  statuses = {};
+  toastError.mockReset();
   vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => setTimeout(() => callback(0), 0) as unknown as number);
   vi.stubGlobal("cancelAnimationFrame", (id: number) => clearTimeout(id));
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
@@ -50,7 +56,7 @@ beforeEach(() => {
     fetchCalls.push(call);
     const path = url.split("?")[0];
     const body = responses[path] ?? {};
-    return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+    return new Response(JSON.stringify(body), { status: statuses[path] ?? 200, headers: { "Content-Type": "application/json" } });
   }));
 });
 
@@ -162,6 +168,64 @@ describe("useRuntimeThread", () => {
       lastError: expect.objectContaining({ id: "rt-start:5", error: "LLM usage limit reached." }),
     })));
     expect(watchers).toHaveLength(0);
+  });
+
+  it("matches a send with @-mentions to the message that carries the model's context for them", async () => {
+    responses["/api/threads/t1/messages"] = { status: "accepted", requestId: "cm_m", agentId: "agt_1", fallback: null };
+    const { result } = mount();
+    await waitFor(() => expect(watchers).toHaveLength(1));
+    await act(async () => {
+      await result.current.client.call("sendMessage", ["Check @sales-db", "cm_m"]);
+    });
+    const modelText = "<camelai system message>\n## Referenced connections\n- @sales-db\n</camelai system message>\n\nCheck @sales-db";
+    act(() => watchers[0].emit({
+      messages: [...seed.page!.entries.map((entry) => entry.message), { role: "user", content: [{ type: "text", text: modelText }], timestamp: Date.now() }],
+      indexes: [0, 1, 2],
+    }));
+    await waitFor(() => expect(result.current.chat.messages.find((message) => message.id === "rt:2")?.clientMessageId).toBe("cm_m"));
+  });
+
+  it("matches by the echoed requestId, and keeps one entry for a retried send", async () => {
+    responses["/api/threads/t1/messages"] = { status: "accepted", requestId: "cm_r", agentId: "agt_1", fallback: null };
+    const { result } = mount();
+    await waitFor(() => expect(watchers).toHaveLength(1));
+    await act(async () => {
+      await result.current.client.call("sendMessage", ["hello", "cm_r"]);
+      await result.current.client.call("sendMessage", ["hello", "cm_r"]);
+    });
+    act(() => watchers[0].emit({
+      messages: [
+        ...seed.page!.entries.map((entry) => entry.message),
+        { role: "user", content: [{ type: "text", text: "something else entirely" }], requestId: "cm_r", timestamp: 1 },
+        { role: "user", content: [{ type: "text", text: "hello" }], timestamp: 1 },
+      ],
+      indexes: [0, 1, 2, 3],
+    }));
+    await waitFor(() => expect(result.current.chat.messages.find((message) => message.id === "rt:2")?.clientMessageId).toBe("cm_r"));
+    expect(result.current.chat.messages.find((message) => message.id === "rt:3")?.clientMessageId).toBeUndefined();
+  });
+
+  it("turns a failed send into a transport failure, so Chat resends it under the same id", async () => {
+    responses["/api/threads/t1/messages"] = { error: "socket hang up", retryable: true };
+    statuses["/api/threads/t1/messages"] = 503;
+    const { result } = mount();
+    await expect(result.current.client.call("sendMessage", ["hi", "cm_fail"])).rejects.toThrow("socket hang up");
+  });
+
+  it("says why an answer was refused", async () => {
+    const { result, callbacks } = mount();
+    await waitFor(() => expect(watchers).toHaveLength(1));
+    const input = { id: "in_9", kind: "question", message: "", detail: { questions: [{ question: "Q?", header: "", options: [{ label: "A" }] }] } };
+    act(() => watchers[0].emit({ messages: seed.page!.entries.map((entry) => entry.message), indexes: [0, 1], pendingInputs: [input] }));
+    responses["/api/threads/t1/inputs/in_9"] = { error: "Forbidden" };
+    statuses["/api/threads/t1/inputs/in_9"] = 403;
+    await waitFor(() => expect(callbacks.current.onStateUpdate).toHaveBeenLastCalledWith(expect.objectContaining({
+      pendingQuestion: expect.objectContaining({ questionId: "in_9" }),
+    })));
+    await act(async () => {
+      await result.current.client.call("answerQuestion", ["in_9", { "Q?": "A" }]);
+    });
+    expect(toastError).toHaveBeenCalledWith(expect.stringContaining("Only the person who started this turn"));
   });
 
   it("opens the preview a set_preview result names while the page watches", async () => {

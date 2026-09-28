@@ -7682,6 +7682,9 @@ export class OrgDO extends DurableObject<DOEnv> {
     this.sql.exec("DELETE FROM audit_log");
     this.sql.exec("DELETE FROM worker_scripts");
     this.sql.exec("DELETE FROM threads");
+    this.deleteRuntimeAgents(
+      this.sql.exec<{ agent_id: string }>("SELECT agent_id FROM thread_runtime WHERE agent_id IS NOT NULL").toArray().map((row) => row.agent_id),
+    );
     this.sql.exec("DELETE FROM thread_runtime");
     this.sql.exec("DELETE FROM thread_ui_state");
     this.sql.exec("DELETE FROM proxy_usage");
@@ -8578,20 +8581,25 @@ export class OrgDO extends DurableObject<DOEnv> {
       payload: { id, workspace_id: existing.workspace_id },
     });
     // A runtime thread's transcript lives only on its agent: delete it too.
+    if (agentId) this.deleteRuntimeAgents([agentId]);
+    return true;
+  }
+
+  /** Delete deleted threads' agents on the runtime, in the background (a 404 is fine). */
+  private deleteRuntimeAgents(agentIds: string[]): void {
     const runtimeEnv = this.env as unknown as KeyScopeEnv;
-    if (agentId && runtimeEnv.AGENT_RUNTIME_API_TOKEN) {
-      this.ctx.waitUntil(
-        runtimeApi(runtimeEnv, "DELETE", `/v1/agents/${encodeURIComponent(agentId)}`).catch((error) => {
+    if (agentIds.length === 0 || !runtimeEnv.AGENT_RUNTIME_API_TOKEN) return;
+    this.ctx.waitUntil((async () => {
+      for (const agentId of agentIds) {
+        await runtimeApi(runtimeEnv, "DELETE", `/v1/agents/${encodeURIComponent(agentId)}`).catch((error) => {
           if (error instanceof RuntimeApiError && error.status === 404) return;
-          console.error("[OrgDO] failed to delete a deleted thread's runtime agent", {
-            threadId: id,
+          console.error("[OrgDO] failed to delete a runtime agent", {
             agentId,
             error: error instanceof Error ? error.message : String(error),
           });
-        }),
-      );
-    }
-    return true;
+        });
+      }
+    })());
   }
 
   /**
@@ -8669,19 +8677,13 @@ export class OrgDO extends DurableObject<DOEnv> {
     };
   }
 
-  /**
-   * Save a direct runtime thread's preview tabs and bump their version.
-   * With `expectedVersion`, only when it is still the saved version (null when
-   * it is not, or the thread does not exist).
-   */
+  /** Save a direct runtime thread's preview tabs and bump their version (null: no such thread). */
   setThreadUiState(
     threadId: string,
     preview: Record<string, unknown> | null,
-    expectedVersion?: number,
   ): ThreadUiStateRecord | null {
     if (!this.getThread(threadId)) return null;
     const current = this.getThreadUiState(threadId);
-    if (expectedVersion !== undefined && (current?.previewVersion ?? 0) !== expectedVersion) return null;
     const now = Date.now();
     const version = (current?.previewVersion ?? 0) + 1;
     this.sql.exec(

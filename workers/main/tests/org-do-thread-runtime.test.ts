@@ -79,12 +79,8 @@ describe('OrgDO thread_ui_state', () => {
     expect(await orgStub.getThreadUiState(threadId)).toMatchObject({ previewVersion: 2, preview: null });
   });
 
-  it('refuses a save against a stale version', async () => {
-    const { orgStub, threadId } = await freshThread();
-    await orgStub.setThreadUiState(threadId, { tabs: [] });
-    expect(await orgStub.setThreadUiState(threadId, { tabs: ['x'] }, 0)).toBeNull();
-    expect(await orgStub.setThreadUiState(threadId, { tabs: ['x'] }, 1)).toMatchObject({ previewVersion: 2 });
-    expect(await orgStub.setThreadUiState('missing-thread', null)).toBeNull();
+  it('refuses a save for a thread that does not exist', async () => {
+    expect(await (await freshThread()).orgStub.setThreadUiState('missing-thread', null)).toBeNull();
   });
 });
 

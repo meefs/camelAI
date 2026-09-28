@@ -123,22 +123,28 @@ async function modelText(env: ChatEnv, context: ChatContextState, text: string):
   return applyMentionContext(safe, { integrations, projects }).content;
 }
 
+/** The runtime's agent id for a provisioning key (its `agentId(tenant, key)`), to find an agent it already made. */
+async function provisionedAgentId(tenant: string, key: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${tenant}:${key}`));
+  const hex = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `client_${hex.slice(0, 40)}`;
+}
+
 /**
- * The thread's agent: the one on its row, or a new one (idempotent per
- * thread, so concurrent first sends get the same agent), then configured for
- * this run where the model, key scope or spend limit changed.
+ * Create the thread's agent, idempotently per thread. When the runtime
+ * answers that the key was used with a different configuration (the agent
+ * definition changed since), adopt the agent it made then; the caller
+ * reconfigures it. `adopted` says so.
  */
-async function ensureConfiguredAgent(
+async function createThreadAgent(
   env: ChatEnv,
   context: ChatContextState,
-  row: ThreadRuntimeRecord,
   run: PreparedRuntimeRun,
-): Promise<string> {
-  const org = orgStub(env, context.orgId);
-  let agentId = row.agentId;
-  if (!agentId) {
-    const thread = await org.getThread(context.threadId);
-    const subject = thread?.created_by?.trim() || context.userId || "";
+): Promise<{ agentId: string; adopted: boolean }> {
+  const key = `thread_${context.threadId}`;
+  const thread = await orgStub(env, context.orgId).getThread(context.threadId);
+  const subject = thread?.created_by?.trim() || context.userId || "";
+  try {
     const created = await runtimeApi(env, "POST", "/v1/agents", {
       definition: env.AGENT_RUNTIME_DEFINITION,
       name: context.threadId,
@@ -153,33 +159,93 @@ async function ensureConfiguredAgent(
       fileTools: false,
       ...(subject ? { subject } : {}),
       context: { org: context.orgId, workspace: context.workspaceId, thread: context.threadId },
-    }, { "Idempotency-Key": `thread_${context.threadId}` }) as { id?: unknown };
+    }, { "Idempotency-Key": key }) as { id?: unknown };
     if (typeof created?.id !== "string") throw new Error("Agent runtime returned no agent id");
-    agentId = created.id;
-    await org.setThreadRuntimeAgent(context.threadId, {
-      agentId,
-      model: run.model,
-      keyScope: run.keyScope,
-      configured: { thinkingLevel: run.thinkingLevel, spendLimitUsd: run.spendLimitUsd },
-    });
-    return agentId;
+    return { agentId: created.id, adopted: false };
+  } catch (error) {
+    if (!(error instanceof RuntimeApiError && error.status === 409 && /different configuration/i.test(error.message))) throw error;
+    const tenant = env.AGENT_RUNTIME_TENANT?.trim() ?? "";
+    const byKey = await provisionedAgentId(tenant, key);
+    const found = await runtimeApi(env, "GET", `/v1/agents/${encodeURIComponent(byKey)}`).then(() => byKey, () => null)
+      ?? ((await runtimeApi(env, "GET", "/v1/agents")) as Array<{ id: string; name?: string }>)
+        .find((agent) => agent.name === context.threadId)?.id
+      ?? null;
+    if (!found) throw error;
+    return { agentId: found, adopted: true };
   }
-  const modelChanged = row.model !== run.model;
-  const scopeChanged = (row.keyScope ?? null) !== run.keyScope;
-  const lastLimit = row.configured?.spendLimitUsd ?? null;
-  // A spend limit is a budget from now: set before every run that has one.
-  if (!modelChanged && !scopeChanged && run.spendLimitUsd === null && lastLimit === null) return agentId;
+}
+
+/** Whether the agent is running a turn now, and whether it already has `requestId` (a retried send). */
+async function agentActivity(env: ChatEnv, agentId: string, requestId: string): Promise<{ running: boolean; retried: boolean }> {
+  const base = `/v1/agents/${encodeURIComponent(agentId)}`;
+  const [state, retried] = await Promise.all([
+    runtimeApi(env, "GET", `${base}/state`) as Promise<{ requests?: Array<{ state?: string; method?: string }> }>,
+    runtimeApi(env, "GET", `${base}/requests/${encodeURIComponent(requestId)}`).then(() => true, (error) => {
+      if (error instanceof RuntimeApiError && error.status === 404) return false;
+      throw error;
+    }),
+  ]);
+  const running = (state?.requests ?? []).some((request) =>
+    request.state === "running" && ["prompt", "continue", "resume"].includes(request.method ?? ""));
+  return { running, retried };
+}
+
+/**
+ * The thread's agent, created (or adopted) on first use and configured for
+ * this send where the model, key scope or spend limit changed.
+ *
+ * A spend limit is a budget from now: the runtime resets what was spent and
+ * applies it at once, to a running turn too. So it is set only while the
+ * agent is idle; a send during a turn (another member's, or a retry) leaves
+ * the running turn's budget alone, and a retried request changes nothing.
+ */
+async function ensureConfiguredAgent(
+  env: ChatEnv,
+  context: ChatContextState,
+  row: ThreadRuntimeRecord,
+  run: PreparedRuntimeRun,
+  requestId: string,
+): Promise<string> {
+  const org = orgStub(env, context.orgId);
+  let agentId = row.agentId;
+  /** An agent made under an earlier configuration (adopted): bring all of it up to date. */
+  let stale = false;
+  if (!agentId) {
+    const made = await createThreadAgent(env, context, run);
+    agentId = made.agentId;
+    if (!made.adopted) {
+      await org.setThreadRuntimeAgent(context.threadId, {
+        agentId,
+        model: run.model,
+        keyScope: run.keyScope,
+        configured: { thinkingLevel: run.thinkingLevel, spendLimitUsd: run.spendLimitUsd },
+      });
+      return agentId;
+    }
+    stale = true;
+  }
+  const { running, retried } = await agentActivity(env, agentId, requestId);
+  if (retried) return agentId;
+  const modelChanged = stale || row.model !== run.model;
+  const scopeChanged = stale || (row.keyScope ?? null) !== run.keyScope;
+  const lastLimit = (row.configured?.spendLimitUsd as number | null | undefined) ?? null;
+  const setLimit = !running && (stale || run.spendLimitUsd !== null || lastLimit !== null);
+  if (!modelChanged && !scopeChanged && !setLimit) return agentId;
   await runtimeApi(env, "PATCH", `/v1/agents/${encodeURIComponent(agentId)}/configuration`, {
     requestId: `run_${crypto.randomUUID()}`,
-    spendLimit: run.spendLimitUsd === null ? null : { usd: run.spendLimitUsd },
+    ...(setLimit ? { spendLimit: run.spendLimitUsd === null ? null : { usd: run.spendLimitUsd } } : {}),
     ...(modelChanged ? { model: run.model, thinkingLevel: run.thinkingLevel } : {}),
     ...(scopeChanged ? { keyScope: run.keyScope, modelHeaders: run.modelHeaders } : {}),
+    ...(stale ? { systemPromptAppend: runtimeSystemPromptAppend(env, context) } : {}),
   });
   await org.setThreadRuntimeAgent(context.threadId, {
     agentId,
     model: run.model,
     keyScope: run.keyScope,
-    configured: { thinkingLevel: modelChanged ? run.thinkingLevel : row.configured?.thinkingLevel ?? run.thinkingLevel, spendLimitUsd: run.spendLimitUsd },
+    configured: {
+      thinkingLevel: modelChanged ? run.thinkingLevel : row.configured?.thinkingLevel ?? run.thinkingLevel,
+      spendLimitUsd: setLimit ? run.spendLimitUsd : lastLimit,
+    },
   });
   return agentId;
 }
@@ -217,7 +283,7 @@ export async function startRuntimeTurn(
     if (error instanceof RuntimeRunRefused) return { status: "error", error: error.message, code: error.code };
     throw error;
   }
-  const agentId = await ensureConfiguredAgent(env, context, input.row, run);
+  const agentId = await ensureConfiguredAgent(env, context, input.row, run, input.clientMessageId);
   const name = resolveMessageAuthorDisplayName(sender.userName, sender.userEmail);
   let request: { id?: unknown };
   try {

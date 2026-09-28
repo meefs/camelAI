@@ -51,6 +51,9 @@ function fakeRuntime(responses: Record<string, (call: Call) => Response> = {}) {
     if (key.endsWith("/configuration")) return Response.json({ id: call.body.requestId, method: "configure", state: "running", fingerprint: "f" }, { status: 202 });
     if (key.endsWith("/browser-tokens")) return Response.json({ token: "abt_1", expiresAt: 1_900_000_000_000, agentId: "agt_1", url: "https://agents.test" }, { status: 201 });
     if (key.endsWith("/abort")) return Response.json({ aborted: true });
+    // An idle agent that has never seen the request.
+    if (call.method === "GET" && url.pathname.endsWith("/state")) return Response.json({ cursor: 1, requests: [] });
+    if (call.method === "GET" && url.pathname.includes("/requests/")) return Response.json({ error: "Unknown request" }, { status: 404 });
     return Response.json({}, { status: 200 });
   });
   return calls;
@@ -148,7 +151,9 @@ describe("startRuntimeTurn", () => {
     calls = fakeRuntime();
     await send(setup, "third", "cm_c");
     const configure = calls.find((call) => call.path === "/v1/agents/agt_1/configuration")!;
-    expect(configure.body).toMatchObject({ spendLimit: null, thinkingLevel: expect.any(String) });
+    expect(configure.body).toMatchObject({ thinkingLevel: expect.any(String) });
+    // No limit before or now: the budget is left as it is.
+    expect(configure.body).not.toHaveProperty("spendLimit");
     expect(configure.body.model).toMatch(/^anthropic\//);
     expect(configure.body).not.toHaveProperty("keyScope");
     const order = calls.map((call) => call.path);
@@ -234,5 +239,64 @@ describe("pinNewThreadToRuntime", () => {
     const context = { ...setup.context, threadId: thread.id };
     expect(await pinNewThreadToRuntime({ ...runtimeEnv, AGENT_RUNTIME_DIRECT_THREADS: "1" } as ChatEnv, context)).toBeNull();
     expect(await setup.orgStub.getThreadRuntime(thread.id)).toBeNull();
+  });
+});
+
+describe("spend limits and retries on an existing agent", () => {
+  async function withLimit(limit: number | null) {
+    const setup = await runtimeThread();
+    fakeRuntime();
+    await send(setup, "first", "cm_first");
+    const row = (await setup.orgStub.getThreadRuntime(setup.threadId))!;
+    await setup.orgStub.setThreadRuntimeAgent(setup.threadId, { agentId: row.agentId!, model: row.model, keyScope: row.keyScope, configured: { spendLimitUsd: limit } });
+    return setup;
+  }
+
+  it("sets the spend limit while the agent is idle", async () => {
+    const setup = await withLimit(5);
+    const calls = fakeRuntime();
+    await send(setup, "next", "cm_idle");
+    const configure = calls.find((call) => call.path.endsWith("/configuration"));
+    expect(configure?.body).toMatchObject({ spendLimit: null });
+    expect(await setup.orgStub.getThreadRuntime(setup.threadId)).toMatchObject({ configured: { spendLimitUsd: null } });
+  });
+
+  it("leaves a running turn's budget alone when someone sends during it", async () => {
+    const setup = await withLimit(5);
+    const calls = fakeRuntime({
+      "GET /v1/agents/agt_1/state": () => Response.json({ cursor: 3, requests: [{ id: "r1", method: "prompt", state: "running" }] }),
+    });
+    expect(await send(setup, "during", "cm_during")).toMatchObject({ status: "accepted" });
+    expect(calls.some((call) => call.path.endsWith("/configuration"))).toBe(false);
+    expect(calls.some((call) => call.path.endsWith("/prompt"))).toBe(true);
+    expect(await setup.orgStub.getThreadRuntime(setup.threadId)).toMatchObject({ configured: { spendLimitUsd: 5 } });
+  });
+
+  it("changes nothing for a retried request", async () => {
+    const setup = await withLimit(5);
+    await setup.orgStub.updateThreadModel(setup.threadId, "opus");
+    const calls = fakeRuntime({
+      "GET /v1/agents/agt_1/requests/cm_retry": () => Response.json({ id: "cm_retry", method: "prompt", state: "running", fingerprint: "f" }),
+    });
+    expect(await send(setup, "again", "cm_retry")).toMatchObject({ status: "accepted", requestId: "cm_retry" });
+    expect(calls.some((call) => call.path.endsWith("/configuration"))).toBe(false);
+  });
+});
+
+describe("agent creation conflicts", () => {
+  it("adopts the thread's agent when its key was used with an earlier configuration, and reconfigures it", async () => {
+    const setup = await runtimeThread();
+    const tenantKey = `chiridion-test:thread_${setup.threadId}`;
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(tenantKey));
+    const adopted = `client_${[...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("").slice(0, 40)}`;
+    const calls = fakeRuntime({
+      "POST /v1/agents": () => Response.json({ error: "Idempotency key reused with different configuration" }, { status: 409 }),
+      [`GET /v1/agents/${adopted}`]: () => Response.json({ id: adopted }),
+    });
+    expect(await send(setup, "hello", "cm_adopt")).toMatchObject({ status: "accepted", agentId: adopted });
+    const configure = calls.find((call) => call.path === `/v1/agents/${adopted}/configuration`)!;
+    expect(configure.body).toMatchObject({ model: expect.stringMatching(/^anthropic\//), keyScope: `org_${setup.context.orgId}`, spendLimit: null });
+    expect(configure.body.systemPromptAppend).toContain("camelAI tools on this runtime");
+    expect(await setup.orgStub.getThreadRuntime(setup.threadId)).toMatchObject({ agentId: adopted });
   });
 });

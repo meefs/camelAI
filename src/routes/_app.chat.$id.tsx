@@ -266,7 +266,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
       const env = getEnv(context);
       // A runtime thread has no ChatThreadDO: its next send configures the
       // agent with the new model.
-      const runtime = await env.ORG.get(env.ORG.idFromName(orgId)).getThreadRuntime(params.id);
+      const runtime = await chatDO.getThreadRuntime(context, params.id, orgId);
       if (runtime) return { thread: updated };
       const chatThread = env.CHAT_THREAD.get(
         env.CHAT_THREAD.idFromName(params.id),
@@ -490,6 +490,7 @@ async function buildChatData(
     const { loadRuntimeThreadSeed } = await import("@/lib/runtime-threads.server");
     const { seed, error } = await loadRuntimeThreadSeed(getEnv(context) as never, {
       orgId: options.orgId,
+      workspaceId: options.workspaceId,
       threadId,
       userId: options.userId,
       row: options.runtime,

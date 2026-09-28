@@ -52,6 +52,25 @@ export function startErrorStillCurrent(
   return newest > error.at ? null : { id: error.id, error: error.error };
 }
 
+/**
+ * Cross-site request forgery on the runtime-thread routes, which act with the
+ * session cookie while user apps are same-site (*.apps.<host>): a write must
+ * be a JSON request (a form cannot send one, another origin cannot without
+ * CORS) and, where the browser says, from this origin. Throws a JSON Response.
+ */
+export function requireSameOriginJson(request: Request): void {
+  const site = request.headers.get("sec-fetch-site");
+  if (site && site !== "same-origin" && site !== "none") {
+    throw Response.json({ error: "Forbidden" }, { status: 403 });
+  }
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    const type = request.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
+    if (type !== "application/json") {
+      throw Response.json({ error: "Content-Type must be application/json" }, { status: 415 });
+    }
+  }
+}
+
 /** The MCP server name chiridion's tools are served under in the runtime definition. */
 export const RUNTIME_TOOL_SERVER = "camel";
 export const RUNTIME_TOOL_PREFIX = `${RUNTIME_TOOL_SERVER}__`;
