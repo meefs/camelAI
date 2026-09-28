@@ -17,8 +17,8 @@ vi.mock('@/components/markdown-renderer', () => ({
 }));
 
 vi.mock('@/components/chat-file-preview', () => ({
-  FilePreviewChip: ({ filename }: { filename: string }) => (
-    <div data-testid="file-preview-chip">{filename}</div>
+  FilePreviewChip: ({ filename, previewUrl }: { filename: string; previewUrl?: string }) => (
+    <div data-testid="file-preview-chip" data-url={previewUrl}>{filename}</div>
   ),
 }));
 
@@ -131,5 +131,31 @@ describe('MessageBubble upload references', () => {
     fireEvent.click(screen.getByRole('button'));
 
     expect(onCopy).toHaveBeenCalledWith('user-message', 'can you see this?');
+  });
+});
+
+describe('MessageBubble scratch files', () => {
+  const file = (name: string): ContentBlock => ({
+    type: 'file',
+    path: `/workspace/out/${name}`,
+    name,
+    href: `/api/threads/thread-1/files/workspace/out/${name}`,
+    contentType: 'image/png',
+    size: 900,
+    caption: 'Q3 revenue',
+  });
+
+  it("shows a user message's attached file as a chip served from the thread", () => {
+    render(<MessageBubble message={userMessage([{ type: 'text', text: 'look' }, file('q3.png')])} copiedId={null} onCopy={vi.fn()} />);
+    const chip = screen.getByTestId('file-preview-chip');
+    expect(chip.textContent).toBe('q3.png');
+    expect(chip.getAttribute('data-url')).toBe('/api/threads/thread-1/files/workspace/out/q3.png');
+  });
+
+  it('shows a file the agent handed over, with its caption, in the reply', () => {
+    const reply: Message = { id: 'a1', thread_id: 'thread-1', role: 'assistant', content: [file('chart.png'), { type: 'text', text: 'Here it is.' }], created_at: 1 };
+    render(<MessageBubble message={reply} copiedId={null} onCopy={vi.fn()} renderMode="final-text-only" />);
+    expect(screen.getByTestId('file-preview-chip').textContent).toBe('chart.png');
+    expect(screen.getByText('Q3 revenue')).toBeTruthy();
   });
 });

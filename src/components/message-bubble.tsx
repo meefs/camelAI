@@ -380,6 +380,27 @@ export function ContentBlockRenderer({
       return;
     }
 
+    if (block.type === 'file') {
+      items.push({
+        kind: 'other',
+        key: `file-${index}`,
+        node: (
+          <div className="flex flex-col gap-1">
+            <FilePreviewChip
+              filename={block.name}
+              previewUrl={block.href}
+              contentType={block.contentType}
+              fileSize={block.size}
+            />
+            {block.caption ? (
+              <p className="text-xs text-muted-foreground">{block.caption}</p>
+            ) : null}
+          </div>
+        ),
+      });
+      return;
+    }
+
     if (isRedactedThinkingBlock(block)) {
       return;
     }

@@ -242,8 +242,24 @@ export interface ErrorBlock {
   errorType?: string;
 }
 
+/**
+ * A file shown in the chat: one attached to a message, or one the agent handed
+ * over (present_file). `href` serves it from chiridion's origin.
+ */
+export interface FileBlock {
+  type: "file";
+  /** The path as the agent sees it (a runtime thread's scratch: /workspace/...). */
+  path: string;
+  name: string;
+  href: string;
+  contentType?: string;
+  size?: number;
+  caption?: string;
+}
+
 export type ContentBlock =
   | TextBlock
+  | FileBlock
   | ToolUseBlock
   | ToolResultBlock
   | ThinkingBlock

@@ -153,6 +153,62 @@ describe("piRender while a message is sent", () => {
   });
 });
 
+describe("piRender and scratch files", () => {
+  it("shows a user message's attached files as file blocks served from the thread's files route", () => {
+    const message = {
+      role: "user",
+      timestamp: 1,
+      content: [
+        { type: "text", text: "What changed?" },
+        { type: "file", path: "/workspace/uploads/r1/q3 report.pdf", volume: "vol_1", version: 1, size: 2048, contentType: "application/pdf", chunks: [] },
+      ],
+    } as unknown as AgentMessage;
+    const { messages } = render([message]);
+    expect(messages[0].content).toEqual([
+      { type: "text", text: "What changed?" },
+      { type: "file", path: "/workspace/uploads/r1/q3 report.pdf", name: "q3 report.pdf", href: "/api/threads/t1/files/workspace/uploads/r1/q3%20report.pdf", contentType: "application/pdf", size: 2048 },
+    ]);
+  });
+
+  it("puts a file the agent presented after its call, with its caption, in the turn's output", () => {
+    const { messages } = render([
+      user("chart please", 1),
+      assistant([{ type: "toolCall", id: "p1", name: "present_file", arguments: { path: "/workspace/out/chart.png", caption: "Q3 revenue" } }], 2, { stopReason: "toolUse" }),
+      toolResult("p1", "present_file", '{"path":"/workspace/out/chart.png","version":2,"size":900,"contentType":"image/png","presented":true}', 3, {
+        details: { path: "/workspace/out/chart.png", version: 2, size: 900, contentType: "image/png", presented: true },
+      }),
+      assistant([{ type: "text", text: "Here it is." }], 4),
+    ]);
+    const blocks = messages[1].content as ContentBlock[];
+    expect(blocks.map((block) => block.type)).toEqual(["tool_use", "tool_result", "file", "text"]);
+    expect(blocks[2]).toEqual({
+      type: "file", path: "/workspace/out/chart.png", name: "chart.png", href: "/api/threads/t1/files/workspace/out/chart.png",
+      contentType: "image/png", size: 900, caption: "Q3 revenue",
+    });
+  });
+
+  it("does not show a file for a present_file call that failed", () => {
+    const { messages } = render([
+      user("x", 1),
+      assistant([{ type: "toolCall", id: "p2", name: "present_file", arguments: { path: "/workspace/missing.csv" } }], 2, { stopReason: "toolUse" }),
+      toolResult("p2", "present_file", "/workspace/missing.csv does not exist", 3, { isError: true }),
+    ]);
+    expect((messages[1].content as ContentBlock[]).some((block) => block.type === "file")).toBe(false);
+  });
+
+  it("names a tool's saved file in its result instead of printing it as JSON", () => {
+    const { messages } = render([
+      user("draw", 1),
+      assistant([{ type: "toolCall", id: "g1", name: "camel__generate_image", arguments: {} }], 2, { stopReason: "toolUse" }),
+      { role: "toolResult", toolCallId: "g1", toolName: "camel__generate_image", isError: false, timestamp: 3,
+        content: [{ type: "file", path: "/workspace/tool-outputs/generate_image/ab12cd34/image-1.png", contentType: "image/png", size: 5000 }] } as unknown as AgentMessage,
+    ]);
+    const result = (messages[1].content as ContentBlock[]).find((block) => block.type === "tool_result") as ToolResultBlock;
+    expect(result.content).toContain("[File /workspace/tool-outputs/generate_image/ab12cd34/image-1.png (image/png");
+    expect(String(result.content)).not.toContain('"chunks"');
+  });
+});
+
 describe("runtime thread derivations", () => {
   it("reads the latest todo list from the transcript", () => {
     expect(latestRuntimeTodos([user("x", 1)])).toBeNull();

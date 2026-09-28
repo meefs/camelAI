@@ -8,7 +8,7 @@
  * token after the caller checked access.
  */
 import { resolveMessageAuthorDisplayName } from "../../../../src/lib/message-author";
-import { runtimeDirectThreadsEnabled as directThreadsEnabled, type RuntimeInputAnswer } from "../../../../src/lib/agent-runtime-shared";
+import { SCRATCH_MOUNT, runtimeDirectThreadsEnabled as directThreadsEnabled, type RuntimeInputAnswer } from "../../../../src/lib/agent-runtime-shared";
 import type { ChatContextState, ChatEnv } from "../chat-thread/types";
 import type { ThreadRuntimeRecord } from "../identity/org-do";
 import { ChatThreadMetadata, type ChatThreadMetadataEnv } from "../chat-thread/metadata";
@@ -495,5 +495,48 @@ export async function forwardRuntimeThreadCodexCall(
     status: upstream.status,
     statusText: upstream.statusText,
     headers: forwardedResponseHeaders(upstream.headers),
+  });
+}
+
+/**
+ * The thread's scratch volume: the one its agent mounts at /workspace, read
+ * from the runtime once and kept on the thread's row. Null before the agent
+ * exists, or when it has no such mount.
+ */
+export async function threadScratchVolume(
+  env: ChatEnv,
+  context: ChatContextState,
+  row: ThreadRuntimeRecord,
+): Promise<string | null> {
+  const known = row.configured?.scratchVolumeId;
+  if (typeof known === "string" && known) return known;
+  if (!row.agentId) return null;
+  const agent = await runtimeApi(env, "GET", `/v1/agents/${encodeURIComponent(row.agentId)}`) as {
+    mounts?: Array<{ volumeId?: string; path?: string; mode?: string }>;
+  };
+  const volumeId = agent.mounts?.find((mount) => mount.path === SCRATCH_MOUNT && typeof mount.volumeId === "string")?.volumeId;
+  if (!volumeId) return null;
+  await orgStub(env, context.orgId).setThreadRuntimeAgent(context.threadId, {
+    agentId: row.agentId,
+    model: row.model,
+    keyScope: row.keyScope,
+    configured: { ...row.configured, scratchVolumeId: volumeId },
+  });
+  return volumeId;
+}
+
+/** A scratch file's bytes from the runtime, as it answers (200, 206 for a range, 404). */
+export async function fetchScratchFile(
+  env: ChatEnv,
+  volumeId: string,
+  volumePath: string,
+  range?: string | null,
+): Promise<Response> {
+  const encoded = volumePath.split("/").filter(Boolean).map(encodeURIComponent).join("/");
+  return await fetch(`${runtimeUrl(env)}/v1/volumes/${encodeURIComponent(volumeId)}/files/${encoded}`, {
+    headers: {
+      Authorization: `Bearer ${env.AGENT_RUNTIME_API_TOKEN ?? ""}`,
+      ...(range ? { Range: range } : {}),
+    },
   });
 }
