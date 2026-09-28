@@ -19,8 +19,8 @@ import {
   type RuntimeTurnResult,
 } from "../../workers/main/src/agent-runtime/thread-runtime";
 import type { RuntimeThreadSeed } from "@/lib/use-runtime-thread";
-import type { PreviewTarget } from "@/types";
-import { initialRuntimeRequestId, startErrorStillCurrent } from "@/lib/agent-runtime-shared";
+import { normalizePreviewTabs } from "../../workers/main/src/chat-thread/preview-state";
+import { initialRuntimeRequestId, requireSameOriginJson, startErrorStillCurrent } from "@/lib/agent-runtime-shared";
 
 export interface RuntimeThreadAccess {
   env: ChatEnv;
@@ -44,6 +44,7 @@ export async function requireRuntimeThreadAccess(
   threadId: string | undefined,
   workspaceId?: string | null,
 ): Promise<RuntimeThreadAccess> {
+  requireSameOriginJson(request);
   const { session } = await requireSession(request, loadContext);
   const id = threadId?.trim();
   if (!id) throw json("Thread ID required", 400);
@@ -104,7 +105,7 @@ export function requestWorkspaceId(request: Request, body?: unknown): string | n
  */
 export async function loadRuntimeThreadSeed(
   env: ChatEnv,
-  input: { orgId: string; threadId: string; userId: string; row: ThreadRuntimeRecord },
+  input: { orgId: string; workspaceId: string; threadId: string; userId: string; row: ThreadRuntimeRecord },
 ): Promise<{ seed: RuntimeThreadSeed; error: string | null }> {
   const org = env.ORG.get(env.ORG.idFromName(input.orgId)) as unknown as {
     getThreadUiState(threadId: string): Promise<{ preview: Record<string, unknown> | null } | null>;
@@ -126,9 +127,11 @@ export async function loadRuntimeThreadSeed(
       : Promise.resolve({ token: null, page: null, error: null }),
     runtimeStartError(org, input.threadId),
   ]);
-  const preview = uiState?.preview ?? null;
-  const previewTabs = Array.isArray(preview?.tabs) ? (preview.tabs as PreviewTarget[]) : [];
-  const activeTabId = typeof preview?.activeTabId === "string" ? preview.activeTabId : null;
+  const { tabs: previewTabs, activeTabId } = normalizePreviewTabs(
+    uiState?.preview?.tabs,
+    uiState?.preview?.activeTabId,
+    input.workspaceId,
+  );
   return {
     seed: {
       agentId,

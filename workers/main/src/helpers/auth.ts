@@ -374,6 +374,11 @@ export async function requireChatWebSocketAccess(
       }
     }
 
+    // A thread on the agent runtime has no ChatThreadDO to connect to.
+    if (orgValidation.runtime) {
+      return { error: text("This thread runs on the agent runtime", 409) };
+    }
+
     return {
       session,
       orgId: orgValidation.orgId,

@@ -3,6 +3,7 @@ import { requestWorkspaceId, requireRuntimeThread } from "@/lib/runtime-threads.
 import { waitUntil } from "@/lib/wait-until";
 import { RUNTIME_REQUEST_ID } from "@/lib/agent-runtime-shared";
 import { startRuntimeTurn } from "../../../workers/main/src/agent-runtime/thread-runtime";
+import { RuntimeApiError } from "../../../workers/main/src/agent-runtime/runtime-api";
 
 /**
  * POST /api/threads/:id/messages {text, clientMessageId}: send a message to a
@@ -46,9 +47,14 @@ export async function action({ request, context, params }: ActionFunctionArgs) {
     return Response.json(result);
   } catch (error) {
     console.error("[runtime-thread] send failed", error);
-    return Response.json(
-      { status: "error", error: error instanceof Error ? error.message : "Failed to send message" },
-      { status: 502 },
-    );
+    const message = error instanceof Error ? error.message : "Failed to send message";
+    // The runtime refused the request itself: a resend would be refused too.
+    if (error instanceof RuntimeApiError && error.status >= 400 && error.status < 500) {
+      return Response.json({ status: "error", error: message });
+    }
+    // The runtime or the network failed: the message may or may not have been
+    // taken. Chat retries it under the same clientMessageId, which the runtime
+    // deduplicates, as it does on the DO path.
+    return Response.json({ error: message, retryable: true }, { status: 503 });
   }
 }

@@ -329,7 +329,7 @@ describe('chat loader workspace mismatch handling', () => {
     expect(result.runtimeThread).toBe(true);
     expect(await result.chatData).toMatchObject({ runtime: seed, initialUiMessages: [], messagesError: null });
     expect(loadRuntimeThreadSeedMock).toHaveBeenCalledWith(expect.anything(), {
-      orgId: 'org_active', threadId: 'thread_rt', userId: 'user_1', row,
+      orgId: 'org_active', workspaceId: 'ws_active', threadId: 'thread_rt', userId: 'user_1', row,
     });
     expect(getUiMessagesMock).not.toHaveBeenCalled();
     expect(getTodoStateMock).not.toHaveBeenCalled();

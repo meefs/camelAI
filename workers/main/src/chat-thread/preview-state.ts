@@ -34,6 +34,7 @@ export function normalizePreviewTarget(
   }
 
   if (target.kind === "app") {
+    if (typeof target.scriptName !== "string") return null;
     const scriptName = target.scriptName
       .replace(/[^a-zA-Z0-9_-]/g, "_")
       .slice(0, 63);
@@ -96,6 +97,38 @@ export function normalizePreviewTarget(
   }
 
   return null;
+}
+
+/** At most this many preview tabs are kept for a thread. */
+export const MAX_PREVIEW_TABS = 32;
+
+/**
+ * Preview tabs from outside (a browser's PUT, stored state): each normalized
+ * as ChatThreadDO normalizes them, deduplicated, bounded, and file tabs only
+ * from `workspaceId`. The active tab must be one of them.
+ */
+export function normalizePreviewTabs(
+  tabs: unknown,
+  activeTabId: unknown,
+  workspaceId: string,
+): { tabs: PreviewTarget[]; activeTabId: string | null } {
+  const byId = new Map<string, PreviewTarget>();
+  for (const tab of Array.isArray(tabs) ? tabs : []) {
+    let normalized: PreviewTarget | null = null;
+    try {
+      normalized = normalizePreviewTarget(tab as PreviewTarget);
+    } catch {
+      continue;
+    }
+    if (!normalized || (normalized.kind === "file" && normalized.workspaceId !== workspaceId)) continue;
+    const id = getPreviewTabId(normalized);
+    if (!byId.has(id) && byId.size >= MAX_PREVIEW_TABS) continue;
+    byId.set(id, normalized);
+  }
+  const active = typeof activeTabId === "string" && byId.has(activeTabId)
+    ? activeTabId
+    : (byId.keys().next().value ?? null);
+  return { tabs: [...byId.values()], activeTabId: active };
 }
 
 export interface ChatThreadPreviewStateDeps {

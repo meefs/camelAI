@@ -260,19 +260,3 @@ export function latestRuntimeTodos(messages: readonly AgentMessage[]): Array<{ c
   }
   return null;
 }
-
-/**
- * The share of the model's context the latest response used (input and cache
- * tokens over the window), or null without a window or a response.
- */
-export function runtimeContextUsedPercent(messages: readonly AgentMessage[], contextWindow: number | null | undefined): number | null {
-  if (!contextWindow || contextWindow <= 0) return null;
-  for (let at = messages.length - 1; at >= 0; at--) {
-    const message = messages[at] as { role?: string; usage?: { input?: number; cacheRead?: number; cacheWrite?: number } };
-    if (message.role !== "assistant" || !message.usage) continue;
-    const used = (message.usage.input ?? 0) + (message.usage.cacheRead ?? 0) + (message.usage.cacheWrite ?? 0);
-    if (used <= 0) continue;
-    return Math.max(0, Math.min(100, (used / contextWindow) * 100));
-  }
-  return null;
-}

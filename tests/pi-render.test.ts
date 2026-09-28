@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { latestRuntimeTodos, piRender, runtimeContextUsedPercent } from "@/lib/pi-render";
+import { latestRuntimeTodos, piRender } from "@/lib/pi-render";
 import type { ContentBlock, ToolResultBlock, ToolUseBlock } from "@/types";
 
 const usage = { input: 1000, output: 10, cacheRead: 500, cacheWrite: 0, totalTokens: 1510, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
@@ -108,10 +108,5 @@ describe("runtime thread derivations", () => {
       assistant([{ type: "toolCall", id: "t2", name: "camel__TodoWrite", arguments: { todos: [{ content: "Ship", status: "inProgress", activeForm: "Shipping" }, { content: "" }] } }], 2),
     ]);
     expect(todos).toEqual([{ content: "Ship", status: "in_progress", activeForm: "Shipping" }]);
-  });
-
-  it("computes context use from the latest response", () => {
-    expect(runtimeContextUsedPercent([assistant([], 1)], 3000)).toBeCloseTo(50);
-    expect(runtimeContextUsedPercent([assistant([], 1)], null)).toBeNull();
   });
 });
