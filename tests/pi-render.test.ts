@@ -209,6 +209,32 @@ describe("piRender and scratch files", () => {
   });
 });
 
+describe("piRender and cut tool results", () => {
+  it("links a result the runtime cut to its full copy in the thread's scratch space", () => {
+    const cut = `rows...\n\n[Result cut at 32,000 of 215,000 characters. The whole result is in /workspace/tool-results/3-call_9.txt: read it in parts.]`;
+    const { messages } = render([
+      user("query", 1),
+      assistant([{ type: "toolCall", id: "call_9", name: "camel__connections_query", arguments: {} }], 2, { stopReason: "toolUse" }),
+      toolResult("call_9", "camel__connections_query", cut, 3),
+    ]);
+    const result = (messages[1].content as ContentBlock[]).find((block) => block.type === "tool_result") as ToolResultBlock;
+    expect(result.details?.fullResult).toEqual({
+      path: "/workspace/tool-results/3-call_9.txt",
+      href: "/api/threads/t1/files/workspace/tool-results/3-call_9.txt",
+    });
+  });
+
+  it("leaves results that were not cut alone", () => {
+    const { messages } = render([
+      user("q", 1),
+      assistant([{ type: "toolCall", id: "c", name: "camel__read", arguments: {} }], 2, { stopReason: "toolUse" }),
+      toolResult("c", "camel__read", "short, mentions /workspace/tool-results/x.txt in passing", 3),
+    ]);
+    const result = (messages[1].content as ContentBlock[]).find((block) => block.type === "tool_result") as ToolResultBlock;
+    expect(result.details?.fullResult).toBeUndefined();
+  });
+});
+
 describe("runtime thread derivations", () => {
   it("reads the latest todo list from the transcript", () => {
     expect(latestRuntimeTodos([user("x", 1)])).toBeNull();

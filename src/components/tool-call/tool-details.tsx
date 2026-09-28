@@ -128,9 +128,21 @@ export function ToolCallDetails({ tool, result, results, skillSheet, status }: T
       content = <GenericDetails tool={tool} result={result} />;
   }
 
+  // A result the runtime cut for the model: its whole text is in the thread's scratch space.
+  const fullResult = result?.details?.fullResult as { href?: unknown } | undefined;
   return (
     <div className="ml-1 mt-1 border-l border-border/50 pl-4 text-xs text-muted-foreground/80">
       {content}
+      {typeof fullResult?.href === 'string' ? (
+        <a
+          href={fullResult.href}
+          target="_blank"
+          rel="noreferrer"
+          className="mt-1 inline-block underline underline-offset-2 hover:text-foreground"
+        >
+          View full result
+        </a>
+      ) : null}
     </div>
   );
 }
