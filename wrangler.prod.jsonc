@@ -24,6 +24,16 @@
   "routes": [{ "pattern": "camelai.dev", "custom_domain": true }],
   "vpc_services": [],
   "vars": {
+    // Hosted agent runtime (plans/agent-runtime-migration.md): with these plus the
+    // AGENT_RUNTIME_API_TOKEN secret, new threads with a runtime route run on it.
+    // Remove AGENT_RUNTIME_DEFINITION to send new threads back to the in-DO loop.
+    "AGENT_RUNTIME_TENANT": "chiridion-prod",
+    "AGENT_RUNTIME_DEFINITION": "def_1691d4d5174202254235",
+    // New web threads run directly on the runtime (plans/runtime-threads-direct.md).
+    // Remove to create new web threads on ChatThreadDO again (they are still
+    // pinned to the runtime while AGENT_RUNTIME_DEFINITION is set); threads
+    // already created stay put.
+    "AGENT_RUNTIME_DIRECT_THREADS": "1",
     "AI_VIRTUAL_MODEL": "google/gemini-3.8-flash",
     // Static-IP database egress relay (docs/db-egress-relay.md). SOCKS + Access
     // service-token credentials are secrets (DB_EGRESS_RELAY_SOCKS_* /
