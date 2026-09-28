@@ -261,4 +261,49 @@ describe("useRuntimeThread", () => {
       previewActiveTabId: expect.any(String),
     })));
   });
+
+  it("opens what a notebook run or a deploy previewed, as the DO path did", async () => {
+    const { callbacks } = mount();
+    await waitFor(() => expect(watchers).toHaveLength(1));
+    const base = seed.page!.entries.map((entry) => entry.message);
+    act(() => watchers[0].emit({ messages: base, indexes: [0, 1] }));
+    const notebook = { kind: "file", source: "project", workspaceId: "w1", project: "sales", path: "analysis.ipynb", contentType: "application/x-ipynb+json" };
+    act(() => watchers[0].emit({
+      messages: [...base, { role: "toolResult", toolCallId: "n1", toolName: "camel__run_notebook", content: [], isError: false, timestamp: 9,
+        details: { ok: true, preview: { success: true, target: notebook }, message: "Executed and previewed analysis.ipynb" } }],
+      indexes: [0, 1, 2],
+    }));
+    await waitFor(() => expect(callbacks.current.onStateUpdate).toHaveBeenLastCalledWith(expect.objectContaining({ previewTabs: [notebook] })));
+    const app = { kind: "app", scriptName: "shop", isPublic: false };
+    act(() => watchers[0].emit({
+      messages: [...watchers[0].state.messages, { role: "toolResult", toolCallId: "d1", toolName: "camel__deploy_project", content: [], isError: false, timestamp: 10,
+        details: { success: true, url: "https://shop.test", preview: { success: true, target: app } } }],
+      indexes: [0, 1, 2, 3],
+    }));
+    await waitFor(() => expect(callbacks.current.onStateUpdate).toHaveBeenLastCalledWith(expect.objectContaining({
+      previewTabs: [notebook, app],
+      previewActiveTabId: "app:shop",
+    })));
+  });
+
+  it("picks up previews set from inside js_exec when the run ends, from the thread's saved preview", async () => {
+    const app = { kind: "app", scriptName: "dash", isPublic: true };
+    responses["/api/threads/t1/preview"] = { preview: { tabs: [app], activeTabId: "app:dash" }, previewVersion: 3 };
+    const { callbacks } = mount();
+    await waitFor(() => expect(watchers).toHaveLength(1));
+    const base = seed.page!.entries.map((entry) => entry.message);
+    act(() => watchers[0].emit({ messages: base, indexes: [0, 1], running: true }));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    // A js_exec call deployed from code: its result names no preview.
+    act(() => watchers[0].emit({
+      messages: [...base, { role: "toolResult", toolCallId: "j1", toolName: "js_exec", content: [{ type: "text", text: "done" }], isError: false, timestamp: 9 }],
+      indexes: [0, 1, 2],
+      running: false,
+    }));
+    await waitFor(() => expect(callbacks.current.onStateUpdate).toHaveBeenLastCalledWith(expect.objectContaining({
+      previewTabs: [app],
+      previewActiveTabId: "app:dash",
+    })));
+    expect(fetchCalls.some((call) => call.url.startsWith("/api/threads/t1/preview") && call.method === "GET")).toBe(true);
+  });
 });

@@ -141,14 +141,18 @@ async function postJson(url: string, body?: unknown): Promise<{ ok: boolean; sta
 }
 
 /**
- * A preview target a set_preview result opened (its structured result's
- * `target`), for results that arrive while the page watches.
+ * A preview target a tool result opened, for results that arrive while the
+ * page watches: set_preview's `target`, or the `preview` a tool that previews
+ * what it made reports (run_notebook, deploy_project, …: `preview.target`).
+ * The tool already saved it to the thread (thread_ui_state).
  */
 function previewTargetOf(message: AgentMessage): PreviewTarget | null {
   const result = message as { role?: string; toolName?: string; details?: unknown; isError?: boolean };
-  if (result.role !== "toolResult" || result.isError) return null;
-  if (localToolName(result.toolName) !== "set_preview") return null;
-  const target = isRecord(result.details) ? result.details.target : undefined;
+  if (result.role !== "toolResult" || result.isError || !isRecord(result.details)) return null;
+  const opened = localToolName(result.toolName) === "set_preview"
+    ? result.details
+    : isRecord(result.details.preview) && result.details.preview.success !== false ? result.details.preview : null;
+  const target = opened?.target;
   return isRecord(target) && typeof target.kind === "string" ? target as unknown as PreviewTarget : null;
 }
 
@@ -339,6 +343,30 @@ export function useRuntimeThread(options: {
 
   // Rows that did not change keep their objects between events (see PiRenderMemo).
   const renderMemoRef = useRef<PiRenderMemo>(new Map());
+  // When a run ends, take the preview the thread saved: tools called from
+  // js_exec (a deploy in code) open their tab server-side only.
+  const wasRunningRef = useRef(false);
+  useEffect(() => {
+    const ended = wasRunningRef.current && !view.running;
+    wasRunningRef.current = view.running;
+    if (!ended || !enabled || !base) return;
+    let cancelled = false;
+    fetch(`${base}/preview${query}`, { credentials: "same-origin" })
+      .then((response) => (response.ok ? response.json() as Promise<{ preview?: { tabs?: unknown; activeTabId?: unknown } | null }> : null))
+      .then((saved) => {
+        if (cancelled || !saved?.preview) return;
+        const tabs = Array.isArray(saved.preview.tabs) ? saved.preview.tabs as PreviewTarget[] : [];
+        const activeTabId = typeof saved.preview.activeTabId === "string" ? saved.preview.activeTabId : null;
+        setPreview((current) => (
+          JSON.stringify([current.tabs, current.activeTabId]) === JSON.stringify([tabs, activeTabId])
+            ? current
+            : { tabs, activeTabId, version: current.version + 1, refreshTabId: activeTabId }
+        ));
+      })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [view.running, enabled, base, query]);
+
   const rendered = useMemo(() => {
     const echoed = new Set<string>(clientMessageIds.values());
     for (const message of view.messages) {
