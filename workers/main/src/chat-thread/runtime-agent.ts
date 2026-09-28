@@ -73,8 +73,6 @@ export interface RuntimeRunRecord {
 export interface RuntimeAgentStore {
   agent(): RuntimeAgentRecord | null;
   saveAgent(agent: RuntimeAgentRecord): void;
-  cursor(): number | null;
-  saveCursor(cursor: number): void;
   run(): RuntimeRunRecord | null;
   saveRun(run: RuntimeRunRecord | null): void;
 }
@@ -297,6 +295,9 @@ function userText(message: AgentMessage): string {
   return content.map((part) => (isRecord(part) && part.type === "text" ? String(part.text ?? "") : "")).join("");
 }
 
+/** Replay gaps one run may recover from before it gives up, so a stream that keeps answering 409 cannot loop. */
+const MAX_REPLAY_GAPS = 3;
+
 const SPEND_LIMIT_MESSAGE =
   "This reply stopped at your spending limit (your LLM usage limit or your organization's remaining hosted credits).";
 
@@ -433,9 +434,12 @@ export class RuntimeAgentSession {
     });
   }
 
+  /**
+   * The agent's live event cursor, read before each run: event ids restart at
+   * a new base when the runtime unloads an idle agent and loads it again, so a
+   * cursor kept from an earlier run can fall below its buffer.
+   */
   private async currentCursor(agent: RuntimeAgentRecord): Promise<number> {
-    const stored = this.options.store.cursor();
-    if (stored !== null) return stored;
     const state = await this.call(`/clients/${agent.id}/state`, { token: agent.token }) as { cursor?: unknown };
     return typeof state.cursor === "number" ? state.cursor : 0;
   }
@@ -501,6 +505,7 @@ export class RuntimeAgentSession {
   private async relay(agent: RuntimeAgentRecord, requestId: string, cursor: number): Promise<void> {
     let position = cursor;
     let backoffMs = 250;
+    let gaps = 0;
     for (;;) {
       this.streamAbort = new AbortController();
       let response: Response;
@@ -517,8 +522,12 @@ export class RuntimeAgentSession {
       }
       if (response.status === 409) {
         await response.body?.cancel();
-        await this.recoverFromHistory(agent, requestId);
-        return;
+        const resume = await this.recoverFromHistory(agent, requestId);
+        if (resume === null) return;
+        // The run is still going: relay the rest of it from the live cursor.
+        if (++gaps > MAX_REPLAY_GAPS) throw new RuntimeAgentError("Agent runtime event stream kept losing its place");
+        position = resume;
+        continue;
       }
       if (!response.ok || !response.body) {
         await response.body?.cancel();
@@ -557,7 +566,6 @@ export class RuntimeAgentSession {
               // Runtime notices (turn_resumed, file_presented, …) carry no Pi shape; the DO ignores unknown types.
               if (frame.requestId === requestId || frame.requestId === "") await this.emit(frame.event);
             } else if (frame.type === "response" && frame.id === requestId) {
-              this.options.store.saveCursor(position);
               const resume = await this.answerInputs(agent, frame.outcome);
               if (resume) {
                 // The turn goes on in the resume run: keep relaying, now for it.
@@ -652,8 +660,12 @@ export class RuntimeAgentSession {
     await this.settle(outcome);
   }
 
-  /** Replay gap: take the run's messages from the agent's history, then close the run out. */
-  private async recoverFromHistory(agent: RuntimeAgentRecord, requestId: string) {
+  /**
+   * Replay gap: take the run's messages from the agent's history. A finished
+   * run is closed out (null); one still going returns the live cursor to
+   * relay the rest of it from.
+   */
+  private async recoverFromHistory(agent: RuntimeAgentRecord, requestId: string): Promise<number | null> {
     const history = await this.call(`/clients/${agent.id}/history`, { token: agent.token }) as { messages?: AgentMessage[] };
     const status = await this.call(`/clients/${agent.id}/requests/${encodeURIComponent(requestId)}`, { token: agent.token }) as {
       outcome?: { error?: string };
@@ -677,9 +689,9 @@ export class RuntimeAgentSession {
     if (status.outcome) {
       if (!this.heldAgentEnd) this.heldAgentEnd = { type: "agent_end", messages: runMessages };
       await this.settle(status.outcome);
+      return null;
     }
-    const state = await this.call(`/clients/${agent.id}/state`, { token: agent.token }) as { cursor?: unknown };
-    if (typeof state.cursor === "number") this.options.store.saveCursor(state.cursor);
+    return await this.currentCursor(agent);
   }
 
   private async run(method: "prompt" | "continue", params: Record<string, unknown>) {
