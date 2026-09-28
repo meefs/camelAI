@@ -75,8 +75,8 @@ export interface PiToolDefinitionOptions {
  */
 export const PI_SUBAGENT_ABORT_GRACE_MS = 2_000;
 
-const RESEARCH_CAPABILITY_MODEL = "gpt-5.6-luna";
-const ORACLE_CAPABILITY_MODEL = "gpt-5.6-luna";
+const RESEARCH_CAPABILITY_MODEL = "gpt-6-luna";
+const ORACLE_CAPABILITY_MODEL = "gpt-6-luna";
 
 export function capabilityAgentToolOptions(
   toolName: "Research" | "Oracle",

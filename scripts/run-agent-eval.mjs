@@ -129,7 +129,7 @@ function usage() {
 Available evals: ${evalIds.join(", ")}
 
 Options:
-  --model <id>              Thread model id, for example sonnet, gpt-5.4, custom
+  --model <id>              Thread model id, for example gpt-6-luna, sonnet, custom
   --custom-base-url <url>   Base URL for EVAL_MODEL=custom
   --custom-api-key <key>    API key for EVAL_MODEL=custom
   --custom-api <api>        openai-completions, openai-responses, or anthropic-messages

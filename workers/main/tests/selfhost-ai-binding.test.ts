@@ -147,7 +147,7 @@ describe("selfhost ai binding", () => {
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 
-  it("uses Haiku for Anthropic auxiliary generation", async () => {
+  it("uses Sonnet 5 for Anthropic auxiliary generation", async () => {
     const fetchMock = vi.fn(async () =>
       Response.json({
         content: [{ type: "text", text: "Generated Anthropic title" }],
@@ -179,7 +179,7 @@ describe("selfhost ai binding", () => {
       "Content-Type": "application/json",
     });
     expect(JSON.parse(String(init.body))).toEqual({
-      model: "claude-haiku-4-5-20251001",
+      model: "claude-sonnet-5",
       system: "Return a short title",
       messages: [{ role: "user", content: "Build an incident dashboard" }],
       max_tokens: 50,
@@ -211,7 +211,7 @@ describe("selfhost ai binding", () => {
       Authorization: "Bearer openai-test-key",
     });
     expect(JSON.parse(String(init.body))).toMatchObject({
-      model: "gpt-5.6-luna",
+      model: "gpt-6-luna",
       max_output_tokens: 32,
       store: false,
       reasoning: { effort: "none" },
@@ -246,7 +246,7 @@ describe("selfhost ai binding", () => {
       "X-OpenRouter-Title": "camelAI",
     });
     expect(JSON.parse(String(init.body))).toMatchObject({
-      model: "deepseek/deepseek-v4-flash",
+      model: "openai/gpt-6-luna",
       max_tokens: 24,
       reasoning: { effort: "none" },
     });

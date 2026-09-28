@@ -30,7 +30,7 @@ function makeThread(id: string): Thread {
     workspace_id: "workspace_1",
     title: `Thread ${id}`,
     created_by: "user_1",
-    model: "haiku",
+    model: "gpt-6-luna",
     created_at: 100,
     updated_at: 200,
     user_message_count: 1,

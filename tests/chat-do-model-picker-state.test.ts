@@ -114,11 +114,11 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
       llmProvider: null,
       effectivePickerDefaultModel: null,
       hasEffectivePickerDefault: false,
-      defaultModel: 'sonnet',
+      defaultModel: 'gpt-6-luna',
     });
     expect(state?.allowedThreadModels).toContain('sonnet');
-    expect(state?.allowedThreadModels).toContain('gpt-5.6-luna');
-    expect(state?.allowedThreadModels).toContain('gpt-5.6-terra');
+    expect(state?.allowedThreadModels).toContain('gpt-6-luna');
+    expect(state?.allowedThreadModels).toContain('gpt-6-sol');
     expect(orgStub.getModelPickerConfig).toHaveBeenCalledTimes(2);
     expect(workspaceStub.getModelPickerConfig).toHaveBeenCalledTimes(2);
   });
@@ -312,7 +312,7 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     );
   });
 
-  it('keeps the hosted premium default for a subscribed organization', async () => {
+  it('uses GPT-6 Luna as the hosted default for a subscribed organization', async () => {
     const workspaceStub = {
       getInfo: vi.fn().mockResolvedValue({ org_id: 'org_123' }),
       getModelPickerConfig: vi.fn().mockResolvedValue({
@@ -332,6 +332,48 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
         use_platform_defaults: true,
         models: [],
         default_model: null,
+      }),
+    };
+
+    getEnvMock.mockReturnValue({
+      WORKSPACE: {
+        idFromName: (id: string) => id,
+        get: () => workspaceStub,
+      },
+      ORG: {
+        idFromName: (id: string) => id,
+        get: () => orgStub,
+      },
+    });
+
+    const state = await getWorkspaceModelPickerState({}, 'ws_123');
+
+    expect(state?.defaultModel).toBe('gpt-6-luna');
+  });
+
+  it('keeps an explicitly configured org default instead of the GPT-6 Luna default', async () => {
+    const workspaceStub = {
+      getInfo: vi.fn().mockResolvedValue({ org_id: 'org_123' }),
+      getModelPickerConfig: vi.fn().mockResolvedValue({
+        use_org_defaults: true,
+        models: [],
+        default_model: null,
+      }),
+    };
+    const orgStub = {
+      getInfo: vi.fn().mockResolvedValue({
+        billing_status: 'active',
+        billing_credit_purchase_total_cents: 0,
+        billing_credit_grant_total_cents: 0,
+      }),
+      getLlmProviderConfig: vi.fn().mockResolvedValue(null),
+      getModelPickerConfig: vi.fn().mockResolvedValue({
+        use_platform_defaults: false,
+        models: [
+          { id: 'sonnet', added_at: 2 },
+          { id: 'gpt-6-luna', added_at: 1 },
+        ],
+        default_model: 'sonnet',
       }),
     };
 
@@ -387,10 +429,10 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
             : {
                 use_platform_defaults: false,
                 models: [
-                  { id: 'fable-5', added_at: 4 },
+                  { id: 'fable-5.1', added_at: 4 },
                   { id: 'sonnet', added_at: 3 },
-                  { id: 'gpt-5.6-sol', added_at: 2 },
-                  { id: 'grok-4.5', added_at: 1 },
+                  { id: 'gpt-6-sol', added_at: 2 },
+                  { id: 'grok-4.7', added_at: 1 },
                 ],
                 default_model: 'sonnet',
               },
@@ -426,13 +468,13 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
       freeState?.modelOptions.find((option) => option.id === 'sonnet'),
     ).toMatchObject({ locked: true, unlockHint: 'generic' });
     expect(
-      freeState?.modelOptions.find((option) => option.id === 'fable-5'),
+      freeState?.modelOptions.find((option) => option.id === 'fable-5.1'),
     ).toMatchObject({ locked: true, unlockHint: 'generic' });
     expect(
-      freeState?.modelOptions.find((option) => option.id === 'gpt-5.6-sol'),
+      freeState?.modelOptions.find((option) => option.id === 'gpt-6-sol'),
     ).toMatchObject({ locked: true, unlockHint: 'openai' });
     expect(
-      freeState?.modelOptions.find((option) => option.id === 'grok-4.5'),
+      freeState?.modelOptions.find((option) => option.id === 'grok-4.7'),
     ).toMatchObject({ locked: true, unlockHint: 'generic' });
 
     const openAiState = await loadState({
@@ -441,12 +483,12 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     });
     expect(openAiState?.billingAccessMode).toBe('camel_free');
     expect(openAiState?.canUnlockPremiumModels).toBe(true);
-    expect(openAiState?.defaultModel).toBe('gpt-5.6-sol');
-    expect(openAiState?.effectivePickerDefaultModel).toBe('gpt-5.6-sol');
-    expect(openAiState?.allowedThreadModels).toContain('gpt-5.6-sol');
+    expect(openAiState?.defaultModel).toBe('gpt-6-sol');
+    expect(openAiState?.effectivePickerDefaultModel).toBe('gpt-6-sol');
+    expect(openAiState?.allowedThreadModels).toContain('gpt-6-sol');
     expect(
       openAiState?.modelOptions.find(
-        (option) => option.id === 'gpt-5.6-sol',
+        (option) => option.id === 'gpt-6-sol',
       )?.locked,
     ).not.toBe(true);
     expect(openAiState?.modelOptions.some((option) => option.locked)).toBe(false);
@@ -454,7 +496,7 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
       'sonnet',
     );
     expect(openAiState?.modelOptions.map((option) => option.id)).not.toContain(
-      'grok-4.5',
+      'grok-4.7',
     );
     expect(openAiState?.modelOptions.map((option) => option.id)).not.toContain(
       'deepseek-v4-auto',
@@ -466,7 +508,7 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     });
     expect(
       platformFreeState?.modelOptions.find(
-        (option) => option.id === 'fable-5',
+        (option) => option.id === 'fable-5.1',
       ),
     ).toMatchObject({ locked: true, unlockHint: 'generic' });
 
@@ -476,8 +518,8 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     });
     expect(paidState?.billingAccessMode).toBe('subscription');
     expect(
-      paidState?.modelOptions.find((option) => option.id === 'fable-5'),
-    ).toMatchObject({ id: 'fable-5' });
+      paidState?.modelOptions.find((option) => option.id === 'fable-5.1'),
+    ).toMatchObject({ id: 'fable-5.1' });
     expect(paidState?.canUnlockPremiumModels).toBe(false);
     expect(paidState?.modelOptions.some((option) => option.locked)).toBe(false);
   });
@@ -496,14 +538,14 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
       modelOptions: [
         MODEL_CATALOG[CAMEL_CODE_LLM_MODEL],
         MODEL_CATALOG.sonnet,
-        MODEL_CATALOG['gpt-5.6-sol'],
-        MODEL_CATALOG['grok-4.5'],
+        MODEL_CATALOG['gpt-6-sol'],
+        MODEL_CATALOG['grok-4.7'],
       ],
       allowedThreadModels: [
         CAMEL_CODE_LLM_MODEL,
         'sonnet',
-        'gpt-5.6-sol',
-        'grok-4.5',
+        'gpt-6-sol',
+        'grok-4.7',
       ],
       effectivePickerDefaultModel: 'sonnet',
       hasEffectivePickerDefault: true,
@@ -567,10 +609,10 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
       result.modelOptions.find((option) => option.id === 'sonnet')?.locked,
     ).not.toBe(true);
     expect(
-      result.modelOptions.find((option) => option.id === 'gpt-5.6-sol')?.locked,
+      result.modelOptions.find((option) => option.id === 'gpt-6-sol')?.locked,
     ).not.toBe(true);
     expect(
-      result.modelOptions.find((option) => option.id === 'grok-4.5'),
+      result.modelOptions.find((option) => option.id === 'grok-4.7'),
     ).toMatchObject({
       locked: true,
       pausedReason: 'included_credits_exhausted',
@@ -600,13 +642,13 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
         allowOpenAiSubscription: true,
         modelOptions: [
           MODEL_CATALOG.sonnet,
-          MODEL_CATALOG['gpt-5.6-sol'],
-          MODEL_CATALOG['gpt-5.6-luna'],
+          MODEL_CATALOG['gpt-6-sol'],
+          MODEL_CATALOG['gpt-6-luna'],
         ],
         allowedThreadModels: [
           'sonnet',
-          'gpt-5.6-sol',
-          'gpt-5.6-luna',
+          'gpt-6-sol',
+          'gpt-6-luna',
         ],
       }),
       { billingStatus: 'active', availableCreditsCents: 0 },
@@ -614,15 +656,15 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
 
     expect(result.modelOptions.map((option) => option.id)).toEqual([
       'sonnet',
-      'gpt-5.6-sol',
-      'gpt-5.6-luna',
+      'gpt-6-sol',
+      'gpt-6-luna',
     ]);
     expect(result.allowedThreadModels).toEqual([
-      'gpt-5.6-sol',
-      'gpt-5.6-luna',
+      'gpt-6-sol',
+      'gpt-6-luna',
     ]);
-    expect(result.defaultModel).toBe('gpt-5.6-luna');
-    expect(result.effectivePickerDefaultModel).toBe('gpt-5.6-luna');
+    expect(result.defaultModel).toBe('gpt-6-luna');
+    expect(result.effectivePickerDefaultModel).toBe('gpt-6-luna');
   });
 
   it.each(['enterprise', 'byok', 'camel_free'] as const)(
@@ -788,7 +830,7 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
         workspace_id: 'ws_123',
         title: 'New Chat',
         created_by: 'user_123',
-        model: 'fable-5',
+        model: 'fable-5.1',
         created_at: 1,
         updated_at: 2,
         user_message_count: 0,
@@ -809,7 +851,7 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
 
     await expect(
       createThread({}, 'ws_123', 'New Chat', 'user_123', undefined, null),
-    ).resolves.toMatchObject({ id: 'thread_123', model: 'fable-5' });
+    ).resolves.toMatchObject({ id: 'thread_123', model: 'fable-5.1' });
     expect(orgStub.createThread).toHaveBeenCalledWith(
       'ws_123',
       'New Chat',
@@ -856,7 +898,7 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     expect(state).toMatchObject({
       effectivePickerDefaultModel: null,
       hasEffectivePickerDefault: false,
-      defaultModel: 'sonnet',
+      defaultModel: 'gpt-6-luna',
     });
   });
 
@@ -984,16 +1026,16 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
       getModelPickerConfig: vi.fn().mockResolvedValue({
         use_platform_defaults: true,
         models: [
-          { id: 'opus-5', added_at: 10 },
+          { id: 'opus-5.5', added_at: 10 },
           { id: 'sonnet', added_at: 9 },
           { id: 'gpt-5.5', added_at: 8 },
           { id: 'gpt-5.4-mini', added_at: 7 },
-          { id: 'gemini-3.5-flash', added_at: 6 },
-          { id: 'gemini-3-flash-preview', added_at: 5 },
-          { id: 'deepseek-v4-pro', added_at: 4 },
-          { id: 'deepseek-v4-flash', added_at: 3 },
+          { id: 'gemini-3.8-flash', added_at: 6 },
+          { id: 'gemini-3.8-flash', added_at: 5 },
+          { id: 'deepseek-v4.1-flash', added_at: 4 },
+          { id: 'deepseek-v4.1-flash', added_at: 3 },
           { id: 'kimi-k2.6', added_at: 2 },
-          { id: 'grok-4.5', added_at: 1 },
+          { id: 'grok-4.7', added_at: 1 },
         ],
         default_model: null,
       }),
@@ -1002,7 +1044,7 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
         workspace_id: 'ws_123',
         title: 'New Chat',
         created_by: 'user_123',
-        model: 'fable-5',
+        model: 'fable-5.1',
         created_at: 1,
         updated_at: 2,
         user_message_count: 0,
@@ -1023,26 +1065,26 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
 
     const state = await getWorkspaceModelPickerState({}, 'ws_123');
     const modelIds = state?.modelOptions.map((option) => option.id) ?? [];
-    expect(modelIds).toContain('fable-5');
-    expect(state?.allowedThreadModels).toContain('fable-5');
+    expect(modelIds).toContain('fable-5.1');
+    expect(state?.allowedThreadModels).toContain('fable-5.1');
     expect(state?.allowedThreadModels[0]).toBe('deepseek-v4-auto');
-    expect(state?.allowedThreadModels).toContain('opus-5');
-    expect(modelIds.indexOf('opus-5')).toBeLessThan(
-      modelIds.indexOf('fable-5'),
+    expect(state?.allowedThreadModels).toContain('opus-5.5');
+    expect(modelIds.indexOf('opus-5.5')).toBeLessThan(
+      modelIds.indexOf('fable-5.1'),
     );
-    expect(modelIds.indexOf('fable-5')).toBeLessThan(
+    expect(modelIds.indexOf('fable-5.1')).toBeLessThan(
       modelIds.indexOf('sonnet'),
     );
 
     await expect(
-      createThread({}, 'ws_123', 'New Chat', 'user_123', undefined, 'fable-5'),
-    ).resolves.toMatchObject({ id: 'thread_123', model: 'fable-5' });
+      createThread({}, 'ws_123', 'New Chat', 'user_123', undefined, 'fable-5.1'),
+    ).resolves.toMatchObject({ id: 'thread_123', model: 'fable-5.1' });
     expect(orgStub.createThread).toHaveBeenCalledWith(
       'ws_123',
       'New Chat',
       'user_123',
       undefined,
-      'fable-5',
+      'fable-5.1',
     );
   });
 
@@ -1059,7 +1101,7 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
       getLlmProviderConfig: vi.fn().mockResolvedValue(null),
       getModelPickerConfig: vi.fn().mockResolvedValue({
         use_platform_defaults: false,
-        models: [{ id: 'fable-5', added_at: 1 }],
+        models: [{ id: 'fable-5.1', added_at: 1 }],
         default_model: null,
       }),
       createThread: vi.fn().mockResolvedValue({
@@ -1067,7 +1109,7 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
         workspace_id: 'ws_123',
         title: 'New Chat',
         created_by: 'user_123',
-        model: 'fable-5',
+        model: 'fable-5.1',
         created_at: 1,
         updated_at: 2,
         user_message_count: 0,
@@ -1087,17 +1129,17 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     });
 
     const state = await getWorkspaceModelPickerState({}, 'ws_123');
-    expect(state?.allowedThreadModels).toEqual(['fable-5']);
+    expect(state?.allowedThreadModels).toEqual(['fable-5.1']);
 
     await expect(
-      createThread({}, 'ws_123', 'New Chat', 'user_123', undefined, 'fable-5'),
-    ).resolves.toMatchObject({ id: 'thread_123', model: 'fable-5' });
+      createThread({}, 'ws_123', 'New Chat', 'user_123', undefined, 'fable-5.1'),
+    ).resolves.toMatchObject({ id: 'thread_123', model: 'fable-5.1' });
     expect(orgStub.createThread).toHaveBeenCalledWith(
       'ws_123',
       'New Chat',
       'user_123',
       undefined,
-      'fable-5',
+      'fable-5.1',
     );
   });
 
@@ -1116,7 +1158,7 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
         use_platform_defaults: false,
         models: [
           { id: 'sonnet', added_at: 2 },
-          { id: 'fable-5', added_at: 1 },
+          { id: 'fable-5.1', added_at: 1 },
         ],
         default_model: null,
       }),
@@ -1136,7 +1178,7 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
         workspace_id: 'ws_123',
         title: 'Existing Chat',
         created_by: 'user_123',
-        model: 'fable-5',
+        model: 'fable-5.1',
         created_at: 1,
         updated_at: 3,
         user_message_count: 0,
@@ -1156,9 +1198,9 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     });
 
     await expect(
-      updateThreadModel({}, 'thread_123', 'fable-5' as never, 'ws_123'),
-    ).resolves.toMatchObject({ id: 'thread_123', model: 'fable-5' });
-    expect(orgStub.updateThreadModel).toHaveBeenCalledWith('thread_123', 'fable-5');
+      updateThreadModel({}, 'thread_123', 'fable-5.1' as never, 'ws_123'),
+    ).resolves.toMatchObject({ id: 'thread_123', model: 'fable-5.1' });
+    expect(orgStub.updateThreadModel).toHaveBeenCalledWith('thread_123', 'fable-5.1');
   });
 
   it('normalizes legacy stored thread models before returning them to React', async () => {
@@ -1192,7 +1234,7 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
 
     const thread = await getThread({}, 'thread_123', 'ws_123');
 
-    expect(thread?.model).toBe('gemini-3.5-flash');
+    expect(thread?.model).toBe('gemini-3.8-flash');
   });
 
   it('replaces retained camelCode before returning self-host threads to React', async () => {
@@ -1340,7 +1382,7 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     expect(orgStub.getLlmProviderConfig).not.toHaveBeenCalled();
     expect(state?.orgId).toBe('org_123');
     expect(state?.llmProvider).toBe('openai');
-    expect(state?.allowedThreadModels).toContain('gpt-5.6-terra');
+    expect(state?.allowedThreadModels).toContain('gpt-6-sol');
   });
 
   it('uses preloaded org model context for thread model updates', async () => {
@@ -1371,15 +1413,15 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
       }),
       getModelPickerConfig: vi.fn().mockResolvedValue({
         use_platform_defaults: false,
-        models: [{ id: 'gpt-5.6-terra', added_at: 1 }],
-        default_model: 'gpt-5.6-terra',
+        models: [{ id: 'gpt-6-sol', added_at: 1 }],
+        default_model: 'gpt-6-sol',
       }),
       updateThreadModel: vi.fn().mockResolvedValue({
         id: 'thread_123',
         workspace_id: 'ws_123',
         title: 'Existing Chat',
         created_by: 'user_123',
-        model: 'gpt-5.6-terra',
+        model: 'gpt-6-sol',
         created_at: 1,
         updated_at: 3,
         user_message_count: 0,
@@ -1401,7 +1443,7 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     const updated = await updateThreadModel(
       {},
       'thread_123',
-      'gpt-5.6-terra',
+      'gpt-6-sol',
       'ws_123',
       {
         orgId: 'org_123',
@@ -1420,9 +1462,9 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     expect(orgStub.getLlmProviderConfig).not.toHaveBeenCalled();
     expect(orgStub.updateThreadModel).toHaveBeenCalledWith(
       'thread_123',
-      'gpt-5.6-terra',
+      'gpt-6-sol',
     );
-    expect(updated?.model).toBe('gpt-5.6-terra');
+    expect(updated?.model).toBe('gpt-6-sol');
   });
 
   it('uses a known org id for thread reads without loading workspace info', async () => {

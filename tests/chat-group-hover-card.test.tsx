@@ -12,7 +12,7 @@ function makeThread(
 ): ChatGroupThreadSummary {
   const updatedAt = overrides.updated_at ?? 1;
   return {
-    model: "haiku",
+    model: "gpt-6-luna",
     updated_at: updatedAt,
     status: "idle",
     membership: "open",

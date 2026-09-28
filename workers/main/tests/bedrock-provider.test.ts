@@ -7,7 +7,7 @@ afterEach(() => {
 });
 
 describe("Bedrock provider Opus routing", () => {
-  it("advertises Opus 5 with Mantle-compatible model metadata", async () => {
+  it("advertises Opus 5.5 and Fable 5.1 with Mantle-compatible model metadata", async () => {
     const response = await bedrockProvider.fetch(
       new Request("https://bedrock-provider.test/v1/models"),
       {},
@@ -18,9 +18,9 @@ describe("Bedrock provider Opus routing", () => {
 
     expect(response.status).toBe(200);
     expect(body.data).toContainEqual(expect.objectContaining({
-      id: "claude-opus-5",
-      bedrockModelId: "anthropic.claude-opus-5",
-      name: "Claude Opus 5",
+      id: "claude-opus-5-5",
+      bedrockModelId: "anthropic.claude-opus-5-5",
+      name: "Claude Opus 5.5",
       reasoning: true,
       thinkingLevelMap: { xhigh: "xhigh", max: "max" },
       compat: {
@@ -31,9 +31,43 @@ describe("Bedrock provider Opus routing", () => {
       contextWindow: 1_000_000,
       maxTokens: 128_000,
     }));
-    expect(body.data).not.toContainEqual(expect.objectContaining({
-      id: "claude-opus-4-8",
+    expect(body.data).toContainEqual(expect.objectContaining({
+      id: "claude-fable-5-1",
+      bedrockModelId: "anthropic.claude-fable-5-1",
+      name: "Claude Fable 5.1",
     }));
+    for (const retired of ["claude-opus-4-8", "claude-opus-5", "claude-fable-5"]) {
+      expect(body.data).not.toContainEqual(expect.objectContaining({ id: retired }));
+    }
+  });
+
+  it("forwards current and retired Claude aliases to the current Mantle ids", async () => {
+    const upstreamFetch = vi.spyOn(globalThis, "fetch").mockImplementation(
+      async () => Response.json({ id: "msg_test", content: [] }),
+    );
+    const cases: Record<string, string> = {
+      "opus-5": "anthropic.claude-opus-5-5",
+      "anthropic/claude-opus-5": "anthropic.claude-opus-5-5",
+      "anthropic/claude-opus-5.5": "anthropic.claude-opus-5-5",
+      "global.anthropic.claude-opus-5-5": "anthropic.claude-opus-5-5",
+      "fable-5": "anthropic.claude-fable-5-1",
+      "fable-5.1": "anthropic.claude-fable-5-1",
+      "anthropic/claude-fable-5.1": "anthropic.claude-fable-5-1",
+      "global.anthropic.claude-fable-5-1": "anthropic.claude-fable-5-1",
+    };
+    for (const [model, mantleModel] of Object.entries(cases)) {
+      upstreamFetch.mockClear();
+      await bedrockProvider.fetch(
+        new Request("https://bedrock-provider.test/v1/messages", {
+          method: "POST",
+          headers: { authorization: "Bearer bedrock-token", "content-type": "application/json" },
+          body: JSON.stringify({ model, max_tokens: 16, messages: [{ role: "user", content: "Hi" }] }),
+        }),
+        {},
+      );
+      const [, init] = upstreamFetch.mock.calls[0];
+      expect(JSON.parse(String(init?.body)).model, model).toBe(mantleModel);
+    }
   });
 
   it("migrates legacy Opus request bodies before forwarding to Mantle", async () => {
@@ -73,7 +107,7 @@ describe("Bedrock provider Opus routing", () => {
     );
     const forwardedBody = JSON.parse(String(init?.body));
     expect(forwardedBody).toMatchObject({
-      model: "anthropic.claude-opus-5",
+      model: "anthropic.claude-opus-5-5",
       thinking: { type: "adaptive", display: "summarized" },
       max_tokens: 1024,
       messages: [{ role: "user", content: "Hello" }],
@@ -110,7 +144,7 @@ describe("Bedrock provider Opus routing", () => {
     expect(response.status).toBe(200);
     const [, init] = upstreamFetch.mock.calls[0];
     expect(JSON.parse(String(init?.body))).toMatchObject({
-      model: "anthropic.claude-opus-5",
+      model: "anthropic.claude-opus-5-5",
       thinking: { type: "adaptive" },
       output_config: { effort: "max" },
     });
@@ -141,7 +175,7 @@ describe("Bedrock provider Opus routing", () => {
 
     const [, init] = upstreamFetch.mock.calls[0];
     expect(JSON.parse(String(init?.body))).toMatchObject({
-      model: "anthropic.claude-opus-5",
+      model: "anthropic.claude-opus-5-5",
       thinking: { type: "disabled" },
       output_config: { effort: "high" },
     });

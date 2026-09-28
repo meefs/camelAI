@@ -32,7 +32,7 @@ describe("new-chat selected model", () => {
         model: "deepseek-v4-auto",
         notice: {
           id: "fallback_123",
-          fromModel: "gemini-3-flash-preview",
+          fromModel: "gemini-3.8-flash",
           toModel: "deepseek-v4-auto",
           reason: "hosted_credits_exhausted",
           createdAt: now - 1_000,
@@ -46,7 +46,7 @@ describe("new-chat selected model", () => {
     expect(
       shouldIgnoreStaleThreadModelResult({
         threadId: "thread_123",
-        nextModel: "gemini-3-flash-preview",
+        nextModel: "gemini-3.8-flash",
         optimistic: {
           threadId: "thread_123",
           model: "deepseek-v4-auto",
@@ -74,7 +74,7 @@ describe("new-chat selected model", () => {
     expect(
       shouldIgnoreOlderThreadModelUpdate({
         threadId: "thread_123",
-        nextModel: "gemini-3-flash-preview",
+        nextModel: "gemini-3.8-flash",
         nextUpdatedAt: 100,
         authoritative,
       }),
@@ -82,7 +82,7 @@ describe("new-chat selected model", () => {
     expect(
       shouldIgnoreOlderThreadModelUpdate({
         threadId: "thread_123",
-        nextModel: "gemini-3-flash-preview",
+        nextModel: "gemini-3.8-flash",
         nextUpdatedAt: 300,
         authoritative,
       }),

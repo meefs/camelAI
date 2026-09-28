@@ -44,7 +44,7 @@ export function buildBedrockPiModel(
 
 function toMantleAnthropicModelId(modelId: string): string {
   const normalized = modelId.trim().toLowerCase();
-  if (normalized.includes("fable-5")) return "anthropic.claude-fable-5";
+  if (normalized.includes("fable-5")) return "anthropic.claude-fable-5-1";
   if (
     normalized.includes("opus-5") ||
     normalized.includes("opus-4-8") ||
@@ -52,7 +52,7 @@ function toMantleAnthropicModelId(modelId: string): string {
     normalized.includes("opus-4-7") ||
     normalized.includes("opus-4.7")
   ) {
-    return "anthropic.claude-opus-5";
+    return "anthropic.claude-opus-5-5";
   }
   if (normalized.includes("sonnet-5")) return "anthropic.claude-sonnet-5";
   if (normalized.includes("haiku-4-5") || normalized.includes("haiku-4.5")) {
@@ -68,19 +68,19 @@ function toMantleAnthropicModelId(modelId: string): string {
 function anthropicMantleMetadata(modelId: string): AnthropicMantleMetadata {
   if (modelId.includes("claude-fable-5")) {
     return {
-      name: "Claude Fable 5",
+      name: "Claude Fable 5.1",
       compat: { forceAdaptiveThinking: true },
       reasoning: true,
       thinkingLevelMap: { off: null, xhigh: "xhigh" },
       input: ["text", "image"],
-      cost: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
+      cost: { input: 10, output: 50, cacheRead: 0.25, cacheWrite: 12.5 },
       contextWindow: 1_000_000,
       maxTokens: 128_000,
     };
   }
   if (modelId.includes("claude-opus-5")) {
     return {
-      name: "Claude Opus 5",
+      name: "Claude Opus 5.5",
       compat: {
         forceAdaptiveThinking: true,
         supportsTemperature: false,
@@ -88,7 +88,7 @@ function anthropicMantleMetadata(modelId: string): AnthropicMantleMetadata {
       reasoning: true,
       thinkingLevelMap: { xhigh: "xhigh", max: "max" },
       input: ["text", "image"],
-      cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+      cost: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
       contextWindow: 1_000_000,
       maxTokens: 128_000,
     };

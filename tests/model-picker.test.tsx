@@ -74,13 +74,13 @@ function getModelItem(label: string): HTMLElement {
 function renderPicker() {
   render(
     <ModelPicker
-      value="opus-5"
+      value="opus-5.5"
       onValueChange={vi.fn()}
       options={[
-        MODEL_CATALOG['opus-5'],
+        MODEL_CATALOG['opus-5.5'],
         MODEL_CATALOG.sonnet,
         MODEL_CATALOG[CAMEL_CODE_LLM_MODEL],
-        MODEL_CATALOG['deepseek-v4-flash'],
+        MODEL_CATALOG['deepseek-v4.1-flash'],
       ]}
       isOrgAdmin={false}
     />,
@@ -99,8 +99,8 @@ describe('ModelPicker metadata card state', () => {
   it('renders a single metadata card as keyboard focus moves between models', () => {
     renderPicker();
 
-    fireEvent.focus(getModelItem('Opus 5'));
-    expect(screen.getByRole('tooltip')).toHaveTextContent('Opus 5');
+    fireEvent.focus(getModelItem('Opus 5.5'));
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Opus 5.5');
     expect(
       screen.getByLabelText('Intelligence rating: 4.5 out of 5'),
     ).toBeInTheDocument();
@@ -126,7 +126,7 @@ describe('ModelPicker metadata card state', () => {
   it('delays pointer metadata and cancels pending opens on leave', () => {
     renderPicker();
 
-    const opusItem = getModelItem('Opus 5');
+    const opusItem = getModelItem('Opus 5.5');
     fireEvent.pointerEnter(opusItem);
     act(() => vi.advanceTimersByTime(149));
     expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
@@ -137,7 +137,7 @@ describe('ModelPicker metadata card state', () => {
 
     fireEvent.pointerEnter(opusItem);
     act(() => vi.advanceTimersByTime(150));
-    expect(screen.getByRole('tooltip')).toHaveTextContent('Opus 5');
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Opus 5.5');
 
     fireEvent.pointerEnter(getModelItem('Sonnet 5'));
     act(() => vi.advanceTimersByTime(150));
@@ -153,14 +153,14 @@ describe('ModelPicker metadata card state', () => {
     expect(screen.getByText('Free')).toBeInTheDocument();
     expect(screen.queryByLabelText(/Cost rating:/)).not.toBeInTheDocument();
 
-    fireEvent.focus(getModelItem('DeepSeek V4 Flash'));
-    expect(screen.getByRole('tooltip')).toHaveTextContent('DeepSeek V4 Flash');
-    expect(screen.getByLabelText('Cost rating: 1 out of 5')).toHaveTextContent(
+    fireEvent.focus(getModelItem('DeepSeek V4.1 Flash'));
+    expect(screen.getByRole('tooltip')).toHaveTextContent('DeepSeek V4.1 Flash');
+    expect(screen.getByLabelText('Cost rating: 2 out of 5')).toHaveTextContent(
       '$$$$$',
     );
 
-    fireEvent.focus(getModelItem('Opus 5'));
-    expect(screen.getByRole('tooltip')).toHaveTextContent('Opus 5');
+    fireEvent.focus(getModelItem('Opus 5.5'));
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Opus 5.5');
     expect(screen.getByLabelText('Cost rating: 4 out of 5')).toHaveTextContent(
       '$$$$$',
     );
@@ -177,7 +177,7 @@ describe('ModelPicker metadata card state', () => {
         options={[
           MODEL_CATALOG[CAMEL_CODE_LLM_MODEL],
           {
-            ...MODEL_CATALOG['gpt-5.6-sol'],
+            ...MODEL_CATALOG['gpt-6-sol'],
             locked: true,
             unlockHint: 'openai',
           },
@@ -189,8 +189,8 @@ describe('ModelPicker metadata card state', () => {
     );
 
     expect(screen.getByText('Premium models')).toBeInTheDocument();
-    fireEvent.click(getModelItem('GPT-5.6 Sol'));
-    expect(onLockedModelSelect).toHaveBeenCalledWith('gpt-5.6-sol');
+    fireEvent.click(getModelItem('GPT-6 Sol'));
+    expect(onLockedModelSelect).toHaveBeenCalledWith('gpt-6-sol');
     expect(onValueChange).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByText('Unlock premium models'));
@@ -205,9 +205,9 @@ describe('ModelPicker metadata card state', () => {
         options={[
           MODEL_CATALOG[CAMEL_CODE_LLM_MODEL],
           { ...MODEL_CATALOG.sonnet, locked: true, unlockHint: 'generic' },
-          MODEL_CATALOG['gpt-5.6-sol'],
+          MODEL_CATALOG['gpt-6-sol'],
           {
-            ...MODEL_CATALOG['grok-4.5'],
+            ...MODEL_CATALOG['grok-4.7'],
             locked: true,
             unlockHint: 'generic',
           },
@@ -216,7 +216,7 @@ describe('ModelPicker metadata card state', () => {
       />,
     );
 
-    const gptItem = getModelItem('GPT-5.6 Sol');
+    const gptItem = getModelItem('GPT-6 Sol');
     const premiumLabel = screen
       .getByText('Premium models')
       .closest('[data-slot="dropdown-menu-label"]');
@@ -238,12 +238,12 @@ describe('ModelPicker metadata card state', () => {
         options={[
           MODEL_CATALOG[CAMEL_CODE_LLM_MODEL],
           {
-            ...MODEL_CATALOG['gpt-5.6-sol'],
+            ...MODEL_CATALOG['gpt-6-sol'],
             locked: true,
             unlockHint: 'openai',
           },
           {
-            ...MODEL_CATALOG['grok-4.5'],
+            ...MODEL_CATALOG['grok-4.7'],
             locked: true,
             unlockHint: 'generic',
           },
@@ -256,11 +256,11 @@ describe('ModelPicker metadata card state', () => {
     expect(screen.getByRole('tooltip')).toHaveTextContent(
       'Free and always included',
     );
-    fireEvent.focus(getModelItem('GPT-5.6 Sol'));
+    fireEvent.focus(getModelItem('GPT-6 Sol'));
     expect(screen.getByRole('tooltip')).toHaveTextContent(
       'or your OpenAI account',
     );
-    fireEvent.focus(getModelItem('Grok 4.5'));
+    fireEvent.focus(getModelItem('Grok 4.7'));
     expect(screen.getByRole('tooltip')).toHaveTextContent(
       'Unlock with a plan, credits, or an API key.',
     );

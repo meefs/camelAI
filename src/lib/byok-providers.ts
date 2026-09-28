@@ -58,7 +58,7 @@ export const BYOK_PROVIDERS: Record<OnboardingByokProvider, ByokProviderMeta> =
       settingsLinkLabel: "Open Anthropic API settings",
       requiresRegion: false,
       description:
-        "Anthropic gives you direct access to the Claude family — Sonnet, Opus, and Haiku.",
+        "Anthropic gives you direct access to the Claude family — Sonnet, Opus, and Fable.",
       steps: [
         "Create an Anthropic Console account",
         "Add a payment method and load credits",
@@ -102,10 +102,10 @@ export const BYOK_PROVIDERS: Record<OnboardingByokProvider, ByokProviderMeta> =
       description:
         "Bedrock runs Claude plus supported GPT models inside your own AWS account, billed through your existing AWS bill.",
       enterpriseNote:
-        "Best suited for teams already using AWS. Setting up Bedrock involves an AWS account, IAM permissions, and granting model access in the region you'll use. Claude Fable 5 requires Bedrock Mantle data retention mode provider_data_share at the account or project level. GPT-5.6 Sol and Terra use Bedrock's bedrock-mantle Responses endpoint and have narrower regional availability than Claude.",
+        "Best suited for teams already using AWS. Setting up Bedrock involves an AWS account, IAM permissions, and granting model access in the region you'll use. Claude Fable 5.1 requires Bedrock Mantle data retention mode provider_data_share at the account or project level. GPT-5.6 Terra uses Bedrock's bedrock-mantle Responses endpoint and has narrower regional availability than Claude.",
       warning: {
         title: "Bedrock requires model access",
-        body: "AWS will bill usage on your account automatically, but your key won't return responses until you request model access in the Bedrock console for the region you select below. Claude Fable 5 also requires an AWS admin to grant bedrock-mantle:PutAccountDataRetention and set Bedrock Mantle data retention to provider_data_share with PUT https://bedrock-mantle.<region>.api.aws/v1/data_retention, or on a Bedrock Mantle project with POST https://bedrock-mantle.<region>.api.aws/v1/organization/projects/{project_id}. GPT-5.6 Sol is available in us-east-1/us-east-2; GPT-5.6 Terra is available in us-east-1/us-east-2/us-west-2.",
+        body: "AWS will bill usage on your account automatically, but your key won't return responses until you request model access in the Bedrock console for the region you select below. Claude Fable 5.1 also requires an AWS admin to grant bedrock-mantle:PutAccountDataRetention and set Bedrock Mantle data retention to provider_data_share with PUT https://bedrock-mantle.<region>.api.aws/v1/data_retention, or on a Bedrock Mantle project with POST https://bedrock-mantle.<region>.api.aws/v1/organization/projects/{project_id}. GPT-5.6 Terra is available in us-east-1/us-east-2/us-west-2.",
         helpUrl:
           "https://docs.aws.amazon.com/bedrock/latest/userguide/data-retention.html",
         helpLinkLabel: "Open AWS data retention docs",

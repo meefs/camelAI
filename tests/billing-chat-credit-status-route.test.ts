@@ -178,7 +178,7 @@ describe("billing chat credit status route", () => {
 
     const result = await loader({
       request: new Request(
-        "https://camelai.test/api/billing/chat-credit-status?model=gemini-3-flash-preview&threadId=thread_123",
+        "https://camelai.test/api/billing/chat-credit-status?model=gemini-3.8-flash&threadId=thread_123",
       ),
       context: {},
       params: {},
@@ -192,7 +192,7 @@ describe("billing chat credit status route", () => {
     );
     expect(result).toMatchObject({
       ok: true,
-      requestedModel: "gemini-3-flash-preview",
+      requestedModel: "gemini-3.8-flash",
       threadModel: "deepseek-v4-auto",
       threadModelUpdatedAt: 1234,
       billingCreditStatus: { isExhausted: true },

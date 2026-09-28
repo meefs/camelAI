@@ -27,6 +27,55 @@ export interface UsageTokens {
 const SONNET_FALLBACK_MODEL = "claude-sonnet-5";
 
 const modelPricingTable: Record<string, ModelPricing> = {
+  // OpenRouter /api/v1/models and runtime catalog pricing, 2026-09-28.
+  "claude-fable-5-1": {
+    inputPerToken: 0.00001,
+    outputPerToken: 0.00005,
+    cacheCreationPerToken: 0.0000125,
+    cacheReadPerToken: 0.00000025,
+  },
+  "anthropic/claude-fable-5.1": {
+    inputPerToken: 0.00001,
+    outputPerToken: 0.00005,
+    cacheCreationPerToken: 0.0000125,
+    cacheReadPerToken: 0.00000025,
+  },
+  "anthropic/claude-fable-5-1": {
+    inputPerToken: 0.00001,
+    outputPerToken: 0.00005,
+    cacheCreationPerToken: 0.0000125,
+    cacheReadPerToken: 0.00000025,
+  },
+  "anthropic.claude-fable-5-1": {
+    inputPerToken: 0.00001,
+    outputPerToken: 0.00005,
+    cacheCreationPerToken: 0.0000125,
+    cacheReadPerToken: 0.00000025,
+  },
+  "claude-opus-5-5": {
+    inputPerToken: 0.000004,
+    outputPerToken: 0.00002,
+    cacheCreationPerToken: 0.000005,
+    cacheReadPerToken: 0.0000002,
+  },
+  "anthropic/claude-opus-5.5": {
+    inputPerToken: 0.000004,
+    outputPerToken: 0.00002,
+    cacheCreationPerToken: 0.000005,
+    cacheReadPerToken: 0.0000002,
+  },
+  "anthropic/claude-opus-5-5": {
+    inputPerToken: 0.000004,
+    outputPerToken: 0.00002,
+    cacheCreationPerToken: 0.000005,
+    cacheReadPerToken: 0.0000002,
+  },
+  "anthropic.claude-opus-5-5": {
+    inputPerToken: 0.000004,
+    outputPerToken: 0.00002,
+    cacheCreationPerToken: 0.000005,
+    cacheReadPerToken: 0.0000002,
+  },
   "claude-fable-5": {
     inputPerToken: 0.00001,
     outputPerToken: 0.00005,
@@ -226,7 +275,24 @@ const modelPricingTable: Record<string, ModelPricing> = {
       },
     ],
   },
-  // OpenRouter list prices; the free tier's model on the hosted agent runtime.
+  // OpenRouter list prices, 2026-09-28; the long-context tier follows GPT-6 Luna.
+  "gpt-6-sol": {
+    inputPerToken: 0.000002,
+    outputPerToken: 0.00001,
+    cacheCreationPerToken: 0.0000025,
+    cacheReadPerToken: 0.0000002,
+    tiers: [
+      {
+        inputTokensAbove: 272_000,
+        inputPerToken: 0.000004,
+        outputPerToken: 0.000015,
+        cacheCreationPerToken: 0.000005,
+        cacheReadPerToken: 0.0000004,
+      },
+    ],
+  },
+  // OpenRouter list prices; the default model and the free tier's model on the
+  // hosted agent runtime.
   "gpt-6-luna": {
     inputPerToken: 0.0000001,
     outputPerToken: 0.0000005,
@@ -261,6 +327,59 @@ const modelPricingTable: Record<string, ModelPricing> = {
     inputPerToken: 0,
     outputPerToken: 0,
     cacheReadPerToken: 0,
+  },
+  // OpenRouter /api/v1/models pricing snapshot, 2026-09-28.
+  "moonshotai/kimi-k3": {
+    inputPerToken: 0.000003,
+    outputPerToken: 0.000015,
+    cacheReadPerToken: 0.0000003,
+  },
+  "kimi-k3": {
+    inputPerToken: 0.000003,
+    outputPerToken: 0.000015,
+    cacheReadPerToken: 0.0000003,
+  },
+  "x-ai/grok-4.7": {
+    inputPerToken: 0.0000016,
+    outputPerToken: 0.0000048,
+    cacheReadPerToken: 0.0000004,
+  },
+  "grok-4.7": {
+    inputPerToken: 0.0000016,
+    outputPerToken: 0.0000048,
+    cacheReadPerToken: 0.0000004,
+  },
+  "z-ai/glm-5.3-flash": {
+    inputPerToken: 0.00000015,
+    outputPerToken: 0.0000005,
+    cacheReadPerToken: 0.00000003,
+  },
+  "glm-5.3-flash": {
+    inputPerToken: 0.00000015,
+    outputPerToken: 0.0000005,
+    cacheReadPerToken: 0.00000003,
+  },
+  "google/gemini-3.8-flash": {
+    inputPerToken: 0.00000075,
+    outputPerToken: 0.00000375,
+    cacheCreationPerToken: 0.0000000416666666666667,
+    cacheReadPerToken: 0.000000075,
+  },
+  "gemini-3.8-flash": {
+    inputPerToken: 0.00000075,
+    outputPerToken: 0.00000375,
+    cacheCreationPerToken: 0.0000000416666666666667,
+    cacheReadPerToken: 0.000000075,
+  },
+  "deepseek/deepseek-v4.1-flash": {
+    inputPerToken: 0.0000003,
+    outputPerToken: 0.0000012,
+    cacheReadPerToken: 0.000000006,
+  },
+  "deepseek-v4.1-flash": {
+    inputPerToken: 0.0000003,
+    outputPerToken: 0.0000012,
+    cacheReadPerToken: 0.000000006,
   },
   "moonshotai/kimi-k2.7-code": {
     inputPerToken: 0.00000074,
@@ -417,6 +536,9 @@ export function lookupPricingOrNull(model: string): ModelPricing | null {
   if (normalized.startsWith("gpt-5.6-terra")) {
     return modelPricingTable["gpt-5.6-terra"];
   }
+  if (normalized.startsWith("gpt-6-sol")) {
+    return modelPricingTable["gpt-6-sol"];
+  }
   if (normalized.startsWith("gpt-6-luna")) {
     return modelPricingTable["gpt-6-luna"];
   }
@@ -429,6 +551,18 @@ export function lookupPricingOrNull(model: string): ModelPricing | null {
   if (normalized.startsWith("gpt-5.5")) return modelPricingTable["gpt-5.5"];
   if (normalized.startsWith("gpt-5.4")) {
     return modelPricingTable["gpt-5.6-terra"];
+  }
+  if (
+    normalized.includes("claude-fable-5.1") ||
+    normalized.includes("claude-fable-5-1")
+  ) {
+    return modelPricingTable["claude-fable-5-1"];
+  }
+  if (
+    normalized.includes("claude-opus-5.5") ||
+    normalized.includes("claude-opus-5-5")
+  ) {
+    return modelPricingTable["claude-opus-5-5"];
   }
   if (normalized.includes("claude-fable-5")) {
     return modelPricingTable["claude-fable-5"];
@@ -463,18 +597,28 @@ export function lookupPricingOrNull(model: string): ModelPricing | null {
   ) {
     return modelPricingTable["claude-sonnet-4-6"];
   }
+  if (normalized.includes("kimi-k3")) {
+    return modelPricingTable["moonshotai/kimi-k3"];
+  }
   if (normalized.includes("kimi-k2.7-code")) {
     return modelPricingTable["moonshotai/kimi-k2.7-code"];
   }
   if (normalized.includes("kimi-k2.6") || normalized.includes("kimi-latest")) {
     return modelPricingTable["~moonshotai/kimi-latest"];
   }
+  if (normalized.includes("grok-4.7")) return modelPricingTable["x-ai/grok-4.7"];
   if (normalized.includes("grok-4.5")) return modelPricingTable["x-ai/grok-4.5"];
   if (normalized.includes("grok-4.3")) return modelPricingTable["x-ai/grok-4.5"];
+  if (normalized.includes("glm-5.3-flash")) {
+    return modelPricingTable["z-ai/glm-5.3-flash"];
+  }
   if (normalized.includes("glm-5.3")) return modelPricingTable["z-ai/glm-5.3"];
   if (normalized.includes("glm-5.2")) return modelPricingTable["z-ai/glm-5.2"];
   if (normalized.includes("deepseek-v4-auto")) {
     return modelPricingTable["deepseek-v4-auto"];
+  }
+  if (normalized.includes("deepseek-v4.1-flash")) {
+    return modelPricingTable["deepseek/deepseek-v4.1-flash"];
   }
   if (normalized.includes("deepseek-v4-pro")) {
     return modelPricingTable["deepseek/deepseek-v4-pro"];
@@ -487,6 +631,9 @@ export function lookupPricingOrNull(model: string): ModelPricing | null {
     normalized.includes("claude-haiku-4-5")
   ) {
     return modelPricingTable["anthropic/claude-haiku-4.5"];
+  }
+  if (normalized.includes("gemini-3.8-flash")) {
+    return modelPricingTable["google/gemini-3.8-flash"];
   }
   if (normalized.includes("gemini-3.5-flash")) {
     return modelPricingTable["google/gemini-3.5-flash"];

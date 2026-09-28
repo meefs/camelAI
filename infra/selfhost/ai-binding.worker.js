@@ -5,12 +5,13 @@ const AUXILIARY_MODEL_IDS = new Set([
 
 // Auxiliary work should stay on the configured self-host provider and use a
 // fast inexpensive model. Bedrock's auxiliary-only Luna route is intentionally
-// independent from the user-facing chat model picker.
+// independent from the user-facing chat model picker (Bedrock has no GPT-6
+// Luna yet).
 const AUXILIARY_MODELS = {
-  anthropic: "claude-haiku-4-5-20251001",
+  anthropic: "claude-sonnet-5",
   bedrock: "openai.gpt-5.6-luna",
-  openai: "gpt-5.6-luna",
-  openrouter: "deepseek/deepseek-v4-flash",
+  openai: "gpt-6-luna",
+  openrouter: "openai/gpt-6-luna",
 };
 
 const BEDROCK_OPENAI_MODEL_REGIONS = {

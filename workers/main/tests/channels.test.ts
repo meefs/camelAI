@@ -301,7 +301,7 @@ describe("channels", () => {
       "Telegram chat",
       "telegram",
       "hello from Telegram",
-      "sonnet",
+      "gpt-6-luna",
       expect.objectContaining({
         source: "channel",
         channelKind: "telegram",
@@ -351,7 +351,7 @@ describe("channels", () => {
       "Long Slack chat",
       "slack",
       longMessage,
-      "sonnet",
+      "gpt-6-luna",
       expect.objectContaining({
         source: "channel",
         channelKind: "slack",

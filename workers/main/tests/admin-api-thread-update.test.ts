@@ -78,7 +78,7 @@ describe('admin API thread patch route', () => {
         Authorization: 'Bearer test-admin-api-key',
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ model: 'opus-5' }),
+      body: JSON.stringify({ model: 'opus-5.5' }),
     });
 
     const response = await handleAdminApi({
@@ -99,7 +99,7 @@ describe('admin API thread patch route', () => {
     });
 
     const stored = await orgStub.getThread(thread.id);
-    expect(stored?.model).toBe('sonnet');
+    expect(stored?.model).toBe('gpt-6-luna');
   });
 
   it('indexes newly created thread model in D1', async () => {
@@ -112,7 +112,7 @@ describe('admin API thread patch route', () => {
 
     await waitForAdminIndexThreadPresence(thread.id);
 
-    await expect(appIndex.getThreadContextById(thread.id)).resolves.toMatchObject({ model: 'sonnet' });
+    await expect(appIndex.getThreadContextById(thread.id)).resolves.toMatchObject({ model: 'gpt-6-luna' });
   });
 
   it('normalizes legacy thread models from admin list responses', async () => {
@@ -150,7 +150,7 @@ describe('admin API thread patch route', () => {
     expect(response).not.toBeNull();
     expect(response!.status).toBe(200);
     await expect(response!.json()).resolves.toMatchObject({
-      items: [expect.objectContaining({ id: thread.id, model: 'opus-5' })],
+      items: [expect.objectContaining({ id: thread.id, model: 'opus-5.5' })],
       total: 1,
     });
   });
@@ -191,10 +191,10 @@ describe('admin API thread patch route', () => {
     await expect(response!.json()).resolves.toMatchObject({
       id: thread.id,
       title: 'Renamed legacy model',
-      model: 'opus-5',
+      model: 'opus-5.5',
     });
     await expect(orgStub.getThread(thread.id)).resolves.toMatchObject({
-      model: 'opus-5',
+      model: 'opus-5.5',
     });
   });
 
@@ -208,7 +208,7 @@ describe('admin API thread patch route', () => {
       'Patch thread title',
       userId,
       undefined,
-      'opus-5',
+      'opus-5.5',
     );
     await waitForAdminIndexThreadPresence(thread.id);
 
@@ -227,7 +227,7 @@ describe('admin API thread patch route', () => {
         Authorization: 'Bearer test-admin-api-key',
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ title: 'Renamed through admin API', model: 'opus-5' }),
+      body: JSON.stringify({ title: 'Renamed through admin API', model: 'opus-5.5' }),
     });
 
     const response = await handleAdminApi({
@@ -255,7 +255,7 @@ describe('admin API thread patch route', () => {
       result.updated_at,
     );
     expect(setModel).toHaveBeenCalledWith(
-      'opus-5',
+      'opus-5.5',
       result.updated_at,
     );
     expect(refreshRunnerConfig).toHaveBeenCalledTimes(1);

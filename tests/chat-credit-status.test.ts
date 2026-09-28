@@ -42,11 +42,11 @@ function makeOverview(overrides: Partial<OrgBillingOverview>): OrgBillingOvervie
 describe('chat credit status', () => {
   it('applies a canonical refreshed model only if selection did not change in flight', () => {
     const refresh = {
-      requestedModel: 'gemini-3-flash-preview' as const,
+      requestedModel: 'gemini-3.8-flash' as const,
       model: 'deepseek-v4-auto' as const,
     };
     expect(
-      resolveRefreshedThreadModel('gemini-3-flash-preview', refresh),
+      resolveRefreshedThreadModel('gemini-3.8-flash', refresh),
     ).toBe('deepseek-v4-auto');
     expect(resolveRefreshedThreadModel('sonnet', refresh)).toBeNull();
     expect(
@@ -66,7 +66,7 @@ describe('chat credit status', () => {
           isExhausted: true,
           hasByokProvider: false,
         },
-        'gemini-3-flash-preview',
+        'gemini-3.8-flash',
       ),
     ).toBe(true);
     expect(
@@ -100,7 +100,7 @@ describe('chat credit status', () => {
     expect(
       shouldSwitchExhaustedThreadModel(
         status,
-        'gpt-5.6-sol',
+        'gpt-6-sol',
         'anthropic',
         true,
       ),
@@ -207,7 +207,7 @@ describe('chat credit status', () => {
           available_credits_cents: 0,
         }),
         'openai',
-        'gpt-5.6-luna',
+        'gpt-6-luna',
       ),
     ).toMatchObject({
       availableCreditsCents: 0,
@@ -289,13 +289,13 @@ describe('chat credit status', () => {
         total_credit_limit_cents: 0,
       }),
       'anthropic',
-      'gpt-5.6-sol',
+      'gpt-6-sol',
     );
 
     expect(
       resolveDisplayedBillingCreditStatus(
         status,
-        'gpt-5.6-sol',
+        'gpt-6-sol',
         true,
         'anthropic',
         true,
@@ -325,7 +325,7 @@ describe('chat credit status', () => {
           available_credits_cents: 440,
         }),
         'anthropic',
-        'gpt-5.6-luna',
+        'gpt-6-luna',
       ),
     ).toMatchObject({
       availableCreditsCents: 440,

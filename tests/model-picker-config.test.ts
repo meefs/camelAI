@@ -40,7 +40,7 @@ describe('model picker config parsing', () => {
     });
 
     expect(parsed.models).toEqual([
-      { id: 'opus-5', added_at: 10 },
+      { id: 'opus-5.5', added_at: 10 },
       { id: 'sonnet', added_at: Date.now() },
     ]);
     expect(parsed.default_model).toBeNull();
@@ -87,7 +87,7 @@ describe('model picker config parsing', () => {
       use_platform_defaults: true,
       models: [
         { id: 'sonnet', added_at: 10 },
-        { id: 'opus-5', added_at: 9 },
+        { id: 'opus-5.5', added_at: 9 },
       ],
       default_model: 'sonnet',
     });
@@ -105,9 +105,9 @@ describe('model picker config parsing', () => {
       use_org_defaults: false,
       use_platform_defaults: true,
       models: [
-        { id: 'gpt-5.6-terra', added_at: 10 },
+        { id: 'gpt-6-sol', added_at: 10 },
       ],
-      default_model: 'gpt-5.6-terra',
+      default_model: 'gpt-6-sol',
     });
   });
 
@@ -182,7 +182,7 @@ describe('model picker config parsing', () => {
     });
 
     expect(parsed.models.map((model) => model.id)).toEqual([
-      'opus-5',
+      'opus-5.5',
       'sonnet',
     ]);
     expect(parsed.default_model).toBeNull();
@@ -217,14 +217,15 @@ describe('model picker config parsing', () => {
     expect(parsed).toEqual(defaultOrgModelPickerConfig());
   });
 
-  it('normalizes newly supported models in stored picker configs', () => {
+  it('remaps and dedupes retired models in stored picker configs', () => {
     const parsed = parseOrgModelPickerConfig({
       use_platform_defaults: false,
       models: [
-        { id: 'gpt-5.5', added_at: 5 },
+        { id: 'gpt-5.5', added_at: 6 },
+        { id: 'gpt-5.6-terra', added_at: 5 },
         { id: 'opus-5', added_at: 4 },
-        { id: 'gemini-3-flash-preview', added_at: 4 },
-        { id: 'gemini-3.5-flash', added_at: 3 },
+        { id: 'gemini-3.5-flash', added_at: 4 },
+        { id: 'gemini-3-flash-preview', added_at: 3 },
         { id: 'deepseek-v4-pro', added_at: 2 },
         { id: 'deepseek-v4-flash', added_at: 1 },
       ],
@@ -234,14 +235,12 @@ describe('model picker config parsing', () => {
     expect(parsed).toEqual({
       use_platform_defaults: false,
       models: [
-        { id: 'gpt-5.6-terra', added_at: 5 },
-        { id: 'opus-5', added_at: 4 },
-        { id: 'gemini-3-flash-preview', added_at: 4 },
-        { id: 'gemini-3.5-flash', added_at: 3 },
-        { id: 'deepseek-v4-pro', added_at: 2 },
-        { id: 'deepseek-v4-flash', added_at: 1 },
+        { id: 'gpt-6-sol', added_at: 6 },
+        { id: 'opus-5.5', added_at: 4 },
+        { id: 'gemini-3.8-flash', added_at: 4 },
+        { id: 'deepseek-v4.1-flash', added_at: 2 },
       ],
-      default_model: 'deepseek-v4-flash',
+      default_model: 'deepseek-v4.1-flash',
     });
   });
 
@@ -249,7 +248,7 @@ describe('model picker config parsing', () => {
     const parsed = parseOrgModelPickerConfig({
       use_platform_defaults: false,
       models: [
-        { id: 'gpt-5.6-terra', added_at: 5 },
+        { id: 'gpt-6-sol', added_at: 5 },
         { id: 'gemini-3.1-pro-preview', added_at: 4 },
       ],
       default_model: 'gemini-3.1-pro-preview',
@@ -258,10 +257,10 @@ describe('model picker config parsing', () => {
     expect(parsed).toEqual({
       use_platform_defaults: false,
       models: [
-        { id: 'gpt-5.6-terra', added_at: 5 },
-        { id: 'gemini-3.5-flash', added_at: 4 },
+        { id: 'gpt-6-sol', added_at: 5 },
+        { id: 'gemini-3.8-flash', added_at: 4 },
       ],
-      default_model: 'gemini-3.5-flash',
+      default_model: 'gemini-3.8-flash',
     });
   });
 
@@ -273,6 +272,7 @@ describe('model picker config parsing', () => {
         { id: 'gemini-3.1-pro-preview', added_at: 4 },
         { id: 'gemini-3.5-flash', added_at: 3 },
         { id: 'gemini-3-flash-preview', added_at: 2 },
+        { id: 'gemini-3.8-flash', added_at: 1 },
       ],
       default_model: 'gemini-3.5-flash',
     });
@@ -281,10 +281,9 @@ describe('model picker config parsing', () => {
       use_org_defaults: false,
       use_platform_defaults: false,
       models: [
-        { id: 'gemini-3.5-flash', added_at: 4 },
-        { id: 'gemini-3-flash-preview', added_at: 2 },
+        { id: 'gemini-3.8-flash', added_at: 4 },
       ],
-      default_model: 'gemini-3.5-flash',
+      default_model: 'gemini-3.8-flash',
     });
   });
 
@@ -294,7 +293,7 @@ describe('model picker config parsing', () => {
       use_platform_defaults: false,
       models: [
         { id: 'kimi-k2.6', added_at: 4 },
-        { id: 'kimi-k2.7-code', added_at: 3 },
+        { id: 'kimi-k3', added_at: 3 },
         { id: 'grok-4.3', added_at: 2 },
       ],
       default_model: 'kimi-k2.6',
@@ -304,10 +303,10 @@ describe('model picker config parsing', () => {
       use_org_defaults: false,
       use_platform_defaults: false,
       models: [
-        { id: 'kimi-k2.7-code', added_at: 4 },
-        { id: 'grok-4.5', added_at: 2 },
+        { id: 'kimi-k3', added_at: 4 },
+        { id: 'grok-4.7', added_at: 2 },
       ],
-      default_model: 'kimi-k2.7-code',
+      default_model: 'kimi-k3',
     });
   });
 
@@ -328,8 +327,8 @@ describe('model picker config parsing', () => {
     ).toEqual({
       use_org_defaults: true,
       use_platform_defaults: false,
-      models: [{ id: 'opus-5', added_at: 1 }],
-      default_model: 'opus-5',
+      models: [{ id: 'opus-5.5', added_at: 1 }],
+      default_model: 'opus-5.5',
     });
   });
 
@@ -342,8 +341,8 @@ describe('model picker config parsing', () => {
     const workspace = {
       use_org_defaults: false,
       use_platform_defaults: false,
-      models: [{ id: 'opus-5' as const, added_at: 2 }],
-      default_model: 'opus-5' as const,
+      models: [{ id: 'opus-5.5' as const, added_at: 2 }],
+      default_model: 'opus-5.5' as const,
     };
 
     expect(resolveEffectivePickerConfig(org, null).source).toBe('org');
@@ -353,7 +352,7 @@ describe('model picker config parsing', () => {
     });
     expect(resolveEffectivePickerConfig(org, workspace)).toMatchObject({
       source: 'workspace',
-      default_model: 'opus-5',
+      default_model: 'opus-5.5',
     });
   });
 
@@ -366,8 +365,8 @@ describe('model picker config parsing', () => {
     const workspace = {
       use_org_defaults: false,
       use_platform_defaults: true,
-      models: [{ id: 'opus-5' as const, added_at: 2 }],
-      default_model: 'opus-5' as const,
+      models: [{ id: 'opus-5.5' as const, added_at: 2 }],
+      default_model: 'opus-5.5' as const,
     };
 
     expect(resolveEffectivePickerConfig(org, null)).toMatchObject({
@@ -382,15 +381,15 @@ describe('model picker config parsing', () => {
 });
 
 describe('default model resolution', () => {
-  const visible = (ids: readonly ('opus-5' | 'sonnet' | 'gpt-5.6-terra')[]) =>
+  const visible = (ids: readonly ('opus-5.5' | 'sonnet' | 'gpt-6-sol')[]) =>
     ids.map((id) => ({ id }));
 
   it('uses the visible admin default before recent models', () => {
     expect(
       resolveDefaultModelForChat({
         effectiveDefaultModel: 'sonnet',
-        recentModel: 'opus-5',
-        visibleCatalog: visible(['opus-5', 'sonnet']),
+        recentModel: 'opus-5.5',
+        visibleCatalog: visible(['opus-5.5', 'sonnet']),
       }),
     ).toBe('sonnet');
   });
@@ -399,10 +398,10 @@ describe('default model resolution', () => {
     expect(
       resolveDefaultModelForChat({
         effectiveDefaultModel: null,
-        recentModel: 'opus-5',
-        visibleCatalog: visible(['opus-5', 'sonnet']),
+        recentModel: 'opus-5.5',
+        visibleCatalog: visible(['opus-5.5', 'sonnet']),
       }),
-    ).toBe('opus-5');
+    ).toBe('opus-5.5');
   });
 
   it('falls back to the first visible model', () => {
@@ -410,9 +409,9 @@ describe('default model resolution', () => {
       resolveDefaultModelForChat({
         effectiveDefaultModel: 'sonnet',
         recentModel: null,
-        visibleCatalog: visible(['gpt-5.6-terra']),
+        visibleCatalog: visible(['gpt-6-sol']),
       }),
-    ).toBe('gpt-5.6-terra');
+    ).toBe('gpt-6-sol');
   });
 
   it('uses the fallback model before the first visible model', () => {
@@ -421,7 +420,7 @@ describe('default model resolution', () => {
         effectiveDefaultModel: null,
         recentModel: null,
         fallbackModel: 'sonnet',
-        visibleCatalog: visible(['opus-5', 'sonnet']),
+        visibleCatalog: visible(['opus-5.5', 'sonnet']),
       }),
     ).toBe('sonnet');
   });

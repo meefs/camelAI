@@ -14,7 +14,7 @@ describe("useBillingCreditStatus", () => {
       load: vi.fn(),
     };
     const selectedThreadModelRef = {
-      current: "gemini-3-flash-preview" as LlmModel,
+      current: "gemini-3.8-flash" as LlmModel,
     };
     const locationSearchRef = { current: "" };
 
@@ -32,7 +32,7 @@ describe("useBillingCreditStatus", () => {
       result.current.refreshBillingCreditStatusAfterTurn("thread_123:turn:1");
     });
     expect(fetcher.load).toHaveBeenCalledWith(
-      "/api/billing/chat-credit-status?model=gemini-3-flash-preview&threadId=thread_123",
+      "/api/billing/chat-credit-status?model=gemini-3.8-flash&threadId=thread_123",
     );
 
     fetcher.data = {
@@ -43,14 +43,14 @@ describe("useBillingCreditStatus", () => {
         isExhausted: true,
         hasByokProvider: false,
       },
-      requestedModel: "gemini-3-flash-preview",
+      requestedModel: "gemini-3.8-flash",
       threadModel: "deepseek-v4-auto",
       threadModelUpdatedAt: 1234,
     };
     rerender();
 
     expect(result.current.refreshedThreadModel).toEqual({
-      requestedModel: "gemini-3-flash-preview",
+      requestedModel: "gemini-3.8-flash",
       model: "deepseek-v4-auto",
       updatedAt: 1234,
     });
@@ -63,7 +63,7 @@ describe("useBillingCreditStatus", () => {
       load: vi.fn(),
     };
     const selectedThreadModelRef = {
-      current: "gpt-5.6-sol" as LlmModel,
+      current: "gpt-6-sol" as LlmModel,
     };
     const locationSearchRef = { current: "" };
     const { result, rerender } = renderHook(() =>
@@ -85,7 +85,7 @@ describe("useBillingCreditStatus", () => {
         hasByokProvider: true,
         billingStatus: "active",
       },
-      requestedModel: "gpt-5.6-sol",
+      requestedModel: "gpt-6-sol",
       threadModel: "deepseek-v4-auto",
       threadModelUpdatedAt: 1234,
     };

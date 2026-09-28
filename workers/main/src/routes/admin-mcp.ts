@@ -14,6 +14,7 @@ import {
   type AdminMcpTokenGrantRecord,
 } from "../admin-mcp-oauth.js";
 import { getAdminIndexStub } from "./admin/helpers.js";
+import { LlmModelSchema } from "./admin/schemas.js";
 import {
   errorToObservabilityFields,
   recordErrorEvent,
@@ -462,7 +463,7 @@ function adminTools() {
           thread_id: { type: "string" },
           title: { type: "string" },
           created_by: { type: "string" },
-          model: { type: "string", enum: ["sonnet", "opus-5", "gpt-5.4", "gpt-5.4-mini"] },
+          model: { type: "string", enum: LlmModelSchema.exclude(["custom"]).options },
         },
         required: ["thread_id"],
         additionalProperties: false,

@@ -10,7 +10,7 @@ import {
 } from '@/lib/model-catalog';
 import type { LlmModel } from '@/types';
 
-const NEW_ROUTED_MODELS: Array<{
+const CURRENT_MODELS: Array<{
   id: LlmModel;
   label: string;
   providerLogo: string;
@@ -18,87 +18,40 @@ const NEW_ROUTED_MODELS: Array<{
   modelOrder: number;
   pricingKey: string;
   cost: string;
-  intelligence: number;
-  speed: number;
 }> = [
-  {
-    id: 'gemini-3.5-flash',
-    label: 'Gemini 3.5 Flash',
-    providerLogo: 'gemini',
-    providerOrder: 2,
-    modelOrder: 0,
-    pricingKey: 'google/gemini-3.5-flash',
-    cost: '$$$',
-    intelligence: 4,
-    speed: 4.5,
-  },
-  {
-    id: 'gemini-3-flash-preview',
-    label: 'Gemini 3 Flash Preview',
-    providerLogo: 'gemini',
-    providerOrder: 2,
-    modelOrder: 1,
-    pricingKey: 'google/gemini-3-flash-preview',
-    cost: '$$',
-    intelligence: 2,
-    speed: 5,
-  },
-  {
-    id: 'deepseek-v4-pro',
-    label: 'DeepSeek V4 Pro',
-    providerLogo: 'deepseek',
-    providerOrder: 3,
-    modelOrder: 0,
-    pricingKey: 'deepseek/deepseek-v4-pro',
-    cost: '$',
-    intelligence: 3,
-    speed: 3.5,
-  },
-  {
-    id: 'deepseek-v4-auto',
-    label: 'camelCode',
-    providerLogo: 'camelai',
-    providerOrder: 3,
-    modelOrder: 1,
-    pricingKey: 'deepseek-v4-auto',
-    cost: 'Free',
-    intelligence: 3,
-    speed: 3.5,
-  },
-  {
-    id: 'deepseek-v4-flash',
-    label: 'DeepSeek V4 Flash',
-    providerLogo: 'deepseek',
-    providerOrder: 3,
-    modelOrder: 2,
-    pricingKey: 'deepseek/deepseek-v4-flash',
-    cost: '$',
-    intelligence: 1.5,
-    speed: 5,
-  },
+  { id: 'opus-5.5', label: 'Opus 5.5', providerLogo: 'claude', providerOrder: 0, modelOrder: 0, pricingKey: 'claude-opus-5-5', cost: '$$$$' },
+  { id: 'fable-5.1', label: 'Fable 5.1', providerLogo: 'claude', providerOrder: 0, modelOrder: 1, pricingKey: 'claude-fable-5-1', cost: '$$$$$' },
+  { id: 'sonnet', label: 'Sonnet 5', providerLogo: 'claude', providerOrder: 0, modelOrder: 2, pricingKey: 'claude-sonnet-5', cost: '$$$' },
+  { id: 'gpt-6-sol', label: 'GPT-6 Sol', providerLogo: 'openai', providerOrder: 1, modelOrder: 0, pricingKey: 'gpt-6-sol', cost: '$$$' },
+  { id: 'gpt-6-luna', label: 'GPT-6 Luna', providerLogo: 'openai', providerOrder: 1, modelOrder: 1, pricingKey: 'gpt-6-luna', cost: '$' },
+  { id: 'gpt-5.6-terra-bedrock', label: 'GPT-5.6 Terra Bedrock', providerLogo: 'openai', providerOrder: 1, modelOrder: 2, pricingKey: 'gpt-5.6-terra', cost: '$$$' },
+  { id: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash', providerLogo: 'gemini', providerOrder: 2, modelOrder: 0, pricingKey: 'google/gemini-3.8-flash', cost: '$$' },
+  { id: 'deepseek-v4-auto', label: 'camelCode', providerLogo: 'camelai', providerOrder: 3, modelOrder: 0, pricingKey: 'deepseek-v4-auto', cost: 'Free' },
+  { id: 'deepseek-v4.1-flash', label: 'DeepSeek V4.1 Flash', providerLogo: 'deepseek', providerOrder: 3, modelOrder: 1, pricingKey: 'deepseek/deepseek-v4.1-flash', cost: '$$' },
+  { id: 'kimi-k3', label: 'Kimi K3', providerLogo: 'kimi', providerOrder: 4, modelOrder: 0, pricingKey: 'moonshotai/kimi-k3', cost: '$$$' },
+  { id: 'grok-4.7', label: 'Grok 4.7', providerLogo: 'grok', providerOrder: 5, modelOrder: 0, pricingKey: 'x-ai/grok-4.7', cost: '$$$' },
+  { id: 'glm-5.3', label: 'GLM 5.3', providerLogo: 'glm', providerOrder: 6, modelOrder: 0, pricingKey: 'z-ai/glm-5.3', cost: '$$' },
+  { id: 'glm-5.3-flash', label: 'GLM 5.3 Flash', providerLogo: 'glm', providerOrder: 6, modelOrder: 1, pricingKey: 'z-ai/glm-5.3-flash', cost: '$' },
 ];
 
-const NEW_FRONTIER_MODELS: Array<{
-  id: LlmModel;
-  label: string;
-  providerLogo: string;
-  pricingKey: string;
-  cost: string;
-}> = [
-  {
-    id: 'gpt-5.6-luna',
-    label: 'GPT-5.6 Luna',
-    providerLogo: 'openai',
-    pricingKey: 'gpt-5.6-luna',
-    cost: '$',
-  },
-  {
-    id: 'opus-5',
-    label: 'Opus 5',
-    providerLogo: 'claude',
-    pricingKey: 'claude-opus-5',
-    cost: '$$$$',
-  },
+const RETIRED_MODELS = [
+  'haiku',
+  'opus',
+  'opus-4.7',
+  'opus-5',
+  'fable-5',
+  'gpt-5.5',
+  'gpt-5.6-sol',
+  'gpt-5.6-terra',
+  'gpt-5.6-luna',
+  'gpt-5.6-sol-bedrock',
+  'gemini-3.1-pro-preview',
+  'gemini-3.5-flash',
+  'gemini-3-flash-preview',
+  'deepseek-v4-pro',
+  'deepseek-v4-flash',
+  'kimi-k2.7-code',
+  'grok-4.5',
 ];
 
 describe('MODEL_CATALOG', () => {
@@ -141,9 +94,9 @@ describe('MODEL_CATALOG', () => {
   });
 
   it('uses Claude product logos for Anthropic-family models', () => {
-    expect(MODEL_CATALOG['opus-5'].providerLogo).toBe('claude');
+    expect(MODEL_CATALOG['opus-5.5'].providerLogo).toBe('claude');
     expect(MODEL_CATALOG.sonnet.providerLogo).toBe('claude');
-    expect(MODEL_CATALOG.haiku.providerLogo).toBe('claude');
+    expect(MODEL_CATALOG['fable-5.1'].providerLogo).toBe('claude');
   });
 
   it('has pricing key mappings for every supported model', () => {
@@ -152,16 +105,11 @@ describe('MODEL_CATALOG', () => {
     }
   });
 
-  it('does not expose retired Gemini 3.1 Pro Preview as a selectable model', () => {
-    expect(ALL_LLM_MODELS).not.toContain('gemini-3.1-pro-preview');
-    expect(MODEL_CATALOG).not.toHaveProperty('gemini-3.1-pro-preview');
-    expect(LLM_MODEL_TO_PRICING_KEY).not.toHaveProperty(
-      'gemini-3.1-pro-preview',
+  it('lists exactly the current models with their metadata and pricing keys', () => {
+    expect([...ALL_LLM_MODELS].sort()).toEqual(
+      [...CURRENT_MODELS.map((model) => model.id), 'custom'].sort(),
     );
-  });
-
-  it('adds Gemini and DeepSeek metadata with provider pricing keys', () => {
-    for (const expected of NEW_ROUTED_MODELS) {
+    for (const expected of CURRENT_MODELS) {
       expect(MODEL_CATALOG[expected.id]).toMatchObject({
         id: expected.id,
         label: expected.label,
@@ -169,36 +117,17 @@ describe('MODEL_CATALOG', () => {
         providerOrder: expected.providerOrder,
         modelOrder: expected.modelOrder,
         cost: expected.cost,
-        intelligence: expected.intelligence,
-        speed: expected.speed,
       });
       expect(LLM_MODEL_TO_PRICING_KEY[expected.id]).toBe(expected.pricingKey);
     }
   });
 
-  it('adds Luna and Opus 5 as distinct priced models', () => {
-    for (const expected of NEW_FRONTIER_MODELS) {
-      expect(MODEL_CATALOG[expected.id]).toMatchObject({
-        id: expected.id,
-        label: expected.label,
-        providerLogo: expected.providerLogo,
-        cost: expected.cost,
-      });
-      expect(LLM_MODEL_TO_PRICING_KEY[expected.id]).toBe(expected.pricingKey);
+  it('does not expose retired models as selectable', () => {
+    for (const retired of RETIRED_MODELS) {
+      expect(ALL_LLM_MODELS).not.toContain(retired);
+      expect(MODEL_CATALOG).not.toHaveProperty(retired);
+      expect(LLM_MODEL_TO_PRICING_KEY).not.toHaveProperty(retired);
     }
-    expect(MODEL_CATALOG).not.toHaveProperty('opus');
-    expect(MODEL_CATALOG).not.toHaveProperty('opus-4.7');
-    expect(LLM_MODEL_TO_PRICING_KEY).not.toHaveProperty('opus');
-    expect(LLM_MODEL_TO_PRICING_KEY).not.toHaveProperty('opus-4.7');
-    expect(MODEL_CATALOG).not.toHaveProperty('gpt-5.5');
-    expect(LLM_MODEL_TO_PRICING_KEY).not.toHaveProperty('gpt-5.5');
-    expect(MODEL_CATALOG['fable-5']).toMatchObject({
-      id: 'fable-5',
-      label: 'Fable 5',
-      providerLogo: 'claude',
-      cost: '$$$$$',
-    });
-    expect(LLM_MODEL_TO_PRICING_KEY['fable-5']).toBe('claude-fable-5');
   });
 
   it('hides Claude and OpenRouter-only models for OpenAI BYOK orgs', () => {
@@ -209,17 +138,14 @@ describe('MODEL_CATALOG', () => {
         default_model: null,
         models: [
           { id: 'sonnet', added_at: 1 },
-          { id: 'opus-5', added_at: 11 },
-          { id: 'gpt-5.6-sol', added_at: 12 },
-          { id: 'gpt-5.6-terra', added_at: 13 },
-          { id: 'gpt-5.6-luna', added_at: 14 },
-          { id: 'kimi-k2.7-code', added_at: 5 },
-          { id: 'grok-4.5', added_at: 6 },
-          { id: 'gemini-3-flash-preview', added_at: 7 },
-          { id: 'gemini-3.5-flash', added_at: 8 },
-          { id: 'deepseek-v4-pro', added_at: 9 },
+          { id: 'opus-5.5', added_at: 11 },
+          { id: 'gpt-6-sol', added_at: 12 },
+          { id: 'gpt-6-luna', added_at: 14 },
+          { id: 'kimi-k3', added_at: 5 },
+          { id: 'grok-4.7', added_at: 6 },
+          { id: 'gemini-3.8-flash', added_at: 8 },
           { id: 'deepseek-v4-auto', added_at: 10 },
-          { id: 'deepseek-v4-flash', added_at: 11 },
+          { id: 'deepseek-v4.1-flash', added_at: 11 },
         ],
       },
       orgProvider: 'openai',
@@ -227,9 +153,8 @@ describe('MODEL_CATALOG', () => {
 
     expect(visible.map((entry) => entry.id)).toEqual([
       'deepseek-v4-auto',
-      'gpt-5.6-sol',
-      'gpt-5.6-terra',
-      'gpt-5.6-luna',
+      'gpt-6-sol',
+      'gpt-6-luna',
     ]);
   });
 
@@ -246,9 +171,9 @@ describe('MODEL_CATALOG', () => {
     }).map((entry) => entry.id);
 
     expect(visible).toContain('sonnet');
-    expect(visible).toContain('gpt-5.6-terra');
-    expect(visible).not.toContain('kimi-k2.7-code');
-    expect(visible).not.toContain('gpt-5.5-bedrock');
+    expect(visible).toContain('gpt-6-luna');
+    expect(visible).not.toContain('kimi-k3');
+    expect(visible).not.toContain('gpt-5.6-terra-bedrock');
   });
 
   it('filters custom provider picker models by API mode', () => {
@@ -258,11 +183,10 @@ describe('MODEL_CATALOG', () => {
       default_model: null,
         models: [
         { id: 'sonnet' as const, added_at: 1 },
-        { id: 'opus-5' as const, added_at: 2 },
-        { id: 'gpt-5.6-sol' as const, added_at: 3 },
-        { id: 'gpt-5.6-terra' as const, added_at: 4 },
-        { id: 'gpt-5.6-luna' as const, added_at: 5 },
-        { id: 'kimi-k2.7-code' as const, added_at: 6 },
+        { id: 'opus-5.5' as const, added_at: 2 },
+        { id: 'gpt-6-sol' as const, added_at: 3 },
+        { id: 'gpt-6-luna' as const, added_at: 5 },
+        { id: 'kimi-k3' as const, added_at: 6 },
       ],
     };
 
@@ -272,14 +196,14 @@ describe('MODEL_CATALOG', () => {
         orgProvider: 'custom',
         customApi: 'openai-responses',
       }).map((entry) => entry.id),
-    ).toEqual(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']);
+    ).toEqual(['gpt-6-sol', 'gpt-6-luna']);
     expect(
       resolveModelPickerCatalog({
         effectiveConfig,
         orgProvider: 'custom',
         customApi: 'anthropic-messages',
       }).map((entry) => entry.id),
-    ).toEqual(['opus-5', 'sonnet']);
+    ).toEqual(['opus-5.5', 'sonnet']);
     expect(
       resolveModelPickerCatalog({
         effectiveConfig,
@@ -316,20 +240,17 @@ describe('MODEL_CATALOG', () => {
 
     expect(visible.map((entry) => entry.id)).toEqual([
       'deepseek-v4-auto',
-      'opus-5',
-      'fable-5',
+      'opus-5.5',
+      'fable-5.1',
       'sonnet',
-      'haiku',
-      'gpt-5.6-sol',
-      'gpt-5.6-terra',
-      'gpt-5.6-luna',
-      'gemini-3.5-flash',
-      'gemini-3-flash-preview',
-      'deepseek-v4-pro',
-      'deepseek-v4-flash',
-      'kimi-k2.7-code',
-      'grok-4.5',
+      'gpt-6-sol',
+      'gpt-6-luna',
+      'gemini-3.8-flash',
+      'deepseek-v4.1-flash',
+      'kimi-k3',
+      'grok-4.7',
       'glm-5.3',
+      'glm-5.3-flash',
     ]);
   });
 
@@ -343,7 +264,7 @@ describe('MODEL_CATALOG', () => {
       },
       orgProvider: null,
     });
-    expect(platformDefaults.map((entry) => entry.id)).toContain('fable-5');
+    expect(platformDefaults.map((entry) => entry.id)).toContain('fable-5.1');
   });
 
   it('keeps camelCode in hosted camelAI platform models', () => {
@@ -388,6 +309,6 @@ describe('MODEL_CATALOG', () => {
     });
 
     expect(visible.map((entry) => entry.id)).toEqual(['sonnet']);
-    expect(visible.map((entry) => entry.id)).not.toContain('fable-5');
+    expect(visible.map((entry) => entry.id)).not.toContain('fable-5.1');
   });
 });

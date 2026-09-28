@@ -180,7 +180,7 @@ describe('organization model settings UI', () => {
             isDefault: true,
           },
         ],
-        additional: [MODEL_CATALOG['gpt-5.6-terra']],
+        additional: [MODEL_CATALOG['gpt-6-sol']],
         capacity: { used: 1, max: 10 },
       },
     }));
@@ -242,12 +242,12 @@ describe('organization model settings UI', () => {
             isDefault: true,
           },
           {
-            entry: MODEL_CATALOG['gpt-5.6-terra'],
+            entry: MODEL_CATALOG['gpt-6-luna'],
             addedAt: 2,
             isDefault: false,
           },
         ],
-        additional: [MODEL_CATALOG['gpt-5.6-sol']],
+        additional: [MODEL_CATALOG['gpt-6-sol']],
         capacity: { used: 2, max: 10 },
       },
     }));
@@ -278,7 +278,7 @@ describe('organization model settings UI', () => {
             isDefault: false,
           },
         ],
-        additional: [MODEL_CATALOG['gpt-5.6-terra']],
+        additional: [MODEL_CATALOG['gpt-6-sol']],
         capacity: { used: 1, max: 10 },
       },
     }));
@@ -342,7 +342,7 @@ describe('organization model settings UI', () => {
             isDefault: false,
           },
         ],
-        additional: [MODEL_CATALOG['gpt-5.6-terra']],
+        additional: [MODEL_CATALOG['gpt-6-sol']],
         capacity: { used: 1, max: 10 },
       },
     }));
@@ -381,8 +381,8 @@ describe('organization model settings UI', () => {
       billingStatus: 'inactive',
       billingLockedModelIds: [
         'sonnet',
-        'gpt-5.6-sol',
-        'gemini-3.5-flash',
+        'gpt-6-sol',
+        'gemini-3.8-flash',
       ],
     }));
 
@@ -453,16 +453,16 @@ describe('organization model settings UI', () => {
     loaderDataMock.mockReturnValue(loaderData({
       billingAccessMode: 'byok',
       hiddenLockedModels: [
-        MODEL_CATALOG['gpt-5.6-sol'],
-        MODEL_CATALOG['gemini-3.5-flash'],
+        MODEL_CATALOG['gpt-6-sol'],
+        MODEL_CATALOG['gemini-3.8-flash'],
       ],
     }));
 
     render(<OrganizationModelsPage />);
 
     expect(screen.getByText('Locked models')).toBeInTheDocument();
-    expect(screen.getByText('GPT-5.6 Sol')).toBeInTheDocument();
-    expect(screen.getByText('Gemini 3.5 Flash')).toBeInTheDocument();
+    expect(screen.getByText('GPT-6 Sol')).toBeInTheDocument();
+    expect(screen.getByText('Gemini 3.8 Flash')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'add' })).not.toBeInTheDocument();
     expect(
       screen.queryByRole('button', { name: 'remove' }),
@@ -474,7 +474,7 @@ describe('organization model settings UI', () => {
       billingAccessMode: 'enterprise',
       showLockedModels: false,
       billingLockedModelIds: ['sonnet'],
-      hiddenLockedModels: [MODEL_CATALOG['gpt-5.6-sol']],
+      hiddenLockedModels: [MODEL_CATALOG['gpt-6-sol']],
     }));
 
     render(<OrganizationModelsPage />);

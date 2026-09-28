@@ -64,7 +64,7 @@ function makeThreadSummary(
 ): ChatGroupThreadSummary {
   const updatedAt = overrides.updated_at ?? 1;
   return {
-    model: "haiku",
+    model: "sonnet",
     updated_at: updatedAt,
     status: "idle",
     membership: "open",
@@ -283,11 +283,11 @@ function renderTabBar(overrides: Partial<React.ComponentProps<typeof ChatTabBar>
     groupPinnedAt: null,
     groupMemberCount: 1,
     openTabs: [
-      { threadId: "thread_1", title: "API plan", model: "haiku", status: "idle" },
+      { threadId: "thread_1", title: "API plan", model: "sonnet", status: "idle" },
       {
         threadId: "thread_2",
         title: "UI polish",
-        model: "haiku",
+        model: "sonnet",
         status: "running",
       },
     ],
@@ -295,7 +295,7 @@ function renderTabBar(overrides: Partial<React.ComponentProps<typeof ChatTabBar>
       {
         threadId: "thread_3",
         title: "Archived idea",
-        model: "haiku",
+        model: "sonnet",
         status: "idle",
       },
     ],
@@ -433,14 +433,14 @@ describe("ChatTabBar", () => {
       openTabs: Array.from({ length: MAX_OPEN_CHAT_TABS_PER_GROUP }, (_, index) => ({
         threadId: `thread_${index + 1}`,
         title: `Open chat ${index + 1}`,
-        model: "haiku",
+        model: "sonnet",
         status: "idle",
       })),
       closedTabs: [
         {
           threadId: "thread_closed",
           title: "Archived idea",
-          model: "haiku",
+          model: "sonnet",
           status: "idle",
         },
       ],
@@ -591,13 +591,13 @@ describe("ChatTabBar", () => {
   });
 
   it("renders stable right slots for idle, running, and unread tabs", () => {
-    const { rerender } = render(<TabRightSlot status="idle" model="haiku" />);
+    const { rerender } = render(<TabRightSlot status="idle" model="sonnet" />);
     expect(screen.getByAltText("claude")).toBeInTheDocument();
 
-    rerender(<TabRightSlot status="running" model="haiku" />);
+    rerender(<TabRightSlot status="running" model="sonnet" />);
     expect(screen.getByLabelText("Agent is working")).toHaveAttribute("width", "16");
 
-    rerender(<TabRightSlot status="unread" model="haiku" />);
+    rerender(<TabRightSlot status="unread" model="sonnet" />);
     expect(screen.getByLabelText("Awaiting your review")).toHaveClass("bg-amber-500");
   });
 
@@ -630,7 +630,7 @@ describe("ChatTabBar", () => {
         {
           threadId: "thread_1",
           title: "API plan",
-          model: "haiku",
+          model: "sonnet",
           status: "unread",
         },
       ],
@@ -658,7 +658,7 @@ describe("ChatTabBar", () => {
   it("renders the indicator before the title and shows empty titles as New chat", () => {
     renderTabBar({
       openTabs: [
-        { threadId: "thread_1", title: "", model: "haiku", status: "idle" },
+        { threadId: "thread_1", title: "", model: "sonnet", status: "idle" },
       ],
       closedTabs: [],
     });

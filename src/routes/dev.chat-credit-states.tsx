@@ -172,7 +172,7 @@ export default function DevChatCreditStatesRoute() {
     state === 'fallback-credits'
       ? {
           id: 'dev-fallback-credits',
-          fromModel: 'gpt-5.6-sol',
+          fromModel: 'gpt-6-sol',
           toModel: 'deepseek-v4-auto',
           reason: 'hosted_credits_exhausted',
           createdAt: 1,
@@ -328,7 +328,7 @@ export default function DevChatCreditStatesRoute() {
       <UnlockPremiumModal
         open={unlockOpen}
         onOpenChange={setUnlockOpen}
-        triggerModel="gpt-5.6-sol"
+        triggerModel="gpt-6-sol"
         isOrgAdmin
         orgId="dev-org"
         onSeePlans={() => setUnlockOpen(false)}

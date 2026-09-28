@@ -53,27 +53,27 @@ const TIERS: ReadonlySet<TierName> = new Set(["cheap", "fast", "auto", "smart"])
 
 const TIER_MODELS: Readonly<Record<ProviderKind, Readonly<Record<TierName, string>>>> = {
   openai: {
-    cheap: "gpt-5.4-nano",
-    fast: "gpt-5.4-mini",
-    auto: "gpt-5.4-mini",
-    smart: "gpt-5.6-sol",
+    cheap: "gpt-6-luna",
+    fast: "gpt-6-luna",
+    auto: "gpt-6-luna",
+    smart: "gpt-6-sol",
   },
   anthropic: {
-    cheap: "claude-haiku-4-5-20251001",
-    fast: "claude-haiku-4-5-20251001",
+    cheap: "claude-sonnet-5",
+    fast: "claude-sonnet-5",
     auto: "claude-sonnet-5",
-    smart: "claude-opus-5",
+    smart: "claude-opus-5-5",
   },
   bedrock: {
-    cheap: "anthropic.claude-haiku-4-5",
-    fast: "anthropic.claude-haiku-4-5",
+    cheap: "anthropic.claude-sonnet-5",
+    fast: "anthropic.claude-sonnet-5",
     auto: "anthropic.claude-sonnet-5",
-    smart: "anthropic.claude-opus-5",
+    smart: "anthropic.claude-opus-5-5",
   },
   openrouter: {
-    cheap: "deepseek/deepseek-v4-flash",
-    fast: "deepseek/deepseek-v4-flash",
-    auto: "moonshotai/kimi-k2.7-code",
+    cheap: "openai/gpt-6-luna",
+    fast: "openai/gpt-6-luna",
+    auto: "openai/gpt-6-luna",
     smart: "anthropic/claude-sonnet-5",
   },
 };
@@ -101,25 +101,34 @@ const LEGACY_MODEL_ALIASES: Readonly<Record<string, string>> = {
   auto_search: "auto",
   "dynamic/auto_search": "auto",
   "dynamic/auto_image": "auto_image",
-  "gpt-5.5": "openai/gpt-5.6-terra",
-  "openai/gpt-5.5": "openai/gpt-5.6-terra",
-  "kimi-k2.6": "moonshotai/kimi-k2.7-code",
-  "kimi-latest": "moonshotai/kimi-k2.7-code",
-  opus: "anthropic/claude-opus-5",
-  "opus-4.7": "anthropic/claude-opus-5",
-  "opus-4.8": "anthropic/claude-opus-5",
-  "opus-5": "anthropic/claude-opus-5",
-  "grok-4.3": "x-ai/grok-4.5",
-  "x-ai/grok-4.3": "x-ai/grok-4.5",
-  "grok-latest": "x-ai/grok-4.5",
-  "grok-4.5": "x-ai/grok-4.5",
+  "gpt-5.5": "openai/gpt-6-sol",
+  "openai/gpt-5.5": "openai/gpt-6-sol",
+  "kimi-k2.6": "moonshotai/kimi-k3",
+  "kimi-latest": "moonshotai/kimi-k3",
+  "kimi-k2.7-code": "moonshotai/kimi-k3",
+  "kimi-k3": "moonshotai/kimi-k3",
+  opus: "anthropic/claude-opus-5.5",
+  "opus-4.7": "anthropic/claude-opus-5.5",
+  "opus-4.8": "anthropic/claude-opus-5.5",
+  "opus-5": "anthropic/claude-opus-5.5",
+  "opus-5.5": "anthropic/claude-opus-5.5",
+  "fable-5": "anthropic/claude-fable-5.1",
+  "fable-5.1": "anthropic/claude-fable-5.1",
+  "grok-4.3": "x-ai/grok-4.7",
+  "x-ai/grok-4.3": "x-ai/grok-4.7",
+  "grok-latest": "x-ai/grok-4.7",
+  "grok-4.5": "x-ai/grok-4.7",
+  "grok-4.7": "x-ai/grok-4.7",
   "glm-5.2": "z-ai/glm-5.3",
   "z-ai/glm-5.2": "z-ai/glm-5.3",
   "glm-5.3": "z-ai/glm-5.3",
+  "glm-5.3-flash": "z-ai/glm-5.3-flash",
   "glm-latest": "z-ai/glm-5.3",
-  "gemini-3.5-flash": "google/gemini-3.5-flash",
-  "gemini-3-flash-preview": "google/gemini-3-flash-preview",
-  "gemini-3.1-pro-preview": "google/gemini-3.5-flash",
+  "gemini-3.5-flash": "google/gemini-3.8-flash",
+  "gemini-3-flash-preview": "google/gemini-3.8-flash",
+  "gemini-3.1-pro-preview": "google/gemini-3.8-flash",
+  "gemini-3.8-flash": "google/gemini-3.8-flash",
+  "deepseek-v4.1-flash": "deepseek/deepseek-v4.1-flash",
 };
 
 const DEEPSEEK_V4_VIRTUAL_AI_ROUTES: Readonly<
@@ -725,7 +734,8 @@ function formatModelForProvider(
 export function appendNitro(model: string): string {
   const trimmed = model.trim();
   if (!trimmed) return trimmed;
-  if (trimmed.toLowerCase() === "openai/gpt-5.6-luna") return trimmed;
+  const lower = trimmed.toLowerCase();
+  if (lower === "openai/gpt-5.6-luna" || lower === "openai/gpt-6-luna") return trimmed;
   const lastSegment = trimmed.slice(trimmed.lastIndexOf("/") + 1);
   if (lastSegment.includes(":")) return trimmed;
   return `${trimmed}:nitro`;
