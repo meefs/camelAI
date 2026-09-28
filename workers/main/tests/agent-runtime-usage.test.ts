@@ -158,7 +158,7 @@ describe("usage.recorded on POST /agent-runtime/events", () => {
     const { env, recordThreadStreaming, workspaces } = fakeEnv();
     await deliver(env, usageEvent());
     expect(workspaces).toEqual(["ws1"]);
-    expect(recordThreadStreaming).toHaveBeenCalledWith("t1", true, { refresh: true });
+    expect(recordThreadStreaming).toHaveBeenCalledWith("t1", true, { refresh: true, source: "runtime_usage" });
   });
 
   it("still records usage when the lease cannot be renewed", async () => {

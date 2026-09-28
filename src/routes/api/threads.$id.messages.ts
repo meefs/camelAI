@@ -4,6 +4,7 @@ import { waitUntil } from "@/lib/wait-until";
 import { RUNTIME_REQUEST_ID } from "@/lib/agent-runtime-shared";
 import { startRuntimeTurn } from "../../../workers/main/src/agent-runtime/thread-runtime";
 import { RuntimeApiError } from "../../../workers/main/src/agent-runtime/runtime-api";
+import { recordRuntimeSendFailure } from "../../../workers/main/src/agent-runtime/runtime-thread-telemetry";
 
 /**
  * POST /api/threads/:id/messages {text, clientMessageId}: send a message to a
@@ -44,9 +45,11 @@ export async function action({ request, context, params }: ActionFunctionArgs) {
       source: "web",
       waitUntil,
     });
+    recordRuntimeSendFailure(env, threadContext, "send", { result });
     return Response.json(result);
   } catch (error) {
     console.error("[runtime-thread] send failed", error);
+    recordRuntimeSendFailure(env, threadContext, "send", { error });
     const message = error instanceof Error ? error.message : "Failed to send message";
     // The runtime refused the request itself: a resend would be refused too.
     if (error instanceof RuntimeApiError && error.status >= 400 && error.status < 500) {

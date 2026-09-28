@@ -222,6 +222,7 @@ describe('ChatThreadDO streaming lease heartbeat', () => {
     expect(recordThreadStreaming).toHaveBeenCalledTimes(1);
     expect(recordThreadStreaming).toHaveBeenCalledWith('thread1', true, {
       refresh: true,
+      source: 'chat_thread_do',
     });
 
     vi.advanceTimersByTime(LEASE_REFRESH_MS);

@@ -9,7 +9,8 @@ export type ClientEventSource =
   | 'chat_sse'
   | 'chat_new_thread'
   | 'workspace_status_stream'
-  | 'version_skew';
+  | 'version_skew'
+  | 'runtime_watch';
 
 export type ClientTelemetrySeverity =
   | 'debug'

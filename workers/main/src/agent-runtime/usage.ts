@@ -88,7 +88,7 @@ export async function recordRuntimeUsage(env: Env, eventId: string, data: Runtim
   // A model response means the run is still going: renew the thread's
   // running lease (5 minutes), which only ChatThreadDO heartbeats otherwise.
   // Refresh-only, so a late event never marks a finished thread running.
-  await recordWorkspaceThreadStreaming(env, row.workspace_id, row.thread_id, true, { refresh: true })
+  await recordWorkspaceThreadStreaming(env, row.workspace_id, row.thread_id, true, { refresh: true, source: "runtime_usage" })
     .catch((error) => console.warn("[agent-runtime-usage] could not renew the thread's running lease", error));
   return true;
 }

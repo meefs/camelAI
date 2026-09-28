@@ -144,6 +144,38 @@ describe("POST /agent-runtime/events", () => {
     expect(streaming).not.toHaveBeenCalled();
   });
 
+  it("records a handler failure and answers an error, so the runtime delivers the event again", async () => {
+    const { runEnv, agentId, metadata } = await setup();
+    const writes = { writeDataPoint: vi.fn() };
+    const errors = { writeDataPoint: vi.fn() };
+    const failing = {
+      ...runEnv,
+      OBSERVABILITY_EVENTS: writes,
+      ERROR_ANALYTICS: errors,
+      WORKSPACE: { idFromName: (name: string) => name, get: () => ({ recordThreadStreaming: async () => { throw new Error("workspace unavailable"); } }) },
+    } as unknown as Env;
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const event = { id: eventId(), type: "run.started", created: 1, data: { agentId, requestId: "r", method: "prompt", metadata } };
+    await expect(deliver(failing, event)).rejects.toThrow("workspace unavailable");
+    const [{ blobs }] = writes.writeDataPoint.mock.calls[0] as [{ blobs: string[] }];
+    expect(blobs.slice(0, 5)).toEqual(["runtime_event_handler_failed", "error", "agent_runtime_events", "run.started", "failed"]);
+    expect(errors.writeDataPoint).toHaveBeenCalledTimes(1);
+    // Not marked seen: the redelivery is handled.
+    expect(await testEnv.APP_KV.get(`agent-runtime:event:${event.id}`)).toBeNull();
+  });
+
+  it("records an event for no known runtime thread", async () => {
+    const { runEnv, metadata } = await setup();
+    const writes = { writeDataPoint: vi.fn() };
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const response = await deliver({ ...runEnv, OBSERVABILITY_EVENTS: writes } as unknown as Env, {
+      id: eventId(), type: "run.completed", created: 1, data: { agentId: "client_other", requestId: "r", method: "prompt", metadata },
+    });
+    expect(response.status).toBe(204);
+    const [{ blobs }] = writes.writeDataPoint.mock.calls[0] as [{ blobs: string[] }];
+    expect(blobs.slice(0, 5)).toEqual(["runtime_event_unknown_thread", "warn", "agent_runtime_events", "run.completed", "unknown_thread"]);
+  });
+
   it("acknowledges events for agents that are not the thread's, without acting", async () => {
     const { runEnv, metadata, streaming } = await setup();
     const response = await deliver(runEnv, {

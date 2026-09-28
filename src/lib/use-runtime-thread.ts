@@ -22,6 +22,7 @@ import { latestRuntimeTodos, piRender, type PiRenderMemo } from "@/lib/pi-render
 import { getPreviewTabId } from "@/components/preview-panel/preview-utils";
 import { watchAgent, type AgentView, type Watcher } from "@camelai/agent-runtime/watch";
 import { stripSystemMessageTags } from "@/lib/turn-utils";
+import { trackRuntimeWatchError } from "@/lib/chat-sse-telemetry";
 import { toast } from "sonner";
 
 /** What the loader read server-side for first paint: a token, and the newest page of history. */
@@ -265,10 +266,16 @@ export function useRuntimeThread(options: {
           // Deltas arrive per token: render at most once a frame.
           if (frame === null) frame = requestAnimationFrame(flush);
         },
-        onError: (error) => console.warn("[runtime-thread] watcher", error.message),
+        onError: (error) => {
+          console.warn("[runtime-thread] watcher", error.message);
+          trackRuntimeWatchError(threadId, error, "watch");
+        },
       });
     };
-    start().catch((error) => console.error("[runtime-thread] could not watch the agent", error));
+    start().catch((error) => {
+      console.error("[runtime-thread] could not watch the agent", error);
+      trackRuntimeWatchError(threadId, error, "start");
+    });
     return () => {
       cancelled = true;
       if (frame !== null) cancelAnimationFrame(frame);

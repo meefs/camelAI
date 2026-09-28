@@ -17,6 +17,7 @@ import {
   parseWorkspaceModelPickerConfig,
 } from '../../../src/lib/model-picker-config';
 import { refreshRemoteMcpOAuthToken } from './remote-mcp-oauth';
+import { recordObservabilityEvent } from './observability';
 
 // Buffer time before token expiry to trigger refresh (10 minutes)
 const TOKEN_REFRESH_BUFFER_MS = 10 * 60 * 1000;
@@ -228,6 +229,7 @@ export interface WorkspaceEnv {
   CHAT_THREAD?: DurableObjectNamespace;
   WORKSPACE_CRON?: DurableObjectNamespace<WorkspaceCronDO>;
   TOKEN_SIGNING_SECRET?: string;
+  OBSERVABILITY_EVENTS?: AnalyticsEngineDataset;
 }
 
 /**
@@ -389,8 +391,8 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
 
   private pruneStaleStreamingRows(now = Date.now()): void {
     const staleRows = this.sql
-      .exec<{ thread_id: string }>(
-        'SELECT thread_id FROM thread_streaming_status WHERE updated_at < ?',
+      .exec<{ thread_id: string; updated_at: number }>(
+        'SELECT thread_id, updated_at FROM thread_streaming_status WHERE updated_at < ?',
         now - THREAD_STREAMING_LEASE_TTL_MS,
       )
       .toArray();
@@ -400,6 +402,18 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       now - THREAD_STREAMING_LEASE_TTL_MS,
     );
     for (const row of staleRows) {
+      // A running turn whose heartbeats stopped: its owner died, or (a direct
+      // runtime thread) nothing renewed the lease within it. The row does not
+      // say which backend ran the turn, hence `any_backend`.
+      recordObservabilityEvent(this.env, {
+        event: 'thread_running_lease_expired',
+        severity: 'warn',
+        component: 'workspace_do',
+        operation: 'lease_sweep',
+        status: 'any_backend',
+        threadId: row.thread_id,
+        durationMs: now - row.updated_at,
+      });
       this.lastThreadStatusBroadcasts.delete(row.thread_id);
       // The turn died without a terminal isStreaming=false (its heartbeats
       // stopped). Tell connected status sockets it is over — an expired lease
@@ -419,6 +433,7 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       activityText?: string | null;
       activityAt?: number | null;
       refresh?: boolean;
+      source?: string;
       clearOnlyIfRunning?: boolean;
       clearRunningStartedAtOrBefore?: number | null;
     },
@@ -470,11 +485,23 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
         // Update-only and broadcast-free: nothing user-visible changes, and a
         // late tick racing the terminal isStreaming=false must not resurrect
         // the cleared row.
-        this.sql.exec(
+        const renewed = this.sql.exec(
           'UPDATE thread_streaming_status SET updated_at = ? WHERE thread_id = ?',
           now,
           normalizedThreadId,
-        );
+        ).rowsWritten;
+        if (renewed === 0) {
+          // No running row to renew: the turn already ended (a late tick), or
+          // its lease expired while it was still running.
+          recordObservabilityEvent(this.env, {
+            event: 'thread_running_lease_refresh_missed',
+            severity: 'info',
+            component: 'workspace_do',
+            operation: 'lease_refresh',
+            status: options.source ?? 'unspecified',
+            threadId: normalizedThreadId,
+          });
+        }
         return;
       }
       if (hasActivityTextUpdate) {

@@ -566,3 +566,38 @@ export function reportChatStreamStallClamped(
     details: connectionContext(),
   });
 }
+
+/**
+ * `runtime_watch_error`: the runtime-thread watcher (use-runtime-thread) hit
+ * an error: a failed token mint, a stream or poll the runtime refused (a
+ * 401/403/404 stops the watcher for good), or a dropped connection. `phase`
+ * is `start` (the first token/watch never began) or `watch`. Status is the
+ * HTTP status when the error carries one, else the error's name; the message
+ * stays constant per status so the reporter's signature budget caps a loop.
+ */
+export function trackRuntimeWatchError(
+  threadId: string,
+  error: unknown,
+  phase: "start" | "watch",
+): void {
+  const record = error && typeof error === "object" ? (error as { status?: unknown; name?: unknown }) : null;
+  const statusCode =
+    typeof record?.status === "number" && Number.isFinite(record.status) ? record.status : undefined;
+  const status =
+    statusCode !== undefined
+      ? String(statusCode)
+      : typeof record?.name === "string" && record.name
+        ? record.name
+        : "unknown";
+  reportClientEvent({
+    source: "runtime_watch",
+    event: "runtime_watch_error",
+    severity: phase === "start" ? "error" : "warn",
+    status,
+    statusCode,
+    message: `Runtime thread watcher error (${phase}, ${status}).`,
+    threadId,
+    details: { ...connectionContext(), phase },
+    error,
+  });
+}
