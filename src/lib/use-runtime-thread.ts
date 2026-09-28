@@ -342,8 +342,8 @@ export function useRuntimeThread(options: {
     if (!lastError && view.lastOutcome?.error) {
       lastError = { id: `rt-outcome:${view.lastOutcome.id}`, error: view.lastOutcome.error, billingSource: null, provider: null, status: null, errorType: null };
     }
-    // Until the thread's agent exists, the refusal of its first message.
-    if (!lastError && !agentId && seed?.startError) {
+    // The refusal of the thread's first message, while nothing reached the agent after it.
+    if (!lastError && seed?.startError) {
       lastError = { id: seed.startError.id, error: seed.startError.error, billingSource: null, provider: null, status: null, errorType: null };
     }
     return {
@@ -358,7 +358,7 @@ export function useRuntimeThread(options: {
       lastError,
       modelFallbackNotice: fallbackNotice ?? null,
     };
-  }, [view, preview, fallbackNotice, agentId, seed]);
+  }, [view, preview, fallbackNotice, seed]);
 
   // Deltas re-derive the state every frame; hand it on only when it changed.
   const lastStateRef = useRef<string | null>(null);

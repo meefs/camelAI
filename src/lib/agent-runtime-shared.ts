@@ -6,6 +6,52 @@
  * asked in the chat's question card.
  */
 
+/**
+ * A request id the runtime accepts (its `requestId`, our client message id):
+ * letters, digits, `_` and `-`, at most 80.
+ */
+export const RUNTIME_REQUEST_ID = /^[A-Za-z0-9_-]{1,80}$/;
+
+/**
+ * Whether new web threads run directly on the runtime in this deployment: its
+ * runtime tenant (operator token, tenant id, agent definition) is set and
+ * AGENT_RUNTIME_DIRECT_THREADS is on.
+ */
+export function runtimeDirectThreadsEnabled(env: {
+  AGENT_RUNTIME_API_TOKEN?: string;
+  AGENT_RUNTIME_TENANT?: string;
+  AGENT_RUNTIME_DEFINITION?: string;
+  AGENT_RUNTIME_DIRECT_THREADS?: string;
+}): boolean {
+  return Boolean(
+    env.AGENT_RUNTIME_API_TOKEN?.trim() &&
+      env.AGENT_RUNTIME_TENANT?.trim() &&
+      env.AGENT_RUNTIME_DEFINITION?.trim() &&
+      env.AGENT_RUNTIME_DIRECT_THREADS?.trim() === "1",
+  );
+}
+
+/** The request id of a new thread's first message, sent by the new-chat action. */
+export function initialRuntimeRequestId(threadId: string): string {
+  return `initial_${threadId}`;
+}
+
+/**
+ * A recorded refusal of a runtime thread's message still describes the thread
+ * when nothing reached the agent after it: its newest history is older.
+ */
+export function startErrorStillCurrent(
+  error: { id: string; error: string; at: number } | null,
+  entries: ReadonlyArray<{ message: unknown }>,
+): { id: string; error: string } | null {
+  if (!error) return null;
+  const newest = Math.max(0, ...entries.map(({ message }) => {
+    const at = (message as { timestamp?: unknown } | null)?.timestamp;
+    return typeof at === "number" && Number.isFinite(at) ? at : 0;
+  }));
+  return newest > error.at ? null : { id: error.id, error: error.error };
+}
+
 /** The MCP server name chiridion's tools are served under in the runtime definition. */
 export const RUNTIME_TOOL_SERVER = "camel";
 export const RUNTIME_TOOL_PREFIX = `${RUNTIME_TOOL_SERVER}__`;

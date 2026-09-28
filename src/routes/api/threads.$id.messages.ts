@@ -1,6 +1,7 @@
 import type { ActionFunctionArgs } from "react-router";
 import { requestWorkspaceId, requireRuntimeThread } from "@/lib/runtime-threads.server";
 import { waitUntil } from "@/lib/wait-until";
+import { RUNTIME_REQUEST_ID } from "@/lib/agent-runtime-shared";
 import { startRuntimeTurn } from "../../../workers/main/src/agent-runtime/thread-runtime";
 
 /**
@@ -19,8 +20,12 @@ export async function action({ request, context, params }: ActionFunctionArgs) {
   const text = typeof body?.text === "string" ? body.text : "";
   const clientMessageId = typeof body?.clientMessageId === "string" ? body.clientMessageId.trim() : "";
   if (!text.trim()) return Response.json({ status: "error", error: "Empty message" }, { status: 400 });
-  if (!clientMessageId || clientMessageId.length > 200) {
-    return Response.json({ status: "error", error: "clientMessageId required" }, { status: 400 });
+  // The runtime takes it as the request id, which must match its format.
+  if (!RUNTIME_REQUEST_ID.test(clientMessageId)) {
+    return Response.json(
+      { status: "error", error: "clientMessageId must be 1-80 letters, digits, _ or -" },
+      { status: 400 },
+    );
   }
   const { env, context: threadContext, sender, row } = await requireRuntimeThread(
     request,

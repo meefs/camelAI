@@ -20,6 +20,7 @@ import {
 } from "../../workers/main/src/agent-runtime/thread-runtime";
 import type { RuntimeThreadSeed } from "@/lib/use-runtime-thread";
 import type { PreviewTarget } from "@/types";
+import { initialRuntimeRequestId, startErrorStillCurrent } from "@/lib/agent-runtime-shared";
 
 export interface RuntimeThreadAccess {
   env: ChatEnv;
@@ -123,8 +124,7 @@ export async function loadRuntimeThreadSeed(
           },
         )
       : Promise.resolve({ token: null, page: null, error: null }),
-    // No agent yet: the first message never reached one. Its refusal, if any.
-    agentId ? Promise.resolve(null) : runtimeStartError(org, input.threadId),
+    runtimeStartError(org, input.threadId),
   ]);
   const preview = uiState?.preview ?? null;
   const previewTabs = Array.isArray(preview?.tabs) ? (preview.tabs as PreviewTarget[]) : [];
@@ -138,7 +138,7 @@ export async function loadRuntimeThreadSeed(
       page: reads.page ? { entries: reads.page.entries, next: reads.page.next } : null,
       previewTabs,
       activeTabId,
-      startError,
+      startError: startErrorStillCurrent(startError, reads.page?.entries ?? []),
     },
     error: reads.error,
   };
@@ -148,13 +148,14 @@ export async function loadRuntimeThreadSeed(
 async function runtimeStartError(
   org: unknown,
   threadId: string,
-): Promise<RuntimeThreadSeed["startError"]> {
+): Promise<{ id: string; error: string; at: number } | null> {
   const thread = await (org as { getThread(id: string): Promise<{ last_chat_error_at?: number | null; last_chat_error_message?: string | null } | null> })
     .getThread(threadId)
     .catch(() => null);
   const message = thread?.last_chat_error_message?.trim();
   if (!message) return null;
-  return { id: `rt-start:${thread?.last_chat_error_at ?? 0}`, error: message };
+  const at = thread?.last_chat_error_at ?? 0;
+  return { id: `rt-start:${at}`, error: message, at };
 }
 
 /**
@@ -187,7 +188,7 @@ export async function startFirstRuntimeTurn(
   try {
     turn = await startRuntimeTurn(env, {
       ...input,
-      clientMessageId: `initial:${input.context.threadId}`,
+      clientMessageId: initialRuntimeRequestId(input.context.threadId),
       source: "web",
     });
   } catch (error) {
