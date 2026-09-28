@@ -19,8 +19,12 @@ import { applyMentionContext } from "../mention-context";
 import { WorkspaceFilesystemClient } from "../workspace-filesystem-do";
 import { HOSTED_KEY_SCOPE } from "./key-scopes";
 import { RuntimeApiError, runtimeApi, runtimeUrl } from "./runtime-api";
+import { codexError, codexRoute, codexUpstreamCall, forwardedResponseHeaders } from "./codex-forwarder";
+import { HostedModelFallbackRequiredError } from "../chat-thread/pi-model-config";
+import { assertUserLlmUsageAccess, UserLlmUsageLimitError } from "../user-llm-usage-policy";
 import {
   prepareThreadRuntimeRun,
+  resolveThreadRuntimeRoute,
   RuntimeRunRefused,
   runtimeSystemPromptAppend,
   type PreparedRuntimeRun,
@@ -311,4 +315,59 @@ export async function answerRuntimeInput(
 /** Stop the agent's running turn (its tool calls are cancelled; the stream shows the end). */
 export async function abortRuntimeThread(env: ChatEnv, agentId: string): Promise<void> {
   await runtimeApi(env, "POST", `/v1/agents/${encodeURIComponent(agentId)}/abort`);
+}
+
+/**
+ * One Codex call of a runtime thread's agent (routes/agent-runtime-llm.ts),
+ * as ChatThreadDO.runtimeProviderRequest does it for the threads it hosts:
+ * the acting user's limits, the org's ChatGPT subscription swapped in for the
+ * runtime's credentials, and the bytes passed through both ways.
+ */
+export async function forwardRuntimeThreadCodexCall(
+  env: ChatEnv,
+  request: { provider: string; path: string; search: string; method: string; headers: [string, string][]; body: ArrayBuffer | null },
+  caller: { orgId: string; workspaceId: string; threadId: string; userId: string },
+): Promise<Response> {
+  if (request.provider !== "openai-codex") {
+    return codexError(404, `chiridion forwards only openai-codex, not ${request.provider}`, "not_found");
+  }
+  const context: ChatContextState = { ...caller, userName: null, userEmail: null };
+  let config: Awaited<ReturnType<typeof resolveThreadRuntimeRoute>>["config"];
+  try {
+    ({ config } = await resolveThreadRuntimeRoute(env, context));
+    if (caller.userId) {
+      await assertUserLlmUsageAccess(env.ORG.get(env.ORG.idFromName(caller.orgId)) as never, {
+        env,
+        orgId: caller.orgId,
+        workspaceId: caller.workspaceId,
+        threadId: caller.threadId,
+        userId: caller.userId,
+        provider: config.usageProvider || config.model.provider,
+        model: config.model.id,
+      });
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (error instanceof UserLlmUsageLimitError) return codexError(429, message, "usage_limit");
+    if (error instanceof HostedModelFallbackRequiredError) return codexError(402, message, "insufficient_credits");
+    throw error;
+  }
+  const route = codexRoute(config);
+  if (!route) {
+    return codexError(409, "This thread's model no longer uses the ChatGPT subscription; send the message again.", "route_mismatch");
+  }
+  const body = request.body ? new Uint8Array(request.body) : new Uint8Array(0);
+  const call = codexUpstreamCall(route, request.path, request.search, request.headers, body);
+  if ("error" in call) return codexError(409, call.error, "route_mismatch");
+  const upstream = await fetch(call.url, {
+    method: request.method,
+    headers: call.headers,
+    // The bytes as the runtime sent them (zstd).
+    body: body.byteLength > 0 ? body : undefined,
+  });
+  return new Response(upstream.body, {
+    status: upstream.status,
+    statusText: upstream.statusText,
+    headers: forwardedResponseHeaders(upstream.headers),
+  });
 }

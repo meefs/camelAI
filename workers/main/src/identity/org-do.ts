@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { syncOrgKeyScope, type KeyScopeEnv } from "../agent-runtime/key-scopes";
+import { RuntimeApiError, runtimeApi } from "../agent-runtime/runtime-api";
 import type { DOEnv } from "./env";
 import {
   WorkspaceDO,
@@ -93,6 +94,8 @@ import { usageCost, usageInteger, usageText } from "./usage";
 import { generateEmailHandle } from "../../../../src/lib/workspace-email";
 import type { EmailHandleDO } from "../email-handle-registry";
 import type { WorkspaceIntegrationDefinitionRecord } from "../../../../src/lib/integration-definition";
+import { getPreviewTabId } from "../chat-thread/preview-state";
+import type { PreviewTarget } from "../chat-thread/types";
 import {
   getCustomDomain as getOrgCustomDomain,
   removeCustomDomain as removeOrgCustomDomain,
@@ -8561,6 +8564,7 @@ export class OrgDO extends DurableObject<DOEnv> {
   deleteThread(id: string, actorId?: string): boolean {
     const existing = this.getThread(id);
     if (!existing) return false;
+    const agentId = this.getThreadRuntime(id)?.agentId;
     this.sql.exec("DELETE FROM threads WHERE id = ?", id);
     this.sql.exec("DELETE FROM thread_runtime WHERE thread_id = ?", id);
     this.sql.exec("DELETE FROM thread_ui_state WHERE thread_id = ?", id);
@@ -8573,6 +8577,20 @@ export class OrgDO extends DurableObject<DOEnv> {
       type: "thread_delete",
       payload: { id, workspace_id: existing.workspace_id },
     });
+    // A runtime thread's transcript lives only on its agent: delete it too.
+    const runtimeEnv = this.env as unknown as KeyScopeEnv;
+    if (agentId && runtimeEnv.AGENT_RUNTIME_API_TOKEN) {
+      this.ctx.waitUntil(
+        runtimeApi(runtimeEnv, "DELETE", `/v1/agents/${encodeURIComponent(agentId)}`).catch((error) => {
+          if (error instanceof RuntimeApiError && error.status === 404) return;
+          console.error("[OrgDO] failed to delete a deleted thread's runtime agent", {
+            threadId: id,
+            agentId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }),
+      );
+    }
     return true;
   }
 
@@ -8679,6 +8697,31 @@ export class OrgDO extends DurableObject<DOEnv> {
       now,
     );
     return { threadId, preview, previewVersion: version, updatedAt: now };
+  }
+
+  /**
+   * A runtime thread's agent opened a preview (set_preview): add or replace
+   * its tab and make it active, as ChatThreadDO.setPreviewTarget does.
+   */
+  upsertThreadPreviewTarget(threadId: string, target: PreviewTarget): ThreadUiStateRecord | null {
+    const current = this.getThreadUiState(threadId)?.preview ?? null;
+    const tabs = Array.isArray(current?.tabs) ? (current.tabs as PreviewTarget[]) : [];
+    const id = getPreviewTabId(target);
+    const next = tabs.some((tab) => getPreviewTabId(tab) === id)
+      ? tabs.map((tab) => (getPreviewTabId(tab) === id ? target : tab))
+      : [...tabs, target];
+    return this.setThreadUiState(threadId, { tabs: next, activeTabId: id });
+  }
+
+  /** An app's visibility changed: update it on a runtime thread's open app tabs. */
+  setThreadPreviewAppVisibility(threadId: string, scriptName: string, isPublic: boolean): ThreadUiStateRecord | null {
+    const current = this.getThreadUiState(threadId)?.preview ?? null;
+    const tabs = Array.isArray(current?.tabs) ? (current.tabs as PreviewTarget[]) : [];
+    if (!tabs.some((tab) => tab.kind === "app" && tab.scriptName === scriptName && tab.isPublic !== isPublic)) return null;
+    return this.setThreadUiState(threadId, {
+      ...current,
+      tabs: tabs.map((tab) => (tab.kind === "app" && tab.scriptName === scriptName ? { ...tab, isPublic } : tab)),
+    });
   }
 
   /**

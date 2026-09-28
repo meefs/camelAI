@@ -87,3 +87,18 @@ describe('OrgDO thread_ui_state', () => {
     expect(await orgStub.setThreadUiState('missing-thread', null)).toBeNull();
   });
 });
+
+describe('OrgDO runtime thread previews', () => {
+  it('opens set_preview targets as tabs, replacing a tab with the same id, and tracks app visibility', async () => {
+    const { orgStub, threadId } = await freshThread();
+    const app = { kind: 'app', scriptName: 'shop', isPublic: false } as const;
+    const file = { kind: 'file', source: 'workspace', workspaceId: 'ws', path: '/a.md' } as const;
+    await orgStub.upsertThreadPreviewTarget(threadId, app);
+    await orgStub.upsertThreadPreviewTarget(threadId, file);
+    let state = await orgStub.upsertThreadPreviewTarget(threadId, { ...app, isPublic: true });
+    expect(state?.preview).toEqual({ tabs: [{ ...app, isPublic: true }, file], activeTabId: 'app:shop' });
+    state = await orgStub.setThreadPreviewAppVisibility(threadId, 'shop', false);
+    expect(state?.preview).toMatchObject({ tabs: [app, file], activeTabId: 'app:shop' });
+    expect(await orgStub.setThreadPreviewAppVisibility(threadId, 'shop', false)).toBeNull();
+  });
+});

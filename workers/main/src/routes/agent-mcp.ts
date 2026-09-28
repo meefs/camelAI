@@ -105,7 +105,15 @@ export async function authorizeRuntimeIdentity(
   const access = await getOrgStub(env, orgId).validateChatWebSocketAccess(userId, workspaceId, threadId);
   if (!access.ok) return { error: `Forbidden (${access.reason})` };
   if (access.orgId !== orgId) return { error: "Forbidden (org_mismatch)" };
-  return { orgId, workspaceId, threadId, userId, allowWebTools: false };
+  return {
+    orgId,
+    workspaceId,
+    threadId,
+    userId,
+    allowWebTools: false,
+    // A thread with a runtime row has no ChatThreadDO (plans/runtime-threads-direct.md).
+    ...(access.runtime ? { directRuntime: true } : {}),
+  };
 }
 
 /**
