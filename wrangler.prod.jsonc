@@ -24,7 +24,7 @@
   "routes": [{ "pattern": "camelai.dev", "custom_domain": true }],
   "vpc_services": [],
   "vars": {
-    "AI_VIRTUAL_MODEL": "google/gemini-3-flash-preview",
+    "AI_VIRTUAL_MODEL": "google/gemini-3.8-flash",
     // Static-IP database egress relay (docs/db-egress-relay.md). SOCKS + Access
     // service-token credentials are secrets (DB_EGRESS_RELAY_SOCKS_* /
     // DB_EGRESS_RELAY_ACCESS_*); this hostname is the tunnel public host gost
