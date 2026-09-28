@@ -260,7 +260,13 @@ async function connectionSetupFallback(
 }
 
 export function agentMcpHandler(env: Env, tools: ToolsFactory, options: AgentMcpOptions = {}) {
+  // The SDK refuses tokens of other tenants' agents, and so needs ours.
+  const tenant = env.AGENT_RUNTIME_TENANT?.trim();
+  if (!tenant) {
+    return async (_req: Request) => Response.json({ error: "The agent runtime is not configured" }, { status: 503 });
+  }
   return serveTools(agentToolServer(env, tools), {
+    tenant,
     runtime: env.AGENT_RUNTIME_URL || DEFAULT_RUNTIME,
     ...(env.AGENT_RUNTIME_MCP_AUDIENCE ? { audience: env.AGENT_RUNTIME_MCP_AUDIENCE } : {}),
     ...(options.fetch ? { fetch: options.fetch } : {}),
