@@ -319,6 +319,7 @@ describe("the runtime prompt's two filesystems", () => {
     expect(append).toContain("/workspace is this conversation's scratch space");
     expect(append).toContain("fs in js_exec");
     expect(append).toContain("only when the user asks");
+    expect(append).toContain("camel__import_file");
     expect(append).not.toMatch(/not fs\b/);
     expect(await setup.orgStub.getThreadRuntime(setup.threadId)).toMatchObject({ configured: { promptVersion: RUNTIME_PROMPT_VERSION } });
   });

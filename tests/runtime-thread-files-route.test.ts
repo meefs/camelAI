@@ -73,4 +73,11 @@ describe("GET /api/threads/:id/files/*", () => {
     threadScratchVolumeMock.mockResolvedValue(null);
     expect((await get("workspace/x.txt")).status).toBe(404);
   });
+
+  it("answers the preview's text view, as the workspace text-preview route does", async () => {
+    fetchScratchFileMock.mockResolvedValue(new Response("a,b\n1,2\n3,4\n", { headers: { "Content-Length": "12" } }));
+    const response = await get("workspace/out/data.csv", "?text=initial&maxLines=2");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ text: "a,b\n1,2", truncated: true, contentType: "text/csv; charset=utf-8" });
+  });
 });

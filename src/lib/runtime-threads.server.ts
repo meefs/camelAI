@@ -131,6 +131,7 @@ export async function loadRuntimeThreadSeed(
     uiState?.preview?.tabs,
     uiState?.preview?.activeTabId,
     input.workspaceId,
+    input.threadId,
   );
   return {
     seed: {

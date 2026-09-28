@@ -166,7 +166,7 @@ describe("piRender and scratch files", () => {
     const { messages } = render([message]);
     expect(messages[0].content).toEqual([
       { type: "text", text: "What changed?" },
-      { type: "file", path: "/workspace/uploads/r1/q3 report.pdf", name: "q3 report.pdf", href: "/api/threads/t1/files/workspace/uploads/r1/q3%20report.pdf", contentType: "application/pdf", size: 2048 },
+      { type: "file", path: "/workspace/uploads/r1/q3 report.pdf", name: "q3 report.pdf", href: "/api/threads/t1/files/workspace/uploads/r1/q3%20report.pdf", threadId: "t1", contentType: "application/pdf", size: 2048 },
     ]);
   });
 
@@ -182,7 +182,7 @@ describe("piRender and scratch files", () => {
     const blocks = messages[1].content as ContentBlock[];
     expect(blocks.map((block) => block.type)).toEqual(["tool_use", "tool_result", "file", "text"]);
     expect(blocks[2]).toEqual({
-      type: "file", path: "/workspace/out/chart.png", name: "chart.png", href: "/api/threads/t1/files/workspace/out/chart.png",
+      type: "file", path: "/workspace/out/chart.png", name: "chart.png", href: "/api/threads/t1/files/workspace/out/chart.png", threadId: "t1",
       contentType: "image/png", size: 900, caption: "Q3 revenue",
     });
   });

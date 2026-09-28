@@ -37,10 +37,12 @@ export type PreviewTarget =
     }
   | {
       kind: "file";
-      source: "workspace" | "project" | "upload" | "output";
+      source: "workspace" | "project" | "upload" | "output" | "scratch";
       workspaceId: string;
       path: string;
       project?: string;
+      /** The runtime thread whose scratch file this is (source `scratch`). */
+      threadId?: string;
       filename?: string;
       contentType?: string;
     }

@@ -124,7 +124,7 @@ export async function authorizeRuntimeIdentity(
  * tools (deploy_project, run_notebook, set_preview, ...).
  */
 const DIRECT_FIRST = new Set([
-  "read", "write", "edit", "ls", "delete",
+  "read", "write", "edit", "ls", "delete", "import_file",
   ...CODE_MODE_PI_PASSTHROUGH_TOOL_DEFINITIONS.map((definition) => definition.name),
 ]);
 

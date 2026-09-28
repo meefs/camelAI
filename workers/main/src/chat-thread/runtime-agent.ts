@@ -50,7 +50,7 @@ export const RUNTIME_PROMPT_PREAMBLE = [
   [
     "There are two filesystems.",
     "/workspace is this conversation's scratch space: files attached to messages, files tools return (under /workspace/tool-outputs/), and your own intermediate files. Read and write it with fs in js_exec, and give a file to the user with present_file. It is private to this conversation and deleted with it.",
-    `The camelAI workspace is the user's durable storage, shared with their apps and other chats: workspace, project and uploaded files live there (location "workspace", "project" or "r2"). Use the ${TOOL_PREFIX} file tools for it, never fs. Save something from /workspace into it only when the user asks.`,
+    `The camelAI workspace is the user's durable storage, shared with their apps and other chats: workspace, project and uploaded files live there (location "workspace", "project" or "r2"). Use the ${TOOL_PREFIX} file tools for it, never fs. Save something from /workspace into it only when the user asks, with ${TOOL_PREFIX}import_file ({ source: { "$file": "/workspace/<path>" }, destination: { location, path } }).`,
     "Where the instructions below name a camelAI file path (such as /workspace/AGENTS.md, or a project VM's /workspace for shell commands), that is the camelAI workspace or the project, not the scratch space.",
   ].join(" "),
   `In js_exec, await tools.${TOOL_PREFIX}<tool>(args) returns the tool's data itself (for example ${TOOL_PREFIX}list_apps gives { total, count, apps: [...] }; a file read gives its text, or { text, ...details }): use it directly, without JSON.parse or unwrapping.`,
@@ -61,7 +61,7 @@ export const RUNTIME_PROMPT_PREAMBLE = [
  * (RUNTIME_PROMPT_PREAMBLE and the prompt after it). Bump it when they change
  * in a way existing threads must get: their next send re-sends them.
  */
-export const RUNTIME_PROMPT_VERSION = 2;
+export const RUNTIME_PROMPT_VERSION = 3;
 
 export interface RuntimeAgentEnv {
   AGENT_RUNTIME_URL?: string;

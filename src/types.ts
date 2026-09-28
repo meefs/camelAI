@@ -155,10 +155,13 @@ export type PreviewTarget =
     }
   | {
       kind: "file";
-      source: "workspace" | "project" | "upload" | "output";
+      /** `scratch`: a runtime thread's /workspace (path as the agent sees it, with threadId). */
+      source: "workspace" | "project" | "upload" | "output" | "scratch";
       workspaceId: string;
       path: string;
       project?: string;
+      /** The runtime thread whose scratch file this is (source `scratch`). */
+      threadId?: string;
       filename?: string;
       contentType?: string;
     }
@@ -252,6 +255,8 @@ export interface FileBlock {
   path: string;
   name: string;
   href: string;
+  /** The runtime thread the file belongs to (its scratch space). */
+  threadId?: string;
   contentType?: string;
   size?: number;
   caption?: string;
