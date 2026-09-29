@@ -34,6 +34,7 @@ import {
   AGENT_RUNTIME_STATE_FILE,
   inspectSelfhostAgentRuntime,
 } from "./selfhost-agent-runtime.mjs";
+import { sweepDoctorReport } from "./selfhost-runtime-sweep.mjs";
 
 const checks = [];
 const env = await readSelfhostEnv(false);
@@ -593,6 +594,24 @@ await check("agent runtime", async () => {
   }
   const failed = inspection.findings.find((finding) => finding.level === "fail");
   if (failed) fail(failed.message);
+});
+
+await check("runtime thread sweep", async () => {
+  if (!(await canConnect("127.0.0.1", appPort))) {
+    warn("stack is not running; thread sweep status skipped");
+    return;
+  }
+  const response = await fetch(`http://127.0.0.1:${appPort}/api/admin/selfhost/runtime-sweep`, {
+    headers: { Authorization: `Bearer ${env.ADMIN_API_KEY || ""}` },
+    signal: AbortSignal.timeout(5000),
+  }).catch((error) => fail(`thread sweep status request failed: ${error.message}`));
+  if (!response.ok) {
+    warn(`thread sweep status: HTTP ${response.status}`);
+    return;
+  }
+  const report = sweepDoctorReport(await response.json());
+  for (const line of report.lines) note(line);
+  if (report.level === "warn") warn(report.lines[0]);
 });
 
 for (const item of checks) {

@@ -577,8 +577,7 @@ thread's own loop inside the app.
   `SELFHOST_AGENT_RUNTIME_OUTBOUND_ALLOW_ORIGINS=http://10.1.2.3:8000`
   (`selfhost:doctor` warns when `SELFHOST_AI_BASE_URL` needs one). Endpoints
   organizations set themselves must be `https` and never on loopback. A model
-  with no runtime route (for example Anthropic Messages behind
-  `Authorization: Bearer`) keeps its threads on the in-app loop.
+  with no runtime route keeps its threads on the in-app loop.
 - **What agents can reach on the VM.** The runtime's outbound guard blocks
   loopback and private addresses except the exact origins it is given
   (`AGENT_OUTBOUND_ALLOW_ORIGINS`): the app's own `http://127.0.0.1:<port>`
@@ -604,9 +603,8 @@ to another tenant: fix `AGENT_RUNTIME_API_TOKEN` instead.
 With `SELFHOST_AGENT_RUNTIME_DIRECT_THREADS=1` (the default) every new thread
 runs on the runtime. Threads created before the upgrade stay on the in-app
 loop and keep working there. They are moved to the runtime by the automatic
-thread sweep (its own section, "Moving existing threads", arrives with the
-sweep), which a later release that removes the in-app loop requires to have
-finished.
+thread sweep ("Moving existing threads" below), which a later release that
+removes the in-app loop requires to have finished.
 
 ### Rollback
 
@@ -619,6 +617,79 @@ images; the runtime's volumes are left as they are, and a later upgrade picks
 them up again. A release without the runtime cannot open threads that were
 created on it, so prefer the setting above to a release rollback once users
 have runtime threads.
+
+## Moving existing threads
+
+Threads created before an install ran on the agent runtime still run inside
+the app (on ChatThreadDO). The app moves them to the runtime by itself, in the
+background, with no downtime: every start of the app begins a pass of the
+**thread sweep**, which walks every organization's threads still on the
+in-app loop and moves each with its history (the same move a thread makes
+when it is opened; a very long history is imported up to the runtime's limit,
+and the full original transcript is kept in the thread's files).
+
+- **Bounded.** A few threads move at once, one short step at a time (never
+  two steps together), so users keep working; a thread with a turn running is
+  left alone and retried later, and a move that takes minutes (a very long
+  history) finishes on its own while the sweep goes on.
+- **Paused when the runtime fails.** If the runtime does not answer, or
+  several moves fail in one step, the sweep pauses (1 minute, doubling, at
+  most 30) rather than burn through every thread; the doctor and the log say
+  so.
+- **Resumable.** Its progress (a cursor per org and thread, and a record of
+  every thread it could not move yet) is in the app's D1 database, so a
+  restart resumes where it stopped. After a complete pass it looks again every
+  six hours, and at every start.
+- **Visible.** The app log has a `[selfhost:runtime-sweep]` line whenever its
+  progress changes, and `bun run selfhost:doctor` reports it under "runtime
+  thread sweep": complete, or how many threads moved, will be retried, or were
+  skipped, with each skipped thread's org, id and reason. The admin API has
+  the same, as JSON:
+
+  ```bash
+  curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
+    http://127.0.0.1:3001/api/admin/selfhost/runtime-sweep
+  ```
+
+  `POST` the same path with `{"action": "start"}` to begin a new pass now,
+  or `{"action": "reset"}` to forget its records.
+- **What it skips.** A thread whose model has no runtime route (for example
+  a custom endpoint the runtime may not call; see "Upgrading to the runtime"),
+  or whose
+  history cannot be imported at all (`too_large`), stays on the in-app loop
+  and keeps working there. Busy threads and failed attempts are retried with a
+  growing delay (1 minute, doubling, at most an hour); one still failing after
+  12 tries or 3 days is skipped ("gave up after …"). A skipped thread is tried
+  again at the next start, after you fixed its cause (allowed the endpoint's
+  origin, changed the thread's model), except one the runtime will never take
+  (`too_large`, `invalid_history`). An organization the app cannot read is
+  passed over, recorded, and tried again with the retries.
+- **Complete means counted.** Before it reports complete, the sweep counts
+  every organization's threads still on the in-app loop; threads that came
+  while it ran start another pass.
+- `SELFHOST_RUNTIME_SWEEP=0` turns the sweep off.
+
+### The version gate
+
+A later release removes the in-app loop. It cannot run or move threads that
+are still on it, so it refuses to start on an install whose sweep has not
+completed, and prints what is left and a pointer here:
+
+- **Upgrade through a release with the sweep.** An install that skips from a
+  release before the runtime straight to one without the in-app loop is
+  refused: install the last release with the sweep first, let
+  `selfhost:doctor` report the sweep complete, then upgrade. A new install,
+  with no organizations yet, is never refused.
+- **Threads the sweep skipped.** They also stop the upgrade, since they would
+  no longer open. Fix their cause and restart the app (the sweep tries them
+  again), or accept losing them with `SELFHOST_ALLOW_UNMIGRATED_THREADS=1`
+  (which also accepts a sweep still waiting on retries).
+- **A recheck under way.** The sweep looks again at every start and every six
+  hours; while it does, the gate goes by its last complete pass.
+
+The gate runs before the app's web server starts (in the D1 migration step),
+so a refused upgrade serves nothing; `selfhost:upgrade --rollback` returns to
+the previous release, whose sweep then finishes the job.
 
 ## Operational validation
 
