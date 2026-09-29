@@ -8,16 +8,13 @@ import type { WorkspaceDO } from "../workspace.js";
 import type { OrgDO, UserDO } from "../auth.js";
 import { getSignedSessionFromRequest } from "../cookies.js";
 import { text } from "./response.js";
-import { getWorkspaceStub, getOrgStub } from "./stubs.js";
 import { isOrgBanned, isUserBanned } from "../ban-list.js";
 import { validateSessionMapsToOrg } from "./proxy-auth-providers.js";
 import {
   isDegradableChatWebSocketAuthError,
   retryTransientDurableObjectRpc,
 } from "../../../../src/lib/do-rpc-retry.server";
-import { getAppIndexReadDatabase } from "../app-index-db.js";
 import { validateOrgSsoSession } from "../org-sso.js";
-import { ENTERPRISE_OIDC_AUTH_SOURCE } from "../signed-session.js";
 
 export type AuthResult = { session: SessionData } | { error: Response };
 
@@ -27,21 +24,6 @@ export type AuthResult = { session: SessionData } | { error: Response };
 // including the short retry delays.
 const CHAT_WS_AUTH_RPC_TIMEOUT_MS = 2_500;
 const CHAT_WS_AUTH_RPC_ATTEMPTS = 2;
-const WORKSPACE_ORG_INDEX_PREFIX = "workspace_org:";
-
-async function getWorkspaceOrgId(
-  env: Env,
-  workspaceId: string,
-): Promise<string | null> {
-  const indexed = await env.APP_KV.get(`${WORKSPACE_ORG_INDEX_PREFIX}${workspaceId}`);
-  if (indexed) return indexed;
-  const appIndex = getAppIndexReadDatabase(env);
-  const orgId = appIndex ? await appIndex.getWorkspaceOrgId(workspaceId) : null;
-  if (orgId) {
-    await env.APP_KV.put(`${WORKSPACE_ORG_INDEX_PREFIX}${workspaceId}`, orgId);
-  }
-  return orgId;
-}
 
 class ChatWebSocketAuthRpcTimeoutError extends Error {
   // Picked up by isTransientDurableObjectRpcError so timeouts retry and
@@ -289,116 +271,3 @@ async function getLocalAuthBypassSession(
   };
 }
 
-export interface ChatWebSocketAccess {
-  session: SessionData;
-  orgId: string;
-  orgSlug: string;
-  workspaceId: string;
-  userId: string;
-  wsStub: WorkspaceDO;
-  threadId: string;
-}
-
-/**
- * Returned when the user has a valid signed session but the authorization
- * Durable Objects (WorkspaceDO/OrgDO) were unreachable after retries. The
- * route may forward the upgrade to ChatThreadDO marked as degraded; the DO
- * only admits users it has previously seen pass full authorization for the
- * same thread.
- */
-export interface ChatWebSocketDegradedAccess {
-  degraded: true;
-  session: SessionData;
-  userId: string;
-  threadId: string;
-}
-
-export type ChatWebSocketAccessResult =
-  | ChatWebSocketAccess
-  | ChatWebSocketDegradedAccess
-  | { error: Response };
-
-export async function requireChatWebSocketAccess(
-  req: Request,
-  env: Env,
-  threadId: string,
-  workspaceIdFromUrl?: string | null,
-): Promise<ChatWebSocketAccessResult> {
-  const auth = await requireSession(req, env, {
-    failOpenOnInvalidationCheckError: true,
-  });
-  if ("error" in auth) return auth;
-
-  const { session } = auth;
-  const { org_id: sessionOrgId, user_id: userId } = session;
-
-  // Authorize against the workspace the tab is actually connected to, not the
-  // session's currently-selected workspace.
-  // The session selection is a shared per-browser cookie that other tabs
-  // mutate; using it here breaks open threads in other workspaces/orgs.
-  const workspaceId =
-    workspaceIdFromUrl?.trim() || session.workspace_id || "";
-  if (!workspaceId) {
-    return { error: text("No workspace selected", 400) };
-  }
-
-  try {
-    const wsStub = getWorkspaceStub(env, workspaceId);
-    const resolvedOrgId = await chatWsAuthRpc(
-      "workspace_org_index.get",
-      () => getWorkspaceOrgId(env, workspaceId),
-    );
-    const workspaceOrgId = resolvedOrgId || sessionOrgId;
-    if (
-      session.auth_source === ENTERPRISE_OIDC_AUTH_SOURCE &&
-      workspaceOrgId !== sessionOrgId
-    ) {
-      return { error: text("Forbidden", 403) };
-    }
-    const orgStub = getOrgStub(env, workspaceOrgId);
-    const orgValidation = await chatWsAuthRpc(
-      "OrgDO.validateChatWebSocketAccess",
-      () => orgStub.validateChatWebSocketAccess(userId, workspaceId, threadId),
-    );
-
-    if (!orgValidation.ok) {
-      switch (orgValidation.reason) {
-        case "org_not_found":
-        case "workspace_not_found":
-          return { error: text("Workspace not found", 404) };
-        case "thread_not_found":
-          return { error: text("Thread not found", 404) };
-        case "forbidden":
-        default:
-          return { error: text("Forbidden", 403) };
-      }
-    }
-
-    // A thread on the agent runtime has no ChatThreadDO to connect to.
-    if (orgValidation.runtime) {
-      return { error: text("This thread runs on the agent runtime", 409) };
-    }
-
-    return {
-      session,
-      orgId: orgValidation.orgId,
-      orgSlug: orgValidation.orgSlug,
-      workspaceId: orgValidation.workspaceId,
-      userId,
-      wsStub,
-      threadId: orgValidation.threadId,
-    };
-  } catch (error) {
-    if (isDegradableChatWebSocketAuthError(error)) {
-      // The authorization DOs are unreachable or overloaded, not denying
-      // access. Fall back to degraded auth: the session is verified, and
-      // ChatThreadDO will only admit users it has already seen pass full
-      // authorization.
-      return { degraded: true, session, userId, threadId };
-    }
-    // Unknown/application errors are not authoritative denials. Return 503 so
-    // the upgrade path closes with reconnectable 1013 instead of terminal 4403
-    // (which would permanently kill tabs during a bad deploy window).
-    return { error: text("Authorization temporarily unavailable", 503) };
-  }
-}

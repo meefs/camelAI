@@ -11,7 +11,7 @@ import { encryptCredentials } from "../../../src/lib/integration-crypto";
 import { stringifyStoredLlmProviderConfig } from "../../../src/lib/llm-provider-config";
 import { buildWorkspaceScopedR2Key } from "../../../src/lib/workspace-r2-paths";
 import type { ChatEnv } from "../src/chat-thread/types";
-import { RUNTIME_PROMPT_VERSION } from "../src/chat-thread/runtime-agent";
+import { RUNTIME_PROMPT_VERSION } from "../src/agent-runtime/runtime-prompt";
 import {
   abortRuntimeThread,
   answerRuntimeInput,
@@ -274,14 +274,14 @@ describe("runtime thread reads and writes", () => {
 });
 
 describe("pinNewThreadToRuntime", () => {
-  it("pins a new thread only where direct runtime threads are on", async () => {
+  it("pins a new thread wherever the agent runtime is configured", async () => {
     const setup = await runtimeThread();
     const thread = await setup.orgStub.createThread(setup.context.workspaceId, "Fresh", setup.sender.userId);
     const context = { ...setup.context, threadId: thread.id };
-    expect(await pinNewThreadToRuntime(runtimeEnv, context)).toBeNull();
+    expect(await pinNewThreadToRuntime({ ...runtimeEnv, AGENT_RUNTIME_DEFINITION: "" } as ChatEnv, context)).toBeNull();
     expect(await setup.orgStub.getThreadRuntime(thread.id)).toBeNull();
 
-    const pinned = await pinNewThreadToRuntime({ ...runtimeEnv, AGENT_RUNTIME_DIRECT_THREADS: "1" } as ChatEnv, context);
+    const pinned = await pinNewThreadToRuntime(runtimeEnv, context);
     expect(pinned).toMatchObject({ threadId: thread.id, agentId: null });
     expect(await setup.orgStub.getThreadRuntime(thread.id)).toMatchObject({ threadId: thread.id });
   });
@@ -299,7 +299,7 @@ describe("pinNewThreadToRuntime", () => {
     return { setup, thread, context: { ...setup.context, threadId: thread.id } };
   }
 
-  it("leaves a thread whose model has no runtime route on ChatThreadDO", async () => {
+  it("does not pin a thread whose model has no runtime route", async () => {
     // A custom endpoint the runtime cannot call (not https).
     const { setup, thread, context } = await customThread("http://llm.example.test/v1");
     expect(await pinNewThreadToRuntime({ ...runtimeEnv, AGENT_RUNTIME_DIRECT_THREADS: "1" } as ChatEnv, context)).toBeNull();

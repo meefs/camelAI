@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { startRuntimeTurnMock, directEnabledMock, migrateOnSendMock } = vi.hoisted(() => ({
   startRuntimeTurnMock: vi.fn(),
-  migrateOnSendMock: vi.fn(async () => null),
+  migrateOnSendMock: vi.fn(async (): Promise<unknown> => ({ row: null, outcome: { state: "retrying", retryAt: null, error: "HTTP 503" } })),
   directEnabledMock: vi.fn(() => true),
 }));
 
@@ -18,7 +18,7 @@ vi.mock("../src/agent-runtime/thread-runtime.js", () => ({
 
 vi.mock("../src/agent-runtime/thread-migration.js", async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  migrateThreadOnSend: migrateOnSendMock,
+  moveThreadForSend: migrateOnSendMock,
 }));
 
 import {
@@ -75,7 +75,7 @@ beforeEach(() => {
 });
 
 describe("startChannelRuntimeTurn", () => {
-  it("leaves the thread on ChatThreadDO where direct threads are off", async () => {
+  it("starts nothing where the agent runtime is not configured", async () => {
     directEnabledMock.mockReturnValue(false);
     expect(await startChannelRuntimeTurn(fakeEnv().env, request())).toBeNull();
     expect(startRuntimeTurnMock).not.toHaveBeenCalled();
@@ -123,9 +123,15 @@ describe("startChannelRuntimeTurn", () => {
   });
 
   it("moves a thread on ChatThreadDO's own loop to the runtime, then runs the message there", async () => {
-    migrateOnSendMock.mockResolvedValueOnce({ ...ROW, agentId: "agt_moved" } as never);
+    migrateOnSendMock.mockResolvedValueOnce({ row: { ...ROW, agentId: "agt_moved" } });
     expect(await startChannelRuntimeTurn(fakeEnv({ row: null, relay: null }).env, request())).toEqual({ status: "accepted" });
     expect(startRuntimeTurnMock.mock.calls[0][1].row.agentId).toBe("agt_moved");
+  });
+
+  it("says a thread that can never move is unmovable, so the channel re-homes the conversation", async () => {
+    migrateOnSendMock.mockResolvedValueOnce({ row: null, outcome: { state: "readonly", reason: "invalid_history" } });
+    expect(await startChannelRuntimeTurn(fakeEnv({ row: null, relay: null }).env, request())).toEqual({ status: "unmovable", reason: "invalid_history" });
+    expect(startRuntimeTurnMock).not.toHaveBeenCalled();
   });
 
   it("does not move a thread with no member to act for its message", async () => {
@@ -185,22 +191,22 @@ describe("channel history notes", () => {
 });
 
 describe("ChatThreadDO.relayRuntimeAgent", () => {
-  async function relayOf(store: Record<string, unknown>, streaming = false) {
+  async function relayOf(store: Record<string, unknown>) {
     const { ChatThreadDO } = await import("../src/chat-thread-do");
     const fake = Object.create(ChatThreadDO.prototype) as Record<string, unknown>;
     fake.ctx = { storage: { kv: { get: (key: string) => store[key] } } };
-    fake.isThreadStreaming = () => streaming;
     return (ChatThreadDO.prototype as unknown as { relayRuntimeAgent(): unknown }).relayRuntimeAgent.call(fake);
   }
 
-  it("hands over the relayed agent between turns", async () => {
+  it("hands over the relayed agent (no turn runs in the DO any more)", async () => {
     expect(await relayOf({ runtimeAgent: { id: "agt_1", token: "t", model: "m", keyScope: "hosted" } }))
       .toEqual({ agentId: "agt_1", model: "m", keyScope: "hosted" });
+    // A relay run the old loop left recorded does not hold the agent back.
+    expect(await relayOf({ runtimeAgent: { id: "agt_1", token: "t" }, runtimeAgentRun: { requestId: "r" } }))
+      .toEqual({ agentId: "agt_1", model: null, keyScope: null });
   });
 
-  it("keeps it while a turn runs, and has none for a thread it never relayed", async () => {
-    expect(await relayOf({ runtimeAgent: { id: "agt_1", token: "t" } }, true)).toBeNull();
-    expect(await relayOf({ runtimeAgent: { id: "agt_1", token: "t" }, runtimeAgentRun: { requestId: "r" } })).toBeNull();
+  it("has none for a thread it never relayed", async () => {
     expect(await relayOf({})).toBeNull();
   });
 });
