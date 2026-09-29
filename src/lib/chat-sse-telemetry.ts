@@ -568,6 +568,54 @@ export function reportChatStreamStallClamped(
 }
 
 /**
+ * `runtime_watch_open` / `runtime_watch_expired`: a runtime-thread watcher
+ * (use-runtime-thread) first connected, on which transport, or stopped on a
+ * token it could not renew. One open per watcher, so a page's are few.
+ */
+export function trackRuntimeWatchLifecycle(
+  threadId: string,
+  phase: "open" | "expired",
+  details: { transport: string | null; agentId: string; generation: number },
+): void {
+  reportClientEvent({
+    source: "runtime_watch",
+    event: phase === "open" ? "runtime_watch_open" : "runtime_watch_expired",
+    severity: phase === "open" ? "info" : "warn",
+    status: details.transport ?? "unknown",
+    message: phase === "open" ? "Runtime thread watcher connected." : "Runtime thread watcher token expired.",
+    threadId,
+    count: details.generation,
+    details: { ...connectionContext(), ...details, visibility: typeof document === "undefined" ? null : document.visibilityState },
+  });
+}
+
+/**
+ * `runtime_view_missed_reply`: in a visible page, a run ended (or a send's
+ * submitted window ran out) with no new message on screen. `reason` says which.
+ */
+export function trackRuntimeViewMissedReply(
+  threadId: string,
+  details: {
+    reason: "run_ended" | "submitted_expired";
+    agentId: string | null;
+    knownMaxIndex: number;
+    viewMaxIndex: number;
+    connected: boolean;
+    transport: string | null;
+  },
+): void {
+  reportClientEvent({
+    source: "runtime_watch",
+    event: "runtime_view_missed_reply",
+    severity: "warn",
+    status: details.reason,
+    message: `Runtime thread view showed no new message after a run (${details.reason}).`,
+    threadId,
+    details: { ...connectionContext(), ...details, visibility: typeof document === "undefined" ? null : document.visibilityState },
+  });
+}
+
+/**
  * `runtime_watch_error`: the runtime-thread watcher (use-runtime-thread) hit
  * an error: a failed token mint, a stream or poll the runtime refused (a
  * 401/403/404 stops the watcher for good), or a dropped connection. `phase`

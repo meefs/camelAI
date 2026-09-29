@@ -22,7 +22,7 @@ import { latestRuntimeTodos, piRender, type PiRenderMemo } from "@/lib/pi-render
 import { getPreviewTabId } from "@/components/preview-panel/preview-utils";
 import { watchAgent, type AgentView, type Watcher } from "@camelai/agent-runtime/watch";
 import { stripSystemMessageTags } from "@/lib/turn-utils";
-import { trackRuntimeWatchError } from "@/lib/chat-sse-telemetry";
+import { trackRuntimeViewMissedReply, trackRuntimeWatchError, trackRuntimeWatchLifecycle } from "@/lib/chat-sse-telemetry";
 import { toast } from "sonner";
 
 /** What the loader read server-side for first paint: a token, and the newest page of history. */
@@ -90,6 +90,11 @@ const MAX_RECONNECT_DELAY_MS = 30_000;
 const WATCH_STALL_MS = 20_000;
 /** A drop shorter than this is a routine reconnect, not worth showing. */
 const RECONNECTING_NOTICE_MS = 3_000;
+/** How long after a run ends its messages may take to reach the view before it counts as missed. */
+const MISSED_REPLY_GRACE_MS = 3_000;
+
+/** A hidden page's watcher pauses (the SDK closes its stream): not a stall, and nothing is missed. */
+const pageHidden = () => typeof document !== "undefined" && document.visibilityState === "hidden";
 
 // The watcher's messages are Pi's (the SDK declares its own structural copy
 // of them); the view keeps Pi's types for pi-render.
@@ -112,6 +117,8 @@ function seedView(seed: RuntimeThreadSeed | null | undefined): View {
     hasOlder: Boolean(seed?.page?.next),
   };
 }
+
+const maxIndex = (indexes: number[]) => (indexes.length > 0 ? indexes[indexes.length - 1] : -1);
 
 function snapshot(state: AgentView): View {
   return {
@@ -256,12 +263,38 @@ export function useRuntimeThread(options: {
       }, restartDelay);
       restartDelay = Math.min(restartDelay * 2, 30_000);
     };
+    // A watcher down a while is watched again, unless the page is hidden
+    // (its watcher waits for it to show, then catches up by itself).
+    const armStall = () => {
+      if (stall !== null || pageHidden()) return;
+      notice ??= window.setTimeout(() => {
+        notice = null;
+        if (!cancelled) setReconnecting(true);
+      }, RECONNECTING_NOTICE_MS);
+      stall = window.setTimeout(() => {
+        stall = null;
+        if (cancelled) return;
+        watcherRef.current?.close();
+        rewatch();
+      }, WATCH_STALL_MS);
+    };
+    const onVisibility = () => {
+      if (pageHidden()) {
+        if (stall !== null) window.clearTimeout(stall);
+        if (notice !== null) window.clearTimeout(notice);
+        stall = notice = null;
+      } else if (latest && !latest.connected) {
+        armStall();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
     const start = async (fresh = false) => {
       const initial = !fresh && seed?.token && seed.agentId === agentId && seed.url && (seed.expiresAt ?? 0) - Date.now() > 60_000
         ? { token: seed.token, expiresAt: seed.expiresAt ?? undefined, url: seed.url }
         : await getToken();
       if (cancelled) return;
       const mine = ++generation;
+      let opened = false;
       watcherRef.current = watchAgent({
         url: initial.url,
         agentId,
@@ -277,6 +310,7 @@ export function useRuntimeThread(options: {
           // The watcher stops when its token cannot be renewed: watch again
           // with a new one, backing off while the token route keeps failing.
           if (state.expired) {
+            trackRuntimeWatchLifecycle(threadId, "expired", { transport: state.transport, agentId, generation: mine });
             if (stall !== null) window.clearTimeout(stall);
             stall = null;
             setReconnecting(true);
@@ -285,22 +319,17 @@ export function useRuntimeThread(options: {
             return;
           }
           if (state.connected) {
+            if (!opened) {
+              opened = true;
+              trackRuntimeWatchLifecycle(threadId, "open", { transport: state.transport, agentId, generation: mine });
+            }
             if (stall !== null) window.clearTimeout(stall);
             stall = null;
             if (notice !== null) window.clearTimeout(notice);
             notice = null;
             setReconnecting(false);
-          } else if (stall === null) {
-            notice ??= window.setTimeout(() => {
-              notice = null;
-              if (!cancelled) setReconnecting(true);
-            }, RECONNECTING_NOTICE_MS);
-            stall = window.setTimeout(() => {
-              stall = null;
-              if (cancelled) return;
-              watcherRef.current?.close();
-              rewatch();
-            }, WATCH_STALL_MS);
+          } else {
+            armStall();
           }
           latest = state;
           // Deltas arrive per token: render at most once a frame.
@@ -319,6 +348,7 @@ export function useRuntimeThread(options: {
     });
     return () => {
       cancelled = true;
+      document.removeEventListener("visibilitychange", onVisibility);
       if (frame !== null) cancelAnimationFrame(frame);
       if (restart !== null) window.clearTimeout(restart);
       if (stall !== null) window.clearTimeout(stall);
@@ -385,11 +415,55 @@ export function useRuntimeThread(options: {
   useEffect(() => {
     if (view.running || view.lastOutcome) setSubmittedAt(null);
   }, [view.running, view.lastOutcome]);
+
+  const latestViewRef = useRef(view);
+  latestViewRef.current = view;
+  const agentIdRef = useRef(agentId);
+  agentIdRef.current = agentId;
+  /**
+   * A run ended, or a send's submitted window ran out, and no message past
+   * `knownMax` is on screen in a visible page: the watcher missed the end of
+   * its stream. Diagnostic only (a hidden page's watcher pauses by design,
+   * and catches up when the page shows).
+   */
+  const reportMissedReply = useCallback((reason: "run_ended" | "submitted_expired", knownMax: number) => {
+    const shown = latestViewRef.current;
+    if (!threadId || pageHidden() || maxIndex(shown.indexes) > knownMax || shown.running) return;
+    const watcher = watcherRef.current;
+    trackRuntimeViewMissedReply(threadId, {
+      reason,
+      agentId: agentIdRef.current,
+      knownMaxIndex: knownMax,
+      viewMaxIndex: maxIndex(shown.indexes),
+      connected: watcher?.state.connected ?? false,
+      transport: watcher?.state.transport ?? null,
+    });
+  }, [threadId]);
+
+  // The newest index on screen when a run starts: a run adds at least its
+  // prompt, so one that ends without passing it is a missed reply.
+  const runFromRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (view.running) {
+      runFromRef.current ??= maxIndex(latestViewRef.current.indexes);
+      return;
+    }
+    const from = runFromRef.current;
+    if (from === null) return;
+    runFromRef.current = null;
+    const timer = window.setTimeout(() => reportMissedReply("run_ended", from), MISSED_REPLY_GRACE_MS);
+    return () => window.clearTimeout(timer);
+  }, [view.running, reportMissedReply]);
   useEffect(() => {
     if (submittedAt === null) return;
-    const timer = window.setTimeout(() => setSubmittedAt(null), SUBMITTED_WINDOW_MS);
+    // What was on screen when the message went: its run adds past it.
+    const from = maxIndex(latestViewRef.current.indexes);
+    const timer = window.setTimeout(() => {
+      setSubmittedAt(null);
+      reportMissedReply("submitted_expired", from);
+    }, SUBMITTED_WINDOW_MS);
     return () => window.clearTimeout(timer);
-  }, [submittedAt]);
+  }, [submittedAt, reportMissedReply]);
 
   // A set_preview the agent runs while the page watches opens its tab.
   useEffect(() => {
