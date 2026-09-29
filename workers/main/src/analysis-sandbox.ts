@@ -9,6 +9,11 @@ import {
 
 import { isSelfhostRuntime, type SelfhostRuntimeEnv } from "../../../src/lib/selfhost-runtime.js";
 import { ANALYSIS_SLEEP_AFTER } from "./container-sizing.js";
+import {
+  errorToObservabilityFields,
+  recordObservabilityEvent,
+  type ObservabilityEnv,
+} from "./observability.js";
 import { handleAuthenticatedConnectionsRpc } from "./routes/connections-rpc.js";
 import {
   createSandboxZombieHealState,
@@ -19,6 +24,7 @@ import {
   withZombieSelfHeal,
   type SandboxZombieRestartOutcome,
   type SandboxZombieRestartRequest,
+  type SandboxZombieRestartTrigger,
   type ZombieHealableSandbox,
 } from "./sandbox-zombie-recovery.js";
 import type { Env } from "./types.js";
@@ -131,13 +137,33 @@ export interface MountRecoverTarget {
     command: string,
     options?: { timeout?: number },
   ): Promise<{ exitCode?: number; stdout?: string; stderr?: string }>;
+  /**
+   * Detach whatever is at `mountPath` in the container and drop the SDK's
+   * registry entry for it, for the case `unmountBucket` cannot handle (see
+   * `mountOrRecover`). Optional: targets without it skip that step.
+   */
+  forceUnmount?(mountPath: string): Promise<void>;
 }
+
+/**
+ * How `mountOrRecover` got a usable mount. Low-cardinality; it is the `status`
+ * of the `sandbox_mount_recovery` telemetry event.
+ */
+export type MountRecoverOutcome =
+  | "mounted"
+  | "remounted"
+  | "force_remounted"
+  | "present_readable";
 
 export class UnreadableR2MountError extends Error {
   constructor(mountPath: string) {
+    // Surfaces to the agent as the tool error. Remount and container restart
+    // were already tried (bounded by the restart cooldown), and the agent
+    // cannot restart the container itself, so say what it CAN do.
     super(
-      `R2 mount at ${mountPath} appears present but is not readable (I/O error). ` +
-        `Recreate the analysis sandbox container to recover.`,
+      `R2 mount at ${mountPath} appears present but is not readable (I/O error), ` +
+        `and automatic recovery (remount and sandbox restart) did not fix it. ` +
+        `The sandbox restarts at most once every few minutes; wait a few minutes and retry.`,
     );
     this.name = "UnreadableR2MountError";
   }
@@ -207,16 +233,25 @@ export async function waitForWritableLocalMount(
  * wedged until the container was destroyed. Instead: unmount, remount (so
  * egress is re-registered), and if the mount still only "looks" present, probe
  * a directory listing and fail loudly when I/O is dead.
+ *
+ * `unmountBucket` only works on mounts the SDK's in-memory registry knows. When
+ * the registry lost the entry but the kernel still has the FUSE mount, it fails
+ * with "No active mount found" and the remount hits the same busy mountpoint.
+ * This happens when the DO instance is recreated, and also after a container
+ * restart: the old container's `onStop` can arrive after the new container
+ * mounted, clearing the registry and the `r2.internal` egress for the new,
+ * live mount. `forceUnmount` detaches the mount in the container and drops any
+ * registry entry, so one more mount starts clean and registers egress again.
  */
 export async function mountOrRecover(
   target: MountRecoverTarget,
   bucket: string,
   mountPath: string,
   options: MountBucketOptions,
-): Promise<void> {
+): Promise<MountRecoverOutcome> {
   try {
     await target.mountBucket(bucket, mountPath, options);
-    return;
+    return "mounted";
   } catch (error) {
     if (!isMountAlreadyPresent(error)) throw error;
   }
@@ -229,14 +264,171 @@ export async function mountOrRecover(
 
   try {
     await target.mountBucket(bucket, mountPath, options);
-    return;
+    return "remounted";
   } catch (error) {
     if (!isMountAlreadyPresent(error)) throw error;
+  }
+
+  if (target.forceUnmount) {
+    try {
+      await target.forceUnmount(mountPath);
+      await target.mountBucket(bucket, mountPath, options);
+      return "force_remounted";
+    } catch (error) {
+      if (!isMountAlreadyPresent(error)) {
+        console.warn(`[sandbox] forced remount of ${mountPath} failed`, error);
+      }
+    }
   }
 
   if (!(await mountAllowsList(target, mountPath))) {
     throw new UnreadableR2MountError(mountPath);
   }
+  return "present_readable";
+}
+
+/**
+ * Shell command that detaches a FUSE mount if one is present. Lazy (`-z` /
+ * `-l`) so a mount that is busy or whose s3fs process is wedged still detaches.
+ * The caller validates `mountPath`.
+ */
+export function forceUnmountCommand(mountPath: string): string {
+  const path = shellQuote(mountPath);
+  return `if mountpoint -q ${path}; then fusermount -uz ${path} 2>/dev/null || umount -l ${path}; fi`;
+}
+
+/**
+ * `MountRecoverTarget.forceUnmount` for a Sandbox DO: detach the mount in the
+ * container, then drop the SDK's registry entry for the path so the next
+ * `mountBucket` does not reject it as "already in use". The SDK has no public
+ * call for this; `unmountBucket` refuses paths missing from the registry and
+ * keeps the entry when `fusermount -u` fails. `mountBucket` rebuilds the
+ * `r2.internal` egress from the registry, so dropping the entry cannot leave
+ * other mounts without egress. Local-sync mounts (self-host) are left to
+ * `unmountBucket`: they have no FUSE mount, and their watcher must be stopped
+ * through the SDK.
+ */
+export async function forceUnmountSdkMount(
+  sandbox: Pick<MountRecoverTarget, "exec">,
+  mountPath: string,
+): Promise<void> {
+  if (!/^\/[A-Za-z0-9._/-]+$/.test(mountPath) || mountPath.includes("..")) {
+    throw new Error(`Refusing to force-unmount unexpected path ${mountPath}`);
+  }
+  const sdk = sandbox as unknown as { activeMounts?: Map<string, { mountType?: string }> };
+  if (sdk.activeMounts?.get(mountPath)?.mountType === "local-sync") return;
+  const result = await sandbox.exec(forceUnmountCommand(mountPath), { timeout: 15_000 });
+  if ((result.exitCode ?? 1) !== 0) {
+    throw new Error(`Forced unmount of ${mountPath} failed: ${result.stderr || result.stdout}`);
+  }
+  sdk.activeMounts?.delete(mountPath);
+}
+
+/**
+ * A mount-setup command that timed out in the container session, e.g.
+ * `CommandError: Failed to execute command 'chmod 0600 '/tmp/.passwd-s3fs-…''
+ * in session 'sandbox-<ws>': Command timeout after 15000ms`.
+ *
+ * The SDK runs its own mount steps (chmod of the s3fs password file, mkdir,
+ * s3fs) in the workspace's default session. That session runs one command at a
+ * time, so when an earlier command is still running there (a user command that
+ * outlived its tool deadline, or a process stuck on a dead FUSE mount), every
+ * setup step waits behind it and times out. Prod 2026-09-26: a blocked session
+ * failed every mount for 11 minutes. Nothing about /tmp or the password file
+ * was wrong. The session was blocked, and a container restart is what frees
+ * it. Matched on text because the error reaches us as a plain CommandError
+ * from the SDK's container client.
+ */
+export function isMountSessionTimeout(error: unknown): boolean {
+  const text = String(error instanceof Error ? `${error.name}: ${error.message}` : error);
+  return /Command timeout after \d+\s*ms/i.test(text);
+}
+
+/** The session stayed blocked and a restart was not possible right now. */
+export class SandboxMountSessionTimeoutError extends Error {
+  constructor(mountPath: string, options?: { cause?: unknown }) {
+    super(
+      `The sandbox did not respond while mounting ${mountPath}: an earlier command is probably ` +
+        `still running in it. Automatic restart is limited to once every few minutes; ` +
+        `wait a few minutes and retry.`,
+      options,
+    );
+    this.name = "SandboxMountSessionTimeoutError";
+  }
+}
+
+/** Telemetry event for every sandbox mount that needed more than a plain mount. */
+export const SANDBOX_MOUNT_RECOVERY_EVENT = "sandbox_mount_recovery";
+
+export interface MountSelfHealHost {
+  target: MountRecoverTarget;
+  /** `AnalysisSandbox` / `DbQuerySandbox`; the event's component. */
+  component: string;
+  /** The sandbox's cooldown-fenced container restart. */
+  heal(request: SandboxZombieRestartRequest): Promise<SandboxZombieRestartOutcome>;
+  env: ObservabilityEnv;
+}
+
+/**
+ * Mount with every recovery we have, before any user code runs:
+ *
+ * 1. `mountOrRecover` in the current container (remount, forced detach).
+ * 2. If the mount is still unreadable, or the session is too blocked to run
+ *    the mount steps, restart the container once and mount once more.
+ *
+ * The restart is `healZombieSandboxContainer`: at most one per cooldown window,
+ * stamped in DO storage before the destroy, so a mount that no restart fixes
+ * fails fast instead of looping. Every outcome past a plain mount emits
+ * `sandbox_mount_recovery` (`blob5` status, `blob8` mount path, `blob16` the
+ * restart trigger when there was one).
+ */
+export async function mountWithSelfHeal(
+  host: MountSelfHealHost,
+  bucket: string,
+  mountPath: string,
+  options: MountBucketOptions,
+): Promise<void> {
+  const record = (status: string, trigger?: string, error?: unknown) => {
+    const failed = error !== undefined;
+    recordObservabilityEvent(host.env, {
+      event: SANDBOX_MOUNT_RECOVERY_EVENT,
+      severity: failed ? "error" : "warn",
+      component: host.component,
+      operation: "ensure_mounted",
+      status,
+      path: mountPath,
+      errorName: trigger ?? null,
+      ...(failed ? { errorMessage: errorToObservabilityFields(error).errorMessage } : {}),
+    });
+  };
+
+  let trigger: SandboxZombieRestartTrigger;
+  try {
+    const outcome = await mountOrRecover(host.target, bucket, mountPath, options);
+    if (outcome !== "mounted") record(outcome);
+    return;
+  } catch (error) {
+    if (error instanceof UnreadableR2MountError) trigger = "mount_io_error";
+    else if (isMountSessionTimeout(error)) trigger = "mount_session_timeout";
+    else throw error;
+
+    const outcome = await host.heal({ operation: "ensure_mounted", trigger, error });
+    if (!outcome.restarted && outcome.reason !== "container_not_running") {
+      record(`restart_${outcome.reason}`, trigger, error);
+      if (trigger === "mount_session_timeout") {
+        throw new SandboxMountSessionTimeoutError(mountPath, { cause: error });
+      }
+      throw error;
+    }
+  }
+
+  try {
+    await mountOrRecover(host.target, bucket, mountPath, options);
+  } catch (retryError) {
+    record("failed_after_restart", trigger, retryError);
+    throw retryError;
+  }
+  record("restarted", trigger);
 }
 
 /** True when listing the mount's contents succeeds without an I/O error. */
@@ -530,34 +722,17 @@ export class AnalysisSandbox extends Sandbox<Env> {
       this.mountGates.set(resolvedMountPath, gate);
     }
     await gate(async () => {
-      try {
-        await mountOrRecover(
-          this,
-          bucketBinding,
-          actualMountPath,
-          mountOptions,
-        );
-      } catch (error) {
-        if (!(error instanceof UnreadableR2MountError)) throw error;
-        // Unmount/remount already failed and a real directory traversal still
-        // returned EIO. That state cannot recover inside the current container.
-        // Reuse the bounded, cooldown-fenced sandbox restart path, then mount
-        // once against the fresh container before any user code is dispatched.
-        const outcome = await healZombieSandboxContainer(
-          this.zombieHealTarget,
-          "AnalysisSandbox",
-          { operation: "ensure_mounted", trigger: "mount_io_error", error },
-        );
-        if (!outcome.restarted && outcome.reason !== "container_not_running") {
-          throw error;
-        }
-        await mountOrRecover(
-          this,
-          bucketBinding,
-          actualMountPath,
-          mountOptions,
-        );
-      }
+      await mountWithSelfHeal(
+        {
+          target: this,
+          component: "AnalysisSandbox",
+          heal: (request) => healZombieSandboxContainer(this.zombieHealTarget, "AnalysisSandbox", request),
+          env: this.env,
+        },
+        bucketBinding,
+        actualMountPath,
+        mountOptions,
+      );
       await ensureLocalMountAlias(this, resolvedMountPath, actualMountPath);
       if ("localBucket" in mountOptions && mountOptions.localBucket && !readOnly) {
         const bucket = this.env[bucketBinding as keyof Env];
@@ -570,6 +745,11 @@ export class AnalysisSandbox extends Sandbox<Env> {
       }
       this.mountedPaths.add(resolvedMountPath);
     });
+  }
+
+  /** `MountRecoverTarget.forceUnmount`; see `forceUnmountSdkMount`. */
+  async forceUnmount(mountPath: string): Promise<void> {
+    await forceUnmountSdkMount(this, mountPath);
   }
 
   /**
