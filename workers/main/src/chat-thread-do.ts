@@ -207,7 +207,7 @@ import {
   piCoreForkMessageIds,
   piCoreMessageToParsedChatMessage,
   attachPiToolResultToParsedMessages,
-  summarizeAdminExplorerThread,
+  piMessagesToParsedMessages,
 } from "./pi-message-export";
 
 // Pure Pi model/provider mapping helpers live in ./pi-model-resolution.
@@ -429,7 +429,6 @@ import type {
 // use and re-exported below so existing `from "./chat-thread-do"` import paths
 // keep working for external callers.
 import type {
-  AdminExplorerThreadSummary,
   AgentEvalParsedMessage,
   AgentEvalSessionRequest,
   AgentEvalSessionResult,
@@ -454,7 +453,6 @@ import type {
   PreviewTarget,
 } from "./chat-thread/types";
 export type {
-  AdminExplorerThreadSummary,
   AgentEvalDeployedApp,
   AgentEvalParsedMessage,
   AgentEvalSessionRequest,
@@ -4050,23 +4048,13 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     threadId: string,
   ): Promise<AgentEvalParsedMessage[]> {
     const normalizedThreadId = threadId.trim() || this.chatContext?.threadId || "";
-    const parsed: AgentEvalParsedMessage[] = [];
-
     // The browser rebuilds live assistant/tool content from the replay buffer,
     // so only canonical persisted history is returned here.
     const storedMessages = await this.loadFullPiCoreTranscriptUnbounded({
       includeUiMetadata: true,
       imagePolicy: "render",
     });
-    storedMessages.forEach((message, index) => {
-      const record = message as unknown as Record<string, unknown>;
-      if (record.role === "toolResult") {
-        attachPiToolResultToParsedMessages(parsed, record);
-        return;
-      }
-      parsed.push(...piCoreMessageToParsedChatMessage(message, index, normalizedThreadId));
-    });
-    return parsed;
+    return piMessagesToParsedMessages(storedMessages, normalizedThreadId);
   }
 
   /**
@@ -4308,19 +4296,6 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       messages,
       projectActivity: await this.listProjectActivity(),
     };
-  }
-
-  async getAdminExplorerSummary(input: {
-    userMessageCap?: number;
-  } = {}): Promise<AdminExplorerThreadSummary> {
-    const messages = await this.loadFullPiCoreTranscriptUnbounded({
-      includeUiMetadata: true,
-      imagePolicy: "render",
-    });
-    return summarizeAdminExplorerThread(messages, {
-      userMessageCap: input.userMessageCap,
-      sessionModelId: this.piSession?.state.model?.id,
-    });
   }
 
   /**
