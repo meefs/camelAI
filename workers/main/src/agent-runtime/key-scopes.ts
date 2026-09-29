@@ -240,9 +240,8 @@ function declaredModel(id: string, catalog: Model<any> | null): KeyScopeModel | 
 /**
  * Whether an org's custom endpoint can be a runtime model provider: the
  * runtime calls only `https` addresses, and sends the key the API's own way
- * (Bearer; x-api-key for Anthropic Messages) or as another header. Anthropic
- * Messages behind `Authorization: Bearer` cannot be said (the runtime sets
- * Authorization itself), so such an endpoint stays on the in-DO loop.
+ * (Bearer; x-api-key for Anthropic Messages, or Bearer when the provider
+ * says `auth: "bearer"`) or as another header.
  *
  * An org-supplied endpoint must be `https` and not on loopback (the bundled
  * self-host runtime can reach the app and its own API there). Only the
@@ -252,7 +251,7 @@ function declaredModel(id: string, catalog: Model<any> | null): KeyScopeModel | 
  */
 export function customEndpointRunsOnRuntime(
   api: string | undefined,
-  authType: LlmProviderStoredConfig["custom_auth_type"],
+  _authType: LlmProviderStoredConfig["custom_auth_type"],
   baseUrl: string | undefined,
   operatorOrigin?: string | null,
 ): boolean {
@@ -266,7 +265,7 @@ export function customEndpointRunsOnRuntime(
   const operator = Boolean(operatorOrigin) && url.origin === operatorOrigin;
   if (!operator && (url.protocol !== "https:" || loopbackHost(url.hostname))) return false;
   if (operator && url.protocol !== "https:" && url.protocol !== "http:") return false;
-  return api !== "anthropic-messages" || authType === "x-api-key";
+  return true;
 }
 
 /**
@@ -310,11 +309,16 @@ async function customModelProvider(apiKey: string, config: LlmProviderStoredConf
   // An OpenAI-API endpoint that takes its key as x-api-key gets that header
   // and no Authorization, as the in-DO loop sends it (customProviderAuthHeaders).
   const asHeader = api !== "anthropic-messages" && authType === "x-api-key";
+  // Anthropic Messages takes Bearer unless the org chose x-api-key (the in-DO
+  // loop's default), which the runtime sends when told: it sets Authorization
+  // itself, and headers cannot.
+  const bearer = api === "anthropic-messages" && authType !== "x-api-key";
   return {
     type: api,
     baseUrl,
     apiKey: asHeader ? null : apiKey,
     headers: asHeader ? { "x-api-key": apiKey } : null,
+    ...(bearer ? { auth: "bearer" as const } : {}),
     models: [...models.values()],
   };
 }
