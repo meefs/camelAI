@@ -31,6 +31,17 @@ export function runtimeDirectThreadsEnabled(env: {
   );
 }
 
+/**
+ * Whether threads still on ChatThreadDO move to the runtime when they are next
+ * used (agent-runtime/thread-migration.ts): direct threads are on and
+ * AGENT_RUNTIME_MIGRATE_DO_THREADS is "1".
+ */
+export function runtimeThreadMigrationEnabled(env: Parameters<typeof runtimeDirectThreadsEnabled>[0] & {
+  AGENT_RUNTIME_MIGRATE_DO_THREADS?: string;
+}): boolean {
+  return runtimeDirectThreadsEnabled(env) && env.AGENT_RUNTIME_MIGRATE_DO_THREADS?.trim() === "1";
+}
+
 /** The agent reads a browser token allows, which chiridion's read proxy passes through. */
 export const RUNTIME_BROWSER_READS: ReadonlySet<string> = new Set(["events", "history", "state", "inputs"]);
 

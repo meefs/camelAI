@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CHAT_LAST_TERMINAL_KEY,
   CHAT_RECOVERING_KEY,
@@ -519,6 +519,13 @@ function createProjectToolFake({
 }
 
 describe('ChatThreadDO Pi turn handling', () => {
+  // The fakes here carry no KV; no thread in them is moving to the runtime.
+  let migrationState: { mockRestore(): void };
+  beforeEach(() => {
+    migrationState = vi.spyOn(ChatThreadDO.prototype as never, 'runtimeMigrationState' as never).mockReturnValue(null as never);
+  });
+  afterEach(() => migrationState.mockRestore());
+
   it('routes GPT-6 product models to OpenAI, keeping Luna off nitro', () => {
     const mapping = new PiModelMapping();
     expect(mapping.resolvePiModelReference('gpt-6-sol')).toEqual({
@@ -7608,6 +7615,92 @@ describe('ChatThreadDO Pi turn handling', () => {
       channelHistoryStatus: 'recorded',
     });
     expect(appendChannelHistoryEvent).not.toHaveBeenCalled();
+    const noteWrite = kvPut.mock.calls.find(([key]) => key === 'channel_history_notes:telegram-thread');
+    expect(JSON.parse(String(noteWrite?.[1]))).toEqual([expect.stringContaining('Delivered message:\nHello from workflow')]);
+  });
+
+  it("queues Telegram outbound history for the runtime when the channel thread is moving there", async () => {
+    const appendChannelHistoryEvent = vi.fn(async () => ({ status: 'moved' }));
+    const kvPut = vi.fn(async (_key: string, _value: string, _options?: unknown) => undefined);
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toMatch(/\/sendMessage$/);
+      const payload = JSON.parse(String(init?.body));
+      expect(payload).toMatchObject({ chat_id: '12345', text: 'Hello from workflow' });
+      return Response.json({ ok: true, result: { message_id: 29 } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const fake = Object.create(CodeModeToolsBinding.prototype) as any;
+    fake.ctx = {
+      props: {
+        orgId: 'org1',
+        workspaceId: 'workspace1',
+        userId: 'user1',
+      },
+    };
+    fake.env = {
+      TELEGRAM_BOT_TOKEN: 'bot-token',
+      R2_BUCKET: { get: vi.fn() },
+      WORKSPACE: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({
+          getIntegration: vi.fn(async () => ({
+            id: 'telegram-int',
+            integration_type: 'telegram',
+            name: 'Product Telegram',
+            config: JSON.stringify({
+              chat_id: '12345',
+              chat_title: 'Product team',
+            }),
+          })),
+        })),
+      },
+      APP_KV: {
+        get: vi.fn(async (key: string) =>
+          key === 'channel_thread:telegram:workspace1:telegram-int:12345'
+            ? 'telegram-thread'
+            : null
+        ),
+        put: kvPut,
+        delete: vi.fn(async () => undefined),
+      },
+      ORG: createChannelOrgNamespace({
+        threadRuntime: null,
+        thread: { id: 'telegram-thread', title: 'Product team' },
+        integration: {
+          id: 'telegram-int',
+          integration_type: 'telegram',
+          name: 'Product Telegram',
+          config: JSON.stringify({
+            chat_id: '12345',
+            chat_title: 'Product team',
+          }),
+        },
+      }),
+      CHAT_THREAD: {
+        idFromName: vi.fn((id: string) => id),
+        get: vi.fn(() => ({ appendChannelHistoryEvent })),
+      },
+    };
+
+    const result = await CodeModeToolsBinding.prototype.callTool.call(
+      fake,
+      'send_telegram_message',
+      {
+        integration_id: 'telegram-int',
+        text: 'Hello from workflow',
+      },
+    );
+
+    expect(result.details).toMatchObject({
+      status: 'sent',
+      channel: 'telegram',
+      chatId: '12345',
+      integrationId: 'telegram-int',
+      messageIds: [29],
+      channelHistoryStatus: 'recorded',
+    });
+    expect(appendChannelHistoryEvent).toHaveBeenCalledTimes(1);
     const noteWrite = kvPut.mock.calls.find(([key]) => key === 'channel_history_notes:telegram-thread');
     expect(JSON.parse(String(noteWrite?.[1]))).toEqual([expect.stringContaining('Delivered message:\nHello from workflow')]);
   });

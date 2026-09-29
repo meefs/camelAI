@@ -21,7 +21,7 @@ import { applyMentionContext } from "../mention-context";
 import { WorkspaceFilesystemClient } from "../workspace-filesystem-do";
 import { HOSTED_KEY_SCOPE } from "./key-scopes";
 import { retryTransientDurableObjectRpc } from "../../../../src/lib/do-rpc-retry.server";
-import { RuntimeApiError, runtimeApi, runtimeUrl } from "./runtime-api";
+import { RuntimeApiError, provisionedAgentId, runtimeApi, runtimeUrl } from "./runtime-api";
 import { codexError, codexRoute, codexUpstreamCall, forwardedResponseHeaders } from "./codex-forwarder";
 import { HostedModelFallbackRequiredError } from "../chat-thread/pi-model-config";
 import { assertUserLlmUsageAccess, UserLlmUsageLimitError } from "../user-llm-usage-policy";
@@ -208,13 +208,6 @@ async function rememberAgentThread(env: ChatEnv, agentId: string, context: ChatC
     workspace: context.workspaceId,
     thread: context.threadId,
   })).catch((error: unknown) => console.error("[runtime-thread] failed to remember an agent's thread", error));
-}
-
-/** The runtime's agent id for a provisioning key (its `agentId(tenant, key)`), to find an agent it already made. */
-async function provisionedAgentId(tenant: string, key: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${tenant}:${key}`));
-  const hex = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-  return `client_${hex.slice(0, 40)}`;
 }
 
 /**

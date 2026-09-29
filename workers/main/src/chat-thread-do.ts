@@ -385,6 +385,8 @@ import {
   type RuntimeRunRecord,
 } from "./chat-thread/runtime-agent";
 import { formatChannelHistoryNote, type RelayRuntimeAgent } from "./agent-runtime/channel-turns";
+import type { DoMigrationRequest, DoMigrationResult } from "./agent-runtime/thread-migration";
+import { ChatThreadRuntimeMigration } from "./chat-thread/runtime-migration";
 import { AUTOMATION_OUTCOME_INSTRUCTION } from "./agent-runtime/scheduled-turns";
 import {
   codexError,
@@ -1077,6 +1079,10 @@ function unpackReplaySegmentBody(rowBody: string): string[] {
 // buffering + replay on reconnect) and, later, chatRecovery. The ai-chat
 // message model is transport-internal only: pi_core_messages remains the
 // canonical history and the Pi runtime owns the agent loop.
+function* mapIterable<T, U>(items: Iterable<T>, map: (item: T) => U): Generator<U> {
+  for (const item of items) yield map(item);
+}
+
 export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState> {
   private static readonly CONNECTION_SETUP_TIMEOUT_MS = 30 * 60 * 1000;
   static renderHistoryWindow = {
@@ -4298,6 +4304,90 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     };
   }
 
+  private runtimeMigrationInstance: ChatThreadRuntimeMigration | null = null;
+
+  /** This thread's move to the runtime, which the DO drives (chat-thread/runtime-migration.ts). */
+  private get runtimeMigration(): ChatThreadRuntimeMigration {
+    return (this.runtimeMigrationInstance ??= new ChatThreadRuntimeMigration({
+      env: this.env as unknown as ChatEnv,
+      kv: this.ctx.storage.kv,
+      busyReason: () => {
+        if (this.isThreadStreaming()) return "running";
+        if (this.activeAutomationRun) return "automation";
+        if (this.browserPrompts.pendingQuestionCount > 0) return "question";
+        return null;
+      },
+      hasRelayAgent: () => Boolean(this.ctx.storage.kv.get(RUNTIME_AGENT_KEY)),
+      revision: () => this.piCoreStore.getPiCoreRevision(),
+      loadHistory: (maxChars) => this.piCoreStore.loadPiCoreHistoryForMigration(maxChars),
+      renderArchivePages: () => this.renderArchivePages(),
+      payloadBatches: () => mapIterable(this.piCoreStore.piCoreRowBatches(), (batch) => batch.map((row) => row.payload)),
+      preview: () => ({ tabs: cloneDurableState(this.previewTabs), activeTabId: this.previewActiveTabId }),
+      scheduleAlarm: (at) => {
+        this.ctx.waitUntil(this.schedule(new Date(at), "runtimeMigrationAlarm").catch((error: unknown) =>
+          console.warn("[ChatThreadDO] could not schedule the runtime move's alarm", error)));
+      },
+      waitUntil: (promise) => this.ctx.waitUntil(promise),
+    }));
+  }
+
+  /** Whether turns are refused here: the thread is moving to the runtime, or moved. */
+  private runtimeMigrationState(): "moving" | "moved" | null {
+    return this.runtimeMigration.state();
+  }
+
+  /** The answer to a message while the thread is moving to the runtime or moved; null when it may run here. */
+  private runtimeMigrationRefusal(): InitialUserMessageResult | null {
+    const migration = this.runtimeMigrationState();
+    if (migration === "moved") return { status: "error", error: "This conversation moved; reload the page to continue it." };
+    if (migration === "moving") return { status: "busy", error: "This conversation is moving; try again in a moment." };
+    return null;
+  }
+
+  /**
+   * Move this thread to the runtime (agent-runtime/thread-migration.ts
+   * decides it may): export, make the agent, commit, all here. Busy while a
+   * turn runs, an automation run is active or a question waits.
+   */
+  async migrateToRuntime(request: DoMigrationRequest): Promise<DoMigrationResult> {
+    return await this.runtimeMigration.migrate(request);
+  }
+
+  /** Where this thread's move to the runtime stands (moving, moved, backing off), before anyone asks for one. */
+  runtimeMigrationStatus(): { state: "moving" | "moved" | "backoff" | null; retryAt?: number } {
+    return this.runtimeMigration.status();
+  }
+
+  /**
+   * The render rows a post-turn compaction left as the only copy of the
+   * history below its cut (render-archive-preserve.ts): those older than the
+   * oldest message pi_core still derives, a bounded page at a time, newest
+   * page first.
+   */
+  private *renderArchivePages(): Generator<UIMessage[]> {
+    const seam = this.oldestDerivedPiCreatedAtMs();
+    if (seam === undefined) return;
+    let beforeCursor: string | null = `e:${formatAiChatCreatedAt(seam)}`;
+    while (beforeCursor) {
+      const page = this.getRenderHistoryPage({ beforeCursor, maxMessages: 50, maxBytes: 2_000_000 });
+      const archived = (page.messages as UIMessage[]).filter((message) => {
+        const createdAt = uiMessageCreatedAtMs(message);
+        return createdAt !== undefined && createdAt < seam;
+      });
+      if (archived.length) yield archived;
+      if (!page.hasMore || !page.nextCursor) return;
+      const key = page.nextCursor.startsWith("i:") || page.nextCursor.startsWith("e:") ? page.nextCursor.slice(2) : page.nextCursor;
+      const next = `e:${key}`;
+      if (next === beforeCursor) return;
+      beforeCursor = next;
+    }
+  }
+
+  /** The move's alarm (scheduled by the move): undo an abandoned one, finish a commit. */
+  async runtimeMigrationAlarm(): Promise<void> {
+    await this.runtimeMigration.onAlarm();
+  }
+
   /**
    * The runtime agent this thread relays to, for the direct path to adopt
    * (agent-runtime/channel-turns.ts). Null when the thread has none, or while
@@ -4336,6 +4426,8 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     if (!text && attachmentCount === 0) {
       return { status: "skipped" };
     }
+    // A transcript being exported, or already moved, takes no more history here.
+    if (this.runtimeMigrationState()) return { status: "moved" };
 
     const providerMessageIds = Array.isArray(input.providerMessageIds)
       ? input.providerMessageIds
@@ -4454,6 +4546,10 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     forkEntryId: string;
     renderedMessageId?: string;
   }): Promise<ChatThreadPiCoreForkResult> {
+    // A thread moving to the runtime, or moved, is forked from its runtime history.
+    if (this.runtimeMigrationState()) {
+      return { success: false, code: "THREAD_MOVED", error: "This conversation moved; reload the page to fork it." };
+    }
     const messages = await this.loadFullPiCoreTranscriptUnbounded({ imagePolicy: "reference" });
     if (messages.length === 0) {
       return {
@@ -6477,6 +6573,8 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     if (!rawContent) {
       return { status: "error", error: "Empty message" };
     }
+    const refusal = this.runtimeMigrationRefusal();
+    if (refusal) return refusal;
 
     const orgBan = await isOrgBanned(this.env.APP_KV, {
       orgId: context.orgId,
@@ -6496,6 +6594,12 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
     if (!attributedContent) {
       return { status: "error", error: "Empty message" };
     }
+
+    // Again, with nothing awaited between here and the turn: a move to the
+    // runtime may have begun during the awaits above, and a turn started now
+    // would land in a transcript that has already been exported.
+    const refusalAfterAwaits = this.runtimeMigrationRefusal();
+    if (refusalAfterAwaits) return refusalAfterAwaits;
 
     // A new turn (the user is prompting, not steering an in-flight run) is given a
     // single canonical timestamp shared by the message we persist below and the
@@ -10095,6 +10199,10 @@ export class ChatThreadDO extends AIChatAgent<ChatAgentEnv, ChatThreadAgentState
       if (type === "message") {
           const content = typeof message.content === "string" ? message.content : "";
           if (!content.trim()) {
+            return false;
+          }
+          // No turn starts on a thread moving to the runtime, or moved there.
+          if (this.runtimeMigrationState()) {
             return false;
           }
           // Cold admission must not wait for Pi session construction. An

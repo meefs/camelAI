@@ -164,6 +164,8 @@ export const PI_DURABLE_CUT_MAX_VISIBLE_CHARS = Math.floor(
 
 /** Rows per metadata probe while choosing the capped window's cut. */
 const PI_SESSION_LOAD_ROW_BATCH_SIZE = 256;
+/** Stored characters one batch of an export walk holds (a larger row alone). */
+export const PI_CORE_EXPORT_BATCH_CHARS = 4_000_000;
 /**
  * Rows inspected per legacy message-key migration step. Payloads are still
  * fetched one at a time; this only bounds the tiny idx metadata array.
@@ -1319,6 +1321,80 @@ export class PiCoreMessageStore {
         idx: Math.max(0, Math.floor(Number(row.idx) || 0)),
         chars: Math.max(0, Math.floor(Number(row.chars) || 0)),
       }));
+  }
+
+  /**
+   * A thread's history for its move to the agent runtime
+   * (agent-runtime/thread-migration.ts). When every stored row fits
+   * `maxChars`: all of them in order (`whole`), with the compaction summary
+   * where its cut falls, so the moved thread shows its full history and its
+   * model sees the summary and what follows. Past it: the bounded session
+   * window (the model's view only). The totals are read first, so a whale
+   * never materializes. Deterministic for an unchanged thread: a retried move
+   * sends the same import.
+   */
+  async loadPiCoreHistoryForMigration(maxChars: number): Promise<{ messages: AgentMessage[]; whole: boolean; totalRows: number }> {
+    this.ensurePiCoreTables();
+    const totals = this.piCoreVisibleWindowTotals(0);
+    if (totals.chars > maxChars) {
+      const { messages } = await this.loadBoundedPiCoreSessionWindow({ maxChars });
+      // A capped window's placeholder summary is stamped with the load time.
+      const [first, next] = messages as Array<AgentMessage & { timestamp?: number }>;
+      if (first && typeof next?.timestamp === "number" && (first.timestamp ?? 0) > next.timestamp) {
+        messages[0] = { ...first, timestamp: next.timestamp } as AgentMessage;
+      }
+      return { messages, whole: false, totalRows: totals.rows };
+    }
+    const compaction = this.loadPiCoreCompaction();
+    const cutAt = compaction && compaction.firstKeptIndex > 0 ? compaction.firstKeptIndex : null;
+    const messages: AgentMessage[] = [];
+    const hydrationState: PiImageHydrationState = { count: 0, declaredChars: 0 };
+    let summarized = cutAt === null;
+    // A batch of payloads at a time, so each row's stored string is released
+    // once it is materialized rather than all of them held until the end.
+    for (const batch of this.piCoreRowBatches()) {
+      for (const row of batch) {
+        if (!summarized && row.idx >= (cutAt ?? 0)) {
+          messages.push(createPiSummaryMessage(compaction!.summary, compaction!.updatedAt));
+          summarized = true;
+        }
+        const message = await this.materializePiCoreRow(row.payload, { imagePolicy: "reference" }, hydrationState);
+        if (message) messages.push(message);
+      }
+    }
+    if (!summarized) messages.push(createPiSummaryMessage(compaction!.summary, compaction!.updatedAt));
+    return { messages, whole: true, totalRows: totals.rows };
+  }
+
+  /**
+   * Every stored row, oldest first, a batch of at most `maxChars` stored
+   * characters at a time (a row larger than that alone): a whole transcript
+   * walked, or streamed out, without ever holding it.
+   */
+  *piCoreRowBatches(maxChars = PI_CORE_EXPORT_BATCH_CHARS): Generator<Array<{ idx: number; payload: string }>> {
+    this.ensurePiCoreTables();
+    let fromIdx = 0;
+    for (;;) {
+      const meta = this.listPiCoreRowMetaAscending({ fromIdx, limit: PI_SESSION_LOAD_ROW_BATCH_SIZE });
+      if (meta.length === 0) return;
+      let chars = 0;
+      let lastIdx = meta[0].idx;
+      for (const row of meta) {
+        if (chars > 0 && chars + row.chars > maxChars) break;
+        chars += row.chars;
+        lastIdx = row.idx;
+      }
+      const rows = this.deps.sql()
+        .exec<{ idx: number; payload: string }>(
+          "SELECT idx, payload FROM pi_core_messages WHERE idx >= ? AND idx <= ? ORDER BY idx ASC",
+          fromIdx,
+          lastIdx,
+        )
+        .toArray()
+        .map((row) => ({ idx: Number(row.idx), payload: row.payload }));
+      fromIdx = lastIdx + 1;
+      if (rows.length) yield rows;
+    }
   }
 
   /**
