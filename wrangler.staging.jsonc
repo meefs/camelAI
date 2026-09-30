@@ -243,8 +243,7 @@
 	    { "tag": "v38", "deleted_classes": ["ChiridionMcp"] },
 	    { "tag": "v39", "deleted_classes": ["OrgSlugDO"] },
 	    { "tag": "v40", "new_sqlite_classes": ["ProjectBuildContainer"] },
-	    { "tag": "v41", "deleted_classes": ["ProjectBuildSandbox"] },
-	    { "tag": "v42", "new_sqlite_classes": ["DbQueryContainer"], "deleted_classes": ["DbQuerySandbox"] },
-	    { "tag": "v43", "new_sqlite_classes": ["AnalysisContainer"], "deleted_classes": ["AnalysisSandbox"] },
+	    { "tag": "v41", "new_sqlite_classes": ["DbQueryContainer"] },
+	    { "tag": "v42", "new_sqlite_classes": ["AnalysisContainer"] },
 	  ],
 	}

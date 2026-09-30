@@ -106,6 +106,13 @@ export class AdminIndexDO extends DurableObject<Env> {}
 // Cloudflare Sandbox SDK experiment. Projects are DO+R2 backed now.
 export class CloudflareSandbox extends DurableObject<Env> {}
 
+// The Sandbox SDK 0.12 classes, unbound. Cloudflare refuses a deleted_classes
+// migration while the live version still binds the class, so these are deleted
+// by the next deploy, after this one has moved the bindings off them.
+export class ProjectBuildSandbox extends DurableObject<Env> {}
+export class DbQuerySandbox extends DurableObject<Env> {}
+export class AnalysisSandbox extends DurableObject<Env> {}
+
 // Compatibility shim for deployed migration histories that introduced the
 // old Think-based migration planning Durable Object. The legacy workspace
 // migration feature has since been removed; this no-op class remains only so
