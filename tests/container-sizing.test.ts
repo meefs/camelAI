@@ -85,8 +85,7 @@ describe("container right-sizing", () => {
       name: "PROJECT_BUILD_SANDBOX",
       class_name: "ProjectBuildContainer",
     });
-    const created = config.migrations.findIndex((m) => m.new_sqlite_classes?.includes("ProjectBuildContainer"));
-    expect(config.migrations[created + 1]).toEqual(expect.objectContaining({ deleted_classes: ["ProjectBuildSandbox"] }));
+    expectReplacedClass(config, "ProjectBuildContainer", "ProjectBuildSandbox");
   });
 
   it.each([
@@ -106,10 +105,7 @@ describe("container right-sizing", () => {
     expect(config.durable_objects.bindings.filter((binding) => binding.name.startsWith("DB_QUERY"))).toEqual([
       { name: "DB_QUERY_SANDBOX", class_name: "DbQueryContainer" },
     ]);
-    expect(config.migrations).toContainEqual(expect.objectContaining({
-      new_sqlite_classes: ["DbQueryContainer"],
-      deleted_classes: ["DbQuerySandbox"],
-    }));
+    expectReplacedClass(config, "DbQueryContainer", "DbQuerySandbox");
     // The S3 mount must name the bucket the WAREHOUSE_EXPORT_BUCKET binding uses.
     const bound = config.r2_buckets?.find((bucket) => bucket.binding === "WAREHOUSE_EXPORT_BUCKET")?.bucket_name;
     expect(bound).toBe(bucketName);
@@ -132,11 +128,7 @@ describe("container right-sizing", () => {
       name: "ANALYSIS_SANDBOX",
       class_name: "AnalysisContainer",
     });
-    // One migration creates the new class and deletes the 0.12 one.
-    expect(config.migrations).toContainEqual(expect.objectContaining({
-      new_sqlite_classes: ["AnalysisContainer"],
-      deleted_classes: ["AnalysisSandbox"],
-    }));
+    expectReplacedClass(config, "AnalysisContainer", "AnalysisSandbox");
     // The mounts name their buckets; S3 mounts need no second binding for /outputs.
     expect(config.vars.R2_BUCKET_NAME).toBeTruthy();
     expect(config.vars.WAREHOUSE_EXPORT_BUCKET_NAME).toBeTruthy();
@@ -161,3 +153,16 @@ describe("container right-sizing", () => {
     expect(config.durable_objects.bindings).toContainEqual({ name: "ANALYSIS_SANDBOX", class_name: "AnalysisContainer" });
   });
 });
+
+/**
+ * The new class gets a migration of its own. Cloudflare refuses to delete a
+ * class the live version still binds, so the 0.12 class may only be deleted
+ * by a later deploy: a later tag, never the one that creates its successor.
+ */
+function expectReplacedClass(config: WranglerConfig, created: string, replaced: string): void {
+  const createdAt = config.migrations.findIndex((m) => m.new_sqlite_classes?.includes(created));
+  expect(createdAt).toBeGreaterThanOrEqual(0);
+  expect(config.migrations[createdAt].deleted_classes ?? []).not.toContain(replaced);
+  const deletedAt = config.migrations.findIndex((m) => m.deleted_classes?.includes(replaced));
+  if (deletedAt >= 0) expect(deletedAt).toBeGreaterThan(createdAt);
+}
