@@ -30,7 +30,7 @@ const sourceOverrideSource = readFileSync(
 );
 const sourceOverride = parse(sourceOverrideSource) as ComposeConfig;
 const analysisDockerfile = readFileSync(
-  "workers/main/analysis-sandbox.Dockerfile",
+  "workers/main/analysis-container.Dockerfile",
   "utf8",
 );
 const containerSmoke = readFileSync(
@@ -55,10 +55,10 @@ describe("self-host Docker container runtime", () => {
     [
       "project-build-image",
       "workers/main",
-      "project-build-sandbox.Dockerfile",
+      "project-build-container.Dockerfile",
     ],
-    ["analysis-image", "workers/main", "analysis-sandbox.Dockerfile"],
-    ["db-query-image", "workers/main", "db-query-sandbox.Dockerfile"],
+    ["analysis-image", "workers/main", "analysis-container.Dockerfile"],
+    ["db-query-image", "workers/main", "db-query-container.Dockerfile"],
   ])("builds %s from the current Cloudflare container Dockerfile only in source mode", (
     serviceName,
     context,
@@ -124,7 +124,7 @@ describe("self-host Docker container runtime", () => {
     expect(analysisDockerfile).toContain(
       "COPY analysis-sandbox-assets/archive-tool.py /usr/local/bin/camelai-archive",
     );
-    expect(containerSmoke).toContain("archiveTest: true");
+    expect(containerSmoke).toContain('native: "analysis"');
     expect(containerSmoke).toContain("CAMELAI_ARCHIVE_PATH=/uploads/source.zip");
     expect(containerSmoke).toContain("camelai-analysis-archive-ok");
   });

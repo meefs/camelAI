@@ -17,17 +17,17 @@ services:
   project-build-image:
     build:
       context: workers/main
-      dockerfile: project-build-sandbox.Dockerfile
+      dockerfile: project-build-container.Dockerfile
 
   analysis-image:
     build:
       context: workers/main
-      dockerfile: analysis-sandbox.Dockerfile
+      dockerfile: analysis-container.Dockerfile
 
   db-query-image:
     build:
       context: workers/main
-      dockerfile: db-query-sandbox.Dockerfile
+      dockerfile: db-query-container.Dockerfile
 
   container-egress-image:
     build:

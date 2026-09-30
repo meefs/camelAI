@@ -120,9 +120,6 @@ const SELFHOST_KV_IDS = {
 
 const SELFHOST_R2_BUCKETS = {
   R2_BUCKET: 'chiridion-selfhost',
-  // AnalysisSandbox mounts the same bucket twice: read-only uploads and
-  // writable outputs. Preserve that alias in local R2 storage.
-  R2_OUTPUTS_BUCKET: 'chiridion-selfhost',
   BACKUP_BUCKET: 'chiridion-selfhost-backups',
   WAREHOUSE_EXPORT_BUCKET: 'chiridion-selfhost-warehouse-exports',
 };
@@ -154,17 +151,32 @@ const DEFAULT_CONTAINER_EGRESS_INTERCEPTOR_IMAGE =
   'camelai-selfhost-container-egress:0.12.0';
 const DEFAULT_DOCKER_SOCKET_URI = 'unix:///var/run/docker.sock';
 const SELFHOST_CONTAINER_IMAGES = {
-  ProjectBuildSandbox: {
-    env: 'SELFHOST_PROJECT_BUILD_IMAGE',
-    image: 'camelai-selfhost-project-build:0.12.0',
+  // Native Durable Object container (scheduling_policy "durable_object"): the
+  // Worker picks the image at start() from ctx.container.images, so workerd
+  // gets named images instead of one imageName.
+  ProjectBuildContainer: {
+    images: {
+      'project-build': {
+        env: 'SELFHOST_PROJECT_BUILD_IMAGE',
+        image: 'camelai-selfhost-project-build:1.0.0',
+      },
+    },
   },
-  AnalysisSandbox: {
-    env: 'SELFHOST_ANALYSIS_IMAGE',
-    image: 'camelai-selfhost-analysis:0.12.0',
+  AnalysisContainer: {
+    images: {
+      analysis: {
+        env: 'SELFHOST_ANALYSIS_IMAGE',
+        image: 'camelai-selfhost-analysis:1.0.0',
+      },
+    },
   },
-  DbQuerySandbox: {
-    env: 'SELFHOST_DB_QUERY_IMAGE',
-    image: 'camelai-selfhost-db-query:0.12.0',
+  DbQueryContainer: {
+    images: {
+      'db-query': {
+        env: 'SELFHOST_DB_QUERY_IMAGE',
+        image: 'camelai-selfhost-db-query:1.0.0',
+      },
+    },
   },
 };
 
@@ -214,10 +226,16 @@ function bindingDurableObjectFromService(name, className, serviceName) {
   `))`;
 }
 
-function durableObjectNamespace(className, containerImage) {
-  const container = containerImage
-    ? `, container = (imageName = ${q(containerImage)})`
-    : '';
+function durableObjectNamespace(className, containerConfig) {
+  let container = '';
+  if (containerConfig?.images) {
+    const images = containerConfig.images
+      .map((entry) => `(name = ${q(entry.name)}, image = ${q(entry.image)})`)
+      .join(', ');
+    container = `, container = (images = [${images}])`;
+  } else if (containerConfig?.image) {
+    container = `, container = (imageName = ${q(containerConfig.image)})`;
+  }
   return `(className = ${q(className)}, ` +
     `uniqueKey = ${q(`camelai-selfhost-${className}`)}, ` +
     `enableSql = true${container})`;
@@ -329,7 +347,8 @@ function resolveContainerRuntime(wrangler, env) {
     (wrangler.durable_objects?.bindings ?? []).map((binding) => binding.class_name),
   );
   const seen = new Set();
-  const containers = (wrangler.containers ?? []).map((container) => {
+  const containers = [];
+  for (const container of wrangler.containers ?? []) {
     const className = container.class_name;
     const supported = SELFHOST_CONTAINER_IMAGES[className];
     if (!supported) {
@@ -347,10 +366,31 @@ function resolveContainerRuntime(wrangler, env) {
       );
     }
     seen.add(className);
+    if (supported.images) {
+      if (container.scheduling_policy !== 'durable_object') {
+        throw new Error(`Self-host container class ${className} must use scheduling_policy "durable_object"`);
+      }
+      const declared = Object.keys(container.images ?? {});
+      const missingImages = Object.keys(supported.images).filter((name) => !declared.includes(name));
+      const unknownImages = declared.filter((name) => !supported.images[name]);
+      if (missingImages.length > 0 || unknownImages.length > 0) {
+        throw new Error(
+          `Self-host container class ${className} images must be ` +
+          `${Object.keys(supported.images).join(', ')}; Wrangler declares ${declared.join(', ') || 'none'}`,
+        );
+      }
+      const images = Object.entries(supported.images).map(([name, entry]) => {
+        const image = configuredValue(env, entry.env, entry.image);
+        if (!image) throw new Error(`${entry.env} must not be empty`);
+        return { name, image, imageEnv: entry.env };
+      });
+      containers.push({ className, images });
+      continue;
+    }
     const image = configuredValue(env, supported.env, supported.image);
     if (!image) throw new Error(`${supported.env} must not be empty`);
-    return { className, image, imageEnv: supported.env };
-  });
+    containers.push({ className, image, imageEnv: supported.env });
+  }
 
   const expected = Object.keys(SELFHOST_CONTAINER_IMAGES);
   const missing = expected.filter((className) => !seen.has(className));
@@ -806,6 +846,7 @@ async function main() {
     if (process.env[key] !== undefined) vars[key] = process.env[key];
   }
 
+
   // Resolve `.selfhost/agent` (or env overrides) into Worker text bindings.
   // loadSelfhostAgentPack already prefers non-empty env values over files.
   const agentPack = await loadSelfhostAgentPack(repoRoot, vars);
@@ -915,11 +956,8 @@ async function main() {
   }
 
   const containerRuntime = resolveContainerRuntime(wrangler, selfhostEnv);
-  const containerImageByClass = new Map(
-    containerRuntime.containers.map((container) => [
-      container.className,
-      container.image,
-    ]),
+  const containerByClass = new Map(
+    containerRuntime.containers.map((container) => [container.className, container]),
   );
   const durableObjectBindings = wrangler.durable_objects?.bindings ?? [];
 
@@ -1021,7 +1059,7 @@ async function main() {
     `durableObjectNamespaces = [` +
       durableObjectClasses.map((className) => durableObjectNamespace(
         className,
-        containerImageByClass.get(className),
+        containerByClass.get(className),
       )).join(', ') +
     `], ` +
     `durableObjectStorage = (localDisk = "do-storage"), ` +

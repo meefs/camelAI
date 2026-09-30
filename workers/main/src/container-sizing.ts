@@ -32,8 +32,12 @@ export const ANALYSIS_INSTANCE_TYPE = "standard-3";
 /** Trusted node SQL/export runner; no user code, bounded result buffers. */
 export const DB_QUERY_INSTANCE_TYPE = "standard-1";
 
-/** Builds finish in seconds; no reason to bill 10m of idle memory/disk. */
-export const PROJECT_BUILD_SLEEP_AFTER = "2m";
+/**
+ * Idle window for the build container (ProjectBuildContainer applies it with
+ * `setInactivityTimeout()`). Builds finish in seconds; no reason to bill 10m of
+ * idle memory/disk.
+ */
+export const PROJECT_BUILD_IDLE_TIMEOUT_MS = 2 * 60_000;
 
 /**
  * How long a FINISHED build keeps the container warm for the session that made
@@ -47,18 +51,28 @@ export const PROJECT_BUILD_SLEEP_AFTER = "2m";
  *
  * Sized against the observed mid-session gap that caused the incident (~6 min
  * between two deploys), not against a workday: the container is a standard-3
- * billing provisioned memory/disk for every awake second, and each warm
- * instance also holds one of the `max_instances` slots in wrangler.prod.jsonc.
- * Raising this multiplies concurrent live instances — check
- * `build_sandbox_stop_deferred` telemetry against that cap first.
+ * billing provisioned memory/disk for every awake second, and every warm
+ * instance counts toward the account's concurrent container limits (the
+ * durable_object policy has no per-application `max_instances`). Raising this
+ * multiplies concurrent live instances.
  */
 export const PROJECT_BUILD_ACTIVE_SESSION_WINDOW_MS = 10 * 60_000;
 
 /** Upper bound on a requested warm window, so a bad caller can't pin a container. */
 export const PROJECT_BUILD_ACTIVE_SESSION_MAX_WINDOW_MS = 30 * 60_000;
 
-/** Interactive notebooks; shorter than the SDK 10m default, still warm enough. */
-export const ANALYSIS_SLEEP_AFTER = "5m";
+/**
+ * How long the analysis container (AnalysisContainer) stays up after its last
+ * request: 5m keeps interactive notebooks warm without the 0.x SDK's 10m
+ * default idle burn. Applied with `setInactivityTimeout()`.
+ */
+export const ANALYSIS_IDLE_TIMEOUT_MS = 5 * 60_000;
 
 /** Single-shot queries/exports; sleep promptly when the workspace goes quiet. */
 export const DB_QUERY_SLEEP_AFTER = "2m";
+
+/**
+ * The same 2m idle window as a number, for the native-container db-query
+ * container (DbQueryContainer), which sets it through `setInactivityTimeout()`.
+ */
+export const DB_QUERY_IDLE_TIMEOUT_MS = 2 * 60_000;

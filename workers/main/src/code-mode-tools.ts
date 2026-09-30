@@ -8,7 +8,6 @@ import {
   type WorkspaceAppHostIndex,
 } from "./workspace-app-fetcher";
 import { WorkerEntrypoint } from "cloudflare:workers";
-import { getSandbox } from "@cloudflare/sandbox";
 import type { OrgDO, WorkerScript } from "./auth";
 import { Type, type TSchema } from "typebox";
 import type { WorkspaceDO } from "./workspace";
@@ -51,10 +50,11 @@ import { CodeModeDeterministicAutomations } from "./code-mode-deterministic-auto
 import { CodeModeIntegrations } from "./code-mode-integrations";
 import { PROJECT_BUILD_ACTIVE_SESSION_WINDOW_MS } from "./container-sizing";
 import { recordErrorEvent, recordObservabilityEvent } from "./observability";
-import { buildLogTail, cleanBuildLog, DEFAULT_BUILD_TIMEOUT_MS, projectBuildSandboxKey, runProjectAddDependency, runProjectBuild, type ProjectBuildResult } from "./project-build-service";
+import { buildLogTail, cleanBuildLog, DEFAULT_BUILD_TIMEOUT_MS, getProjectBuildSandbox, runProjectAddDependency, runProjectBuild, type ProjectBuildResult } from "./project-build-service";
 import {
   createProjectBuildReadinessGate,
   ensureBuildSandboxReady,
+  projectBuildReadinessEventName,
   withProjectBuildServiceErrorMapping,
   type ProjectBuildReadinessEvent,
   type ProjectBuildReadinessGate,
@@ -70,9 +70,7 @@ import {
   ANALYSIS_NOTEBOOK_STDERR_MAX_CHARS,
   ANALYSIS_NOTEBOOK_STDOUT_MAX_CHARS,
   ANALYSIS_NOTEBOOK_VALIDATE_TIMEOUT_MS,
-  ANALYSIS_SESSION_RESTARTED_MESSAGE,
   clampOutputTail,
-  isSandboxSessionDeathError,
 } from "./analysis-service";
 import {
   createSandboxExecDeadline,
@@ -2245,13 +2243,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
   private projectBuildSandbox(): ProjectBuildSandboxLike {
     const { orgId } = this.ctx.props;
     if (!orgId) throw new Error("Project builds require org scope");
-    if (!this.env.PROJECT_BUILD_SANDBOX) {
-      throw new Error("PROJECT_BUILD_SANDBOX container binding is not configured");
-    }
-    return getSandbox(this.env.PROJECT_BUILD_SANDBOX, projectBuildSandboxKey(orgId), {
-      normalizeId: true,
-      transport: "rpc",
-    }) as unknown as ProjectBuildSandboxLike;
+    return getProjectBuildSandbox(this.env, orgId);
   }
 
   /**
@@ -2309,7 +2301,7 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     operation: "add_dependency" | "deploy_project",
   ): Promise<void> {
     try {
-      await sandbox.noteBuildSessionActivity?.();
+      await sandbox.noteBuildSessionActivity();
     } catch (error) {
       console.warn("[project-build] failed to extend build session window", {
         operation,
@@ -2325,24 +2317,13 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     const props = this.ctx?.props;
     // A permanently broken container is a configuration problem, not a slow
     // boot — it gets its own event so cold-start dashboards stay boot-shaped.
-    // Same for a zombie: the wait is real, but the cause is a dead shell layer,
-    // and the DO's own sandbox_zombie_restart records what was done.
-    const eventName = event.type === "cold_start"
-      ? "build_sandbox_cold_start"
-      : event.type === "zombie_detected"
-        ? "build_sandbox_zombie_detected"
-        : event.type === "startup_failed"
-          ? "build_sandbox_startup_failed"
-          : "build_sandbox_ready_timeout";
     const status = event.type === "cold_start"
       ? "ready"
-      : event.type === "zombie_detected"
-        ? (event.restarted ? "restarted" : "restart_suppressed")
-        : event.type === "startup_failed"
-          ? "startup_failed"
-          : "timeout";
+      : event.type === "startup_failed"
+        ? "startup_failed"
+        : "timeout";
     recordObservabilityEvent(this.env, {
-      event: eventName,
+      event: projectBuildReadinessEventName(event),
       severity: event.type === "cold_start" ? "info" : "error",
       component: "CodeModeToolsBinding",
       operation,
@@ -4234,16 +4215,9 @@ export class CodeModeToolsBinding extends WorkerEntrypoint<ChatEnv, CodeModeTool
     limits: SandboxExecLimits,
     run: () => Promise<T>,
   ): Promise<T> {
-    try {
-      return await this.sandboxExecDeadline(operation, declaredTimeoutMs, limits).run(run);
-    } catch (error) {
-      // The environment died under the command: the user gets the
-      // plain-English message, never `SessionTerminatedError: ...`.
-      if (isSandboxSessionDeathError(error)) {
-        throw new Error(ANALYSIS_SESSION_RESTARTED_MESSAGE, { cause: error });
-      }
-      throw error;
-    }
+    // A container that stopped under the command already reports it in
+    // plain English (AnalysisContainer), so errors pass through as they are.
+    return this.sandboxExecDeadline(operation, declaredTimeoutMs, limits).run(run);
   }
 
   private sandboxExecDeadline(

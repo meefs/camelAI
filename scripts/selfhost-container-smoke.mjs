@@ -45,54 +45,61 @@ const notebook = Buffer.from(
 ).toString("base64");
 const archive =
   "UEsDBBQAAAAAAK9kCV0kaUB3GwAAABsAAAAJAAAAcHJvYmUudHh0Y2FtZWxhaS1hbmFseXNpcy1hcmNoaXZlLW9rUEsBAhQDFAAAAAAAr2QJXSRpQHcbAAAAGwAAAAkAAAAAAAAAAAAAAIABAAAAAHByb2JlLnR4dFBLBQYAAAAAAQABADcAAABCAAAAAAA=";
+const analysisImage =
+  process.env.SELFHOST_ANALYSIS_IMAGE ||
+  selfhostEnv.SELFHOST_ANALYSIS_IMAGE ||
+  "camelai-selfhost-analysis:1.0.0";
 const runtimes = {
+  // The real AnalysisContainer against the analysis image, through its
+  // self-host sync mounts only: R2 -> container on prepare(), container -> R2
+  // (writes and deletes) on flushMounts(), and a refresh that picks up a new
+  // upload.
   mount: {
-    className: "ProjectBuildSandbox",
-    image:
-      process.env.SELFHOST_PROJECT_BUILD_IMAGE ||
-      selfhostEnv.SELFHOST_PROJECT_BUILD_IMAGE ||
-      "camelai-selfhost-project-build:0.12.0",
+    className: "AnalysisContainer",
+    native: "analysis",
+    imageName: "analysis",
+    image: analysisImage,
     marker: "camelai-local-r2-sync-ok",
-    mountTest: true,
+    needsR2: true,
   },
+  // The real ProjectBuildContainer (native ctx.container) against the
+  // project-build image, through the calls a build makes.
   project: {
-    className: "ProjectBuildSandbox",
+    className: "ProjectBuildContainer",
+    native: "project",
+    imageName: "project-build",
     image:
       process.env.SELFHOST_PROJECT_BUILD_IMAGE ||
       selfhostEnv.SELFHOST_PROJECT_BUILD_IMAGE ||
-      "camelai-selfhost-project-build:0.12.0",
-    command:
-      "printf 'console.log(\"camelai-project-build-ok\")' > /tmp/smoke.ts " +
-      "&& bun build /tmp/smoke.ts --outfile /tmp/smoke.js >/dev/null " +
-      "&& node /tmp/smoke.js",
+      "camelai-selfhost-project-build:1.0.0",
     marker: "camelai-project-build-ok",
   },
+  // The same class and image through a whole analysis run: sync mounts,
+  // notebook execution, the archive tool, egress (PyPI allowed, any other host
+  // refused, connections.internal served in the Worker) and the exec timeout.
   analysis: {
-    className: "AnalysisSandbox",
-    image:
-      process.env.SELFHOST_ANALYSIS_IMAGE ||
-      selfhostEnv.SELFHOST_ANALYSIS_IMAGE ||
-      "camelai-selfhost-analysis:0.12.0",
-    command:
-      `printf '%s' '${notebook}' | base64 -d > /tmp/smoke.ipynb ` +
-      "&& python /usr/local/bin/execute-notebook /tmp/smoke.ipynb " +
-      `&& python -c "import json; d=json.load(open('/tmp/smoke.ipynb')); ` +
-      `assert ''.join(d['cells'][0]['outputs'][0]['text']) == '42\\\\n'; ` +
-      `print('camelai-analysis-notebook-ok')"`,
+    className: "AnalysisContainer",
+    native: "analysis",
+    imageName: "analysis",
+    image: analysisImage,
     marker: "camelai-analysis-notebook-ok",
-    archiveTest: true,
+    needsR2: true,
+    full: true,
   },
+  // The real DbQueryContainer against the db-query image: drivers, the
+  // background forwarder, the exec timeout, and a self-host export copied into
+  // the R2 binding. SELFHOST_SMOKE_PUBLIC_DB=1 also runs a real query against
+  // a public Postgres through runDbQuery (needs Internet from the container).
   "db-query": {
-    className: "DbQuerySandbox",
+    className: "DbQueryContainer",
+    native: "db-query",
+    imageName: "db-query",
     image:
       process.env.SELFHOST_DB_QUERY_IMAGE ||
       selfhostEnv.SELFHOST_DB_QUERY_IMAGE ||
-      "camelai-selfhost-db-query:0.12.0",
-    command:
-      "cd /opt/db-query-runner && node -e " +
-      `"for (const m of ['pg','pg-cursor','mysql2','tedious','@dsnp/parquetjs','socks']) ` +
-      `require.resolve(m); console.log('camelai-db-query-drivers-ok')"`,
-    marker: "camelai-db-query-drivers-ok",
+      "camelai-selfhost-db-query:1.0.0",
+    marker: "camelai-db-query-ok",
+    needsR2: true,
   },
 };
 const runtimeName = process.argv[2] || "project";
@@ -102,23 +109,6 @@ if (!runtime) {
     `Unknown runtime ${runtimeName}; expected ${Object.keys(runtimes).join(", ")}`,
   );
 }
-if (runtimeName === "analysis") {
-  const dockerInfo = await capture("docker", [
-    "info",
-    "--format",
-    "{{.Architecture}}",
-  ]);
-  const architecture = dockerInfo.stdout.trim();
-  if (architecture !== "x86_64" && architecture !== "amd64") {
-    console.log(
-      `SKIP self-host analysis container smoke on ${architecture}: ` +
-        "Cloudflare's analysis sandbox base is amd64-only and Jupyter is " +
-        "unreliable under emulation; x86_64 CI is authoritative.",
-    );
-    process.exit(0);
-  }
-}
-
 const smokeRoot = path.join(repoRoot, ".selfhost");
 await fs.mkdir(smokeRoot, { recursive: true });
 const tempDir = await fs.mkdtemp(
@@ -134,110 +124,170 @@ let child;
 try {
   await fs.mkdir(statePath);
   await fs.mkdir(r2StatePath);
-  const needsR2 = runtime.mountTest || runtime.archiveTest;
-  const fetchBody = runtime.mountTest
-    ? `
-      await env.SMOKE_BUCKET.put("smoke/input.txt", "from-r2");
-      await sandbox.mountBucket("SMOKE_BUCKET", "/workspace/smoke", {
-        localBucket: true,
-        prefix: "/smoke",
-        readOnly: false,
-      });
-      const alias = await sandbox.exec(
-        "rm -rf /smoke && ln -s /workspace/smoke /smoke",
-      );
-      if (!alias.success) throw new Error("Could not create sandbox mount alias");
-      const seeded = await sandbox.exec("cat /smoke/input.txt");
-      if (!seeded.success || seeded.stdout.trim() !== "from-r2") {
-        throw new Error("R2 to container synchronization failed");
-      }
-      let persisted = null;
-      for (let attempt = 0; attempt < 8 && !persisted; attempt += 1) {
-        await sandbox.exec(
-          "printf 'from-container-" + attempt + "' > /smoke/output.txt",
-        );
-        await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
-        persisted = await env.SMOKE_BUCKET.get("smoke/output.txt");
-      }
-      if (!persisted || !(await persisted.text()).startsWith("from-container-")) {
-        throw new Error("Container to R2 synchronization failed");
-      }
-      return Response.json({ success: true, stdout: ${JSON.stringify(runtime.marker)} });
-    `
-    : runtime.archiveTest
-    ? `
-      const archiveBytes = Uint8Array.from(
-        atob(${JSON.stringify(archive)}),
-        (character) => character.charCodeAt(0),
-      );
-      await env.SMOKE_BUCKET.put("uploads/source.zip", archiveBytes);
-      await sandbox.mountBucket("SMOKE_BUCKET", "/uploads", {
-        localBucket: true,
-        prefix: "/uploads",
-        readOnly: true,
-      });
-      const archiveResult = await sandbox.exec(
-        "rm -rf /tmp/camelai-archive-smoke " +
-        "&& mkdir -p /tmp/camelai-archive-smoke " +
-        "&& cd /tmp/camelai-archive-smoke " +
+  const needsR2 = Boolean(runtime.needsR2);
+  const nativeSource = `
+import { ProjectBuildContainer } from ${JSON.stringify(path.join(repoRoot, "workers/main/src/project-build-container.ts"))};
+
+export { ProjectBuildContainer };
+
+export default {
+  async fetch(_request, env) {
+    // The container is removed with the others by cleanupSmokeContainers().
+    const sandbox = env.SANDBOX.getByName("org-selfhost-smoke");
+    const workdir = "/workspace/smoke";
+    await sandbox.mkdir(workdir + "/src", { recursive: true });
+    await sandbox.writeFile(workdir + "/src/index.ts", 'console.log("' + ${JSON.stringify("camelai-project-build-ok")} + '")');
+    await sandbox.writeFile(workdir + "/archive.bin", new Blob(["streamed"]).stream());
+    const build = await sandbox.exec(
+      "bun build src/index.ts --outfile out/index.js >/dev/null && node out/index.js",
+      { cwd: workdir, timeout: 120000, env: { CI: "1" } },
+    );
+    if (build.exitCode !== 0) return Response.json({ ...build, success: false });
+    const listed = await sandbox.listFiles(workdir + "/out", { recursive: true, includeHidden: true });
+    const bundle = await sandbox.readFileBytes(workdir + "/out/index.js");
+    const streamed = await sandbox.readFile(workdir + "/archive.bin");
+    const missing = await sandbox.readFileBytes(workdir + "/missing");
+    const timedOut = await sandbox.exec("sleep 30", { timeout: 1000 });
+    const checks = [
+      listed.files.some((file) => file.relativePath === "index.js"),
+      bundle.byteLength > 0,
+      streamed.content === "streamed",
+      missing === null,
+      timedOut.timedOut === true,
+    ];
+    if (checks.includes(false)) {
+      return Response.json({ success: false, stdout: build.stdout, checks });
+    }
+    return Response.json({ success: true, stdout: build.stdout });
+  },
+};
+`;
+  const analysisSource = `
+import {
+  AnalysisConnectionsGateway,
+  AnalysisContainer,
+  AnalysisEgress,
+} from ${JSON.stringify(path.join(repoRoot, "workers/main/src/analysis-container.ts"))};
+
+export { AnalysisConnectionsGateway, AnalysisContainer, AnalysisEgress };
+
+const ACCESS = { mode: "agent", orgId: "org-smoke", workspaceId: "ws-smoke" };
+const UPLOADS = "org-smoke/ws-smoke/user-uploads";
+const OUTPUTS = "org-smoke/ws-smoke/user-outputs";
+const FULL = ${JSON.stringify(Boolean(runtime.full))};
+
+export default {
+  async fetch(_request, env) {
+    // The container is removed with the others by cleanupSmokeContainers().
+    const bucket = env.R2_BUCKET;
+    await bucket.put(UPLOADS + "/input.txt", "from-r2");
+    await bucket.put("warehouse/ws-smoke/export.txt", "export-ok");
+    if (FULL) {
+      const archiveBytes = Uint8Array.from(atob(${JSON.stringify(archive)}), (c) => c.charCodeAt(0));
+      await bucket.put(UPLOADS + "/source.zip", archiveBytes);
+    }
+    const sandbox = env.SANDBOX.getByName("ws-smoke");
+    await sandbox.prepare(ACCESS);
+    const run = (command, timeoutMs = 120000) => sandbox.exec(command, { cwd: "/root", timeoutMs });
+    const checks = {};
+    const outputs = [];
+
+    const seeded = await run("cat /uploads/input.txt /warehouse/ws-smoke/export.txt");
+    checks.seeded = seeded.stdout === "from-r2export-ok";
+    await run("printf from-container > /outputs/result.txt");
+    await sandbox.flushMounts();
+    const persisted = await bucket.get(OUTPUTS + "/result.txt");
+    checks.persisted = Boolean(persisted) && (await persisted.text()) === "from-container";
+    await run("rm /outputs/result.txt");
+    await sandbox.flushMounts();
+    checks.deletedFromR2 = (await bucket.head(OUTPUTS + "/result.txt")) === null;
+    await bucket.put(UPLOADS + "/later.txt", "later");
+    await sandbox.prepare(ACCESS);
+    checks.refreshed = (await run("cat /uploads/later.txt")).stdout === "later";
+    outputs.push(${JSON.stringify(runtime.full ? "" : "camelai-local-r2-sync-ok")});
+
+    if (FULL) {
+      const archiveResult = await run(
+        "rm -rf /tmp/camelai-archive-smoke && mkdir -p /tmp/camelai-archive-smoke && cd /tmp/camelai-archive-smoke " +
         "&& CAMELAI_ARCHIVE_ACTION=list CAMELAI_ARCHIVE_PATH=/uploads/source.zip " +
         "python /usr/local/bin/camelai-archive > /tmp/camelai-archive-list.json " +
         "&& grep -q 'extractable.*true' /tmp/camelai-archive-list.json " +
         "&& CAMELAI_ARCHIVE_ACTION=extract CAMELAI_ARCHIVE_PATH=/uploads/source.zip " +
         "CAMELAI_ARCHIVE_DESTINATION=imported python /usr/local/bin/camelai-archive " +
         "> /tmp/camelai-archive-extract.json " +
-        "&& grep -qx camelai-analysis-archive-ok imported/probe.txt " +
-        "&& echo camelai-analysis-archive-ok",
+        "&& grep -qx camelai-analysis-archive-ok imported/probe.txt && echo camelai-analysis-archive-ok",
       );
-      if (!archiveResult.success) {
-        throw new Error(
-          "Analysis archive smoke failed: " +
-          (archiveResult.stderr || archiveResult.stdout),
-        );
-      }
-      const result = await sandbox.exec(${JSON.stringify(runtime.command)});
-      return Response.json({
-        ...result,
-        stdout: (archiveResult.stdout || "") + "\\n" + (result.stdout || ""),
-      });
-    `
-    : `
-      const result = await sandbox.exec(${JSON.stringify(runtime.command)});
-      return Response.json(result);
-    `;
-  await fs.writeFile(
-    sourcePath,
-    `
-import { ContainerProxy, getSandbox, Sandbox } from "@cloudflare/sandbox";
-
-export { ContainerProxy };
-export class ${runtime.className} extends Sandbox {}
-
-export default {
-  async fetch(_request, env) {
-    const sandbox = getSandbox(
-      env.SANDBOX,
-      "selfhost-local-docker-smoke-${runtimeName}",
-    );
-    try {
-      ${fetchBody}
-    } finally {
-      await sandbox.destroy();
+      checks.archive = archiveResult.exitCode === 0;
+      outputs.push(archiveResult.stdout, archiveResult.stderr);
+      const notebook = await run(${JSON.stringify(
+        `printf '%s' '${notebook}' | base64 -d > /tmp/smoke.ipynb ` +
+        "&& python /usr/local/bin/execute-notebook /tmp/smoke.ipynb " +
+        `&& python -c "import json; d=json.load(open('/tmp/smoke.ipynb')); ` +
+        `assert ''.join(d['cells'][0]['outputs'][0]['text']) == '42\\\\n'; ` +
+        `print('camelai-analysis-notebook-ok')"`,
+      )}, 300000);
+      checks.notebook = notebook.exitCode === 0;
+      outputs.push(notebook.stdout, notebook.stderr);
+      const code = (url) => run("curl -sS -m 30 -o /dev/null -w '%{http_code}' " + url + " || true", 60000);
+      const pypi = await code("https://pypi.org/simple/tabulate/");
+      checks.pypiAllowed = pypi.stdout === "200";
+      const blocked = await code("https://example.com/");
+      checks.otherHostBlocked = blocked.stdout !== "200";
+      const blockedHttp = await code("http://example.com/");
+      checks.otherHostBlockedHttp = blockedHttp.stdout !== "200";
+      const connections = await run("curl -sS -m 30 http://connections.internal/", 60000);
+      checks.connections = connections.stdout.includes("invoke");
+      const timedOut = await sandbox.exec("sleep 30", { cwd: "/", timeoutMs: 1000 });
+      checks.timeout = timedOut.timedOut === true;
+      outputs.push("pypi=" + pypi.stdout, "example.com=" + blocked.stdout + "/" + blockedHttp.stdout);
     }
+
+    const success = !Object.values(checks).includes(false);
+    return Response.json({ success, checks, stdout: outputs.join("\\n") });
   },
 };
-`,
+`;
+  await fs.writeFile(
+    sourcePath,
+    runtime.native === "project" ? nativeSource
+    : runtime.native === "analysis" ? analysisSource
+    : `export * from ${JSON.stringify(path.join(repoRoot, "scripts/selfhost-db-query-smoke-worker.ts"))};\n` +
+      `export { default } from ${JSON.stringify(path.join(repoRoot, "scripts/selfhost-db-query-smoke-worker.ts"))};\n`,
   );
 
-  await run("bun", [
-    "build",
-    sourcePath,
-    "--target=browser",
-    "--format=esm",
-    "--external=cloudflare:workers",
-    "--external=node:*",
-    `--outfile=${bundlePath}`,
-  ]);
+  // Bun.build instead of `bun build` for the plugin: db-query-service.ts
+  // imports the runner source as a virtual module (as the Worker build does).
+  const buildScriptPath = path.join(tempDir, "build.mjs");
+  await fs.writeFile(
+    buildScriptPath,
+    `
+import fs from "node:fs/promises";
+const runnerSource = await fs.readFile(${JSON.stringify(path.join(repoRoot, "workers/main/db-query-sandbox-assets/runner/db-query-runner.mjs"))}, "utf8");
+const result = await Bun.build({
+  entrypoints: [${JSON.stringify(sourcePath)}],
+  outdir: ${JSON.stringify(tempDir)},
+  naming: ${JSON.stringify(path.basename(bundlePath))},
+  target: "browser",
+  format: "esm",
+  external: ["cloudflare:workers", "node:*"],
+  plugins: [{
+    name: "db-query-runner-source",
+    setup(builder) {
+      builder.onResolve({ filter: /^virtual:db-query-runner-source$/ }, () => ({ path: "runner", namespace: "smoke-virtual" }));
+      builder.onLoad({ filter: /.*/, namespace: "smoke-virtual" }, () => ({
+        contents: "export default " + JSON.stringify(runnerSource) + ";",
+        loader: "js",
+      }));
+    },
+  }],
+});
+if (!result.success) {
+  for (const log of result.logs) console.error(log);
+  process.exit(1);
+}
+`,
+  );
+  await run("bun", [buildScriptPath]);
 
   await fs.writeFile(
     configPath,
@@ -252,14 +302,18 @@ const smoke :Workerd.Config = (
       bindings = [
         (name = "SANDBOX", durableObjectNamespace = (
           className = ${JSON.stringify(runtime.className)}
-        ))${needsR2 ? ',\n        (name = "SMOKE_BUCKET", r2Bucket = (name = "r2:bucket:smoke"))' : ""}
+        ))${needsR2 ? `,
+        (name = "R2_BUCKET", r2Bucket = (name = "r2:bucket:smoke")),
+        (name = "WAREHOUSE_EXPORT_BUCKET", r2Bucket = (name = "r2:bucket:smoke")),
+        (name = "CF_ACCOUNT_ID", text = "selfhost"),
+        (name = "SMOKE_PUBLIC_DB", text = ${JSON.stringify(process.env.SELFHOST_SMOKE_PUBLIC_DB === "1" ? "1" : "0")})` : ""}
       ],
       globalOutbound = "internet",
       durableObjectNamespaces = [(
         className = ${JSON.stringify(runtime.className)},
         uniqueKey = ${JSON.stringify(`camelai-selfhost-container-smoke-${runtimeName}`)},
         enableSql = true,
-        container = (imageName = ${JSON.stringify(runtime.image)})
+        container = (images = [(name = ${JSON.stringify(runtime.imageName)}, image = ${JSON.stringify(runtime.image)})])
       )],
       durableObjectStorage = (localDisk = "do-storage"),
       containerEngine = (localDocker = (
@@ -349,12 +403,19 @@ ${needsR2 ? `    (name = "r2:bucket:smoke", worker = (
     throw new Error(`Unexpected sandbox response: ${JSON.stringify(result)}`);
   }
   console.log(
-    `Self-host ${runtimeName} localDocker smoke passed with ${runtime.image}.`,
+    `Self-host ${runtimeName} localDocker smoke passed with ${runtime.image}.` +
+      (result.checks ? ` Checks: ${Object.keys(result.checks).join(", ")}.` : ` (${String(result.stdout ?? "").trim()})`),
   );
 } finally {
   if (child && child.exitCode === null) {
+    // workerd can keep serving while an attached container is still running,
+    // so SIGTERM alone may never end it. Escalate; cleanupSmokeContainers()
+    // removes whatever it left behind.
+    const exited = new Promise((resolve) => child.once("exit", resolve));
     child.kill("SIGTERM");
-    await new Promise((resolve) => child.once("exit", resolve));
+    const killTimer = setTimeout(() => child.kill("SIGKILL"), 10_000);
+    await exited;
+    clearTimeout(killTimer);
   }
   await cleanupSmokeContainers();
   if (process.env.SELFHOST_SMOKE_KEEP === "1") {

@@ -114,9 +114,9 @@ description: Follow ACME runbooks. Use when shipping internal tools.
       'ChatThreadDO',
       'WorkspaceDO',
       'WorkspaceFilesystemDO',
-      'ProjectBuildSandbox',
-      'AnalysisSandbox',
-      'DbQuerySandbox',
+      'ProjectBuildContainer',
+      'AnalysisContainer',
+      'DbQueryContainer',
     ],
     'durableObjects',
   );
@@ -125,7 +125,6 @@ description: Follow ACME runbooks. Use when shipping internal tools.
     bindings.r2,
     [
       'R2_BUCKET',
-      'R2_OUTPUTS_BUCKET',
       'BACKUP_BUCKET',
       'WAREHOUSE_EXPORT_BUCKET',
     ],
@@ -141,8 +140,49 @@ description: Follow ACME runbooks. Use when shipping internal tools.
   includesAll(manifest.omittedBindings.sendEmail, ['EMAIL'], 'omitted sendEmail bindings');
   includesAll(
     bindings.containers.map((container) => container.className),
-    ['ProjectBuildSandbox', 'AnalysisSandbox', 'DbQuerySandbox'],
+    ['ProjectBuildContainer', 'AnalysisContainer', 'DbQueryContainer'],
     'container bindings',
+  );
+  assert(
+    !bindings.durableObjects.includes('AnalysisSandbox'),
+    'the deleted 0.12 AnalysisSandbox class must not be bound',
+  );
+  assert(
+    !bindings.r2.includes('R2_OUTPUTS_BUCKET'),
+    'the /outputs duplicate R2 binding is gone: native mounts take a prefix per mount',
+  );
+  assert(
+    config.includes(
+      'className = "AnalysisContainer", uniqueKey = "camelai-selfhost-AnalysisContainer", ' +
+      'enableSql = true, container = (images = [(name = "analysis", image = "camelai-selfhost-analysis:1.0.0")])',
+    ),
+    'config should expose the analysis image to AnalysisContainer as ctx.container.images',
+  );
+  assert(
+    !bindings.durableObjects.includes('ProjectBuildSandbox'),
+    'the deleted 0.12 ProjectBuildSandbox class must not be bound',
+  );
+  assert(
+    !bindings.durableObjects.includes('DbQuerySandbox'),
+    'the deleted 0.12 DbQuerySandbox class must not be bound',
+  );
+  assert(
+    config.includes(
+      'className = "DbQueryContainer", uniqueKey = "camelai-selfhost-DbQueryContainer", ' +
+      'enableSql = true, container = (images = [(name = "db-query", image = "camelai-selfhost-db-query:1.0.0")])',
+    ),
+    'config should expose the db-query image to DbQueryContainer as ctx.container.images',
+  );
+  assert(
+    !config.includes('PROJECT_BUILD_SANDBOX_RUNTIME'),
+    'the retired project-build runtime switch must not reach self-host vars',
+  );
+  assert(
+    config.includes(
+      'className = "ProjectBuildContainer", uniqueKey = "camelai-selfhost-ProjectBuildContainer", ' +
+      'enableSql = true, container = (images = [(name = "project-build", image = "camelai-selfhost-project-build:1.0.0")])',
+    ),
+    'config should expose the project-build image to ProjectBuildContainer as ctx.container.images',
   );
   assert(
     manifest.containerEngine?.kind === 'localDocker',
@@ -209,7 +249,7 @@ description: Follow ACME runbooks. Use when shipping internal tools.
     config.split('(name = "r2:bucket:chiridion-selfhost", worker = (').length -
       1 ===
       1,
-    'R2_BUCKET and R2_OUTPUTS_BUCKET should share one local bucket service',
+    'R2_BUCKET should have one local bucket service',
   );
   assert(
     config.includes('r2:bucket:chiridion-selfhost-warehouse-exports'),
@@ -252,20 +292,6 @@ description: Follow ACME runbooks. Use when shipping internal tools.
       `host-only ${hostOnly} must not leak into Worker bindings`,
     );
   }
-  for (const [containerClass, image] of [
-    ['ProjectBuildSandbox', 'camelai-selfhost-project-build:0.12.0'],
-    ['AnalysisSandbox', 'camelai-selfhost-analysis:0.12.0'],
-    ['DbQuerySandbox', 'camelai-selfhost-db-query:0.12.0'],
-  ]) {
-    assert(
-      config.includes(
-        `className = "${containerClass}", uniqueKey = "camelai-selfhost-${containerClass}", ` +
-        `enableSql = true, container = (imageName = "${image}")`,
-      ),
-      `config should attach ${containerClass} to ${image}`,
-    );
-  }
-
   const compileResult = spawnSync(
     path.join(repoRoot, 'node_modules/workerd/bin/workerd'),
     ['compile', '--config-only', outPath],

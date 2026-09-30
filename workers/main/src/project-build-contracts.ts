@@ -48,3 +48,28 @@ export interface ProjectBuildTimings {
   persistMs: number;
   totalMs: number;
 }
+
+/**
+ * ProjectBuildContainer could not run an operation because its container is
+ * not running: it failed to start, or it stopped under the call. Transient: the
+ * next call starts a fresh container, so the readiness gate and the retry
+ * ladder absorb it.
+ *
+ * Thrown inside the Durable Object and recognized in the Worker. A DO RPC hop
+ * delivers a plain `Error` (name "Error", no own properties) whose message is
+ * prefixed with the original name — checked under `wrangler dev` — so callers
+ * use `is()` rather than `instanceof`.
+ */
+export class ProjectBuildContainerUnavailableError extends Error {
+  static is(error: unknown): boolean {
+    if (!(error instanceof Error)) return false;
+    return error.name === "ProjectBuildContainerUnavailableError" ||
+      error.message.startsWith("ProjectBuildContainerUnavailableError: ");
+  }
+
+  constructor(operation: string, cause: unknown) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    super(`Project build container is not running (${operation}): ${detail}`, { cause });
+    this.name = "ProjectBuildContainerUnavailableError";
+  }
+}

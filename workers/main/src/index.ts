@@ -13,7 +13,6 @@
 
 import { createRequestHandler } from 'react-router';
 import { DurableObject } from 'cloudflare:workers';
-export { ContainerProxy, Sandbox } from '@cloudflare/sandbox';
 import type { Env, Route } from './types.js';
 import { handleSlackEventsQueue } from './slack-events-queue.js';
 import type { AppScreenshotJob } from './screenshot-queue.js';
@@ -88,9 +87,16 @@ export { SecureFetchBinding } from './secure-fetch-service.js';
 export { AppScreenshotBinding } from './app-screenshot-binding.js';
 export { AppBrowserBinding } from './app-browser-binding.js';
 export { WorkspaceFilesystemDO } from './workspace-filesystem-do.js';
-export { AnalysisSandbox } from './analysis-sandbox.js';
-export { ProjectBuildSandbox } from './project-build-sandbox.js';
-export { DbQuerySandbox } from './db-query-sandbox.js';
+export {
+  AnalysisConnectionsGateway,
+  AnalysisContainer,
+  AnalysisEgress,
+} from './analysis-container.js';
+export { ProjectBuildContainer } from './project-build-container.js';
+export { DbQueryContainer } from './db-query-container.js';
+// Native containers' R2 bucket mounts (sandbox-mounts.ts: S3Mount) send each storage
+// request to this entrypoint, which signs it; the container never sees the key.
+export { S3Gateway } from '@cloudflare/sandbox';
 
 // Compatibility shim for environments whose deployed migration history still
 // references the old AdminIndexDO class. The app uses the D1-backed index now.

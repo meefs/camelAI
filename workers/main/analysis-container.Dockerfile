@@ -1,39 +1,48 @@
-# Unified analysis container (AnalysisSandbox) — successor to the warehouse tier.
+# Workspace analysis container (AnalysisContainer, Sandbox SDK 1.0 on the native
+# Durable Object container API).
 #
-# One warm container per workspace runs Jupyter notebook execution, ad-hoc Python/
-# shell, and DuckDB cross-source reduction. Runtime egress is SDK-enforced:
-# `enableInternet = false` with `allowedHosts` = PyPI (so `uv` can install packages
-# beyond this baked stack) plus the intercepted `connections.internal` host for
-# live workspace-connection queries (served by a Worker-side outbound handler; no
-# credential enters the container). See analysis-sandbox.ts and
-# plans/stateless-data-analysis-architecture.md.
+# One warm container per workspace runs Jupyter notebook execution, ad-hoc
+# Python/shell and DuckDB cross-source reduction. Egress is set up by the
+# Durable Object, not here: the container starts with the internet off, and
+# outbound intercepts allow only PyPI (so `uv` can install beyond this baked
+# stack) and `connections.internal` (live workspace-connection queries, served in
+# the Worker; no credential enters the container). See analysis-container.ts
+# and plans/stateless-data-analysis-architecture.md.
 #
-# The default data stack is baked in so the common case needs NO install step
-# (deleting the old skill's `uv init && uv add …` preamble). Projects that declare
-# a pyproject.toml sync from the seeded uv cache in seconds.
+# The default data stack is baked in so the common case needs NO install step.
+# Projects that declare a pyproject.toml sync from the seeded uv cache in seconds.
 #
-# Tag MUST match the @cloudflare/sandbox npm version (0.12.10). Do NOT set ENTRYPOINT
-# — the base image's entrypoint starts the sandbox HTTP API server; we only add
-# packages and tools on top.
+# 1.0 has no sandbox server: the main process only has to stay alive, and the
+# Durable Object runs every command with ctx.container.exec(). exec() sees none
+# of the ENV lines below (only PATH) and starts in / whatever WORKDIR says, so
+# analysis-container.ts passes the same variables (ANALYSIS_BASE_ENV) and a cwd
+# on every command. Keep the two in sync.
 #
-# SANDBOX_BASE_IMAGE exists because Cloudflare publishes amd64-only images:
-# on Apple Silicon the amd64 image runs under Rosetta/QEMU, where the Jupyter
-# kernel never answers its handshake, so run_notebook always fails locally.
-# scripts/build-analysis-sandbox-image.mjs builds the same base from the
-# sandbox-sdk source for arm64 and passes it here; production always uses the
-# default.
-ARG SANDBOX_BASE_IMAGE=docker.io/cloudflare/sandbox:0.12.10-python
-FROM ${SANDBOX_BASE_IMAGE}
+# Cloudflare runs containers as linux/amd64, and sandbox-shim (used by Files
+# and S3Mount) is published for amd64 only, hence the pinned platform on its
+# donor stage. Everything else is multi-arch, so an arm64 host can build this
+# natively (scripts/build-analysis-sandbox-image.mjs), where Jupyter works; the
+# shim then runs under the host's amd64 emulation.
+FROM --platform=linux/amd64 docker.io/cloudflare/sandbox:1.0.0 AS sandbox-tools
 
-# --- CLI tools the data-analysis skill documents -----------------------------
-# sqlite3 for local DBs; usql as the universal SQL CLI (static binary).
+FROM docker.io/python:3.13-slim-trixie
+
+# --- System tools ------------------------------------------------------------
+# ca-certificates: the DO appends the HTTPS intercept CA to this bundle.
+# fuse3 + s3fs: S3Mount's R2 mounts on Cloudflare (self-host copies instead).
+# sqlite3 for local DBs; git/curl/wget/jq/unzip/zip/xz/bzip2/procps for the
+# shell work the data-analysis skill documents (the 0.12 base image had them).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends sqlite3 ca-certificates curl bzip2 \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates curl wget git jq unzip zip bzip2 xz-utils procps \
+        sqlite3 fuse3 s3fs \
     && rm -rf /var/lib/apt/lists/*
 
-# usql universal SQL client. Pinned to 0.19.3: newer releases (>= 0.21) are
-# built against glibc 2.38, and this base image is Ubuntu 22.04 / glibc 2.35.
-# Re-check when the sandbox base image moves to a newer Ubuntu.
+# Files (readFile/writeFile/stat/mkdir/rename) and S3Mount run this helper. Keep
+# its tag equal to the installed @cloudflare/sandbox version.
+COPY --from=sandbox-tools /usr/local/bin/sandbox-shim /usr/local/bin/sandbox-shim
+
+# usql universal SQL client (static-ish binary built against glibc 2.35).
 RUN set -eux; \
     arch="$(uname -m)"; \
     case "$arch" in \
@@ -55,11 +64,11 @@ RUN curl -fsSL https://astral.sh/uv/0.5.11/install.sh | env UV_INSTALL_DIR=/usr/
 
 # --- Baked default analysis venv (on PATH) -----------------------------------
 # The exact set the data-analysis skill used to `uv add` on every fresh VM
-# (keep in sync with ANALYSIS_DEFAULT_STACK in analysis-service.ts). The common
-# analysis needs no install: `python`, `jupyter`, and the stack are ready. The
-# install also populates UV_CACHE_DIR, so project `uv sync`/`uv add` runs reuse
-# the downloaded wheels. This step is BUILD-FATAL by design — a resolution or
-# network failure must fail the image build, never ship a stackless image.
+# (keep in sync with ANALYSIS_DEFAULT_STACK in analysis-service.ts). Python 3.13
+# is the base image's. The install also populates UV_CACHE_DIR, so project
+# `uv sync`/`uv add` runs reuse the downloaded wheels. This step is BUILD-FATAL
+# by design — a resolution or network failure must fail the image build, never
+# ship a stackless image.
 ENV ANALYSIS_VENV=/opt/analysis-venv
 RUN uv venv --python 3.13 "$ANALYSIS_VENV" \
     && VIRTUAL_ENV="$ANALYSIS_VENV" uv pip install --python "$ANALYSIS_VENV/bin/python" \
@@ -75,8 +84,8 @@ ENV PATH="/opt/analysis-venv/bin:${PATH}"
 # Pure-stdlib .ipynb inspector (cell errors, charts fallen back to text/plain,
 # blank/constant charts). Wrangler's container build context is this Dockerfile's
 # directory (workers/main), so we COPY a build-context copy of the canonical
-# sandbox/validate-notebook.py (canonical). The copy is kept byte-identical by a drift test
-# (analysis-service.test.ts); update both together.
+# sandbox/validate-notebook.py. The copy is kept byte-identical by a drift test
+# (tests/analysis-sandbox-asset-drift.test.ts); update both together.
 COPY analysis-sandbox-assets/validate-notebook.py /usr/local/bin/validate-notebook
 RUN chmod +x /usr/local/bin/validate-notebook
 
@@ -99,7 +108,11 @@ RUN chmod +x /usr/local/bin/camelai-archive
 # In-sandbox helpers for workspace connections and BigQuery (`from camelai
 # import bq`): RPC plumbing, MCP response parsing, and export→DuckDB loading.
 # On PYTHONPATH (not installed into a venv) so it is importable from the baked
-# default venv, per-project uv environments, AND run_code alike. Keep in sync
-# with ANALYSIS_PYTHONPATH in analysis-service.ts.
+# default venv, per-project uv environments, AND run_code alike.
 COPY analysis-sandbox-assets/camelai /opt/camelai-python/camelai
 ENV PYTHONPATH=/opt/camelai-python
+
+RUN mkdir -p /projects /scratch /venvs
+WORKDIR /root
+
+CMD ["sleep", "infinity"]
