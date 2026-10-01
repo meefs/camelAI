@@ -61,7 +61,8 @@ export function alarmGuardEntryModule(
 /**
  * Applies the platform cost controls to an upload. Idempotent: an artifact that
  * already carries the alarm guard (e.g. a rollback of a guarded deploy) keeps
- * its modules and only gets the current CPU limit.
+ * its modules and only gets the current CPU limit. `config` must already be
+ * resolved for the app (userAppCostControlsForScript).
  */
 export function withUserAppCostControls<
   Metadata extends CostControlledMetadata,
@@ -75,9 +76,13 @@ export function withUserAppCostControls<
   const limits = metadata.limits && typeof metadata.limits === "object" && !Array.isArray(metadata.limits)
     ? metadata.limits as Record<string, unknown>
     : {};
-  const nextMetadata: Metadata = config.cpuMs > 0
-    ? { ...metadata, limits: { ...limits, cpu_ms: config.cpuMs } }
-    : { ...metadata };
+  // cpuMs 0 means no cpu_ms at all, so the script gets Cloudflare's default.
+  const { cpu_ms: _cpuMs, ...otherLimits } = limits;
+  const nextLimits = config.cpuMs > 0 ? { ...otherLimits, cpu_ms: config.cpuMs } : otherLimits;
+  const { limits: _limits, ...withoutLimits } = metadata;
+  const nextMetadata = (Object.keys(nextLimits).length > 0
+    ? { ...withoutLimits, limits: nextLimits }
+    : withoutLimits) as Metadata;
 
   const alreadyGuarded = metadata.main_module === USER_APP_GUARD_ENTRY_MODULE ||
     modules.some((module) => module.name === USER_APP_ALARM_GUARD_MODULE);

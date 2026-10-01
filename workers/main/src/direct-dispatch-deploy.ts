@@ -20,6 +20,7 @@ import {
 import { resolveUploadedDispatchScriptVersion, withUsageGuardTracing } from "./usage-guard-config.js";
 import {
   userAppCostControlsConfig,
+  userAppCostControlsForScript,
   withUserAppCostControls,
   type UserAppCostControlsEnv,
 } from "./user-app-cost-controls.js";
@@ -360,7 +361,12 @@ export async function deployWorkerModulesDirect(
   timings.artifactCacheMs = Date.now() - artifactCacheStartedAt;
   // The artifact cache keeps the app's own bundle; cost controls are applied to
   // each upload (deploy and rollback) so they always reflect current config.
-  const upload = withUserAppCostControls(metadata, request.modules, userAppCostControlsConfig(env), javascriptModule);
+  const upload = withUserAppCostControls(
+    metadata,
+    request.modules,
+    userAppCostControlsForScript(userAppCostControlsConfig(env), dispatchScriptName),
+    javascriptModule,
+  );
   const form = new FormData();
   form.append("metadata", new Blob([JSON.stringify(upload.metadata)], { type: "application/json" }));
   for (const module of upload.modules) {
@@ -941,7 +947,7 @@ export async function rollbackWorkerDeployFromArtifactCache(
   const upload = withUserAppCostControls(
     metadata,
     record.modules,
-    userAppCostControlsConfig(env),
+    userAppCostControlsForScript(userAppCostControlsConfig(env), record.dispatchScriptName),
     (name, source) => ({ name, contentType: "application/javascript+module", contentBase64: bytesToBase64(new TextEncoder().encode(source)) }),
   );
 

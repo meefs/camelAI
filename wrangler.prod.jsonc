@@ -70,6 +70,10 @@
     "CF_ZONE_ID": "94f647d6b1658a287820a83d09492c73",
     "CF_CUSTOM_HOSTNAME_FALLBACK": "custom-domains.camelai.app",
     "CF_DCV_DELEGATION_UUID": "1b7fee6764db9b60",
+    // Per-app user-app CPU limits (workers/main/src/user-app-cost-controls-policy.ts).
+    // Read-heavy enterprise apps whose Durable Object calls run longer than the
+    // 15 s default; 0 leaves them on Cloudflare's default limit.
+    "USER_APP_CPU_MS_OVERRIDES": "freight-analyzer--gmie6a=0 freight-terms-analyzer--gmie6a=0 freight-cost-drivers--gmie6a=0",
   },
   "assets": {
     "binding": "ASSETS",

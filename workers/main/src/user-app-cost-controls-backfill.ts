@@ -10,6 +10,7 @@ import {
   readDispatchScriptSettings,
   scriptNeedsAlarmGuard,
   userAppCostControlsConfig,
+  userAppCostControlsForScript,
   type CostControlsBackfillGuardState,
   type CostControlsBackfillSkipReason,
 } from "./user-app-cost-controls-policy.js";
@@ -83,7 +84,7 @@ export async function backfillUserAppCostControls(
     leaseExpiresAt,
     settings: settings ?? undefined,
     entrypoint,
-    config: userAppCostControlsConfig(env),
+    config: userAppCostControlsForScript(userAppCostControlsConfig(env), dispatchScriptName),
     now: options.now ?? Date.now(),
   });
   if (decision.action === "skip") return skipped(decision.reason);

@@ -1,6 +1,7 @@
 import {
   classifyCostControlsBackfill,
   scriptNeedsAlarmGuard,
+  userAppCostControlsForScript,
   type CostControlsBackfillGuardState,
   type CostControlsBackfillSkipReason,
   type DispatchScriptSettingsView,
@@ -200,7 +201,7 @@ export async function runBackfill(
       live: true,
       guardState,
       leaseExpiresAt: guardState ? deps.leaseExpiresAt(guardState.app_id) : null,
-      config,
+      config: userAppCostControlsForScript(config, dispatchScriptName),
     };
     const cheap = classifyCostControlsBackfill({ ...base, now: deps.now() });
     if (cheap.action === "skip") {

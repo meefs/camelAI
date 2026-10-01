@@ -8,6 +8,7 @@ import {
   USER_APP_GUARD_ENTRY_MODULE,
   alarmGuardEntryModule,
   userAppCostControlsConfig,
+  userAppCostControlsForScript,
   withUserAppCostControls,
 } from "../src/user-app-cost-controls";
 
@@ -251,13 +252,29 @@ describe("withUserAppCostControls", () => {
   const toModule = (name: string, content: string) => ({ name, contentType: "application/javascript+module", content });
   const userModules = [{ name: "index.js", contentType: "application/javascript+module", content: "export default {};" }];
 
-  it("defaults to a 30s alarm interval, 3,000 alarms/day and 1s of CPU", () => {
-    expect(config).toEqual({ alarmMinIntervalMs: 30_000, alarmDailyBudget: 3_000, cpuMs: 1_000 });
+  it("defaults to a 30s alarm interval, 3,000 alarms/day and 15s of CPU", () => {
+    expect(config).toEqual({ alarmMinIntervalMs: 30_000, alarmDailyBudget: 3_000, cpuMs: 15_000, cpuMsOverrides: new Map() });
     expect(userAppCostControlsConfig({
       USER_APP_ALARM_MIN_INTERVAL_MS: "5000",
       USER_APP_ALARM_DAILY_BUDGET: "0",
       USER_APP_CPU_MS: "garbage",
-    })).toEqual({ alarmMinIntervalMs: 5_000, alarmDailyBudget: 0, cpuMs: 1_000 });
+    })).toEqual({ alarmMinIntervalMs: 5_000, alarmDailyBudget: 0, cpuMs: 15_000, cpuMsOverrides: new Map() });
+  });
+
+  it("resolves per-app CPU overrides and ignores malformed entries once", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const raw = ` heavy--acme=30000,\n unlimited--acme=0  bad--acme=1.5,=5 noequals--acme heavy--acme=x neg--acme=-1 ,${crypto.randomUUID()}=`;
+    const withOverrides = userAppCostControlsConfig({ USER_APP_CPU_MS: "2000", USER_APP_CPU_MS_OVERRIDES: raw });
+    userAppCostControlsConfig({ USER_APP_CPU_MS_OVERRIDES: raw });
+
+    expect(withOverrides.cpuMsOverrides).toEqual(new Map([["heavy--acme", 30_000], ["unlimited--acme", 0]]));
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]![1]).toMatchObject({ ignored: expect.arrayContaining(["bad--acme=1.5", "=5", "noequals--acme", "heavy--acme=x", "neg--acme=-1"]) });
+    expect(userAppCostControlsForScript(withOverrides, "heavy--acme").cpuMs).toBe(30_000);
+    expect(userAppCostControlsForScript(withOverrides, "unlimited--acme").cpuMs).toBe(0);
+    expect(userAppCostControlsForScript(withOverrides, "other--acme").cpuMs).toBe(2_000);
+    expect(userAppCostControlsConfig({ USER_APP_CPU_MS_OVERRIDES: "  " }).cpuMsOverrides.size).toBe(0);
+    warn.mockRestore();
   });
 
   it("wraps local Durable Object classes behind a generated entry module", () => {
@@ -272,7 +289,7 @@ describe("withUserAppCostControls", () => {
     }, userModules, config, toModule);
 
     expect(result.metadata.main_module).toBe(USER_APP_GUARD_ENTRY_MODULE);
-    expect(result.metadata.limits).toEqual({ subrequests: 50, cpu_ms: 1_000 });
+    expect(result.metadata.limits).toEqual({ subrequests: 50, cpu_ms: 15_000 });
     expect(result.modules.map((module) => module.name)).toEqual([
       "index.js",
       USER_APP_ALARM_GUARD_MODULE,
@@ -291,8 +308,23 @@ describe("withUserAppCostControls", () => {
 
   it("only sets the CPU limit for apps without Durable Objects", () => {
     const result = withUserAppCostControls({ main_module: "index.js", bindings: [] }, userModules, config, toModule);
-    expect(result.metadata).toEqual({ main_module: "index.js", bindings: [], limits: { cpu_ms: 1_000 } });
+    expect(result.metadata).toEqual({ main_module: "index.js", bindings: [], limits: { cpu_ms: 15_000 } });
     expect(result.modules).toBe(userModules);
+  });
+
+  it("omits limits.cpu_ms entirely when an app's CPU limit is 0", () => {
+    const unlimited = userAppCostControlsForScript(
+      userAppCostControlsConfig({ USER_APP_CPU_MS_OVERRIDES: "demo--acme=0" }),
+      "demo--acme",
+    );
+    expect(withUserAppCostControls({ main_module: "index.js", bindings: [] }, userModules, unlimited, toModule).metadata)
+      .toEqual({ main_module: "index.js", bindings: [] });
+    expect(withUserAppCostControls(
+      { main_module: "index.js", bindings: [], limits: { cpu_ms: 1_000, subrequests: 50 } },
+      userModules,
+      unlimited,
+      toModule,
+    ).metadata).toEqual({ main_module: "index.js", bindings: [], limits: { subrequests: 50 } });
   });
 
   it("is idempotent for bundles that already carry the guard", () => {
@@ -307,7 +339,7 @@ describe("withUserAppCostControls", () => {
   });
 
   it("can be disabled with zeroes", () => {
-    const off = { alarmMinIntervalMs: 0, alarmDailyBudget: 0, cpuMs: 0 };
+    const off = { alarmMinIntervalMs: 0, alarmDailyBudget: 0, cpuMs: 0, cpuMsOverrides: new Map() };
     const metadata = {
       main_module: "index.js",
       bindings: [{ type: "durable_object_namespace", name: "ROOM", class_name: "Room" }],

@@ -135,7 +135,9 @@ async function main(): Promise<number> {
 
   console.log(`${args.apply ? "APPLY" : "DRY RUN"} env=${args.env} namespace=${namespace} order=${args.order}` +
     `${args.limit !== null ? ` limit=${args.limit}` : ""}${args.scripts ? ` scripts=${args.scripts.length}` : ""}`);
-  console.log(`controls: cpu_ms=${config.cpuMs} alarmMinIntervalMs=${config.alarmMinIntervalMs} alarmDailyBudget=${config.alarmDailyBudget}`);
+  const overrides = [...config.cpuMsOverrides].map(([name, ms]) => `${name}=${ms}`).join(",") || "none";
+  console.log(`controls: cpu_ms=${config.cpuMs} cpu_ms_overrides=${overrides}` +
+    ` alarmMinIntervalMs=${config.alarmMinIntervalMs} alarmDailyBudget=${config.alarmDailyBudget}`);
 
   const liveScripts = await listLiveScripts(token, accountId, namespace);
   const guardRows = await queryD1<CostControlsBackfillGuardState & { dispatch_script_name: string }>(token, accountId, databaseId, `
