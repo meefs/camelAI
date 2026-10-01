@@ -67,6 +67,32 @@ describe("agent MCP", () => {
     expect(validate).not.toHaveBeenCalled();
   });
 
+  it("accepts the hosted runtime's tokens at either of its names", async () => {
+    // The hosted runtime signs as https://agents.camelai.dev whichever name
+    // AGENT_RUNTIME_URL uses; its keys are read from that URL.
+    const list = { jsonrpc: "2.0", id: 1, method: "tools/list" };
+    for (const runtime of ["https://agents.camelai.dev", "https://run.camelai.com"]) {
+      const hosted = await testRuntime({ url: runtime });
+      const env = {
+        AGENT_RUNTIME_URL: runtime,
+        AGENT_RUNTIME_TENANT: "chiridion",
+        ORG: { idFromName: (name: string) => name, get: () => ({ validateChatWebSocketAccess: allowed }) },
+      } as unknown as Env;
+      const handler = agentMcpHandler(env, vi.fn<ToolsFactory>(), { fetch: hosted.fetch });
+      const send = async (iss: string) => handler(new Request(MCP_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json, text/event-stream",
+          Authorization: `Bearer ${await hosted.token(ALICE, MCP_URL, { claims: { iss } })}`,
+        },
+        body: JSON.stringify(list),
+      }));
+      expect((await send("https://agents.camelai.dev")).status).toBe(200);
+      expect((await send("https://run.camelai.com")).status).toBe(401);
+    }
+  });
+
   it("lists the served tools with JSON schemas", async () => {
     const { handler } = setup();
     const response = await handler(await rt.request(MCP_URL, { jsonrpc: "2.0", id: 1, method: "tools/list" }, ALICE));
