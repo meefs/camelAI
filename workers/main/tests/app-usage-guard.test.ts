@@ -494,6 +494,89 @@ describe.sequential("usage guard state machine", () => {
   });
 });
 
+describe.sequential("usage guard exemptions mid-run", () => {
+  async function exempt(db: D1Database, appId: string) {
+    await db.prepare("UPDATE app_usage_guard_state SET status = 'exempt', reason_code = 'ops_exempt' WHERE app_id = ?")
+      .bind(appId).run();
+  }
+
+  async function events(db: D1Database, appId: string) {
+    const result = await db.prepare("SELECT event_type FROM app_usage_guard_events WHERE app_id = ? ORDER BY created_at")
+      .bind(appId).all<{ event_type: string }>();
+    return result.results.map((row) => row.event_type);
+  }
+
+  async function struckOnce(appId: string) {
+    const setup = await stateEnv(appId);
+    await setup.env.APP_DB.prepare("UPDATE app_usage_guard_state SET status = 'warned', consecutive_over_limit = 1 WHERE app_id = ?")
+      .bind(appId).run();
+    return setup;
+  }
+
+  it("does not overwrite an exemption made during telemetry collection", async () => {
+    for (const [label, prepare] of [["warn", stateEnv], ["suspend", struckOnce]] as const) {
+      const appId = `exempt-mid-run-${label}-${crypto.randomUUID()}`;
+      const setup = await prepare(appId);
+      const fetcher = guardFetcher({ onTelemetry: () => exempt(setup.env.APP_DB, appId) });
+      vi.stubGlobal("fetch", fetcher);
+
+      await runUsageGuard(setup.env, Date.now());
+
+      expect(await setup.env.APP_DB.prepare("SELECT status, reason_code, consecutive_over_limit FROM app_usage_guard_state WHERE app_id = ?")
+        .bind(appId).first()).toMatchObject({ status: "exempt", reason_code: "ops_exempt", consecutive_over_limit: label === "warn" ? 0 : 1 });
+      expect(fetcher.mock.calls.some((call) => call[1]?.method === "PUT")).toBe(false);
+      // Untouched: the registry was seeded "active".
+      expect(JSON.parse(setup.registry.get("script:guard-state-app--acme")!).usage_guard_status).toBe("active");
+      expect(await events(setup.env.APP_DB, appId)).toContain(
+        label === "warn" ? "state_update_skipped_stale" : "enforcement_deferred_stale_claim",
+      );
+    }
+  });
+
+  it("does not quarantine an app exempted after the enforcement claim", async () => {
+    const appId = `exempt-after-claim-${crypto.randomUUID()}`;
+    const setup = await struckOnce(appId);
+    const kv = setup.env.APP_KV;
+    setup.env.APP_KV = {
+      get: (key: string) => kv.get(key),
+      put: async (key: string, value: string) => {
+        await kv.put(key, value);
+        if (JSON.parse(value).usage_guard_status === "suspending") await exempt(setup.env.APP_DB, appId);
+      },
+    } as unknown as KVNamespace;
+    const fetcher = guardFetcher();
+    vi.stubGlobal("fetch", fetcher);
+
+    await runUsageGuard(setup.env, Date.now());
+
+    expect(await setup.env.APP_DB.prepare("SELECT status, quarantine_version FROM app_usage_guard_state WHERE app_id = ?")
+      .bind(appId).first()).toMatchObject({ status: "exempt", quarantine_version: null });
+    expect(fetcher.mock.calls.some((call) => call[1]?.method === "PUT")).toBe(false);
+    expect(JSON.parse(setup.registry.get("script:guard-state-app--acme")!)).toMatchObject({
+      usage_guard_status: "exempt",
+      usage_guard_reason: "ops_exempt",
+    });
+    expect(await events(setup.env.APP_DB, appId)).toContain("enforcement_deferred_stale_claim");
+  });
+
+  it("keeps an exemption made while the quarantine was being installed", async () => {
+    const appId = `exempt-during-quarantine-${crypto.randomUUID()}`;
+    const setup = await struckOnce(appId);
+    const base = guardFetcher();
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      if (init?.method === "PUT") await exempt(setup.env.APP_DB, appId);
+      return base(input, init);
+    }));
+
+    await runUsageGuard(setup.env, Date.now());
+
+    expect(await setup.env.APP_DB.prepare("SELECT status, suspended_at FROM app_usage_guard_state WHERE app_id = ?")
+      .bind(appId).first()).toMatchObject({ status: "exempt", suspended_at: null });
+    expect(JSON.parse(setup.registry.get("script:guard-state-app--acme")!).usage_guard_status).toBe("exempt");
+    expect(await events(setup.env.APP_DB, appId)).toContain("quarantine_superseded");
+  });
+});
+
 describe.sequential("deploy eligibility", () => {
   const db = (testEnv as unknown as { APP_DB: D1Database }).APP_DB;
 

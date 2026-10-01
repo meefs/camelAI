@@ -96,6 +96,16 @@ async function updateRegistryBestEffort(
   }
 }
 
+// After a claim loses to an operator exemption, undo the claim's "suspending"
+// registry entry so the dispatcher serves the app again. (A redeploy that wins
+// the race rewrites the registry itself.)
+async function mirrorExemptionToRegistry(env: Env, state: GuardStateRow, now: number): Promise<void> {
+  const current = await env.APP_DB.prepare("SELECT status, reason_code FROM app_usage_guard_state WHERE app_id = ?")
+    .bind(state.app_id)
+    .first<{ status: UsageGuardStatus; reason_code: string | null }>();
+  if (current?.status === "exempt") await updateRegistryBestEffort(env, state, "exempt", current.reason_code, now);
+}
+
 async function setState(input: {
   db: D1Database;
   appId: string;
@@ -106,10 +116,11 @@ async function setState(input: {
   eligibleVersion: string;
   now: number;
 }): Promise<void> {
-  await input.db.prepare(`
+  // Operators can mark an app exempt while a run is in flight; leave it be.
+  const result = await input.db.prepare(`
     UPDATE app_usage_guard_state
     SET status = ?, consecutive_over_limit = ?, reason_code = ?, decision_json = ?, updated_at = ?
-    WHERE app_id = ? AND eligible_script_version = ?
+    WHERE app_id = ? AND eligible_script_version = ? AND status != 'exempt'
   `).bind(
     input.status,
     input.streak,
@@ -119,6 +130,9 @@ async function setState(input: {
     input.appId,
     input.eligibleVersion,
   ).run();
+  if ((result.meta.changes ?? 0) === 0) {
+    await appendEvent(input.db, input.appId, "state_update_skipped_stale", { status: input.status, reason: input.reason ?? null }, input.now);
+  }
 }
 
 async function suspendApp(env: Env, state: GuardStateRow, reason: string, decision: unknown, now: number): Promise<void> {
@@ -138,7 +152,7 @@ async function suspendApp(env: Env, state: GuardStateRow, reason: string, decisi
       UPDATE app_usage_guard_state
       SET status = 'suspending', consecutive_over_limit = ?, reason_code = ?,
           decision_json = ?, quarantine_attempts = ?, next_retry_at = NULL, updated_at = ?
-      WHERE app_id = ? AND eligible_script_version = ?
+      WHERE app_id = ? AND eligible_script_version = ? AND status != 'exempt'
     `).bind(
       state.consecutive_over_limit,
       reason,
@@ -154,6 +168,16 @@ async function suspendApp(env: Env, state: GuardStateRow, reason: string, decisi
     }
     await updateRegistryBestEffort(env, state, "suspending", reason, now);
     try {
+      // Last check before touching the live script: an operator may have
+      // exempted the app since the claim.
+      const claimed = await env.APP_DB.prepare(`
+        SELECT 1 FROM app_usage_guard_state WHERE app_id = ? AND eligible_script_version = ? AND status = 'suspending'
+      `).bind(state.app_id, state.eligible_script_version).first();
+      if (!claimed) {
+        await appendEvent(env.APP_DB, state.app_id, "enforcement_deferred_stale_claim", { reason, decision }, now);
+        await mirrorExemptionToRegistry(env, state, now);
+        return;
+      }
       const quarantineVersion = await quarantineDispatchScript({
         accountId: env.CF_ACCOUNT_ID,
         dispatchNamespace: env.CF_DISPATCH_NAMESPACE,
@@ -161,12 +185,19 @@ async function suspendApp(env: Env, state: GuardStateRow, reason: string, decisi
         apiToken: env.CF_API_TOKEN,
         expectedVersion: state.eligible_script_version,
       });
-      await env.APP_DB.prepare(`
+      const suspended = await env.APP_DB.prepare(`
         UPDATE app_usage_guard_state
         SET status = 'suspended', suspended_at = ?, quarantine_version = ?,
             quarantine_attempts = 0, next_retry_at = NULL, updated_at = ?
-        WHERE app_id = ? AND eligible_script_version = ?
+        WHERE app_id = ? AND eligible_script_version = ? AND status != 'exempt'
       `).bind(now, quarantineVersion, now, state.app_id, state.eligible_script_version).run();
+      if ((suspended.meta.changes ?? 0) === 0) {
+        // Exempted (or redeployed) while the quarantine was being installed. The
+        // live script is quarantined; a redeploy restores it.
+        await appendEvent(env.APP_DB, state.app_id, "quarantine_superseded", { reason, decision, quarantineVersion }, now);
+        await mirrorExemptionToRegistry(env, state, now);
+        return;
+      }
       await updateRegistryBestEffort(env, state, "suspended", reason, now);
       try {
         await appendEvent(env.APP_DB, state.app_id, "suspended", { reason, decision, quarantineVersion }, now);
@@ -176,11 +207,11 @@ async function suspendApp(env: Env, state: GuardStateRow, reason: string, decisi
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       const retryDelay = Math.min(30 * 60_000, 60_000 * 2 ** Math.min(attempt - 1, 5));
-      await env.APP_DB.prepare(`
+      const failed = await env.APP_DB.prepare(`
         UPDATE app_usage_guard_state
         SET status = 'error', reason_code = ?, decision_json = ?,
             quarantine_attempts = ?, next_retry_at = ?, updated_at = ?
-        WHERE app_id = ? AND eligible_script_version = ?
+        WHERE app_id = ? AND eligible_script_version = ? AND status != 'exempt'
       `).bind(
         reason,
         JSON.stringify({ decision, error: errorMessage }),
@@ -190,6 +221,11 @@ async function suspendApp(env: Env, state: GuardStateRow, reason: string, decisi
         state.app_id,
         state.eligible_script_version,
       ).run();
+      if ((failed.meta.changes ?? 0) === 0) {
+        await appendEvent(env.APP_DB, state.app_id, "quarantine_superseded", { reason, decision, error: errorMessage }, now);
+        await mirrorExemptionToRegistry(env, state, now);
+        return;
+      }
       await updateRegistryBestEffort(env, state, "error", reason, now);
       await appendEvent(env.APP_DB, state.app_id, "quarantine_failed", {
         reason,
