@@ -1,7 +1,8 @@
-import { Files, SandboxFileError, type S3GatewayBinding } from "@cloudflare/sandbox";
+import { SandboxFileError, type Files, type S3GatewayBinding } from "@cloudflare/sandbox";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 
 import { getWorkspaceR2Prefix } from "../../../src/lib/workspace-r2-paths.js";
+import { createContainerFiles } from "./container-files.js";
 import { ANALYSIS_IDLE_TIMEOUT_MS, ANALYSIS_INSTANCE_TYPE } from "./container-sizing.js";
 import {
   ANALYSIS_START_POLICY,
@@ -221,7 +222,7 @@ export class AnalysisContainer extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env, deps: AnalysisContainerDeps = {}) {
     super(ctx, env);
     const container = ctx.container;
-    this.files = deps.files ?? (container ? new Files(container) : null);
+    this.files = deps.files ?? (container ? createContainerFiles(container, env) : null);
     this.mountsImpl = deps.mounts ?? null;
     // The inactivity timeout belongs to the DO instance: a restarted DO (a
     // deploy, an eviction) must set it again or the container stops shortly

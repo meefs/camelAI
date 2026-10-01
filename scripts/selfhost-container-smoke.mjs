@@ -302,10 +302,12 @@ const smoke :Workerd.Config = (
       bindings = [
         (name = "SANDBOX", durableObjectNamespace = (
           className = ${JSON.stringify(runtime.className)}
-        ))${needsR2 ? `,
+        )),
+        # As in the generated self-host config: the container classes switch
+        # to their self-host behavior (sync mounts, buffered exec output) on it.
+        (name = "CF_ACCOUNT_ID", text = "selfhost")${needsR2 ? `,
         (name = "R2_BUCKET", r2Bucket = (name = "r2:bucket:smoke")),
         (name = "WAREHOUSE_EXPORT_BUCKET", r2Bucket = (name = "r2:bucket:smoke")),
-        (name = "CF_ACCOUNT_ID", text = "selfhost"),
         (name = "SMOKE_PUBLIC_DB", text = ${JSON.stringify(process.env.SELFHOST_SMOKE_PUBLIC_DB === "1" ? "1" : "0")})` : ""}
       ],
       globalOutbound = "internet",
@@ -576,6 +578,10 @@ async function availablePort() {
   return port;
 }
 
+// Retries only while workerd is not accepting connections yet. The smoke runs
+// once: a request that fails or hangs is the failure. (Aborting and retrying a
+// hung request used to hide a deadlock behind a slow pass, until a run spent
+// its whole budget on retries that queued behind the stuck one.)
 async function poll(url, workerd, logs) {
   const deadline = Date.now() + 240_000;
   let lastError;
@@ -585,22 +591,30 @@ async function poll(url, workerd, logs) {
         `workerd exited with ${workerd.exitCode}\n${logs.join("").slice(-8000)}`,
       );
     }
+    let response;
     try {
-      const response = await fetch(url, {
-        signal: AbortSignal.timeout(30_000),
+      response = await fetch(url, {
+        signal: AbortSignal.timeout(deadline - Date.now()),
       });
-      if (response.ok) return response;
-      throw new Error(
-        `Container smoke returned HTTP ${response.status}: ${await response.text()}\n` +
-          logs.join("").slice(-8000),
-      );
     } catch (error) {
+      if (error?.cause?.code !== "ECONNREFUSED") {
+        throw new Error(
+          `Container smoke request failed: ${error?.message ?? error}\n` +
+            logs.join("").slice(-8000),
+        );
+      }
       lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      continue;
     }
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    if (response.ok) return response;
+    throw new Error(
+      `Container smoke returned HTTP ${response.status}: ${await response.text()}\n` +
+        logs.join("").slice(-8000),
+    );
   }
   throw new Error(
-    `Container smoke timed out: ${lastError?.message ?? "no response"}\n` +
+    `workerd did not accept the smoke request: ${lastError?.message ?? "no response"}\n` +
       logs.join("").slice(-8000),
   );
 }
