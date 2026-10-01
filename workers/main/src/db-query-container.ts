@@ -3,6 +3,13 @@ import { DurableObject } from "cloudflare:workers";
 
 import { DB_QUERY_IDLE_TIMEOUT_MS, DB_QUERY_INSTANCE_TYPE } from "./container-sizing.js";
 import {
+  ContainerStartFailedError,
+  DB_QUERY_START_POLICY,
+  LAST_STARTED_IMAGE_KEY,
+  recordContainerStartEvent,
+  startWithRetry,
+} from "./container-start.js";
+import {
   DB_QUERY_RUNNER_DIR,
   DB_RELAY_LOCAL_PORT,
   DbQueryContainerUnavailableError,
@@ -25,6 +32,9 @@ const BASE_ENV: Readonly<Record<string, string>> = {
   HOME: "/root",
   LANG: "C.UTF-8",
 };
+
+/** How a start failure names this container to the agent. */
+const DB_QUERY_ENVIRONMENT_LABEL = "database query environment";
 
 /** GNU `timeout` sends SIGKILL this long after SIGTERM. */
 const KILL_AFTER_SECONDS = 5;
@@ -106,6 +116,8 @@ export class DbQueryContainer extends DurableObject<Env> implements DbQueryConta
   private readonly files: DbQueryContainerDeps["files"] | null;
   private mountsImpl: SandboxBucketMounts | null;
   private setup: Promise<void> | null = null;
+  /** A start (with its retry) is in flight: callers join it, even while it destroys between attempts. */
+  private starting = false;
 
   constructor(ctx: DurableObjectState, env: Env, deps: DbQueryContainerDeps = {}) {
     super(ctx, env);
@@ -123,15 +135,14 @@ export class DbQueryContainer extends DurableObject<Env> implements DbQueryConta
   }
 
   /**
-   * Starts the container and waits until it runs commands. Callers bound this
-   * with the container-start budget, so the relay/mount setup deadlines that
-   * follow are not spent on a cold start.
+   * Starts the container and waits until it runs commands. A cold start is
+   * bounded and retried once in here (container-start.ts), and every caller
+   * waiting on it gets the retried container. Callers also put a client-side
+   * backstop around this, so the relay/mount setup deadlines that follow are
+   * not spent on a cold start.
    */
   async start(): Promise<void> {
-    await this.withContainer("start", async () => {
-      const probe = await this.container.exec(["true"], { cwd: "/", env: { ...BASE_ENV } });
-      await probe.exitCode;
-    });
+    await this.withContainer("start", async () => {});
   }
 
   /**
@@ -224,10 +235,12 @@ export class DbQueryContainer extends DurableObject<Env> implements DbQueryConta
   /**
    * Stops the container; the next call starts a fresh one. `reason` (a setup
    * step that outlived its deadline, from db-query-service.ts) is recorded.
-   * A fresh container starts in well under a second, so there is no cooldown.
+   * There is no cooldown: in prod a fresh container after a stuck one served
+   * queries within seconds.
    */
   async destroy(reason?: { operation: string; error?: string }): Promise<{ destroyed: boolean }> {
     this.setup = null;
+    this.starting = false;
     const container = this.ctx.container;
     const destroyed = container?.running === true;
     if (destroyed) await container.destroy();
@@ -289,6 +302,9 @@ export class DbQueryContainer extends DurableObject<Env> implements DbQueryConta
       await this.ensureRunning();
       return await run();
     } catch (error) {
+      // A start that failed after its retry already says so in plain words,
+      // and the caller must not retry it again: that would double the wait.
+      if (ContainerStartFailedError.is(error)) throw error;
       if (this.ctx.container?.running || SandboxFileError.is(error) || SandboxS3MountError.is(error)) {
         throw error;
       }
@@ -298,24 +314,45 @@ export class DbQueryContainer extends DurableObject<Env> implements DbQueryConta
   }
 
   private ensureRunning(): Promise<void> {
-    if (this.setup === null || !this.container.running) {
-      this.setup = this.startContainer().catch((error: unknown) => {
-        this.setup = null;
+    if (this.setup !== null && (this.starting || this.container.running)) return this.setup;
+    this.starting = true;
+    const setup: Promise<void> = this.startContainer().then(
+      () => {
+        if (this.setup === setup) this.starting = false;
+      },
+      (error: unknown) => {
+        if (this.setup === setup) {
+          this.setup = null;
+          this.starting = false;
+        }
         throw error;
-      });
-    }
-    return this.setup;
+      },
+    );
+    this.setup = setup;
+    return setup;
   }
 
   /**
    * Starts the container if needed and (re)applies the inactivity timeout.
    * Runs once per DO instance, or again after the container stopped. Every step
    * after start() is safe to repeat: a deploy can restart the DO mid-setup.
+   *
+   * A cold start runs under DB_QUERY_START_POLICY: start, then a `true` probe
+   * (the first command blocks until the container runs). A stuck or failed
+   * attempt is destroyed and retried once; see container-start.ts.
    */
   private async startContainer(): Promise<void> {
     const container = this.container;
     const image = container.images[DB_QUERY_IMAGE];
-    if (!image) throw new Error(`no such image: ${DB_QUERY_IMAGE} is missing from the container images`);
+    if (!image) {
+      throw new ContainerStartFailedError({
+        label: DB_QUERY_ENVIRONMENT_LABEL,
+        attempts: 0,
+        waitedMs: 0,
+        permanent: true,
+        cause: new Error(`no such image: ${DB_QUERY_IMAGE} is missing from the container images`),
+      });
+    }
 
     if (container.running) {
       // A deploy never replaces a running container. The first call on a new DO
@@ -334,28 +371,54 @@ export class DbQueryContainer extends DurableObject<Env> implements DbQueryConta
       }
     }
 
-    if (!container.running) {
-      container.start({
-        image,
-        instance: DB_QUERY_INSTANCE_TYPE,
-        // Public DNS and raw TCP to databases; see the class doc.
-        enableInternet: true,
-      });
-      recordObservabilityEvent(this.env, {
-        event: "db_query_container_start",
-        severity: "info",
-        component: "DbQueryContainer",
-        operation: "startContainer",
-        workspaceId: this.workspaceId,
-      });
+    if (container.running) {
+      try {
+        await container.setInactivityTimeout(DB_QUERY_IDLE_TIMEOUT_MS);
+      } catch (error) {
+        await container.destroy();
+        throw error;
+      }
+      return;
     }
 
-    try {
-      await container.setInactivityTimeout(DB_QUERY_IDLE_TIMEOUT_MS);
-    } catch (error) {
-      await container.destroy();
-      throw error;
-    }
+    const freshImage = (await this.ctx.storage.get<string>(LAST_STARTED_IMAGE_KEY)) !== image;
+    await startWithRetry({
+      policy: DB_QUERY_START_POLICY,
+      label: DB_QUERY_ENVIRONMENT_LABEL,
+      freshImage,
+      attempt: async (signal) => {
+        container.start({
+          image,
+          instance: DB_QUERY_INSTANCE_TYPE,
+          // Public DNS and raw TCP to databases; see the class doc.
+          enableInternet: true,
+        });
+        recordObservabilityEvent(this.env, {
+          event: "db_query_container_start",
+          severity: "info",
+          component: "DbQueryContainer",
+          operation: "startContainer",
+          workspaceId: this.workspaceId,
+        });
+        await container.setInactivityTimeout(DB_QUERY_IDLE_TIMEOUT_MS);
+        signal.throwIfAborted();
+        const probe = await container.exec(["true"], {
+          cwd: "/",
+          env: { ...BASE_ENV },
+          stdout: "ignore",
+          stderr: "ignore",
+          signal,
+        });
+        const exitCode = await probe.exitCode;
+        if (exitCode !== 0) throw new Error(`the readiness probe exited ${exitCode}`);
+      },
+      reset: async () => {
+        if (container.running) await container.destroy();
+      },
+      onEvent: (event) =>
+        recordContainerStartEvent(this.env, event, { component: "DbQueryContainer", workspaceId: this.workspaceId }),
+    });
+    await this.ctx.storage.put(LAST_STARTED_IMAGE_KEY, image);
   }
 }
 

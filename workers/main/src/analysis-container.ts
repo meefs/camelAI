@@ -3,6 +3,13 @@ import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 
 import { getWorkspaceR2Prefix } from "../../../src/lib/workspace-r2-paths.js";
 import { ANALYSIS_IDLE_TIMEOUT_MS, ANALYSIS_INSTANCE_TYPE } from "./container-sizing.js";
+import {
+  ANALYSIS_START_POLICY,
+  ContainerStartFailedError,
+  LAST_STARTED_IMAGE_KEY,
+  recordContainerStartEvent,
+  startWithRetry,
+} from "./container-start.js";
 import { errorToObservabilityFields, recordObservabilityEvent } from "./observability.js";
 import { handleAuthenticatedConnectionsRpc } from "./routes/connections-rpc.js";
 import { SANDBOX_EXEC_TIMEOUT_EXIT_CODE } from "./sandbox-exec-deadline.js";
@@ -79,6 +86,9 @@ export const ANALYSIS_BASE_ENV: Readonly<Record<string, string>> = {
   CURL_CA_BUNDLE: CA_BUNDLE,
   NODE_EXTRA_CA_CERTS: INTERCEPT_CA,
 };
+
+/** How a start failure names this container to the agent. */
+const ANALYSIS_ENVIRONMENT_LABEL = "analysis environment (Python/notebooks)";
 
 /** Bound for the container's own setup commands. */
 const SETUP_TIMEOUT_MS = 60_000;
@@ -203,6 +213,8 @@ export class AnalysisContainer extends DurableObject<Env> {
   private readonly files: AnalysisContainerDeps["files"] | null;
   private mountsImpl: SandboxBucketMounts | null;
   private setup: Promise<void> | null = null;
+  /** A start (with its retry) is in flight: callers join it. */
+  private starting = false;
   /** What the running container was set up for, once known in this instance. */
   private current: StoredSetup | null = null;
 
@@ -300,6 +312,7 @@ export class AnalysisContainer extends DurableObject<Env> {
   /** Stops the container; the next call starts a fresh one (admin reset, a failed setup). */
   async destroy(): Promise<void> {
     this.setup = null;
+    this.starting = false;
     this.current = null;
     await this.ctx.storage.delete(SETUP_KEY);
     const container = this.ctx.container;
@@ -380,26 +393,33 @@ export class AnalysisContainer extends DurableObject<Env> {
 
   /**
    * Starts and sets up the container unless it already serves `access`. True
-   * when this call started one. Concurrent callers share one setup: `running`
-   * is true as soon as start() returns, so a second caller finds `setup` set.
+   * when this call started one. Concurrent callers share one setup, including
+   * its retry: while a start is in flight (`starting`), callers join it even
+   * when the container is momentarily stopped between attempts.
    */
   private async ensureStarted(access: AnalysisAccess): Promise<boolean> {
-    if (this.setup !== null && this.container.running) {
+    if (this.setup !== null && (this.starting || this.container.running)) {
       await this.setup;
       if (this.current && sameAccess(this.current.access, access)) return false;
       await this.destroy();
     }
     let started = false;
-    this.setup = this.startContainer(access).then(
+    this.starting = true;
+    const setup: Promise<void> = this.startContainer(access).then(
       (didStart) => {
         started = didStart;
+        if (this.setup === setup) this.starting = false;
       },
       (error: unknown) => {
-        this.setup = null;
+        if (this.setup === setup) {
+          this.setup = null;
+          this.starting = false;
+        }
         throw error;
       },
     );
-    await this.setup;
+    this.setup = setup;
+    await setup;
     return started;
   }
 
@@ -412,7 +432,15 @@ export class AnalysisContainer extends DurableObject<Env> {
   private async startContainer(access: AnalysisAccess): Promise<boolean> {
     const container = this.container;
     const image = container.images[ANALYSIS_IMAGE];
-    if (!image) throw new Error(`no such image: ${ANALYSIS_IMAGE} is missing from the container images`);
+    if (!image) {
+      throw new ContainerStartFailedError({
+        label: ANALYSIS_ENVIRONMENT_LABEL,
+        attempts: 0,
+        waitedMs: 0,
+        permanent: true,
+        cause: new Error(`no such image: ${ANALYSIS_IMAGE} is missing from the container images`),
+      });
+    }
 
     if (container.running) {
       // A deploy never replaces a running container: the first call on a new DO
@@ -430,20 +458,46 @@ export class AnalysisContainer extends DurableObject<Env> {
       await container.destroy();
     }
 
-    container.start({
-      image,
-      instance: ANALYSIS_INSTANCE_TYPE,
-      enableInternet: false,
-    });
+    // Start through setup runs under ANALYSIS_START_POLICY: a stuck or failed
+    // attempt is destroyed and retried once (container-start.ts). An abandoned
+    // attempt can still be awaiting a container call when the retry starts, so
+    // every step re-checks its signal and only the live attempt records setup.
+    const freshImage = (await this.ctx.storage.get<string>(LAST_STARTED_IMAGE_KEY)) !== image;
     const startedAt = Date.now();
     try {
-      await container.setInactivityTimeout(ANALYSIS_IDLE_TIMEOUT_MS);
-      const mounts = await this.mountAll(access);
-      await this.registerEgress(access);
-      await this.trustInterceptCa();
-      const setup: StoredSetup = { access, mounts };
-      await this.ctx.storage.put(SETUP_KEY, setup);
-      this.current = setup;
+      await startWithRetry({
+        policy: ANALYSIS_START_POLICY,
+        label: ANALYSIS_ENVIRONMENT_LABEL,
+        freshImage,
+        attempt: async (signal) => {
+          container.start({
+            image,
+            instance: ANALYSIS_INSTANCE_TYPE,
+            enableInternet: false,
+          });
+          await container.setInactivityTimeout(ANALYSIS_IDLE_TIMEOUT_MS);
+          signal.throwIfAborted();
+          const mounts = await this.mountAll(access);
+          signal.throwIfAborted();
+          await this.registerEgress(access);
+          signal.throwIfAborted();
+          await this.trustInterceptCa(signal);
+          signal.throwIfAborted();
+          const setup: StoredSetup = { access, mounts };
+          await this.ctx.storage.put(SETUP_KEY, setup);
+          this.current = setup;
+        },
+        reset: async () => {
+          this.current = null;
+          await this.ctx.storage.delete(SETUP_KEY);
+          if (container.running) await container.destroy();
+        },
+        onEvent: (event) =>
+          recordContainerStartEvent(this.env, event, {
+            component: "AnalysisContainer",
+            workspaceId: access.workspaceId,
+          }),
+      });
     } catch (error) {
       recordObservabilityEvent(this.env, {
         event: "analysis_container_start",
@@ -455,9 +509,9 @@ export class AnalysisContainer extends DurableObject<Env> {
         ...errorToObservabilityFields(error),
         workspaceId: access.workspaceId,
       });
-      await container.destroy().catch(() => {});
       throw error;
     }
+    await this.ctx.storage.put(LAST_STARTED_IMAGE_KEY, image);
     recordObservabilityEvent(this.env, {
       event: "analysis_container_start",
       severity: "info",
@@ -566,8 +620,8 @@ export class AnalysisContainer extends DurableObject<Env> {
     await container.interceptOutboundHttps("*", egress);
   }
 
-  private async trustInterceptCa(): Promise<void> {
-    const child = await this.container.exec(TRUST_INTERCEPT_CA, { cwd: "/", env: { LANG: "C.UTF-8" } });
+  private async trustInterceptCa(signal?: AbortSignal): Promise<void> {
+    const child = await this.container.exec(TRUST_INTERCEPT_CA, { cwd: "/", env: { LANG: "C.UTF-8" }, signal });
     const output = await child.output();
     if (output.exitCode !== 0) {
       const stderr = new TextDecoder().decode(output.stderr).trim();

@@ -4,6 +4,7 @@ import {
   PROJECT_BUILD_ACTIVE_SESSION_WINDOW_MS,
   PROJECT_BUILD_IDLE_TIMEOUT_MS,
 } from "../src/container-sizing";
+import { ContainerStartFailedError } from "../src/container-start";
 import { ProjectBuildContainerUnavailableError } from "../src/project-build-contracts";
 import {
   isProjectBuildPermanentStartupError,
@@ -103,6 +104,10 @@ function fakeContainer(options: {
     setInactivityTimeout: vi.fn(async (_ms: number | bigint) => {}),
     inspect: vi.fn(async () => (running ? { image: runningImage, labels: {} } : null)),
     exec: vi.fn(async (argv: string[], execOptions?: ContainerExecOptions) => {
+      // The cold-start readiness probe answers and is not recorded.
+      if (argv.length === 1 && argv[0] === "true" && running && !options.startError) {
+        return fakeProcess({ exitCode: 0 }, nextPid++);
+      }
       execCalls.push({ argv, options: execOptions });
       if (options.startError) {
         running = false;
@@ -256,18 +261,40 @@ describe("ProjectBuildContainer container lifecycle", () => {
     expect(container.start).not.toHaveBeenCalled();
   });
 
-  it("reports a container that is not running as a transient ProjectBuildContainerUnavailableError", async () => {
+  it("retries a start that fails once, then reports it as a start failure the ladder does not retry", async () => {
     const { container } = fakeContainer({ startError: new Error("container exited before it was ready") });
     const { sandbox } = createSandbox({ container });
 
-    const error = await sandbox.exec("true").catch((cause: unknown) => cause);
+    const error = await sandbox.exec("echo hi").catch((cause: unknown) => cause);
+
+    expect(container.start).toHaveBeenCalledTimes(2);
+    expect(ContainerStartFailedError.is(error)).toBe(true);
+    expect(String(error)).toContain("The build environment did not start (2 attempts");
+    expect(String(error)).toContain("container exited before it was ready");
+    expect(projectBuildTransientCause(error)).toBeNull();
+    // The next call tries a fresh start instead of reusing the failed setup.
+    await sandbox.exec("echo hi").catch(() => {});
+    expect(container.start).toHaveBeenCalledTimes(4);
+  });
+
+  it("reports a container that stopped under a command as a transient ProjectBuildContainerUnavailableError", async () => {
+    let stopUnder: (() => void) | null = null;
+    const { container } = fakeContainer({
+      handler: (argv) => {
+        if (argv.includes("echo stop")) stopUnder?.();
+        return { exitCode: 0 };
+      },
+    });
+    stopUnder = () => {
+      void container.destroy();
+      throw new Error("container exited");
+    };
+    const { sandbox } = createSandbox({ container });
+
+    const error = await sandbox.exec("echo stop").catch((cause: unknown) => cause);
 
     expect(ProjectBuildContainerUnavailableError.is(error)).toBe(true);
-    expect(String(error)).toContain("container exited before it was ready");
     expect(projectBuildTransientCause(error)).toBe("container_unavailable");
-    // The next call tries a fresh start instead of reusing the failed setup.
-    await sandbox.exec("true").catch(() => {});
-    expect(container.start).toHaveBeenCalledTimes(2);
   });
 
   it("fails permanently when the build image is missing from the deployment", async () => {
