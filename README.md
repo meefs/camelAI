@@ -217,9 +217,15 @@ files.
 Every app deploy (and rollback) wraps the app's Durable Object classes in an
 alarm throttle and sets a per-script CPU limit (`USER_APP_ALARM_MIN_INTERVAL_MS`,
 `USER_APP_ALARM_DAILY_BUDGET`, `USER_APP_CPU_MS` on the main worker; see
-`workers/main/src/user-app-cost-controls-policy.ts`). Apps deployed before a
-change only pick it up on their next deploy. To backfill them, replay each live
-app's latest cached deploy artifact:
+`workers/main/src/user-app-cost-controls-policy.ts`). The CPU limit defaults to
+15000 ms (Cloudflare's own default is 30 s). `USER_APP_CPU_MS_OVERRIDES` sets it
+per app: a comma- or whitespace-separated list of `<dispatchScriptName>=<ms>`,
+for example `freight-analyzer--gmie6a=30000 other-app--acme=0`, where `0` leaves
+that app without a `cpu_ms` limit. Malformed entries are ignored with a warning.
+The backfill script reads both from the target's `wrangler.<env>.jsonc` vars, so
+set overrides there for "already applied" to match what an upload produces.
+Apps deployed before a change only pick it up on their next deploy. To backfill
+them, replay each live app's latest cached deploy artifact:
 
 ```bash
 # Dry run (default): read-only Cloudflare API calls, lists what would be redeployed

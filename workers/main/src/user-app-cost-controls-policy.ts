@@ -13,22 +13,30 @@ export const DEFAULT_USER_APP_ALARM_MIN_INTERVAL_MS = 30_000;
 // keeps a steady-state chain alive and only trips on runaway retry storms or
 // setAlarm paths that bypass the clamp.
 export const DEFAULT_USER_APP_ALARM_DAILY_BUDGET = 3_000;
-// Cloudflare's default is 30 s per invocation. 1 s is ~100x typical request
-// CPU for generated apps but stops an alarm from burning tens of seconds of
-// CPU on every tick. SQLite time counts: a 2M-row scan (~0.4 s) passes, a
-// 10M-row scan is killed. A killed alarm is retried 6 times, then dropped.
-export const DEFAULT_USER_APP_CPU_MS = 1_000;
+// Cloudflare's default is 30 s per invocation. 15 s still halves the CPU a
+// runaway call can burn, while leaving room for legitimate heavy apps: one
+// read-heavy app's Durable Object RPCs use ~2 s of CPU at the median and up to
+// ~21 s (that app needs an override). SQLite time counts. A killed alarm is
+// retried 6 times, then dropped.
+export const DEFAULT_USER_APP_CPU_MS = 15_000;
 
 export interface UserAppCostControlsEnv {
   USER_APP_ALARM_MIN_INTERVAL_MS?: string;
   USER_APP_ALARM_DAILY_BUDGET?: string;
   USER_APP_CPU_MS?: string;
+  // `<dispatchScriptName>=<ms>` entries separated by commas or whitespace; 0
+  // leaves that app without a cpu_ms limit (Cloudflare's default).
+  USER_APP_CPU_MS_OVERRIDES?: string;
 }
 
 export interface UserAppCostControlsConfig {
   alarmMinIntervalMs: number;
   alarmDailyBudget: number;
+  // The CPU limit for the app being uploaded; 0 means no cpu_ms at all. From
+  // userAppCostControlsConfig this is the default, and
+  // userAppCostControlsForScript resolves the per-app override.
   cpuMs: number;
+  cpuMsOverrides: ReadonlyMap<string, number>;
 }
 
 function nonNegativeInteger(value: string | undefined, fallback: number): number {
@@ -37,13 +45,48 @@ function nonNegativeInteger(value: string | undefined, fallback: number): number
   return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : fallback;
 }
 
+const parsedCpuMsOverrides = new Map<string, ReadonlyMap<string, number>>();
+
+/**
+ * Parses USER_APP_CPU_MS_OVERRIDES. Malformed entries are ignored, with one
+ * warning per distinct value (the config is re-read on every deploy).
+ */
+export function parseUserAppCpuMsOverrides(value: string | undefined): ReadonlyMap<string, number> {
+  const raw = value?.trim() ?? "";
+  if (!raw) return new Map();
+  const cached = parsedCpuMsOverrides.get(raw);
+  if (cached) return cached;
+  const overrides = new Map<string, number>();
+  const ignored: string[] = [];
+  for (const entry of raw.split(/[\s,]+/).filter(Boolean)) {
+    const match = /^([^=]+)=(\d+)$/.exec(entry);
+    if (match) overrides.set(match[1]!, Number(match[2]));
+    else ignored.push(entry);
+  }
+  if (ignored.length > 0) {
+    console.warn("[user-app-cost-controls] ignoring malformed USER_APP_CPU_MS_OVERRIDES entries", { ignored });
+  }
+  parsedCpuMsOverrides.set(raw, overrides);
+  return overrides;
+}
+
 // "0" disables a control.
 export function userAppCostControlsConfig(env: UserAppCostControlsEnv): UserAppCostControlsConfig {
   return {
     alarmMinIntervalMs: nonNegativeInteger(env.USER_APP_ALARM_MIN_INTERVAL_MS, DEFAULT_USER_APP_ALARM_MIN_INTERVAL_MS),
     alarmDailyBudget: nonNegativeInteger(env.USER_APP_ALARM_DAILY_BUDGET, DEFAULT_USER_APP_ALARM_DAILY_BUDGET),
     cpuMs: nonNegativeInteger(env.USER_APP_CPU_MS, DEFAULT_USER_APP_CPU_MS),
+    cpuMsOverrides: parseUserAppCpuMsOverrides(env.USER_APP_CPU_MS_OVERRIDES),
   };
+}
+
+/** The config for one app, with its USER_APP_CPU_MS_OVERRIDES entry applied. */
+export function userAppCostControlsForScript(
+  config: UserAppCostControlsConfig,
+  dispatchScriptName: string,
+): UserAppCostControlsConfig {
+  const override = config.cpuMsOverrides.get(dispatchScriptName);
+  return override === undefined ? config : { ...config, cpuMs: override };
 }
 
 // Durable Object classes this script defines itself (bindings to another
@@ -67,13 +110,15 @@ export interface DispatchScriptSettingsView {
  * Whether a live script already carries the current cost controls. `entrypoint`
  * is the script's main module (the `cf-entrypoint` header of the content API)
  * and only matters when the script declares its own Durable Object classes.
+ * `config` must already be resolved for this script (userAppCostControlsForScript);
+ * a cpuMs of 0 expects no cpu_ms limit at all.
  */
 export function hasCurrentCostControls(
   settings: DispatchScriptSettingsView,
   entrypoint: string | null,
   config: UserAppCostControlsConfig,
 ): boolean {
-  if (config.cpuMs > 0 && settings.limits?.cpu_ms !== config.cpuMs) return false;
+  if ((settings.limits?.cpu_ms ?? 0) !== config.cpuMs) return false;
   const alarmGuardEnabled = config.alarmMinIntervalMs > 0 || config.alarmDailyBudget > 0;
   if (!alarmGuardEnabled || !scriptNeedsAlarmGuard(settings)) return true;
   return entrypoint === USER_APP_GUARD_ENTRY_MODULE;

@@ -11,6 +11,7 @@ import {
 import {
   classifyCostControlsBackfill,
   userAppCostControlsConfig,
+  userAppCostControlsForScript,
   type CostControlsBackfillGuardState,
 } from "../workers/main/src/user-app-cost-controls-policy";
 
@@ -101,13 +102,33 @@ describe("classifyCostControlsBackfill", () => {
   it("treats a script as already applied only with the current CPU limit and, for Durable Objects, the guard entry", () => {
     const decide = (settings: Record<string, unknown>, entrypoint: string | null) =>
       classifyCostControlsBackfill({ ...base, guardState: guardState("a"), settings, entrypoint });
-    expect(decide({ limits: { cpu_ms: 1000 } }, null)).toEqual({ action: "skip", reason: "already-applied" });
+    expect(decide({ limits: { cpu_ms: 15_000 } }, null)).toEqual({ action: "skip", reason: "already-applied" });
     expect(decide({ limits: { cpu_ms: 2000 } }, null)).toEqual({ action: "apply" });
-    expect(decide({ limits: { cpu_ms: 1000 }, bindings: [doBinding] }, "index.js")).toEqual({ action: "apply" });
-    expect(decide({ limits: { cpu_ms: 1000 }, bindings: [doBinding] }, "__camelai_entry.js"))
+    // Apps backfilled with the old 1 s default get the new one.
+    expect(decide({ limits: { cpu_ms: 1000 } }, null)).toEqual({ action: "apply" });
+    expect(decide({}, null)).toEqual({ action: "apply" });
+    expect(decide({ limits: { cpu_ms: 15_000 }, bindings: [doBinding] }, "index.js")).toEqual({ action: "apply" });
+    expect(decide({ limits: { cpu_ms: 15_000 }, bindings: [doBinding] }, "__camelai_entry.js"))
       .toEqual({ action: "skip", reason: "already-applied" });
-    expect(decide({ limits: { cpu_ms: 1000 }, bindings: [{ ...doBinding, script_name: "other" }] }, null))
+    expect(decide({ limits: { cpu_ms: 15_000 }, bindings: [{ ...doBinding, script_name: "other" }] }, null))
       .toEqual({ action: "skip", reason: "already-applied" });
+  });
+
+  it("compares against the app's resolved CPU override, where 0 means no limit", () => {
+    const overridden = userAppCostControlsConfig({ USER_APP_CPU_MS_OVERRIDES: "heavy=30000 unlimited=0" });
+    const decide = (name: string, settings: Record<string, unknown>) => classifyCostControlsBackfill({
+      ...base,
+      config: userAppCostControlsForScript(overridden, name),
+      guardState: guardState(name),
+      settings,
+      entrypoint: null,
+    });
+    expect(decide("heavy", { limits: { cpu_ms: 30_000 } })).toEqual({ action: "skip", reason: "already-applied" });
+    expect(decide("heavy", { limits: { cpu_ms: 15_000 } })).toEqual({ action: "apply" });
+    expect(decide("unlimited", {})).toEqual({ action: "skip", reason: "already-applied" });
+    expect(decide("unlimited", { limits: {} })).toEqual({ action: "skip", reason: "already-applied" });
+    expect(decide("unlimited", { limits: { cpu_ms: 1000 } })).toEqual({ action: "apply" });
+    expect(decide("other", { limits: { cpu_ms: 15_000 } })).toEqual({ action: "skip", reason: "already-applied" });
   });
 });
 
@@ -121,7 +142,7 @@ describe("runBackfill", () => {
       ])),
       leaseExpiresAt: (appId) => appId === "org:leased" ? Date.now() + 60_000 : null,
       readSettings: vi.fn(async (name: string) => name === "guarded"
-        ? { limits: { cpu_ms: 1000 }, bindings: [doBinding] }
+        ? { limits: { cpu_ms: 15_000 }, bindings: [doBinding] }
         : { bindings: [doBinding] }),
       readEntrypoint: vi.fn(async (name: string) => name === "guarded" ? "__camelai_entry.js" : "index.js"),
       applyOne: vi.fn(async (name: string) => {
@@ -166,6 +187,19 @@ describe("runBackfill", () => {
     expect(d.sleep).toHaveBeenCalledWith(1_500);
     expect(summarizeBackfill(outcomes)).toMatchObject({ applied: 1, failed: 1 });
     expect(d.lines).toContain("FAILED       broken: HTTP 502");
+  });
+
+  it("resolves each app's CPU override before deciding", async () => {
+    const d = deps({
+      readSettings: vi.fn(async (name: string) => ({ limits: { cpu_ms: name === "guarded" ? 30_000 : 1000 } })),
+    });
+    const overridden = userAppCostControlsConfig({ USER_APP_CPU_MS_OVERRIDES: "guarded=30000,bare=1000" });
+    const outcomes = await runBackfill(["guarded", "bare", "later"], { apply: false, limit: null, delayMs: 0 }, overridden, d);
+    expect(outcomes).toEqual([
+      { dispatchScriptName: "guarded", result: "skipped", reason: "already-applied" },
+      { dispatchScriptName: "bare", result: "skipped", reason: "already-applied" },
+      { dispatchScriptName: "later", result: "would-apply" },
+    ]);
   });
 
   it("reports server-side skips from the apply call", async () => {

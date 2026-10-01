@@ -127,7 +127,7 @@ export async function refreshAppRegistryAfterDeploy(
       usage_guard_eligible_version: scriptVersion,
       usage_guard_eligible_at: Date.now(),
       usage_guard_probation_until: eligibility.probationUntil,
-      usage_guard_reason: null,
+      usage_guard_reason: eligibility.reasonCode,
     };
   }
 

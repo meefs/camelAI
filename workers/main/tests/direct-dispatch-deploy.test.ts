@@ -1003,9 +1003,49 @@ describe("deployWorkerModulesDirect", () => {
 
     const form = fetcher.mock.calls.find((call) => call[1]?.method === "PUT")![1]?.body as FormData;
     const metadata = JSON.parse(await (form.get("metadata") as Blob).text());
-    expect(metadata.limits).toEqual({ cpu_ms: 1000 });
+    expect(metadata.limits).toEqual({ cpu_ms: 15_000 });
     expect(metadata.main_module).toBe("__camelai_entry.js");
     expect(await (form.get("__camelai_entry.js") as Blob).text()).toContain("guardDurableObjectClass(app.CounterDO, options)");
     expect(await (form.get("__camelai_alarm_guard.js") as Blob).text()).toContain("export function installAlarmGuard");
+
+    fetcher.mockClear();
+    await rollbackWorkerDeployFromArtifactCache({
+      ...rollbackEnv,
+      USER_APP_CPU_MS_OVERRIDES: "other-app--acme=0, demo-app--acme=30000",
+    }, {
+      artifactCacheKey,
+      hostname: "camelai.dev",
+      expected: { orgId: "org-1", workspaceId: "workspace-1", scriptName: "demo-app" },
+    }, { fetcher: fetcher as unknown as typeof fetch });
+    const overridden = fetcher.mock.calls.find((call) => call[1]?.method === "PUT")![1]?.body as FormData;
+    expect(JSON.parse(await (overridden.get("metadata") as Blob).text()).limits).toEqual({ cpu_ms: 30_000 });
+  });
+
+  it("applies a per-app CPU override on deploy, where 0 omits the limit", async () => {
+    const fetcher = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/scripts/demo-app--acme")) {
+        return Response.json({ success: false, errors: [{ code: 10092, message: "not found" }], result: null }, { status: 404 });
+      }
+      return Response.json({ success: true, result: { id: "version-1" } });
+    });
+    const deploy = (overrides: string) => deployWorkerModulesDirect({ ...env, USER_APP_CPU_MS_OVERRIDES: overrides }, {
+      scriptName: "demo-app",
+      hostname: "camelai.dev",
+      identity,
+      metadata: { main_module: "index.js", bindings: [] },
+      modules: [{ name: "index.js", contentType: "application/javascript+module", content: "export default {};" }],
+    }, { fetcher: fetcher as unknown as typeof fetch });
+    const uploadedMetadata = async () => {
+      const form = fetcher.mock.calls.findLast((call) => call[1]?.method === "PUT")![1]?.body as FormData;
+      return JSON.parse(await (form.get("metadata") as Blob).text());
+    };
+
+    await deploy("");
+    expect((await uploadedMetadata()).limits).toEqual({ cpu_ms: 15_000 });
+    await deploy("demo-app--acme=20000");
+    expect((await uploadedMetadata()).limits).toEqual({ cpu_ms: 20_000 });
+    await deploy("demo-app--acme=0");
+    expect(await uploadedMetadata()).not.toHaveProperty("limits");
   });
 });

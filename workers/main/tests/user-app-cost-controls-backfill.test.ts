@@ -93,7 +93,7 @@ describe.sequential("backfillUserAppCostControls", () => {
     );
     const form = upload[1]!.body as FormData;
     const metadata = JSON.parse(await (form.get("metadata") as Blob).text());
-    expect(metadata).toMatchObject({ main_module: "__camelai_entry.js", limits: { cpu_ms: 1000 } });
+    expect(metadata).toMatchObject({ main_module: "__camelai_entry.js", limits: { cpu_ms: 15_000 } });
     expect(onDeploySideEffects).toHaveBeenCalledWith(expect.objectContaining({
       dispatchScriptName,
       orgId: "org-1",
@@ -105,7 +105,7 @@ describe.sequential("backfillUserAppCostControls", () => {
   });
 
   it.each([
-    ["already-applied", { settings: { limits: { cpu_ms: 1000 }, bindings: [doBinding] }, entrypoint: "__camelai_entry.js" }],
+    ["already-applied", { settings: { limits: { cpu_ms: 15_000 }, bindings: [doBinding] }, entrypoint: "__camelai_entry.js" }],
     ["quarantined", { settings: { bindings: [doBinding, { type: "plain_text", name: "CAMELAI_USAGE_GUARD_QUARANTINE", text: "v1" }] } }],
     ["not-live", { settings: null }],
   ] as const)("skips %s apps without uploading", async (reason, live) => {
@@ -114,6 +114,34 @@ describe.sequential("backfillUserAppCostControls", () => {
     const result = await backfillUserAppCostControls(backfillEnv(), dispatchScriptName, { fetcher: fetcher as unknown as typeof fetch });
     expect(result).toEqual({ status: "skipped", dispatchScriptName, reason });
     expect(fetcher.mock.calls.some((call) => call[1]?.method === "PUT")).toBe(false);
+  });
+
+  it("re-applies apps still at the old 1000 ms limit and honors per-app overrides", async () => {
+    await seedGuardState();
+    const guarded = (cpuMs?: number) => cloudflareApi({
+      settings: { ...(cpuMs === undefined ? {} : { limits: { cpu_ms: cpuMs } }), bindings: [doBinding] },
+      entrypoint: "__camelai_entry.js",
+    });
+    const run = (fetcher: ReturnType<typeof cloudflareApi>, overrides?: string) => backfillUserAppCostControls(
+      { ...backfillEnv(), ...(overrides === undefined ? {} : { USER_APP_CPU_MS_OVERRIDES: overrides }) },
+      dispatchScriptName,
+      { fetcher: fetcher as unknown as typeof fetch, onDeploySideEffects: async () => undefined },
+    );
+    const uploadedLimits = async (fetcher: ReturnType<typeof cloudflareApi>) => {
+      const form = fetcher.mock.calls.find((call) => call[1]?.method === "PUT")![1]!.body as FormData;
+      return JSON.parse(await (form.get("metadata") as Blob).text()).limits;
+    };
+
+    const old = guarded(1000);
+    expect(await run(old)).toMatchObject({ status: "applied" });
+    expect(await uploadedLimits(old)).toEqual({ cpu_ms: 15_000 });
+
+    expect(await run(guarded(30_000), `${dispatchScriptName}=30000`)).toMatchObject({ status: "skipped", reason: "already-applied" });
+    expect(await run(guarded(), `${dispatchScriptName}=0`)).toMatchObject({ status: "skipped", reason: "already-applied" });
+
+    const unlimited = guarded(15_000);
+    expect(await run(unlimited, `${dispatchScriptName}=0`)).toMatchObject({ status: "applied" });
+    expect(await uploadedLimits(unlimited)).toBeUndefined();
   });
 
   it("skips suspended apps, apps without an artifact record, and apps with a held lease", async () => {

@@ -5,12 +5,16 @@ import { runUsageGuard } from "../../app-usage-guard/src/index";
 import { evaluateUsage, estimatedSqliteCostUsd, type UsageWindow } from "../../app-usage-guard/src/policy";
 import { quarantineDispatchScript, quarantineModule } from "../../app-usage-guard/src/quarantine";
 import { clearNamespaceScriptCache, queryDurableObjectRows } from "../../app-usage-guard/src/telemetry";
+import { refreshAppRegistryAfterDeploy } from "../src/services/deploy";
+import type { Env } from "../src/types";
 import {
   acquireUsageGuardOperationLease,
   acquireUsageGuardOperationLeaseWithRetry,
   ensureUsageGuardSchema,
+  markUsageGuardEligible,
   releaseUsageGuardOperationLease,
   USAGE_GUARD_OPERATION_LEASE_TTL_MS,
+  USAGE_GUARD_PROBATION_MS,
 } from "../src/usage-guard-state";
 
 function window(overrides: Partial<UsageWindow>): UsageWindow {
@@ -488,4 +492,120 @@ describe.sequential("usage guard state machine", () => {
       usage_guard_status: "active",
     });
   });
+});
+
+describe.sequential("deploy eligibility", () => {
+  const db = (testEnv as unknown as { APP_DB: D1Database }).APP_DB;
+
+  async function seed(appId: string, status: string, reason: string | null = null, decision: string | null = null) {
+    await ensureUsageGuardSchema(db);
+    await db.prepare("DELETE FROM app_usage_guard_state WHERE app_id = ?").bind(appId).run();
+    await db.prepare(`
+      INSERT INTO app_usage_guard_state (
+        app_id, dispatch_script_name, org_id, workspace_id, script_name, status,
+        eligible_script_version, eligible_at, probation_until, consecutive_over_limit,
+        reason_code, decision_json, suspended_at, quarantine_version, quarantine_attempts, next_retry_at, updated_at
+      ) VALUES (?, ?, 'org', 'workspace', ?, ?, 'old-version', 1, 5, 3, ?, ?, 7, 'quarantine-version', 2, 9, 1)
+    `).bind(appId, `${appId}--acme`, appId, status, reason, decision).run();
+  }
+
+  function mark(appId: string, recovering: boolean, now = 1_000_000) {
+    return markUsageGuardEligible({
+      db,
+      appId,
+      dispatchScriptName: `${appId}--acme`,
+      orgId: "org",
+      workspaceId: "workspace",
+      scriptName: appId,
+      scriptVersion: "new-version",
+      artifactCacheKey: "artifact-2",
+      recovering,
+      now,
+    });
+  }
+
+  function row(appId: string) {
+    return db.prepare("SELECT * FROM app_usage_guard_state WHERE app_id = ?").bind(appId).first<Record<string, unknown>>();
+  }
+
+  const resetFields = {
+    eligible_script_version: "new-version",
+    eligible_at: 1_000_000,
+    consecutive_over_limit: 0,
+    suspended_at: null,
+    quarantine_version: null,
+    quarantine_attempts: 0,
+    next_retry_at: null,
+    artifact_cache_key: "artifact-2",
+    updated_at: 1_000_000,
+  };
+
+  it.each([false, true])("keeps an exempt app exempt with its reason (recovering: %s)", async (recovering) => {
+    const appId = `eligible-exempt-${crypto.randomUUID()}`;
+    await seed(appId, "exempt", "customer_read_heavy", "{\"by\":\"ops\"}");
+
+    expect(await mark(appId, recovering)).toEqual({ status: "exempt", probationUntil: null, reasonCode: "customer_read_heavy" });
+    expect(await row(appId)).toMatchObject({
+      ...resetFields,
+      status: "exempt",
+      probation_until: null,
+      reason_code: "customer_read_heavy",
+      decision_json: "{\"by\":\"ops\"}",
+    });
+  });
+
+  it("still resets non-exempt apps to active or probation", async () => {
+    const warned = `eligible-warned-${crypto.randomUUID()}`;
+    await seed(warned, "warned", "cost_60m", "{}");
+    expect(await mark(warned, false)).toEqual({ status: "active", probationUntil: null, reasonCode: null });
+    expect(await row(warned)).toMatchObject({ ...resetFields, status: "active", probation_until: null, reason_code: null, decision_json: null });
+
+    const suspended = `eligible-suspended-${crypto.randomUUID()}`;
+    await seed(suspended, "suspended", "cost_60m", "{}");
+    const probationUntil = 1_000_000 + USAGE_GUARD_PROBATION_MS;
+    expect(await mark(suspended, false)).toEqual({ status: "probation", probationUntil, reasonCode: null });
+    expect(await row(suspended)).toMatchObject({ ...resetFields, status: "probation", probation_until: probationUntil, reason_code: null });
+
+    const fresh = `eligible-new-${crypto.randomUUID()}`;
+    await ensureUsageGuardSchema(db);
+    expect(await mark(fresh, true)).toEqual({ status: "probation", probationUntil, reasonCode: null });
+  });
+
+  it.each(["active", "suspended"] as const)(
+    "mirrors exempt into the dispatcher registry on redeploy (registry was %s)",
+    async (registryStatus) => {
+      const appId = `eligible-registry-${crypto.randomUUID()}`;
+      await seed(`org:${appId}`, "exempt", "customer_read_heavy");
+      const registry = new Map<string, string>([[
+        `script:${appId}--acme`,
+        JSON.stringify({ org_id: "org", org_slug: "acme", is_public: true, usage_guard_status: registryStatus }),
+      ]]);
+      const env = {
+        APP_DB: db,
+        APP_KV: {
+          get: async (key: string) => registry.get(key) ?? null,
+          put: async (key: string, value: string) => { registry.set(key, value); },
+        },
+      } as unknown as Env;
+
+      await refreshAppRegistryAfterDeploy(env, {
+        scriptName: appId,
+        dispatchScriptName: `${appId}--acme`,
+        orgId: "org",
+        orgSlug: "acme",
+        workspaceId: "workspace",
+        hostname: "camelai.dev",
+        scriptVersion: "new-version",
+      });
+
+      expect(JSON.parse(registry.get(`script:${appId}--acme`)!)).toMatchObject({
+        is_public: true,
+        usage_guard_status: "exempt",
+        usage_guard_eligible_version: "new-version",
+        usage_guard_probation_until: null,
+        usage_guard_reason: "customer_read_heavy",
+      });
+      expect(await row(`org:${appId}`)).toMatchObject({ status: "exempt", eligible_script_version: "new-version" });
+    },
+  );
 });

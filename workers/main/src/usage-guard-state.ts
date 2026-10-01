@@ -191,6 +191,12 @@ export async function releaseUsageGuardOperationLease(input: {
     .run();
 }
 
+/**
+ * Points the usage guard at a newly uploaded script version. Every deploy (and
+ * rollback / cost-controls replay) resets the enforcement state, except that an
+ * operator-set `exempt` status, with its reason and decision, survives: exempt
+ * apps are never put into probation by a deploy.
+ */
 export async function markUsageGuardEligible(input: {
   db: D1Database;
   appId: string;
@@ -202,7 +208,7 @@ export async function markUsageGuardEligible(input: {
   artifactCacheKey?: string;
   recovering: boolean;
   now?: number;
-}): Promise<{ status: "active" | "probation"; probationUntil: number | null }> {
+}): Promise<{ status: "active" | "probation" | "exempt"; probationUntil: number | null; reasonCode: string | null }> {
   const now = input.now ?? Date.now();
   await ensureUsageGuardSchema(input.db);
   const prior = await input.db.prepare("SELECT status FROM app_usage_guard_state WHERE app_id = ?")
@@ -211,7 +217,9 @@ export async function markUsageGuardEligible(input: {
   const recovering = input.recovering || isUsageGuardRecovery(prior?.status);
   const status = recovering ? "probation" : "active";
   const probationUntil = recovering ? now + USAGE_GUARD_PROBATION_MS : null;
-  await input.db.prepare(`
+  // The exempt check lives in the upsert itself (not just the read above) so an
+  // operator marking the app exempt mid-deploy is not overwritten.
+  const stored = await input.db.prepare(`
     INSERT INTO app_usage_guard_state (
       app_id, dispatch_script_name, org_id, workspace_id, script_name, status,
       eligible_script_version, eligible_at, trace_audited_at, probation_until,
@@ -223,20 +231,21 @@ export async function markUsageGuardEligible(input: {
       org_id = excluded.org_id,
       workspace_id = excluded.workspace_id,
       script_name = excluded.script_name,
-      status = excluded.status,
+      status = CASE WHEN app_usage_guard_state.status = 'exempt' THEN 'exempt' ELSE excluded.status END,
       eligible_script_version = excluded.eligible_script_version,
       eligible_at = excluded.eligible_at,
       trace_audited_at = excluded.trace_audited_at,
-      probation_until = excluded.probation_until,
+      probation_until = CASE WHEN app_usage_guard_state.status = 'exempt' THEN NULL ELSE excluded.probation_until END,
       consecutive_over_limit = 0,
-      reason_code = NULL,
-      decision_json = NULL,
+      reason_code = CASE WHEN app_usage_guard_state.status = 'exempt' THEN app_usage_guard_state.reason_code ELSE NULL END,
+      decision_json = CASE WHEN app_usage_guard_state.status = 'exempt' THEN app_usage_guard_state.decision_json ELSE NULL END,
       artifact_cache_key = COALESCE(excluded.artifact_cache_key, app_usage_guard_state.artifact_cache_key),
       suspended_at = NULL,
       quarantine_version = NULL,
       quarantine_attempts = 0,
       next_retry_at = NULL,
       updated_at = excluded.updated_at
+    RETURNING status, probation_until, reason_code
   `).bind(
     input.appId,
     input.dispatchScriptName,
@@ -250,8 +259,9 @@ export async function markUsageGuardEligible(input: {
     probationUntil,
     input.artifactCacheKey ?? null,
     now,
-  ).run();
-  return { status, probationUntil };
+  ).first<{ status: "active" | "probation" | "exempt"; probation_until: number | null; reason_code: string | null }>();
+  if (!stored) return { status, probationUntil, reasonCode: null };
+  return { status: stored.status, probationUntil: stored.probation_until, reasonCode: stored.reason_code };
 }
 
 export function isUsageGuardRecovery(status: unknown): boolean {
