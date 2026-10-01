@@ -1,6 +1,7 @@
-import { Files, type S3GatewayBinding, SandboxFileError, SandboxS3MountError } from "@cloudflare/sandbox";
+import { type Files, type S3GatewayBinding, SandboxFileError, SandboxS3MountError } from "@cloudflare/sandbox";
 import { DurableObject } from "cloudflare:workers";
 
+import { createContainerFiles } from "./container-files.js";
 import { DB_QUERY_IDLE_TIMEOUT_MS, DB_QUERY_INSTANCE_TYPE } from "./container-sizing.js";
 import {
   ContainerStartFailedError,
@@ -122,7 +123,7 @@ export class DbQueryContainer extends DurableObject<Env> implements DbQueryConta
   constructor(ctx: DurableObjectState, env: Env, deps: DbQueryContainerDeps = {}) {
     super(ctx, env);
     const container = ctx.container;
-    this.files = deps.files ?? (container ? new Files(container) : null);
+    this.files = deps.files ?? (container ? createContainerFiles(container, env) : null);
     this.mountsImpl = deps.mounts ?? null;
     // The inactivity timeout belongs to the DO instance: a restarted DO (a
     // deploy, an eviction) must set it again or the container stops shortly

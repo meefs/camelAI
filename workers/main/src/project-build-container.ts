@@ -1,6 +1,7 @@
-import { Files, SandboxFileError } from "@cloudflare/sandbox";
+import { SandboxFileError, type Files } from "@cloudflare/sandbox";
 import { DurableObject } from "cloudflare:workers";
 
+import { createContainerFiles } from "./container-files.js";
 import {
   PROJECT_BUILD_ACTIVE_SESSION_MAX_WINDOW_MS,
   PROJECT_BUILD_ACTIVE_SESSION_WINDOW_MS,
@@ -96,7 +97,7 @@ export class ProjectBuildContainer extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env, deps: { files?: ProjectBuildFiles } = {}) {
     super(ctx, env);
     const container = ctx.container;
-    this.files = deps.files ?? (container ? new Files(container) : null);
+    this.files = deps.files ?? (container ? createContainerFiles(container, env) : null);
     // The inactivity timeout belongs to the DO instance: a restarted DO (a
     // deploy, an eviction) must set it again or the container stops shortly
     // after the DO goes idle.
