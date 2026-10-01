@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { containerStartWorstCaseMs, DB_QUERY_START_POLICY } from '../src/container-start';
 import {
   createSandboxExecDeadline,
   isSandboxDeadlineExceededError,
@@ -30,6 +31,9 @@ import {
   type DbQueryDeps,
   type DbQueryRequest,
 } from '../src/db-query-service';
+
+/** The client-side backstop around a db-query container start: the DO's own worst case + grace. */
+const DB_QUERY_START_BACKSTOP_MS = containerStartWorstCaseMs(DB_QUERY_START_POLICY) + 15_000;
 
 afterEach(() => {
   vi.useRealTimers();
@@ -543,8 +547,8 @@ describe('db-query wedged-container recovery', () => {
 
     const promise = runDbQuery(deps, { engine: 'postgres', sql: 'select 1' } as DbQueryRequest);
     const assertion = expect(promise).rejects.toThrow(/db_query_container_start did not return within/);
-    // 120s startup ceiling + 15s grace.
-    await vi.advanceTimersByTimeAsync(135_001);
+    // The DO's own worst case (attempt + destroy + retry) + 15s grace.
+    await vi.advanceTimersByTimeAsync(DB_QUERY_START_BACKSTOP_MS + 1);
     await assertion;
 
     expect(deps.container.destroy).toHaveBeenCalledTimes(1);
@@ -629,7 +633,7 @@ describe('db-query wedged-container recovery', () => {
         name: 'DbQueryContainerNotReadyError',
         cause: expect.any(SandboxDeadlineExceededError),
       });
-      await vi.advanceTimersByTimeAsync(135_001);
+      await vi.advanceTimersByTimeAsync(DB_QUERY_START_BACKSTOP_MS + 1);
       await assertion;
       expect(deps.container.destroy).toHaveBeenCalledTimes(1);
     } finally {

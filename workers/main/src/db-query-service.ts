@@ -20,6 +20,7 @@
 // Embedded at build time; the Vite and Wrangler builds alias this virtual
 // module to the runner source using their respective raw-text mechanisms.
 import RUNNER_SOURCE from "virtual:db-query-runner-source";
+import { ContainerStartFailedError, containerStartWorstCaseMs, DB_QUERY_START_POLICY } from "./container-start.js";
 import {
   createSandboxExecDeadline,
   isSandboxDeadlineExceededError,
@@ -202,6 +203,9 @@ const TRANSIENT_CONTAINER_ERROR_PATTERNS: readonly RegExp[] = [
 export function isTransientDbContainerError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   if (isSandboxDeadlineExceededError(error)) return false;
+  // The DO already destroyed and retried that start; another round would only
+  // double the wait.
+  if (ContainerStartFailedError.is(error)) return false;
   if (DbQueryContainerUnavailableError.is(error)) return true;
   const text = `${error.name}: ${error.message}`;
   return TRANSIENT_CONTAINER_ERROR_PATTERNS.some((pattern) => pattern.test(text));
@@ -252,8 +256,12 @@ const EXEC_OVERHEAD_MS = 15_000;
 /** Runner-side default when the caller declares no timeout. */
 const DEFAULT_QUERY_TIMEOUT_MS = 30_000;
 const DEFAULT_EXPORT_TIMEOUT_MS = 300_000;
-/** Ceiling for a cold container start (1.0 starts in about a second; this is a backstop). */
-const DB_QUERY_CONTAINER_STARTUP_TIMEOUT_MS = 120_000;
+/**
+ * Client-side backstop for a cold container start. The DO bounds the start
+ * itself (DB_QUERY_START_POLICY: a 30s attempt, destroy, one retry), so this
+ * only fires when the DO never answers; it sits just above the DO's worst case.
+ */
+const DB_QUERY_CONTAINER_STARTUP_TIMEOUT_MS = containerStartWorstCaseMs(DB_QUERY_START_POLICY);
 
 /**
  * Client-side deadline for one runner exec.
@@ -370,8 +378,9 @@ async function ensureRelayForwarder(
  * export mount reports its own errors — none of those is fixed by destroying a
  * container other calls may be using. The call still
  * fails, as a DbQueryContainerNotReadyError that tells the agent nothing ran, and
- * there is no in-call retry: the caller has already spent a setup budget of up
- * to 135s, and a second cold start inside the same call would double that.
+ * there is no in-call retry: a stuck container start is already destroyed and
+ * retried once inside the DO (container-start.ts), so reaching this backstop
+ * means the DO itself stopped answering.
  */
 async function withWedgedSetupRecovery(deps: DbQueryDeps, run: () => Promise<void>): Promise<void> {
   try {

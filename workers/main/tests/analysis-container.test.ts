@@ -11,6 +11,7 @@ import {
   type AnalysisAccess,
 } from "../src/analysis-container";
 import { ANALYSIS_IDLE_TIMEOUT_MS, ANALYSIS_INSTANCE_TYPE } from "../src/container-sizing";
+import { ANALYSIS_START_POLICY, ContainerStartFailedError, LAST_STARTED_IMAGE_KEY } from "../src/container-start";
 import type { BucketMount, SandboxBucketMounts } from "../src/sandbox-mounts";
 import type { Env } from "../src/types";
 
@@ -257,11 +258,48 @@ describe("AnalysisContainer setup", () => {
   it("fails the setup, and stops the container, when a required mount fails", async () => {
     const { sandbox, container, storage } = build({ failingMount: (mount) => mount.mountPath === "/uploads" });
 
-    await expect(sandbox.prepare(AGENT)).rejects.toThrow("mount /uploads failed");
+    const error = await sandbox.prepare(AGENT).catch((cause: unknown) => cause);
+    expect(ContainerStartFailedError.is(error)).toBe(true);
+    expect(String(error)).toContain("mount /uploads failed");
+    expect(String(error)).toContain("The analysis environment (Python/notebooks) did not start (2 attempts");
 
-    expect(container.destroy).toHaveBeenCalledTimes(1);
+    // Tried twice, and each failed attempt was destroyed.
+    expect(container.start).toHaveBeenCalledTimes(2);
+    expect(container.destroy).toHaveBeenCalledTimes(2);
     expect(container.running).toBe(false);
     expect(storage.has("analysis-container-setup")).toBe(false);
+  });
+
+  it("replaces a start that hangs in setup; concurrent callers share the retried container", async () => {
+    vi.useFakeTimers();
+    try {
+      let trusts = 0;
+      const { sandbox, container, storage, events } = build({
+        handler: (argv) => {
+          // The first start hangs well past its budget at its first command.
+          if (argv[0] === "sh" && trusts++ === 0) return { exitCode: 0, delayMs: 10 * ANALYSIS_START_POLICY.attemptMs };
+          return { exitCode: 0 };
+        },
+      });
+
+      const callers = [sandbox.prepare(AGENT), sandbox.prepare(AGENT), sandbox.prepare(AGENT)];
+      await vi.advanceTimersByTimeAsync(ANALYSIS_START_POLICY.attemptMs);
+      await expect(Promise.all(callers)).resolves.toEqual([undefined, undefined, undefined]);
+
+      expect(container.start).toHaveBeenCalledTimes(2);
+      expect(container.destroy).toHaveBeenCalledTimes(1);
+      expect(storage.get("analysis-container-setup")).toMatchObject({ access: AGENT });
+      expect(storage.get(LAST_STARTED_IMAGE_KEY)).toBe(IMAGE);
+      expect(events).toContain("sandbox_start_attempt_failed:timeout");
+      expect(events).toContain("sandbox_start_ready:fresh_image");
+
+      // The abandoned attempt finishing later must not touch the live setup.
+      await vi.advanceTimersByTimeAsync(10 * ANALYSIS_START_POLICY.attemptMs);
+      expect(container.start).toHaveBeenCalledTimes(2);
+      expect(container.running).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("carries on without /outputs when only that mount fails", async () => {

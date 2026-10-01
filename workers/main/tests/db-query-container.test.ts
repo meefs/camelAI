@@ -10,6 +10,12 @@ import {
 } from "../src/db-query-container";
 import { DbQueryContainerUnavailableError, dbQueryContainerKey, getDbQueryContainer } from "../src/db-query-contracts";
 import { isTransientDbContainerError } from "../src/db-query-service";
+import {
+  ContainerStartFailedError,
+  containerStartWorstCaseMs,
+  DB_QUERY_START_POLICY,
+  LAST_STARTED_IMAGE_KEY,
+} from "../src/container-start";
 import type { Env } from "../src/types";
 
 // The runtime's DurableObject base only accepts a real DurableObjectState; the
@@ -59,7 +65,9 @@ function fakeProcess(run: FakeRun, pid: number): ExecProcess {
   };
 }
 
-function fakeContainer(options: { running?: boolean; runningImage?: string; handler?: ExecHandler; startError?: Error } = {}) {
+function fakeContainer(
+  options: { running?: boolean; runningImage?: string; handler?: ExecHandler; startError?: Error; scriptProbe?: boolean } = {},
+) {
   let running = options.running ?? false;
   let runningImage = options.runningImage ?? IMAGE;
   let nextPid = 100;
@@ -89,6 +97,8 @@ function fakeContainer(options: { running?: boolean; runningImage?: string; hand
         throw options.startError;
       }
       if (!running) throw new Error("container is not running");
+      // The cold-start readiness probe answers unless a test scripts it.
+      if (argv.length === 1 && argv[0] === "true" && !options.scriptProbe) return fakeProcess({ exitCode: 0 }, nextPid++);
       return fakeProcess(handler(argv, execOptions), nextPid++);
     }),
   };
@@ -103,6 +113,18 @@ function fakeMounts() {
   } satisfies SandboxBucketMounts;
 }
 
+function fakeStorage() {
+  const values = new Map<string, unknown>();
+  return {
+    values,
+    get: vi.fn(async (key: string) => values.get(key)),
+    put: vi.fn(async (key: string, value: unknown) => {
+      values.set(key, value);
+    }),
+    delete: vi.fn(async (key: string) => values.delete(key)),
+  };
+}
+
 function createContainer(options: {
   container?: ReturnType<typeof fakeContainer>["container"];
   deps?: DbQueryContainerDeps;
@@ -112,7 +134,7 @@ function createContainer(options: {
     container: options.container,
     id: { name: "ws-acme", toString: () => "id" },
     exports: {},
-    storage: {},
+    storage: fakeStorage(),
     blockConcurrencyWhile: vi.fn(async <T>(fn: () => Promise<T>) => fn()),
     waitUntil: vi.fn(),
   };
@@ -159,15 +181,105 @@ describe("DbQueryContainer lifecycle", () => {
     expect(container.start).toHaveBeenCalledWith(expect.objectContaining({ image: IMAGE }));
   });
 
-  it("reports a container that failed to start as a retryable failure", async () => {
-    const { container } = fakeContainer({ startError: new Error("no capacity") });
+  it("retries a failed start once, then fails with a start error the service does not retry again", async () => {
+    const { container } = fakeContainer({ startError: new Error("The container connection is temporarily unavailable") });
     const { instance } = createContainer({ container });
     const error = await instance.start().catch((cause: unknown) => cause);
-    expect(error).toBeInstanceOf(DbQueryContainerUnavailableError);
-    expect(String(error)).toContain("DB query container is not running (start): no capacity");
+    expect(container.start).toHaveBeenCalledTimes(2);
+    expect(ContainerStartFailedError.is(error)).toBe(true);
+    expect(String(error)).toContain("The database query environment did not start (2 attempts");
+    expect(String(error)).toContain("Nothing ran");
+    expect(isTransientDbContainerError(error)).toBe(false);
+    // Across the DO RPC hop it arrives as a plain Error with the name in the message.
+    const hopped = new Error(`ContainerStartFailedError: ${(error as Error).message}`);
+    expect(ContainerStartFailedError.is(hopped)).toBe(true);
+    expect(isTransientDbContainerError(hopped)).toBe(false);
+  });
+
+  it("recovers on the retry when the first start fails", async () => {
+    let probes = 0;
+    const { container } = fakeContainer({
+      scriptProbe: true,
+      handler: (argv) => {
+        if (argv[0] === "true" && probes++ === 0) throw new Error("The container connection is temporarily unavailable");
+        return { exitCode: 0 };
+      },
+    });
+    const { instance, ctx } = createContainer({ container });
+    await instance.start();
+    expect(container.start).toHaveBeenCalledTimes(2);
+    expect(container.destroy).toHaveBeenCalledTimes(1);
+    expect(ctx.storage.values.get(LAST_STARTED_IMAGE_KEY)).toBe(IMAGE);
+  });
+
+  it("replaces a start whose probe never answers, and every waiting caller gets the retried container", async () => {
+    vi.useFakeTimers();
+    const { container } = fakeContainer();
+    let probes = 0;
+    const realExec = container.exec.getMockImplementation()!;
+    container.exec.mockImplementation(async (argv: string[], execOptions?: ContainerExecOptions) => {
+      if (argv[0] === "true" && probes++ === 0) {
+        // The stuck first start: never answers until aborted.
+        return new Promise<ExecProcess>((_resolve, reject) => {
+          execOptions?.signal?.addEventListener("abort", () => reject(execOptions.signal?.reason));
+        });
+      }
+      return realExec(argv, execOptions);
+    });
+    const { instance } = createContainer({ container });
+
+    const callers = [instance.start(), instance.start(), instance.relayForwarderReady()];
+    await vi.advanceTimersByTimeAsync(DB_QUERY_START_POLICY.attemptMs - 1);
+    expect(container.start).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+
+    await expect(Promise.all(callers)).resolves.toEqual([undefined, undefined, true]);
+    expect(container.start).toHaveBeenCalledTimes(2);
+    expect(container.destroy).toHaveBeenCalledTimes(1);
+    expect(probes).toBe(2);
+  });
+
+  it("gives the retry a pull allowance only when this DO has never started the image", async () => {
+    vi.useFakeTimers();
+    const stuckForever = () => {
+      const { container } = fakeContainer();
+      const realExec = container.exec.getMockImplementation()!;
+      container.exec.mockImplementation(async (argv: string[], execOptions?: ContainerExecOptions) => {
+        if (argv[0] === "true") {
+          return new Promise<ExecProcess>((_resolve, reject) => {
+            execOptions?.signal?.addEventListener("abort", () => reject(execOptions.signal?.reason));
+          });
+        }
+        return realExec(argv, execOptions);
+      });
+      return container;
+    };
+
+    // Known image: two short attempts.
+    const known = createContainer({ container: stuckForever() });
+    known.ctx.storage.values.set(LAST_STARTED_IMAGE_KEY, IMAGE);
+    const knownStart = known.instance.start().catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(2 * DB_QUERY_START_POLICY.attemptMs);
+    expect(ContainerStartFailedError.is(await knownStart)).toBe(true);
+
+    // New image: the retry waits out a pull.
+    const fresh = createContainer({ container: stuckForever() });
+    let settled = false;
+    const freshStart = fresh.instance.start().catch((error: unknown) => error).finally(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(2 * DB_QUERY_START_POLICY.attemptMs);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(DB_QUERY_START_POLICY.freshImageRetryMs);
+    expect(ContainerStartFailedError.is(await freshStart)).toBe(true);
+    expect(containerStartWorstCaseMs(DB_QUERY_START_POLICY)).toBeLessThanOrEqual(270_000);
+  });
+
+  it("reports a container that stopped under a call as a retryable failure", async () => {
+    const error = new DbQueryContainerUnavailableError("runRunner", new Error("container crashed"));
     expect(isTransientDbContainerError(error)).toBe(true);
     // Across the DO RPC hop it arrives as a plain Error with the name in the message.
-    const hopped = new Error(`DbQueryContainerUnavailableError: ${(error as Error).message}`);
+    const hopped = new Error(`DbQueryContainerUnavailableError: ${error.message}`);
     expect(DbQueryContainerUnavailableError.is(hopped)).toBe(true);
     expect(isTransientDbContainerError(hopped)).toBe(true);
     expect(DbQueryContainerUnavailableError.is(new Error("DB query container is not running"))).toBe(false);
@@ -302,7 +414,7 @@ describe("DbQueryContainer warehouse exports", () => {
 
   it("uses S3Mount through the exported S3Gateway on Cloudflare and a sync mount on self-host", async () => {
     const { container } = fakeContainer();
-    const ctx = { container, id: { name: "ws-1" }, exports: {}, blockConcurrencyWhile: vi.fn() };
+    const ctx = { container, id: { name: "ws-1" }, exports: {}, storage: fakeStorage(), blockConcurrencyWhile: vi.fn() };
     const cloud = new DbQueryContainer(ctx as unknown as DurableObjectState, {} as Env, { files: {} as never });
     await expect(cloud.prepareWarehouseExport("warehouse/ws-1")).rejects.toThrow(/must export S3Gateway/);
 

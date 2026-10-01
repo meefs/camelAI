@@ -7,6 +7,13 @@ import {
   PROJECT_BUILD_IDLE_TIMEOUT_MS,
   PROJECT_BUILD_INSTANCE_TYPE,
 } from "./container-sizing.js";
+import {
+  ContainerStartFailedError,
+  LAST_STARTED_IMAGE_KEY,
+  PROJECT_BUILD_START_POLICY,
+  recordContainerStartEvent,
+  startWithRetry,
+} from "./container-start.js";
 import { recordObservabilityEvent } from "./observability.js";
 import { ProjectBuildContainerUnavailableError } from "./project-build-contracts.js";
 import {
@@ -83,6 +90,8 @@ export type ProjectBuildFiles = Pick<Files, "readFile" | "writeFile" | "mkdir">;
 export class ProjectBuildContainer extends DurableObject<Env> {
   private readonly files: ProjectBuildFiles | null;
   private setup: Promise<void> | null = null;
+  /** A start (with its retry) is in flight: callers join it, even while it destroys between attempts. */
+  private starting = false;
 
   constructor(ctx: DurableObjectState, env: Env, deps: { files?: ProjectBuildFiles } = {}) {
     super(ctx, env);
@@ -221,6 +230,9 @@ export class ProjectBuildContainer extends DurableObject<Env> {
       await this.ensureRunning();
       return await run();
     } catch (error) {
+      // A start that failed after its retry says so itself; the callers'
+      // retry ladder must not run it again.
+      if (ContainerStartFailedError.is(error)) throw error;
       if (this.ctx.container?.running || SandboxFileError.is(error)) throw error;
       this.setup = null;
       throw new ProjectBuildContainerUnavailableError(operation, error);
@@ -228,13 +240,22 @@ export class ProjectBuildContainer extends DurableObject<Env> {
   }
 
   private ensureRunning(): Promise<void> {
-    if (this.setup === null || !this.container.running) {
-      this.setup = this.startContainer().catch((error: unknown) => {
-        this.setup = null;
+    if (this.setup !== null && (this.starting || this.container.running)) return this.setup;
+    this.starting = true;
+    const setup: Promise<void> = this.startContainer().then(
+      () => {
+        if (this.setup === setup) this.starting = false;
+      },
+      (error: unknown) => {
+        if (this.setup === setup) {
+          this.setup = null;
+          this.starting = false;
+        }
         throw error;
-      });
-    }
-    return this.setup;
+      },
+    );
+    this.setup = setup;
+    return setup;
   }
 
   /**
@@ -265,28 +286,57 @@ export class ProjectBuildContainer extends DurableObject<Env> {
       }
     }
 
-    if (!container.running) {
-      container.start({
-        image,
-        instance: PROJECT_BUILD_INSTANCE_TYPE,
-        // Builds need the npm registry.
-        enableInternet: true,
-      });
-      recordObservabilityEvent(this.env, {
-        event: "build_sandbox_start",
-        severity: "info",
-        component: "ProjectBuildContainer",
-        operation: "startContainer",
-        orgId: this.orgId,
-      });
+    if (container.running) {
+      try {
+        await container.setInactivityTimeout(await this.inactivityTimeoutMs());
+      } catch (error) {
+        await container.destroy();
+        throw error;
+      }
+      return;
     }
 
-    try {
-      await container.setInactivityTimeout(await this.inactivityTimeoutMs());
-    } catch (error) {
-      await container.destroy();
-      throw error;
-    }
+    // A cold start runs under PROJECT_BUILD_START_POLICY: start, then a `true`
+    // probe (the first command blocks until the container runs). A stuck or
+    // failed attempt is destroyed and retried once; see container-start.ts.
+    const freshImage = (await this.ctx.storage.get<string>(LAST_STARTED_IMAGE_KEY)) !== image;
+    await startWithRetry({
+      policy: PROJECT_BUILD_START_POLICY,
+      label: "build environment",
+      freshImage,
+      attempt: async (signal) => {
+        container.start({
+          image,
+          instance: PROJECT_BUILD_INSTANCE_TYPE,
+          // Builds need the npm registry.
+          enableInternet: true,
+        });
+        recordObservabilityEvent(this.env, {
+          event: "build_sandbox_start",
+          severity: "info",
+          component: "ProjectBuildContainer",
+          operation: "startContainer",
+          orgId: this.orgId,
+        });
+        await container.setInactivityTimeout(await this.inactivityTimeoutMs());
+        signal.throwIfAborted();
+        const probe = await container.exec(["true"], {
+          cwd: "/",
+          env: { ...PROJECT_BUILD_BASE_ENV },
+          stdout: "ignore",
+          stderr: "ignore",
+          signal,
+        });
+        const exitCode = await probe.exitCode;
+        if (exitCode !== 0) throw new Error(`the readiness probe exited ${exitCode}`);
+      },
+      reset: async () => {
+        if (container.running) await container.destroy();
+      },
+      onEvent: (event) =>
+        recordContainerStartEvent(this.env, event, { component: "ProjectBuildContainer", orgId: this.orgId }),
+    });
+    await this.ctx.storage.put(LAST_STARTED_IMAGE_KEY, image);
   }
 
   /** The 2m idle window, stretched to cover a live build session. */
