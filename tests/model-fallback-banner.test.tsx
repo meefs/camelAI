@@ -35,7 +35,7 @@ describe("ModelFallbackBanner OpenAI guidance", () => {
   beforeEach(() => window.localStorage.clear());
 
   it("names camelCode in both fallback variants", () => {
-    const { unmount } = renderBanner("gpt-6-sol");
+    const { unmount } = renderBanner("gpt-6.1-sol");
     expect(
       screen.getByText(
         "Premium model credits used. You've been switched to camelCode.",
@@ -43,7 +43,7 @@ describe("ModelFallbackBanner OpenAI guidance", () => {
     ).toBeInTheDocument();
 
     unmount();
-    renderBanner("gpt-6-sol", "hosted_subscription_unavailable");
+    renderBanner("gpt-6.1-sol", "hosted_subscription_unavailable");
     expect(
       screen.getByText(
         "Your subscription is unavailable — switched to camelCode.",
@@ -52,7 +52,7 @@ describe("ModelFallbackBanner OpenAI guidance", () => {
   });
 
   it("offers OpenAI sign-in for subscription-covered GPT models", () => {
-    renderBanner("gpt-6-sol");
+    renderBanner("gpt-6.1-sol");
 
     expect(
       screen.getByRole("button", { name: "Sign in with OpenAI" }),

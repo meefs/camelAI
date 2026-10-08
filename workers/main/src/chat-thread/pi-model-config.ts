@@ -236,9 +236,9 @@ const PI_MODEL_CATALOG_FALLBACKS: Record<string, Model<any>> = {
     contextWindow: 1_000_000,
     maxTokens: 128_000,
   } satisfies Model<"anthropic-messages">,
-  "openai/gpt-6-sol": {
-    id: "gpt-6-sol",
-    name: "GPT-6 Sol",
+  "openai/gpt-6.1-sol": {
+    id: "gpt-6.1-sol",
+    name: "GPT-6.1 Sol",
     api: "openai-responses",
     provider: "openai",
     baseUrl: "https://api.openai.com/v1",
@@ -247,7 +247,7 @@ const PI_MODEL_CATALOG_FALLBACKS: Record<string, Model<any>> = {
     cost: {
       input: 2,
       output: 10,
-      cacheRead: 0.2,
+      cacheRead: 0.1,
       cacheWrite: 2.5,
     },
     contextWindow: 1_050_000,

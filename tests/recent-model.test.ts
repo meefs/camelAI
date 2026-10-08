@@ -83,7 +83,7 @@ describe('recent model localStorage helpers', () => {
     expect(getRecentModel(scope)).toBe('opus-5.5');
 
     window.localStorage.setItem('camelai.recentModel.org-a.ws-a', 'gpt-5.6-terra');
-    expect(getRecentModel(scope)).toBe('gpt-6-sol');
+    expect(getRecentModel(scope)).toBe('gpt-6.1-sol');
 
     window.localStorage.setItem('camelai.recentModel.org-a.ws-a', 'kimi-k2.7-code');
     expect(getRecentModel(scope)).toBe('kimi-k3');

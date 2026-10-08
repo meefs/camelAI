@@ -105,9 +105,9 @@ describe('model picker config parsing', () => {
       use_org_defaults: false,
       use_platform_defaults: true,
       models: [
-        { id: 'gpt-6-sol', added_at: 10 },
+        { id: 'gpt-6.1-sol', added_at: 10 },
       ],
-      default_model: 'gpt-6-sol',
+      default_model: 'gpt-6.1-sol',
     });
   });
 
@@ -235,7 +235,7 @@ describe('model picker config parsing', () => {
     expect(parsed).toEqual({
       use_platform_defaults: false,
       models: [
-        { id: 'gpt-6-sol', added_at: 6 },
+        { id: 'gpt-6.1-sol', added_at: 6 },
         { id: 'opus-5.5', added_at: 4 },
         { id: 'gemini-3.8-flash', added_at: 4 },
         { id: 'deepseek-v4.1-flash', added_at: 2 },
@@ -248,7 +248,7 @@ describe('model picker config parsing', () => {
     const parsed = parseOrgModelPickerConfig({
       use_platform_defaults: false,
       models: [
-        { id: 'gpt-6-sol', added_at: 5 },
+        { id: 'gpt-6.1-sol', added_at: 5 },
         { id: 'gemini-3.1-pro-preview', added_at: 4 },
       ],
       default_model: 'gemini-3.1-pro-preview',
@@ -257,7 +257,7 @@ describe('model picker config parsing', () => {
     expect(parsed).toEqual({
       use_platform_defaults: false,
       models: [
-        { id: 'gpt-6-sol', added_at: 5 },
+        { id: 'gpt-6.1-sol', added_at: 5 },
         { id: 'gemini-3.8-flash', added_at: 4 },
       ],
       default_model: 'gemini-3.8-flash',
@@ -381,7 +381,7 @@ describe('model picker config parsing', () => {
 });
 
 describe('default model resolution', () => {
-  const visible = (ids: readonly ('opus-5.5' | 'sonnet' | 'gpt-6-sol')[]) =>
+  const visible = (ids: readonly ('opus-5.5' | 'sonnet' | 'gpt-6.1-sol')[]) =>
     ids.map((id) => ({ id }));
 
   it('uses the visible admin default before recent models', () => {
@@ -409,9 +409,9 @@ describe('default model resolution', () => {
       resolveDefaultModelForChat({
         effectiveDefaultModel: 'sonnet',
         recentModel: null,
-        visibleCatalog: visible(['gpt-6-sol']),
+        visibleCatalog: visible(['gpt-6.1-sol']),
       }),
-    ).toBe('gpt-6-sol');
+    ).toBe('gpt-6.1-sol');
   });
 
   it('uses the fallback model before the first visible model', () => {

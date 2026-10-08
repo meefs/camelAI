@@ -123,7 +123,7 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     });
     expect(state?.allowedThreadModels).toContain('sonnet');
     expect(state?.allowedThreadModels).toContain('gpt-6-luna');
-    expect(state?.allowedThreadModels).toContain('gpt-6-sol');
+    expect(state?.allowedThreadModels).toContain('gpt-6.1-sol');
     expect(orgStub.getModelPickerConfig).toHaveBeenCalledTimes(2);
     expect(workspaceStub.getModelPickerConfig).toHaveBeenCalledTimes(2);
   });
@@ -436,7 +436,7 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
                 models: [
                   { id: 'fable-5.1', added_at: 4 },
                   { id: 'sonnet', added_at: 3 },
-                  { id: 'gpt-6-sol', added_at: 2 },
+                  { id: 'gpt-6.1-sol', added_at: 2 },
                   { id: 'grok-4.7', added_at: 1 },
                 ],
                 default_model: 'sonnet',
@@ -476,7 +476,7 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
       freeState?.modelOptions.find((option) => option.id === 'fable-5.1'),
     ).toMatchObject({ locked: true, unlockHint: 'generic' });
     expect(
-      freeState?.modelOptions.find((option) => option.id === 'gpt-6-sol'),
+      freeState?.modelOptions.find((option) => option.id === 'gpt-6.1-sol'),
     ).toMatchObject({ locked: true, unlockHint: 'openai' });
     expect(
       freeState?.modelOptions.find((option) => option.id === 'grok-4.7'),
@@ -488,12 +488,12 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     });
     expect(openAiState?.billingAccessMode).toBe('camel_free');
     expect(openAiState?.canUnlockPremiumModels).toBe(true);
-    expect(openAiState?.defaultModel).toBe('gpt-6-sol');
-    expect(openAiState?.effectivePickerDefaultModel).toBe('gpt-6-sol');
-    expect(openAiState?.allowedThreadModels).toContain('gpt-6-sol');
+    expect(openAiState?.defaultModel).toBe('gpt-6.1-sol');
+    expect(openAiState?.effectivePickerDefaultModel).toBe('gpt-6.1-sol');
+    expect(openAiState?.allowedThreadModels).toContain('gpt-6.1-sol');
     expect(
       openAiState?.modelOptions.find(
-        (option) => option.id === 'gpt-6-sol',
+        (option) => option.id === 'gpt-6.1-sol',
       )?.locked,
     ).not.toBe(true);
     expect(openAiState?.modelOptions.some((option) => option.locked)).toBe(false);
@@ -543,13 +543,13 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
       modelOptions: [
         MODEL_CATALOG[CAMEL_CODE_LLM_MODEL],
         MODEL_CATALOG.sonnet,
-        MODEL_CATALOG['gpt-6-sol'],
+        MODEL_CATALOG['gpt-6.1-sol'],
         MODEL_CATALOG['grok-4.7'],
       ],
       allowedThreadModels: [
         CAMEL_CODE_LLM_MODEL,
         'sonnet',
-        'gpt-6-sol',
+        'gpt-6.1-sol',
         'grok-4.7',
       ],
       effectivePickerDefaultModel: 'sonnet',
@@ -614,7 +614,7 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
       result.modelOptions.find((option) => option.id === 'sonnet')?.locked,
     ).not.toBe(true);
     expect(
-      result.modelOptions.find((option) => option.id === 'gpt-6-sol')?.locked,
+      result.modelOptions.find((option) => option.id === 'gpt-6.1-sol')?.locked,
     ).not.toBe(true);
     expect(
       result.modelOptions.find((option) => option.id === 'grok-4.7'),
@@ -647,12 +647,12 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
         allowOpenAiSubscription: true,
         modelOptions: [
           MODEL_CATALOG.sonnet,
-          MODEL_CATALOG['gpt-6-sol'],
+          MODEL_CATALOG['gpt-6.1-sol'],
           MODEL_CATALOG['gpt-6-luna'],
         ],
         allowedThreadModels: [
           'sonnet',
-          'gpt-6-sol',
+          'gpt-6.1-sol',
           'gpt-6-luna',
         ],
       }),
@@ -661,11 +661,11 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
 
     expect(result.modelOptions.map((option) => option.id)).toEqual([
       'sonnet',
-      'gpt-6-sol',
+      'gpt-6.1-sol',
       'gpt-6-luna',
     ]);
     expect(result.allowedThreadModels).toEqual([
-      'gpt-6-sol',
+      'gpt-6.1-sol',
       'gpt-6-luna',
     ]);
     expect(result.defaultModel).toBe('gpt-6-luna');
@@ -1352,7 +1352,7 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     expect(orgStub.getLlmProviderConfig).not.toHaveBeenCalled();
     expect(state?.orgId).toBe('org_123');
     expect(state?.llmProvider).toBe('openai');
-    expect(state?.allowedThreadModels).toContain('gpt-6-sol');
+    expect(state?.allowedThreadModels).toContain('gpt-6.1-sol');
   });
 
   it('uses preloaded org model context for thread model updates', async () => {
@@ -1383,15 +1383,15 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
       }),
       getModelPickerConfig: vi.fn().mockResolvedValue({
         use_platform_defaults: false,
-        models: [{ id: 'gpt-6-sol', added_at: 1 }],
-        default_model: 'gpt-6-sol',
+        models: [{ id: 'gpt-6.1-sol', added_at: 1 }],
+        default_model: 'gpt-6.1-sol',
       }),
       updateThreadModel: vi.fn().mockResolvedValue({
         id: 'thread_123',
         workspace_id: 'ws_123',
         title: 'Existing Chat',
         created_by: 'user_123',
-        model: 'gpt-6-sol',
+        model: 'gpt-6.1-sol',
         created_at: 1,
         updated_at: 3,
         user_message_count: 0,
@@ -1413,7 +1413,7 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     const updated = await updateThreadModel(
       {},
       'thread_123',
-      'gpt-6-sol',
+      'gpt-6.1-sol',
       'ws_123',
       {
         orgId: 'org_123',
@@ -1432,9 +1432,9 @@ describe('getWorkspaceModelPickerState rollout compatibility', () => {
     expect(orgStub.getLlmProviderConfig).not.toHaveBeenCalled();
     expect(orgStub.updateThreadModel).toHaveBeenCalledWith(
       'thread_123',
-      'gpt-6-sol',
+      'gpt-6.1-sol',
     );
-    expect(updated?.model).toBe('gpt-6-sol');
+    expect(updated?.model).toBe('gpt-6.1-sol');
   });
 
   it('uses a known org id for thread reads without loading workspace info', async () => {

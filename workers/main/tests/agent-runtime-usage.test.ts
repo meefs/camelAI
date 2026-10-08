@@ -100,8 +100,8 @@ describe("usageRowFor", () => {
     expect(row({}, { billing_status: "enterprise" }).credit_chargeable).toBe(false);
     expect(row({ keyScope: "org_org1", provider: "anthropic", model: "claude-opus-5-5", cost: { usd: 0.01, source: "catalog" } }))
       .toMatchObject({ billing_source: "byok", credit_chargeable: false, estimated_cost_usd: 0.01 });
-    expect(row({ keyScope: null, provider: "chiridion", model: "openai-codex/gpt-6-sol", actor: null }))
-      .toMatchObject({ billing_source: "byok", provider: "openai", model: "gpt-6-sol", user_id: "user1" });
+    expect(row({ keyScope: null, provider: "chiridion", model: "openai-codex/gpt-6.1-sol", actor: null }))
+      .toMatchObject({ billing_source: "byok", provider: "openai", model: "gpt-6.1-sol", user_id: "user1" });
     expect(row({ kind: "compaction" }).usage_surface).toBe("compaction");
     expect(row({ keyScope: "org_org1", provider: "amazon-bedrock", model: "us.anthropic.claude-sonnet-5" }))
       .toMatchObject({ provider: "bedrock", model: "us.anthropic.claude-sonnet-5", billing_source: "byok" });

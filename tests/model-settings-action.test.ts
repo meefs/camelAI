@@ -150,7 +150,7 @@ describe('organization model settings actions', () => {
         use_platform_defaults: false,
         models: [
           { id: 'deepseek-v4-auto', added_at: expect.any(Number) },
-          { id: 'gpt-6-sol', added_at: expect.any(Number) },
+          { id: 'gpt-6.1-sol', added_at: expect.any(Number) },
           { id: 'gpt-6-luna', added_at: expect.any(Number) },
         ],
         default_model: null,
@@ -199,7 +199,7 @@ describe('organization model settings actions', () => {
         use_platform_defaults: false,
         models: [
           { id: 'deepseek-v4-auto', added_at: expect.any(Number) },
-          { id: 'gpt-6-sol', added_at: expect.any(Number) },
+          { id: 'gpt-6.1-sol', added_at: expect.any(Number) },
           { id: 'gpt-6-luna', added_at: expect.any(Number) },
         ],
         default_model: null,
@@ -447,7 +447,7 @@ describe('organization model settings actions', () => {
         use_platform_defaults: false,
         models: [
           { id: 'deepseek-v4-auto', added_at: expect.any(Number) },
-          { id: 'gpt-6-sol', added_at: expect.any(Number) },
+          { id: 'gpt-6.1-sol', added_at: expect.any(Number) },
           { id: 'gpt-6-luna', added_at: expect.any(Number) },
         ],
         default_model: null,
@@ -508,7 +508,7 @@ describe('organization model settings actions', () => {
     const response = await action({
       request: formRequest({
         intent: 'addModel',
-        model: 'gpt-6-sol',
+        model: 'gpt-6.1-sol',
       }, ''),
       context: {},
       params: {},
@@ -522,7 +522,7 @@ describe('organization model settings actions', () => {
       expect.objectContaining({
         use_platform_defaults: false,
         models: [
-          { id: 'gpt-6-sol', added_at: expect.any(Number) },
+          { id: 'gpt-6.1-sol', added_at: expect.any(Number) },
           { id: 'sonnet', added_at: 10 },
         ],
         default_model: 'sonnet',
@@ -531,7 +531,7 @@ describe('organization model settings actions', () => {
         actorId: 'user_123',
         details: {
           intent: 'addModel',
-          model: 'gpt-6-sol',
+          model: 'gpt-6.1-sol',
         },
       }),
     );
@@ -585,7 +585,7 @@ describe('organization model settings actions', () => {
     const response = await action({
       request: formRequest({
         intent: 'addModel',
-        model: 'gpt-6-sol',
+        model: 'gpt-6.1-sol',
       }),
       context: {},
       params: {},
@@ -594,7 +594,7 @@ describe('organization model settings actions', () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       success: true,
-      message: 'Added GPT-6 Sol to picker',
+      message: 'Added GPT-6.1 Sol to picker',
     });
     expect(workspaceSetModelPickerConfigMock).toHaveBeenCalledWith(
       {
@@ -602,7 +602,7 @@ describe('organization model settings actions', () => {
         use_platform_defaults: false,
         models: [
           { id: 'deepseek-v4-auto', added_at: expect.any(Number) },
-          { id: 'gpt-6-sol', added_at: expect.any(Number) },
+          { id: 'gpt-6.1-sol', added_at: expect.any(Number) },
           { id: 'gpt-6-luna', added_at: expect.any(Number) },
         ],
         default_model: null,
@@ -611,7 +611,7 @@ describe('organization model settings actions', () => {
         actorId: 'user_123',
         details: {
           intent: 'addModel',
-          model: 'gpt-6-sol',
+          model: 'gpt-6.1-sol',
         },
       },
     );
@@ -631,7 +631,7 @@ describe('organization model settings actions', () => {
     const response = await action({
       request: formRequest({
         intent: 'removeModel',
-        model: 'gpt-6-sol',
+        model: 'gpt-6.1-sol',
       }),
       context: {},
       params: {},
@@ -655,7 +655,7 @@ describe('organization model settings actions', () => {
         actorId: 'user_123',
         details: {
           intent: 'removeModel',
-          model: 'gpt-6-sol',
+          model: 'gpt-6.1-sol',
         },
       },
     );
@@ -670,15 +670,15 @@ describe('organization model settings actions', () => {
       use_platform_defaults: false,
       models: [
         { id: 'gpt-6-luna', added_at: 20 },
-        { id: 'gpt-6-sol', added_at: 10 },
+        { id: 'gpt-6.1-sol', added_at: 10 },
       ],
-      default_model: 'gpt-6-sol',
+      default_model: 'gpt-6.1-sol',
     });
 
     const response = await action({
       request: formRequest({
         intent: 'removeModel',
-        model: 'gpt-6-sol',
+        model: 'gpt-6.1-sol',
       }),
       context: {},
       params: {},
@@ -701,7 +701,7 @@ describe('organization model settings actions', () => {
         actorId: 'user_123',
         details: {
           intent: 'removeModel',
-          model: 'gpt-6-sol',
+          model: 'gpt-6.1-sol',
         },
       },
     );
@@ -754,7 +754,7 @@ describe('organization model settings loader', () => {
   it('hides provider-incompatible additional models for OpenAI BYOK orgs', async () => {
     orgGetModelPickerConfigMock.mockResolvedValue({
       models: [
-        { id: 'gpt-6-sol', added_at: 40 },
+        { id: 'gpt-6.1-sol', added_at: 40 },
         { id: 'gpt-5.6-terra', added_at: 35 },
         { id: 'gpt-5.5', added_at: 30 },
         { id: 'gpt-5.4', added_at: 20 },
@@ -771,7 +771,7 @@ describe('organization model settings loader', () => {
 
     expect(result.config.inPicker.map((row) => row.entry.id)).toEqual([
       'deepseek-v4-auto',
-      'gpt-6-sol',
+      'gpt-6.1-sol',
       'gpt-6-luna',
     ]);
     expect(result.config.additional).toEqual([]);
@@ -833,7 +833,7 @@ describe('organization model settings loader', () => {
     orgGetModelPickerConfigMock.mockResolvedValue({
       models: [
         { id: 'sonnet', added_at: 50 },
-        { id: 'gpt-6-sol', added_at: 45 },
+        { id: 'gpt-6.1-sol', added_at: 45 },
         { id: 'gpt-5.6-terra', added_at: 42 },
         { id: 'gpt-5.5', added_at: 40 },
         { id: 'deepseek-v4.1-flash', added_at: 30 },
@@ -850,7 +850,7 @@ describe('organization model settings loader', () => {
 
     expect(result.config.inPicker.map((row) => row.entry.id)).toEqual([
       'deepseek-v4-auto',
-      'gpt-6-sol',
+      'gpt-6.1-sol',
       'gpt-6-luna',
     ]);
     expect(result.config.additional).toEqual([]);
@@ -908,13 +908,13 @@ describe('organization model settings loader', () => {
     } as never);
 
     expect(result.config.inPicker.map((row) => row.entry.id)).toContain(
-      'gpt-6-sol',
+      'gpt-6.1-sol',
     );
     expect(result.config.additional.map((entry) => entry.id)).not.toContain(
-      'gpt-6-sol',
+      'gpt-6.1-sol',
     );
     expect(result.hiddenLockedModels.map((entry) => entry.id)).not.toContain(
-      'gpt-6-sol',
+      'gpt-6.1-sol',
     );
   });
 
@@ -947,7 +947,7 @@ describe('organization model settings loader', () => {
     expect(result.allowOpenAiSubscription).toBe(true);
     expect(result.showLockedModels).toBe(true);
     expect(result.billingLockedModelIds).toContain('sonnet');
-    expect(result.billingLockedModelIds).not.toContain('gpt-6-sol');
+    expect(result.billingLockedModelIds).not.toContain('gpt-6.1-sol');
     expect(result.hiddenLockedModels).toEqual([]);
   });
 

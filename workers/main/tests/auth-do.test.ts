@@ -411,15 +411,15 @@ describe('Auth flow (full-stack with DOs)', () => {
         'Recovered thread',
         userId,
         'hello',
-        'gpt-6-sol'
+        'gpt-6.1-sol'
       );
-      expect(thread.model).toBe('gpt-6-sol');
+      expect(thread.model).toBe('gpt-6.1-sol');
       expect(thread.first_user_message).toBe('hello');
       expect(thread.last_user_message).toBe('hello');
       expect(thread.last_user_message_at).toEqual(expect.any(Number));
 
       const stored = await orgStub.getThread(thread.id);
-      expect(stored?.model).toBe('gpt-6-sol');
+      expect(stored?.model).toBe('gpt-6.1-sol');
       expect(stored?.first_user_message).toBe('hello');
       expect(stored?.last_user_message).toBe('hello');
       expect(stored?.last_user_message_at).toEqual(expect.any(Number));
@@ -999,12 +999,12 @@ describe('Auth flow (full-stack with DOs)', () => {
       const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
 
       const thread = await orgStub.createThread(defaultWorkspaceId, 'Model thread', userId, undefined, 'opus-5.5');
-      const updated = await orgStub.updateThreadModel(thread.id, 'gpt-6-sol', userId);
+      const updated = await orgStub.updateThreadModel(thread.id, 'gpt-6.1-sol', userId);
 
-      expect(updated?.model).toBe('gpt-6-sol');
+      expect(updated?.model).toBe('gpt-6.1-sol');
 
       const stored = await orgStub.getThread(thread.id);
-      expect(stored?.model).toBe('gpt-6-sol');
+      expect(stored?.model).toBe('gpt-6.1-sol');
     });
 
     it('preserves Bedrock-only models and maps retired ones when creating and updating threads', async () => {
@@ -1047,9 +1047,9 @@ describe('Auth flow (full-stack with DOs)', () => {
         'gpt-5.4',
       );
 
-      expect(thread.model).toBe('gpt-6-sol');
+      expect(thread.model).toBe('gpt-6.1-sol');
       const stored = await orgStub.getThread(thread.id);
-      expect(stored?.model).toBe('gpt-6-sol');
+      expect(stored?.model).toBe('gpt-6.1-sol');
     });
 
     it('preserves the custom provider model marker when creating a thread', async () => {

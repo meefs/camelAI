@@ -152,8 +152,8 @@ describe("normalizeLegacyModel (back-compat shim)", () => {
   });
 
   it("maps old friendly model names to their OpenRouter ids", () => {
-    expect(normalizeLegacyModel("gpt-5.5")).toBe("openai/gpt-6-sol");
-    expect(normalizeLegacyModel("openai/gpt-5.5")).toBe("openai/gpt-6-sol");
+    expect(normalizeLegacyModel("gpt-5.5")).toBe("openai/gpt-6.1-sol");
+    expect(normalizeLegacyModel("openai/gpt-5.5")).toBe("openai/gpt-6.1-sol");
     expect(normalizeLegacyModel("kimi-k2.6")).toBe("moonshotai/kimi-k3");
     expect(normalizeLegacyModel("kimi-latest")).toBe("moonshotai/kimi-k3");
     expect(normalizeLegacyModel("kimi-k2.7-code")).toBe("moonshotai/kimi-k3");
@@ -188,11 +188,11 @@ describe("normalizeLegacyModel (back-compat shim)", () => {
     expect(normalizeLegacyModel("deepseek-v4-auto")).toBe("deepseek-v4-auto");
     expect(normalizeLegacyModel("deepseek-v4-flash")).toBe("deepseek-v4-flash");
     expect(normalizeLegacyModel("anthropic/claude-sonnet-4.6")).toBe("anthropic/claude-sonnet-4.6");
-    expect(normalizeLegacyModel(normalizeLegacyModel("gpt-5.5"))).toBe("openai/gpt-6-sol");
+    expect(normalizeLegacyModel(normalizeLegacyModel("gpt-5.5"))).toBe("openai/gpt-6.1-sol");
   });
 
   it("trims whitespace before matching", () => {
-    expect(normalizeLegacyModel("  gpt-5.5  ")).toBe("openai/gpt-6-sol");
+    expect(normalizeLegacyModel("  gpt-5.5  ")).toBe("openai/gpt-6.1-sol");
   });
 });
 
@@ -459,7 +459,7 @@ describe("resolveRouting tier defaults", () => {
       },
       tier,
     );
-    expect((await scope("smart")).model).toBe("openai/gpt-6-sol");
+    expect((await scope("smart")).model).toBe("openai/gpt-6.1-sol");
     expect((await scope("auto")).model).toBe("openai/gpt-6-luna");
     expect((await scope("cheap")).model).toBe("openai/gpt-6-luna");
   });

@@ -267,7 +267,7 @@ describe('new chat loader sales prompt handling', () => {
     expect(interactive.llmProvider).toBe('openai');
     expect(interactive.allowedThreadModels).toEqual([
       'deepseek-v4-auto',
-      'gpt-6-sol',
+      'gpt-6.1-sol',
       'gpt-6-luna',
     ]);
 

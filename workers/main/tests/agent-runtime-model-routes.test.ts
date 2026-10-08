@@ -35,7 +35,7 @@ describe("runtimeModelRoute", () => {
     ["opus-5.5", "openrouter/anthropic/claude-opus-5.5"],
     ["fable-5.1", "openrouter/anthropic/claude-fable-5.1:nitro"],
     ["haiku", "openrouter/anthropic/claude-sonnet-5.5:nitro"],
-    ["gpt-6-sol", "openrouter/openai/gpt-6-sol:nitro"],
+    ["gpt-6.1-sol", "openrouter/openai/gpt-6.1-sol:nitro"],
     ["gpt-6-luna", "openrouter/openai/gpt-6-luna"],
     ["gemini-3.8-flash", "openrouter/google/gemini-3.8-flash"],
     ["deepseek-v4.1-flash", "openrouter/deepseek/deepseek-v4.1-flash"],
@@ -61,8 +61,8 @@ describe("runtimeModelRoute", () => {
     const scope = "org_org1";
     expect(runtimeModelRoute(config({ usageProvider: "anthropic", model: { provider: "anthropic", id: "claude-opus-5-5", baseUrl: "https://api.anthropic.com" } }), org))
       .toEqual({ kind: "scope", model: "anthropic/claude-opus-5-5", keyScope: scope });
-    expect(runtimeModelRoute(config({ usageProvider: "openai", model: { provider: "openai", id: "gpt-6-sol", baseUrl: "https://api.openai.com/v1" } }), org))
-      .toEqual({ kind: "scope", model: "openai/gpt-6-sol", keyScope: scope });
+    expect(runtimeModelRoute(config({ usageProvider: "openai", model: { provider: "openai", id: "gpt-6.1-sol", baseUrl: "https://api.openai.com/v1" } }), org))
+      .toEqual({ kind: "scope", model: "openai/gpt-6.1-sol", keyScope: scope });
     expect(runtimeModelRoute(config({ usageProvider: "openrouter", model: { provider: "anthropic", id: "anthropic/claude-sonnet-5.5:nitro", baseUrl: "https://openrouter.ai/api" } }), org))
       .toEqual({ kind: "scope", model: "openrouter/anthropic/claude-sonnet-5.5:nitro", keyScope: scope });
     expect(runtimeModelRoute(config({ usageProvider: "bedrock", model: { provider: "custom", api: "anthropic-messages", id: "anthropic.claude-sonnet-5-5", baseUrl: "https://bedrock-mantle.eu-west-1.api.aws/anthropic" } }), org))

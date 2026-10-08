@@ -100,7 +100,7 @@ describe('chat credit status', () => {
     expect(
       shouldSwitchExhaustedThreadModel(
         status,
-        'gpt-6-sol',
+        'gpt-6.1-sol',
         'anthropic',
         true,
       ),
@@ -289,13 +289,13 @@ describe('chat credit status', () => {
         total_credit_limit_cents: 0,
       }),
       'anthropic',
-      'gpt-6-sol',
+      'gpt-6.1-sol',
     );
 
     expect(
       resolveDisplayedBillingCreditStatus(
         status,
-        'gpt-6-sol',
+        'gpt-6.1-sol',
         true,
         'anthropic',
         true,

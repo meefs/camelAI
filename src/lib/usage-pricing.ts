@@ -299,6 +299,22 @@ const modelPricingTable: Record<string, ModelPricing> = {
       },
     ],
   },
+  // OpenRouter list prices, 2026-10-08: GPT-6 Sol's, with cache reads halved.
+  "gpt-6.1-sol": {
+    inputPerToken: 0.000002,
+    outputPerToken: 0.00001,
+    cacheCreationPerToken: 0.0000025,
+    cacheReadPerToken: 0.0000001,
+    tiers: [
+      {
+        inputTokensAbove: 272_000,
+        inputPerToken: 0.000004,
+        outputPerToken: 0.000015,
+        cacheCreationPerToken: 0.000005,
+        cacheReadPerToken: 0.0000002,
+      },
+    ],
+  },
   // OpenRouter list prices, 2026-09-28; the long-context tier follows GPT-6 Luna.
   "gpt-6-sol": {
     inputPerToken: 0.000002,
@@ -559,6 +575,9 @@ export function lookupPricingOrNull(model: string): ModelPricing | null {
 
   if (normalized.startsWith("gpt-5.6-terra")) {
     return modelPricingTable["gpt-5.6-terra"];
+  }
+  if (normalized.startsWith("gpt-6.1-sol")) {
+    return modelPricingTable["gpt-6.1-sol"];
   }
   if (normalized.startsWith("gpt-6-sol")) {
     return modelPricingTable["gpt-6-sol"];

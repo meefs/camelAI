@@ -21,12 +21,13 @@ const RETIRED_PI_MODEL_IDS: Readonly<Record<string, string>> = {
   "opus-5": "opus-5.5",
   "fable-5": "fable-5.1",
   "claude-fable-5": "fable-5.1",
-  "gpt-5.6-sol": "gpt-6-sol",
-  "gpt-5.6-terra": "gpt-6-sol",
+  "gpt-6-sol": "gpt-6.1-sol",
+  "gpt-5.6-sol": "gpt-6.1-sol",
+  "gpt-5.6-terra": "gpt-6.1-sol",
   "gpt-5.6-luna": "gpt-6-luna",
   "gpt-5.6-sol-bedrock": "gpt-5.6-terra-bedrock",
-  "gpt-5.5": "gpt-6-sol",
-  "gpt-5.4": "gpt-6-sol",
+  "gpt-5.5": "gpt-6.1-sol",
+  "gpt-5.4": "gpt-6.1-sol",
   "gpt-5.4-mini": "gpt-6-luna",
   "kimi-k2.7-code": "kimi-k3",
   "kimi-k2.6": "kimi-k3",
@@ -84,7 +85,7 @@ export class PiModelMapping {
         return claudeReference("claude-fable-5-1");
       case "sonnet":
         return claudeReference("claude-sonnet-5-5");
-      case "gpt-6-sol":
+      case "gpt-6.1-sol":
       case "gpt-6-luna":
         return openAiReference(normalizedModelId);
       case "gpt-5.6-terra-bedrock":

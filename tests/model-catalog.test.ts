@@ -22,7 +22,7 @@ const CURRENT_MODELS: Array<{
   { id: 'opus-5.5', label: 'Opus 5.5', providerLogo: 'claude', providerOrder: 0, modelOrder: 0, pricingKey: 'claude-opus-5-5', cost: '$$$$' },
   { id: 'fable-5.1', label: 'Fable 5.1', providerLogo: 'claude', providerOrder: 0, modelOrder: 1, pricingKey: 'claude-fable-5-1', cost: '$$$$$' },
   { id: 'sonnet', label: 'Sonnet 5.5', providerLogo: 'claude', providerOrder: 0, modelOrder: 2, pricingKey: 'claude-sonnet-5-5', cost: '$$$' },
-  { id: 'gpt-6-sol', label: 'GPT-6 Sol', providerLogo: 'openai', providerOrder: 1, modelOrder: 0, pricingKey: 'gpt-6-sol', cost: '$$$' },
+  { id: 'gpt-6.1-sol', label: 'GPT-6.1 Sol', providerLogo: 'openai', providerOrder: 1, modelOrder: 0, pricingKey: 'gpt-6.1-sol', cost: '$$$' },
   { id: 'gpt-6-luna', label: 'GPT-6 Luna', providerLogo: 'openai', providerOrder: 1, modelOrder: 1, pricingKey: 'gpt-6-luna', cost: '$' },
   { id: 'gpt-5.6-terra-bedrock', label: 'GPT-5.6 Terra Bedrock', providerLogo: 'openai', providerOrder: 1, modelOrder: 2, pricingKey: 'gpt-5.6-terra', cost: '$$$' },
   { id: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash', providerLogo: 'gemini', providerOrder: 2, modelOrder: 0, pricingKey: 'google/gemini-3.8-flash', cost: '$$' },
@@ -41,6 +41,7 @@ const RETIRED_MODELS = [
   'opus-5',
   'fable-5',
   'gpt-5.5',
+  'gpt-6-sol',
   'gpt-5.6-sol',
   'gpt-5.6-terra',
   'gpt-5.6-luna',
@@ -139,7 +140,7 @@ describe('MODEL_CATALOG', () => {
         models: [
           { id: 'sonnet', added_at: 1 },
           { id: 'opus-5.5', added_at: 11 },
-          { id: 'gpt-6-sol', added_at: 12 },
+          { id: 'gpt-6.1-sol', added_at: 12 },
           { id: 'gpt-6-luna', added_at: 14 },
           { id: 'kimi-k3', added_at: 5 },
           { id: 'grok-4.7', added_at: 6 },
@@ -153,7 +154,7 @@ describe('MODEL_CATALOG', () => {
 
     expect(visible.map((entry) => entry.id)).toEqual([
       'deepseek-v4-auto',
-      'gpt-6-sol',
+      'gpt-6.1-sol',
       'gpt-6-luna',
     ]);
   });
@@ -184,7 +185,7 @@ describe('MODEL_CATALOG', () => {
         models: [
         { id: 'sonnet' as const, added_at: 1 },
         { id: 'opus-5.5' as const, added_at: 2 },
-        { id: 'gpt-6-sol' as const, added_at: 3 },
+        { id: 'gpt-6.1-sol' as const, added_at: 3 },
         { id: 'gpt-6-luna' as const, added_at: 5 },
         { id: 'kimi-k3' as const, added_at: 6 },
       ],
@@ -196,7 +197,7 @@ describe('MODEL_CATALOG', () => {
         orgProvider: 'custom',
         customApi: 'openai-responses',
       }).map((entry) => entry.id),
-    ).toEqual(['gpt-6-sol', 'gpt-6-luna']);
+    ).toEqual(['gpt-6.1-sol', 'gpt-6-luna']);
     expect(
       resolveModelPickerCatalog({
         effectiveConfig,
@@ -243,7 +244,7 @@ describe('MODEL_CATALOG', () => {
       'opus-5.5',
       'fable-5.1',
       'sonnet',
-      'gpt-6-sol',
+      'gpt-6.1-sol',
       'gpt-6-luna',
       'gemini-3.8-flash',
       'deepseek-v4.1-flash',

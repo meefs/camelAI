@@ -36,11 +36,12 @@ const STORED_LLM_MODEL_REPLACEMENTS: Readonly<Record<string, LlmModel>> = {
   "opus-4.8": "opus-5.5",
   "opus-5": "opus-5.5",
   "fable-5": "fable-5.1",
-  "gpt-5.6-sol": "gpt-6-sol",
-  "gpt-5.6-terra": "gpt-6-sol",
+  "gpt-6-sol": "gpt-6.1-sol",
+  "gpt-5.6-sol": "gpt-6.1-sol",
+  "gpt-5.6-terra": "gpt-6.1-sol",
   "gpt-5.6-luna": "gpt-6-luna",
-  "gpt-5.5": "gpt-6-sol",
-  "gpt-5.4": "gpt-6-sol",
+  "gpt-5.5": "gpt-6.1-sol",
+  "gpt-5.4": "gpt-6.1-sol",
   "gpt-5.4-mini": "gpt-6-luna",
   // Sonnet runs on every key that could run Haiku, including Claude-only ones.
   haiku: "sonnet",
@@ -88,8 +89,8 @@ export const OPENAI_COMPATIBLE_LLM_MODEL_OPTIONS: ReadonlyArray<{
   description: string;
 }> = [
   {
-    value: "gpt-6-sol",
-    label: "GPT-6 Sol",
+    value: "gpt-6.1-sol",
+    label: "GPT-6.1 Sol",
     description: "High-capability OpenAI model",
   },
   {

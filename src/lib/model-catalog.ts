@@ -61,7 +61,7 @@ export const LLM_MODEL_TO_PRICING_KEY: Readonly<Record<LlmModel, string>> = {
   "opus-5.5": "claude-opus-5-5",
   "fable-5.1": "claude-fable-5-1",
   sonnet: "claude-sonnet-5-5",
-  "gpt-6-sol": "gpt-6-sol",
+  "gpt-6.1-sol": "gpt-6.1-sol",
   "gpt-6-luna": "gpt-6-luna",
   "gpt-5.6-terra-bedrock": "gpt-5.6-terra",
   custom: "custom",
@@ -115,9 +115,9 @@ export const MODEL_CATALOG: Readonly<Record<LlmModel, ModelCatalogEntry>> = {
     intelligence: 4,
     speed: 3.5,
   },
-  "gpt-6-sol": {
-    id: "gpt-6-sol",
-    label: "GPT-6 Sol",
+  "gpt-6.1-sol": {
+    id: "gpt-6.1-sol",
+    label: "GPT-6.1 Sol",
     providerLogo: "openai",
     providerOrder: 1,
     modelOrder: 0,

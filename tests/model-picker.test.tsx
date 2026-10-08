@@ -177,7 +177,7 @@ describe('ModelPicker metadata card state', () => {
         options={[
           MODEL_CATALOG[CAMEL_CODE_LLM_MODEL],
           {
-            ...MODEL_CATALOG['gpt-6-sol'],
+            ...MODEL_CATALOG['gpt-6.1-sol'],
             locked: true,
             unlockHint: 'openai',
           },
@@ -189,8 +189,8 @@ describe('ModelPicker metadata card state', () => {
     );
 
     expect(screen.getByText('Premium models')).toBeInTheDocument();
-    fireEvent.click(getModelItem('GPT-6 Sol'));
-    expect(onLockedModelSelect).toHaveBeenCalledWith('gpt-6-sol');
+    fireEvent.click(getModelItem('GPT-6.1 Sol'));
+    expect(onLockedModelSelect).toHaveBeenCalledWith('gpt-6.1-sol');
     expect(onValueChange).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByText('Unlock premium models'));
@@ -205,7 +205,7 @@ describe('ModelPicker metadata card state', () => {
         options={[
           MODEL_CATALOG[CAMEL_CODE_LLM_MODEL],
           { ...MODEL_CATALOG.sonnet, locked: true, unlockHint: 'generic' },
-          MODEL_CATALOG['gpt-6-sol'],
+          MODEL_CATALOG['gpt-6.1-sol'],
           {
             ...MODEL_CATALOG['grok-4.7'],
             locked: true,
@@ -216,7 +216,7 @@ describe('ModelPicker metadata card state', () => {
       />,
     );
 
-    const gptItem = getModelItem('GPT-6 Sol');
+    const gptItem = getModelItem('GPT-6.1 Sol');
     const premiumLabel = screen
       .getByText('Premium models')
       .closest('[data-slot="dropdown-menu-label"]');
@@ -238,7 +238,7 @@ describe('ModelPicker metadata card state', () => {
         options={[
           MODEL_CATALOG[CAMEL_CODE_LLM_MODEL],
           {
-            ...MODEL_CATALOG['gpt-6-sol'],
+            ...MODEL_CATALOG['gpt-6.1-sol'],
             locked: true,
             unlockHint: 'openai',
           },
@@ -256,7 +256,7 @@ describe('ModelPicker metadata card state', () => {
     expect(screen.getByRole('tooltip')).toHaveTextContent(
       'Free and always included',
     );
-    fireEvent.focus(getModelItem('GPT-6 Sol'));
+    fireEvent.focus(getModelItem('GPT-6.1 Sol'));
     expect(screen.getByRole('tooltip')).toHaveTextContent(
       'or your OpenAI account',
     );

@@ -11,7 +11,7 @@ import {
 const BASE_OPTIONS: ModelPickerOption[] = [
   MODEL_CATALOG[CAMEL_CODE_LLM_MODEL],
   MODEL_CATALOG.sonnet,
-  MODEL_CATALOG["gpt-6-sol"],
+  MODEL_CATALOG["gpt-6.1-sol"],
   MODEL_CATALOG["grok-4.7"],
 ];
 
@@ -104,7 +104,7 @@ describe("deriveHostedCreditPause", () => {
       result.modelOptions.find((option) => option.id === "sonnet")?.locked,
     ).not.toBe(true);
     expect(
-      result.modelOptions.find((option) => option.id === "gpt-6-sol")
+      result.modelOptions.find((option) => option.id === "gpt-6.1-sol")
         ?.locked,
     ).not.toBe(true);
     expect(
@@ -119,7 +119,7 @@ describe("deriveHostedCreditPause", () => {
     const result = deriveHostedCreditPause({
       modelOptions: [
         MODEL_CATALOG.sonnet,
-        MODEL_CATALOG["gpt-6-sol"],
+        MODEL_CATALOG["gpt-6.1-sol"],
       ],
       billingAccessMode: "subscription",
       llmProvider: null,
@@ -132,7 +132,7 @@ describe("deriveHostedCreditPause", () => {
 
     expect(result.modelOptions.map((entry) => entry.id)).toEqual([
       "sonnet",
-      "gpt-6-sol",
+      "gpt-6.1-sol",
     ]);
     expect(
       result.modelOptions
@@ -150,7 +150,7 @@ describe("deriveHostedCreditPause", () => {
   it("chooses the cheapest selectable model and preserves picker order for ties", () => {
     expect(
       findCheapestSelectableModel([
-        MODEL_CATALOG["gpt-6-sol"],
+        MODEL_CATALOG["gpt-6.1-sol"],
         MODEL_CATALOG["gpt-6-luna"],
         MODEL_CATALOG["glm-5.3-flash"],
       ])?.id,
@@ -201,7 +201,7 @@ describe("deriveHostedCreditPause", () => {
     const result = deriveHostedCreditPause({
       modelOptions: [
         MODEL_CATALOG.sonnet,
-        MODEL_CATALOG["gpt-6-sol"],
+        MODEL_CATALOG["gpt-6.1-sol"],
       ],
       billingAccessMode: "subscription",
       llmProvider: "anthropic",

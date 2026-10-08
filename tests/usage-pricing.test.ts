@@ -309,8 +309,8 @@ describe("current model list pricing", () => {
       "claude-fable-5-1": { input: 10, output: 50, cacheRead: 0.25, cacheWrite: 12.5 },
       "camel/anthropic/claude-fable-5.1:nitro": { input: 10, output: 50, cacheRead: 0.25, cacheWrite: 12.5 },
       "anthropic.claude-fable-5-1": { input: 10, output: 50, cacheRead: 0.25, cacheWrite: 12.5 },
-      "gpt-6-sol": { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
-      "openrouter/openai/gpt-6-sol:nitro": { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
+      "gpt-6.1-sol": { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 },
+      "openrouter/openai/gpt-6.1-sol:nitro": { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 },
       "openai/gpt-6-luna": { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 },
       "moonshotai/kimi-k3": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 0 },
       "kimi-k3": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 0 },
@@ -332,6 +332,7 @@ describe("current model list pricing", () => {
     expect(perMillion("claude-opus-5")).toEqual({ input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 });
     expect(perMillion("anthropic/claude-fable-5")).toEqual({ input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 });
     expect(perMillion("gpt-5.6-terra")?.input).toBe(2);
+    expect(perMillion("openai/gpt-6-sol")?.cacheRead).toBe(0.2);
     expect(perMillion("moonshotai/kimi-k2.7-code")?.input).toBe(0.74);
     expect(perMillion("x-ai/grok-4.5")?.input).toBe(2);
     expect(perMillion("google/gemini-3.5-flash")?.input).toBe(1.5);
@@ -339,8 +340,8 @@ describe("current model list pricing", () => {
     expect(perMillion("z-ai/glm-5.3")?.input).toBe(0.84);
   });
 
-  it("applies GPT-6 Sol's long-context tier", () => {
-    const usage = { model: "gpt-6-sol", inputTokens: 300_000, outputTokens: 1_000_000, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 };
+  it("applies GPT-6.1 Sol's long-context tier", () => {
+    const usage = { model: "gpt-6.1-sol", inputTokens: 300_000, outputTokens: 1_000_000, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 };
     expect(calculateUsageCostUsd(usage)).toBeCloseTo(300_000 * 0.000004 + 1_000_000 * 0.000015);
   });
 });

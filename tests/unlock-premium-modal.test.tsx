@@ -31,7 +31,7 @@ function renderModal({
 
 describe("UnlockPremiumModal", () => {
   it("keeps the methods in their static groups and marks OpenAI for GPT triggers", () => {
-    renderModal({ triggerModel: "gpt-6-sol", isOrgAdmin: true });
+    renderModal({ triggerModel: "gpt-6.1-sol", isOrgAdmin: true });
 
     const camelAiTag = screen.getByText("Pay through camelAI");
     const existingPlanTag = screen.getByText("Use what you already pay for");

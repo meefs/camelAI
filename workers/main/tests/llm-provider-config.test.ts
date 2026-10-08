@@ -26,7 +26,7 @@ const ALL_LLM_MODELS_FROM_OPTIONS = LLM_MODEL_OPTIONS.map((option) => option.val
 const CAMEL_CODE_MODEL = "deepseek-v4-auto" as const;
 
 const OPENAI_COMPATIBLE_MODELS = [
-  "gpt-6-sol",
+  "gpt-6.1-sol",
   "gpt-6-luna",
   "gemini-3.8-flash",
   CAMEL_CODE_MODEL,
@@ -114,7 +114,7 @@ describe("llm provider config helpers", () => {
   it("keeps explicitly stored models instead of moving them to the new default", () => {
     expect(normalizeLlmModel("sonnet")).toBe("sonnet");
     expect(normalizeLlmModel("sonnet", "openrouter")).toBe("sonnet");
-    expect(normalizeLlmModel("gpt-6-sol", "openai")).toBe("gpt-6-sol");
+    expect(normalizeLlmModel("gpt-6.1-sol", "openai")).toBe("gpt-6.1-sol");
     expect(normalizeLlmModel("glm-5.3")).toBe("glm-5.3");
     expect(normalizeLlmModel("gpt-5.6-terra-bedrock", "bedrock")).toBe(
       "gpt-5.6-terra-bedrock",
@@ -128,11 +128,12 @@ describe("llm provider config helpers", () => {
       "opus-4.8": "opus-5.5",
       "opus-5": "opus-5.5",
       "fable-5": "fable-5.1",
-      "gpt-5.6-sol": "gpt-6-sol",
-      "gpt-5.6-terra": "gpt-6-sol",
+      "gpt-6-sol": "gpt-6.1-sol",
+      "gpt-5.6-sol": "gpt-6.1-sol",
+      "gpt-5.6-terra": "gpt-6.1-sol",
       "gpt-5.6-luna": "gpt-6-luna",
-      "gpt-5.5": "gpt-6-sol",
-      "gpt-5.4": "gpt-6-sol",
+      "gpt-5.5": "gpt-6.1-sol",
+      "gpt-5.4": "gpt-6.1-sol",
       "gpt-5.4-mini": "gpt-6-luna",
       "gemini-3.1-pro-preview": "gemini-3.8-flash",
       "gemini-3.5-flash": "gemini-3.8-flash",
@@ -158,7 +159,7 @@ describe("llm provider config helpers", () => {
     expect(normalizeLlmModel("haiku", "bedrock")).toBe("sonnet");
     expect(normalizeLlmModel("opus-5", "anthropic")).toBe("opus-5.5");
     expect(normalizeLlmModel("fable-5", "bedrock")).toBe("fable-5.1");
-    expect(normalizeLlmModel("gpt-5.6-terra", "openai")).toBe("gpt-6-sol");
+    expect(normalizeLlmModel("gpt-5.6-terra", "openai")).toBe("gpt-6.1-sol");
     expect(normalizeLlmModel("gpt-5.6-luna", "openai")).toBe("gpt-6-luna");
     // Bedrock has no GPT-6 Sol or Luna; its OpenAI threads land on Terra.
     for (const stored of [
@@ -183,7 +184,7 @@ describe("llm provider config helpers", () => {
       CAMEL_CODE_MODEL,
     ]);
     expect(getLlmModelOptions("openai").map((option) => option.value)).toEqual([
-      "gpt-6-sol",
+      "gpt-6.1-sol",
       "gpt-6-luna",
       CAMEL_CODE_MODEL,
     ]);
@@ -200,7 +201,7 @@ describe("llm provider config helpers", () => {
         (option) => option.value,
       ),
     ).toEqual([
-      "gpt-6-sol",
+      "gpt-6.1-sol",
       "gpt-6-luna",
       CAMEL_CODE_MODEL,
     ]);
@@ -243,7 +244,7 @@ describe("llm provider config helpers", () => {
       }).map((option) => option.value),
     ).toEqual([
       CAMEL_CODE_MODEL,
-      "gpt-6-sol",
+      "gpt-6.1-sol",
       "gpt-6-luna",
     ]);
     expect(
@@ -334,7 +335,7 @@ describe("llm provider config helpers", () => {
       ),
     ).toEqual([
       CAMEL_CODE_MODEL,
-      "gpt-6-sol",
+      "gpt-6.1-sol",
       "gpt-6-luna",
     ]);
     expect(
@@ -357,7 +358,7 @@ describe("llm provider config helpers", () => {
 
   it("validates new thread models against provider policy", () => {
     expect(
-      isLlmModelAllowedForNewThread("gpt-6-sol", null),
+      isLlmModelAllowedForNewThread("gpt-6.1-sol", null),
     ).toBe(true);
     expect(
       isLlmModelAllowedForNewThread("sonnet", null),

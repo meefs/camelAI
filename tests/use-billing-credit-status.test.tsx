@@ -63,7 +63,7 @@ describe("useBillingCreditStatus", () => {
       load: vi.fn(),
     };
     const selectedThreadModelRef = {
-      current: "gpt-6-sol" as LlmModel,
+      current: "gpt-6.1-sol" as LlmModel,
     };
     const locationSearchRef = { current: "" };
     const { result, rerender } = renderHook(() =>
@@ -85,7 +85,7 @@ describe("useBillingCreditStatus", () => {
         hasByokProvider: true,
         billingStatus: "active",
       },
-      requestedModel: "gpt-6-sol",
+      requestedModel: "gpt-6.1-sol",
       threadModel: "deepseek-v4-auto",
       threadModelUpdatedAt: 1234,
     };
