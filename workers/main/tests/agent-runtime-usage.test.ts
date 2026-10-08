@@ -103,6 +103,12 @@ describe("usageRowFor", () => {
     expect(row({ keyScope: null, provider: "chiridion", model: "openai-codex/gpt-6.1-sol", actor: null }))
       .toMatchObject({ billing_source: "byok", provider: "openai", model: "gpt-6.1-sol", user_id: "user1" });
     expect(row({ kind: "compaction" }).usage_surface).toBe("compaction");
+    // A transcription of a message's audio is audio usage of the agent; one made alone has no agent.
+    const transcription = { kind: "transcription", provider: "openai", model: "gpt-transcribe", input: 0, output: 0, audioSeconds: 5, cost: { usd: 0.000375, source: "catalog" as const } };
+    expect(row(transcription, { billing_status: "active" })).toMatchObject({
+      usage_kind: "audio", usage_surface: "agent", provider: "openai", model: "gpt-transcribe", input_tokens: 0, output_tokens: 0, estimated_cost_usd: 0.000375, credit_chargeable: true,
+    });
+    expect(row({ ...transcription, agentId: null, subject: null as unknown as string, actor: null })).toMatchObject({ usage_kind: "audio", usage_surface: "auxiliary", user_id: "" });
     expect(row({ keyScope: "org_org1", provider: "amazon-bedrock", model: "us.anthropic.claude-sonnet-5" }))
       .toMatchObject({ provider: "bedrock", model: "us.anthropic.claude-sonnet-5", billing_source: "byok" });
     // An org scope's model providers are the org's own: BYOK, never credit, priced as the in-DO loop estimates.

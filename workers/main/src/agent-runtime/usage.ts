@@ -16,7 +16,8 @@ import { recordWorkspaceThreadStreaming } from "../thread-status.js";
 
 /** A `usage.recorded` event's `data`. */
 export interface RuntimeUsageRecorded {
-  agentId: string;
+  /** null for a transcription made alone (POST /v1/transcriptions), which no agent made. */
+  agentId: string | null;
   requestId?: string | null;
   subject?: string;
   actor?: string | null;
@@ -24,7 +25,9 @@ export interface RuntimeUsageRecorded {
   keyScope?: string | null;
   provider: string;
   model: string;
+  /** `response`, `compaction`, or `transcription` (audio a message attached, `audioSeconds` of it, no tokens). */
   kind?: string;
+  audioSeconds?: number;
   input?: number;
   output?: number;
   cacheRead?: number;
@@ -61,8 +64,9 @@ export function usageRowFor(eventId: string, data: RuntimeUsageRecorded, org: { 
     provider: provider || "unknown",
     billing_source: hosted ? "hosted" : "byok",
     credit_chargeable: hosted && !freeTier && org?.billing_status !== "enterprise",
-    usage_kind: "llm",
-    usage_surface: data.kind === "compaction" ? "compaction" : "agent",
+    // Audio attached to a runtime message is transcribed for its agent: audio usage, on the agent's surface.
+    usage_kind: data.kind === "transcription" ? "audio" : "llm",
+    usage_surface: data.kind === "compaction" ? "compaction" : data.kind === "transcription" && !text(data.agentId) ? "auxiliary" : "agent",
     input_tokens: count(data.input),
     output_tokens: count(data.output),
     cache_creation_input_tokens: count(data.cacheWrite),
