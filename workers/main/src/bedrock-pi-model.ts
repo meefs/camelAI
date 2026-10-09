@@ -55,6 +55,9 @@ function toMantleAnthropicModelId(modelId: string): string {
     return "anthropic.claude-opus-5-5";
   }
   if (normalized.includes("sonnet-5")) return "anthropic.claude-sonnet-5-5";
+  if (normalized.includes("haiku-5-5") || normalized.includes("haiku-5.5")) {
+    return "anthropic.claude-haiku-5-5";
+  }
   if (normalized.includes("haiku-4-5") || normalized.includes("haiku-4.5")) {
     return "anthropic.claude-haiku-4-5";
   }
@@ -89,6 +92,22 @@ function anthropicMantleMetadata(modelId: string): AnthropicMantleMetadata {
       thinkingLevelMap: { xhigh: "xhigh", max: "max" },
       input: ["text", "image"],
       cost: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
+      contextWindow: 1_000_000,
+      maxTokens: 128_000,
+    };
+  }
+  if (modelId.includes("claude-haiku-5-5")) {
+    // Pi 1.1's catalog: prompts over 100,000 input tokens cost 5x (not tiered here).
+    return {
+      name: "Claude Haiku 5.5",
+      compat: {
+        forceAdaptiveThinking: true,
+        supportsTemperature: false,
+      },
+      reasoning: true,
+      thinkingLevelMap: { off: null, minimal: null, xhigh: "xhigh", max: "max" },
+      input: ["text", "image"],
+      cost: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 },
       contextWindow: 1_000_000,
       maxTokens: 128_000,
     };
