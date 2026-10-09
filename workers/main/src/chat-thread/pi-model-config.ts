@@ -193,6 +193,30 @@ const PI_MODEL_CATALOG_FALLBACKS: Record<string, Model<any>> = {
     contextWindow: 1_000_000,
     maxTokens: 128_000,
   } satisfies Model<"anthropic-messages">,
+  // Pi 1.1's catalog (the agent runtime's since 0.6.0) has Haiku 5.5; the
+  // installed one predates it. Prompts over 100,000 tokens cost 5x there.
+  "anthropic/claude-haiku-5-5": {
+    id: "claude-haiku-5-5",
+    name: "Claude Haiku 5.5",
+    api: "anthropic-messages",
+    provider: "anthropic",
+    baseUrl: "https://api.anthropic.com",
+    compat: {
+      forceAdaptiveThinking: true,
+      supportsTemperature: false,
+    },
+    reasoning: true,
+    thinkingLevelMap: { off: null, minimal: null, xhigh: "xhigh", max: "max" },
+    input: ["text", "image"],
+    cost: {
+      input: 0.1,
+      output: 0.5,
+      cacheRead: 0.01,
+      cacheWrite: 0.125,
+    },
+    contextWindow: 1_000_000,
+    maxTokens: 128_000,
+  } satisfies Model<"anthropic-messages">,
   // The installed Pi catalog predates these models; the metadata matches the
   // agent runtime's catalog and OpenRouter's listing (2026-09-28).
   "anthropic/claude-fable-5-1": {

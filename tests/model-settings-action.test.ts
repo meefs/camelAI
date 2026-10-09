@@ -883,9 +883,10 @@ describe('organization model settings loader', () => {
       'opus-5.5',
       'fable-5.1',
       'sonnet',
+      'haiku-5.5',
     ]);
     expect(result.config.additional).toEqual([]);
-    expect(result.config.capacity.used).toBe(4);
+    expect(result.config.capacity.used).toBe(5);
   });
 
   it('shows OpenAI-login models as usable with Anthropic BYOK credentials', async () => {

@@ -35,6 +35,7 @@ describe("runtimeModelRoute", () => {
     ["opus-5.5", "openrouter/anthropic/claude-opus-5.5"],
     ["fable-5.1", "openrouter/anthropic/claude-fable-5.1:nitro"],
     ["haiku", "openrouter/anthropic/claude-sonnet-5.5:nitro"],
+    ["haiku-5.5", "openrouter/anthropic/claude-haiku-5.5:nitro"],
     ["gpt-6.1-sol", "openrouter/openai/gpt-6.1-sol:nitro"],
     ["gpt-6-luna", "openrouter/openai/gpt-6-luna"],
     ["gemini-3.8-flash", "openrouter/google/gemini-3.8-flash"],
@@ -87,6 +88,10 @@ describe("runtimeModelRoute", () => {
     ["ap-southeast-1", "anthropic.claude-opus-5-5", "global.anthropic.claude-opus-5-5"],
     ["ap-south-1", "anthropic.claude-haiku-4-5", "global.anthropic.claude-haiku-4-5-20251001-v1:0"],
     ["ap-northeast-1", "anthropic.claude-sonnet-5-5", "global.anthropic.claude-sonnet-5-5"],
+    ["us-east-1", "anthropic.claude-sonnet-5-5", "global.anthropic.claude-sonnet-5-5"],
+    // Haiku 5.5 (Pi 1.1, the runtime's catalog since 0.6.0): global everywhere for now.
+    ["us-east-1", "anthropic.claude-haiku-5-5", "global.anthropic.claude-haiku-5-5"],
+    ["eu-west-1", "anthropic.claude-haiku-5-5", "global.anthropic.claude-haiku-5-5"],
     ["sa-east-1", "anthropic.claude-opus-5-5", "global.anthropic.claude-opus-5-5"],
   ])("runs Bedrock in %s: %s as %s", (region, id, profile) => {
     expect(runtimeModelRoute(config({ usageProvider: "bedrock", model: { provider: "custom", api: "anthropic-messages", id, baseUrl: `https://bedrock-mantle.${region}.api.aws/anthropic` } }), org))

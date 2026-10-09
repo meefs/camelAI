@@ -112,6 +112,32 @@ const modelPricingTable: Record<string, ModelPricing> = {
     cacheCreationPerToken: 0.0000025,
     cacheReadPerToken: 0.0000002,
   },
+  // Claude Haiku 5.5 (Pi 1.1 catalog, 2026-10-09): prompts over 100,000 input
+  // tokens cost 5x; this table has no tiers, so it holds the base price.
+  "claude-haiku-5-5": {
+    inputPerToken: 0.0000001,
+    outputPerToken: 0.0000005,
+    cacheCreationPerToken: 0.000000125,
+    cacheReadPerToken: 0.00000001,
+  },
+  "anthropic/claude-haiku-5.5": {
+    inputPerToken: 0.0000001,
+    outputPerToken: 0.0000005,
+    cacheCreationPerToken: 0.000000125,
+    cacheReadPerToken: 0.00000001,
+  },
+  "anthropic/claude-haiku-5-5": {
+    inputPerToken: 0.0000001,
+    outputPerToken: 0.0000005,
+    cacheCreationPerToken: 0.000000125,
+    cacheReadPerToken: 0.00000001,
+  },
+  "anthropic.claude-haiku-5-5": {
+    inputPerToken: 0.0000001,
+    outputPerToken: 0.0000005,
+    cacheCreationPerToken: 0.000000125,
+    cacheReadPerToken: 0.00000001,
+  },
   "claude-sonnet-5": {
     inputPerToken: 0.000002,
     outputPerToken: 0.00001,
@@ -674,6 +700,12 @@ export function lookupPricingOrNull(model: string): ModelPricing | null {
   }
   if (normalized.includes("deepseek-v4-flash")) {
     return modelPricingTable["deepseek/deepseek-v4-flash"];
+  }
+  if (
+    normalized.includes("claude-haiku-5.5") ||
+    normalized.includes("claude-haiku-5-5")
+  ) {
+    return modelPricingTable["claude-haiku-5-5"];
   }
   if (
     normalized.includes("claude-haiku-4.5") ||
