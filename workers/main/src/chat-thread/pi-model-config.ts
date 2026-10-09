@@ -1,7 +1,7 @@
 // Pi model / billing-source resolution for ChatThreadDO, extracted as free
 // functions with explicit deps: BYOK credential resolution, hosted-credit
 // gating, per-request provider config (custom/openrouter/bedrock/hosted
-// gateway), and the model catalog fallbacks. Sibling steps arrive as injected
+// gateway) and catalog lookups. Sibling steps arrive as injected
 // callbacks so ChatThreadDO's thin delegates keep routing through `this`
 // (preserving the DO-internal call surface and its test seams).
 import type { Model } from "@earendil-works/pi-ai";
@@ -173,291 +173,17 @@ function hostedDeepseekStickyKey(
     .join(":");
 }
 
-const PI_MODEL_CATALOG_FALLBACKS: Record<string, Model<any>> = {
-  // Pi's catalog (0.87.1, the agent runtime's too) predates Sonnet 5.5; Anthropic
-  // prices it like Sonnet 5 (2026-09-28).
-  "anthropic/claude-sonnet-5-5": {
-    id: "claude-sonnet-5-5",
-    name: "Claude Sonnet 5.5",
-    api: "anthropic-messages",
-    provider: "anthropic",
-    baseUrl: "https://api.anthropic.com",
-    reasoning: true,
-    input: ["text", "image"],
-    cost: {
-      input: 2,
-      output: 10,
-      cacheRead: 0.2,
-      cacheWrite: 2.5,
-    },
-    contextWindow: 1_000_000,
-    maxTokens: 128_000,
-  } satisfies Model<"anthropic-messages">,
-  // Pi 1.1's catalog (the agent runtime's since 0.6.0) has Haiku 5.5; the
-  // installed one predates it. Prompts over 100,000 tokens cost 5x there.
-  "anthropic/claude-haiku-5-5": {
-    id: "claude-haiku-5-5",
-    name: "Claude Haiku 5.5",
-    api: "anthropic-messages",
-    provider: "anthropic",
-    baseUrl: "https://api.anthropic.com",
-    compat: {
-      forceAdaptiveThinking: true,
-      supportsTemperature: false,
-    },
-    reasoning: true,
-    thinkingLevelMap: { off: null, minimal: null, xhigh: "xhigh", max: "max" },
-    input: ["text", "image"],
-    cost: {
-      input: 0.1,
-      output: 0.5,
-      cacheRead: 0.01,
-      cacheWrite: 0.125,
-    },
-    contextWindow: 1_000_000,
-    maxTokens: 128_000,
-  } satisfies Model<"anthropic-messages">,
-  // The installed Pi catalog predates these models; the metadata matches the
-  // agent runtime's catalog and OpenRouter's listing (2026-09-28).
-  "anthropic/claude-fable-5-1": {
-    id: "claude-fable-5-1",
-    name: "Claude Fable 5.1",
-    api: "anthropic-messages",
-    provider: "anthropic",
-    baseUrl: "https://api.anthropic.com",
-    compat: { forceAdaptiveThinking: true },
-    reasoning: true,
-    thinkingLevelMap: { off: null, xhigh: "xhigh" },
-    input: ["text", "image"],
-    cost: {
-      input: 10,
-      output: 50,
-      cacheRead: 0.25,
-      cacheWrite: 12.5,
-    },
-    contextWindow: 1_000_000,
-    maxTokens: 128_000,
-  } satisfies Model<"anthropic-messages">,
-  "anthropic/claude-opus-5-5": {
-    id: "claude-opus-5-5",
-    name: "Claude Opus 5.5",
-    api: "anthropic-messages",
-    provider: "anthropic",
-    baseUrl: "https://api.anthropic.com",
-    compat: {
-      forceAdaptiveThinking: true,
-      supportsTemperature: false,
-    },
-    reasoning: true,
-    thinkingLevelMap: { xhigh: "xhigh", max: "max" },
-    input: ["text", "image"],
-    cost: {
-      input: 4,
-      output: 20,
-      cacheRead: 0.2,
-      cacheWrite: 5,
-    },
-    contextWindow: 1_000_000,
-    maxTokens: 128_000,
-  } satisfies Model<"anthropic-messages">,
-  "openai/gpt-6.1-sol": {
-    id: "gpt-6.1-sol",
-    name: "GPT-6.1 Sol",
-    api: "openai-responses",
-    provider: "openai",
-    baseUrl: "https://api.openai.com/v1",
-    reasoning: true,
-    input: ["text", "image"],
-    cost: {
-      input: 2,
-      output: 10,
-      cacheRead: 0.1,
-      cacheWrite: 2.5,
-    },
-    contextWindow: 1_050_000,
-    maxTokens: 128_000,
-  } satisfies Model<"openai-responses">,
-  "openai/gpt-6-luna": {
-    id: "gpt-6-luna",
-    name: "GPT-6 Luna",
-    api: "openai-responses",
-    provider: "openai",
-    baseUrl: "https://api.openai.com/v1",
-    reasoning: true,
-    input: ["text", "image"],
-    cost: {
-      input: 0.1,
-      output: 0.5,
-      cacheRead: 0.01,
-      cacheWrite: 0.125,
-    },
-    contextWindow: 1_050_000,
-    maxTokens: 128_000,
-  } satisfies Model<"openai-responses">,
-  "openai/gpt-5.6-luna": {
-    id: "gpt-5.6-luna",
-    name: "GPT-5.6 Luna",
-    api: "openai-responses",
-    provider: "openai",
-    baseUrl: "https://api.openai.com/v1",
-    reasoning: true,
-    input: ["text", "image"],
-    cost: {
-      input: 0.2,
-      output: 1.2,
-      cacheRead: 0.02,
-      cacheWrite: 0.25,
-    },
-    contextWindow: 1_050_000,
-    maxTokens: 128_000,
-  } satisfies Model<"openai-responses">,
-  "openrouter/google/gemini-3.8-flash": {
-    id: "google/gemini-3.8-flash",
-    name: "Google: Gemini 3.8 Flash",
-    api: "openai-completions",
-    provider: "openrouter",
-    baseUrl: "https://openrouter.ai/api/v1",
-    reasoning: true,
-    input: ["text", "image"],
-    cost: {
-      input: 0.75,
-      output: 3.75,
-      cacheRead: 0.075,
-      cacheWrite: 0.041667,
-    },
-    contextWindow: 1048576,
-    maxTokens: 65536,
-  } satisfies Model<"openai-completions">,
-  "openrouter/moonshotai/kimi-k3": {
-    id: "moonshotai/kimi-k3",
-    name: "MoonshotAI: Kimi K3",
-    api: "openai-completions",
-    provider: "openrouter",
-    baseUrl: "https://openrouter.ai/api/v1",
-    reasoning: true,
-    input: ["text", "image"],
-    cost: {
-      input: 3,
-      output: 15,
-      cacheRead: 0.3,
-      cacheWrite: 0,
-    },
-    contextWindow: 1048576,
-    maxTokens: 131072,
-  } satisfies Model<"openai-completions">,
-  "openrouter/x-ai/grok-4.7": {
-    id: "x-ai/grok-4.7",
-    name: "xAI: Grok 4.7",
-    api: "openai-responses",
-    provider: "openrouter",
-    baseUrl: "https://openrouter.ai/api/v1",
-    reasoning: true,
-    input: ["text", "image"],
-    cost: {
-      input: 1.6,
-      output: 4.8,
-      cacheRead: 0.4,
-      cacheWrite: 0,
-    },
-    contextWindow: 500000,
-    maxTokens: 128000,
-  } satisfies Model<"openai-responses">,
-  "openrouter/deepseek/deepseek-v4.1-flash": {
-    id: "deepseek/deepseek-v4.1-flash",
-    name: "DeepSeek: DeepSeek V4.1 Flash",
-    api: "openai-completions",
-    provider: "openrouter",
-    baseUrl: "https://openrouter.ai/api/v1",
-    reasoning: true,
-    input: ["text", "image"],
-    cost: {
-      input: 0.3,
-      output: 1.2,
-      cacheRead: 0.006,
-      cacheWrite: 0,
-    },
-    contextWindow: 1048576,
-    maxTokens: 384000,
-  } satisfies Model<"openai-completions">,
-  "openrouter/z-ai/glm-5.3": {
-    id: "z-ai/glm-5.3",
-    name: "Z.ai: GLM 5.3",
-    api: "openai-completions",
-    provider: "openrouter",
-    baseUrl: "https://openrouter.ai/api/v1",
-    reasoning: true,
-    // https://openrouter.ai/z-ai/glm-5.3 (verified 2026-09-23).
-    // Reasoning is mandatory and accepts only low/high/max. Map Pi's medium
-    // default to high and keep the mapping enabled through AI Gateway.
-    compat: { supportsReasoningEffort: true },
-    thinkingLevelMap: {
-      off: null,
-      minimal: "low",
-      low: "low",
-      medium: "high",
-      high: "high",
-      xhigh: "max",
-      max: "max",
-    },
-    input: ["text"],
-    cost: {
-      input: 0.84,
-      output: 2.64,
-      cacheRead: 0.156,
-      cacheWrite: 0,
-    },
-    contextWindow: 1048576,
-    maxTokens: 131072,
-  } satisfies Model<"openai-completions">,
-  "openrouter/z-ai/glm-5.3-flash": {
-    id: "z-ai/glm-5.3-flash",
-    name: "Z.ai: GLM 5.3 Flash",
-    api: "openai-completions",
-    provider: "openrouter",
-    baseUrl: "https://openrouter.ai/api/v1",
-    reasoning: true,
-    // Same reasoning-effort ladder as GLM 5.3 (low/high/max).
-    compat: { supportsReasoningEffort: true },
-    thinkingLevelMap: {
-      off: null,
-      minimal: "low",
-      low: "low",
-      medium: "high",
-      high: "high",
-      xhigh: "max",
-      max: "max",
-    },
-    input: ["text", "image"],
-    cost: {
-      input: 0.15,
-      output: 0.5,
-      cacheRead: 0.03,
-      cacheWrite: 0,
-    },
-    contextWindow: 1048576,
-    maxTokens: 131072,
-  } satisfies Model<"openai-completions">,
-};
-
-function resolvePiModelCatalogFallback(
-  resolved: PiResolvedModelReference,
-): Model<any> | null {
-  return PI_MODEL_CATALOG_FALLBACKS[`${resolved.provider}/${resolved.modelId}`] ?? null;
-}
-
 /**
- * A model as the in-DO loop looks it up for its context window, output limit,
- * reasoning and input: Pi's catalog, else chiridion's fallbacks (models Pi's
- * catalog predates).
+ * A model as Pi's catalog has it, for its context window, output limit,
+ * reasoning, input and price. Pi 1.1's catalog lists every model chiridion
+ * resolves (workers/main/tests/pi-catalog-coverage.test.ts), so there are no fallbacks.
  */
 export function piCatalogModel(
   getModelFn: (provider: never, modelId: never) => Model<any> | null | undefined,
   provider: string,
   modelId: string,
 ): Model<any> | null {
-  return (getModelFn(provider as never, modelId as never) as Model<any> | null | undefined) ??
-    PI_MODEL_CATALOG_FALLBACKS[`${provider}/${modelId}`] ??
-    null;
+  return (getModelFn(provider as never, modelId as never) as Model<any> | null | undefined) ?? null;
 }
 
 export async function resolvePiModelConfig(
@@ -475,8 +201,7 @@ export async function resolvePiModelConfig(
     (getModelFn(
       resolved.provider as never,
       resolved.modelId as never,
-    ) as Model<any> | null | undefined) ??
-    resolvePiModelCatalogFallback(resolved);
+    ) as Model<any> | null | undefined) ?? null;
   if (!model) {
     throw new Error(`Unsupported Pi model ${requestedModelId}`);
   }
@@ -518,12 +243,7 @@ export async function resolvePiModelConfig(
       ? (getModelFn(
           configured.modelLookupProvider as never,
           (configured.modelLookupModelId ?? configured.requestModelId) as never,
-        ) as Model<any> | null | undefined) ??
-        resolvePiModelCatalogFallback({
-          provider: configured.modelLookupProvider,
-          modelId: configured.modelLookupModelId ?? configured.requestModelId,
-          hostedGatewayProvider: resolved.hostedGatewayProvider,
-        })
+        ) as Model<any> | null | undefined) ?? null
       : null;
   if (configured.modelLookupProvider && !configuredModel) {
     throw new Error(

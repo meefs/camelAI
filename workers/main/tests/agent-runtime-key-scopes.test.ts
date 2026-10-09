@@ -52,7 +52,7 @@ const record = async (provider: string, creds: Record<string, string>, config: R
   config: JSON.stringify(config),
 });
 
-const LUNA = { contextWindow: 1_050_000, maxOutputTokens: 128_000, input: ["text", "image"], reasoning: true, pricing: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 } };
+const LUNA = { contextWindow: 272_000, maxOutputTokens: 128_000, input: ["text", "image"], reasoning: true, pricing: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 } };
 
 describe("key scope providers", () => {
   it("builds the hosted scope from the AI Gateway config, or none without it", () => {

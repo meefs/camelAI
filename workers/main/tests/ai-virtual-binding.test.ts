@@ -60,6 +60,20 @@ describe("buildBedrockPiModel", () => {
       cost: { input: 10, output: 50, cacheRead: 0.25, cacheWrite: 12.5 },
     });
   });
+
+  it("knows Haiku 5.5 as Pi's catalog has it", () => {
+    for (const id of ["anthropic.claude-haiku-5-5", "global.anthropic.claude-haiku-5-5", "claude-haiku-5-5"]) {
+      expect(buildBedrockPiModel(id, "eu-west-1")).toMatchObject({
+        id: "anthropic.claude-haiku-5-5",
+        name: "Claude Haiku 5.5",
+        baseUrl: "https://bedrock-mantle.eu-west-1.api.aws/anthropic",
+        thinkingLevelMap: { off: null, minimal: null },
+        cost: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 },
+        contextWindow: 1_000_000,
+        maxTokens: 128_000,
+      });
+    }
+  });
 });
 
 describe("resolveGatewaySettings", () => {
@@ -747,8 +761,18 @@ describe("executeVirtualAiRun", () => {
 
   it("does not require AI Gateway settings before Bedrock BYOK routing", async () => {
     const encrypted = await encryptCredentials({ bearer_token: "bedrock-token" }, "secret");
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      Response.json({ message: "ok" }),
+    // A whole Anthropic Messages stream: Pi 1.1 fails a stream that ends without a stop reason.
+    const events = [
+      ["message_start", { type: "message_start", message: { id: "msg_1", type: "message", role: "assistant", model: "anthropic.claude-sonnet-5-5", content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 3, output_tokens: 0 } } }],
+      ["content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }],
+      ["content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "ok" } }],
+      ["content_block_stop", { type: "content_block_stop", index: 0 }],
+      ["message_delta", { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 1 } }],
+      ["message_stop", { type: "message_stop" }],
+    ] as const;
+    const body = events.map(([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`).join("");
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } }),
     );
 
     try {
