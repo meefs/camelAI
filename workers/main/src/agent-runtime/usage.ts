@@ -25,9 +25,10 @@ export interface RuntimeUsageRecorded {
   keyScope?: string | null;
   provider: string;
   model: string;
-  /** `response`, `compaction`, or `transcription` (audio a message attached, `audioSeconds` of it, no tokens). */
+  /** `response`, `compaction`, `transcription` (audio a message attached, `audioSeconds` of it, no tokens), or `image` (images generated, `images` of them). */
   kind?: string;
   audioSeconds?: number;
+  images?: number;
   input?: number;
   output?: number;
   cacheRead?: number;
@@ -64,9 +65,10 @@ export function usageRowFor(eventId: string, data: RuntimeUsageRecorded, org: { 
     provider: provider || "unknown",
     billing_source: hosted ? "hosted" : "byok",
     credit_chargeable: hosted && !freeTier && org?.billing_status !== "enterprise",
-    // Audio attached to a runtime message is transcribed for its agent: audio usage, on the agent's surface.
-    usage_kind: data.kind === "transcription" ? "audio" : "llm",
-    usage_surface: data.kind === "compaction" ? "compaction" : data.kind === "transcription" && !text(data.agentId) ? "auxiliary" : "agent",
+    // Audio attached to a runtime message is transcribed for its agent, and its generate_image tool makes
+    // images for it: audio and image usage, on the agent's surface (auxiliary when made alone, with no agent).
+    usage_kind: data.kind === "transcription" ? "audio" : data.kind === "image" ? "image" : "llm",
+    usage_surface: data.kind === "compaction" ? "compaction" : (data.kind === "transcription" || data.kind === "image") && !text(data.agentId) ? "auxiliary" : "agent",
     input_tokens: count(data.input),
     output_tokens: count(data.output),
     cache_creation_input_tokens: count(data.cacheWrite),
