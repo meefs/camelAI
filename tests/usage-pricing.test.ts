@@ -59,6 +59,23 @@ describe("calculateUsageCostUsd", () => {
     expect(lookupPricing("claude-sonnet-5-5")).toEqual(lookupPricing("claude-sonnet-5"));
   });
 
+  it("prices Haiku 5.5 on every provider id at its base price", () => {
+    for (const id of [
+      "claude-haiku-5-5",
+      "anthropic/claude-haiku-5.5",
+      "anthropic/claude-haiku-5.5:nitro",
+      "anthropic.claude-haiku-5-5",
+      "global.anthropic.claude-haiku-5-5",
+    ]) {
+      expect(lookupPricingOrNull(id)).toEqual({
+        inputPerToken: 0.0000001,
+        outputPerToken: 0.0000005,
+        cacheCreationPerToken: 0.000000125,
+        cacheReadPerToken: 0.00000001,
+      });
+    }
+  });
+
   it("prices GLM 5.3 aliases while retaining historical GLM 5.2 pricing", () => {
     const usage = {
       inputTokens: 1_000_000,

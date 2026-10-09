@@ -13,13 +13,14 @@ type FakeState = {
   transport: null;
   connected: boolean;
   expired?: boolean;
+  loaded: boolean;
 };
 
 const watchers: Array<{ options: any; state: FakeState; emit(patch: Partial<FakeState>): void; closed: boolean; loadOlder: ReturnType<typeof vi.fn> }> = [];
 
 vi.mock("@camelai/run/watch", () => ({
   watchAgent: (options: any) => {
-    const state: FakeState = { messages: [], indexes: [], partial: null, progress: new Map(), running: false, pendingInputs: [], lastOutcome: null, hasOlder: false, transport: null, connected: true };
+    const state: FakeState = { messages: [], indexes: [], partial: null, progress: new Map(), running: false, pendingInputs: [], lastOutcome: null, hasOlder: false, transport: null, connected: true, loaded: true };
     const watcher = {
       options,
       state,
@@ -114,6 +115,21 @@ describe("useRuntimeThread", () => {
     await waitFor(() => expect(result.current.chat.isStreaming).toBe(true));
     // A response after a finished answer is a new turn (a run no message of ours started).
     expect(result.current.chat.streamingMessageId).toBe("rt:2");
+  });
+
+  it("keeps the loader's page on screen until the watcher has read history (AgentView.loaded)", async () => {
+    const { result } = mount();
+    await waitFor(() => expect(watchers).toHaveLength(1));
+    // Connected, history on its way: an empty view is not an empty chat.
+    act(() => watchers[0].emit({ loaded: false, messages: [], indexes: [] }));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(result.current.chat.messages.map((message) => message.id)).toEqual(["rt:0", "rt:1"]);
+    act(() => watchers[0].emit({
+      loaded: true,
+      messages: [...seed.page!.entries.map((entry) => entry.message), { role: "user", content: [{ type: "text", text: "again" }], timestamp: 3 }],
+      indexes: [0, 1, 2],
+    }));
+    await waitFor(() => expect(result.current.chat.messages.map((message) => message.id)).toEqual(["rt:0", "rt:1", "rt:2"]));
   });
 
   it("watches again with a new token once the watcher stops on an expired token", async () => {

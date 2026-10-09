@@ -37,7 +37,7 @@ type WatcherState = Record<string, unknown> & { messages: unknown[]; indexes: nu
 const watchers: Array<{ state: WatcherState; emit(patch: Partial<WatcherState>, event?: Record<string, unknown>): void }> = [];
 vi.mock("@camelai/run/watch", () => ({
   watchAgent: (options: { onChange?: (state: WatcherState) => void; onEvent?: (event: unknown) => void }) => {
-    const state: WatcherState = { messages: [], indexes: [], partial: null, progress: new Map(), running: false, pendingInputs: [], lastOutcome: null, hasOlder: false, transport: null, connected: true };
+    const state: WatcherState = { messages: [], indexes: [], partial: null, progress: new Map(), running: false, pendingInputs: [], lastOutcome: null, hasOlder: false, transport: null, connected: true, loaded: true };
     // As the watcher does: state takes the event in, then onEvent, then onChange.
     watchers.push({ state, emit: (patch, event) => { Object.assign(state, patch); if (event) options.onEvent?.(event); options.onChange?.(state); } });
     return { state, loadOlder: async () => false, close: () => {} };

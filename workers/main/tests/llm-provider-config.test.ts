@@ -41,6 +41,7 @@ const ANTHROPIC_MODELS = [
   "opus-5.5",
   "fable-5.1",
   "sonnet",
+  "haiku-5.5",
 ] as const;
 
 const PINNED_HOSTED_MODELS = [

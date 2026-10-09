@@ -58,7 +58,10 @@ const BEDROCK_CONVERSE_IDS: Record<string, string> = {
  * list-inference-profiles` showed them on 2026-09-28. APAC has no `apac.` profile for any current
  * Claude (only 3.x and Sonnet 4): Tokyo and Osaka have `jp.`, Sydney and Melbourne `au.`, each for
  * some models. A model or region not listed here takes the `global.` profile, which every
- * commercial region offers for every current Claude; Sonnet 5.5 has only that one so far.
+ * commercial region offers for every current Claude. Sonnet 5.5 and Haiku 5.5 take it everywhere:
+ * Pi 1.1's catalog (the runtime's since 0.6.0) lists geographic profiles for both, priced 10%
+ * over global, but Bedrock refused Sonnet 5.5's `us.`/`eu.` ids on 2026-09-28 (#87), so neither
+ * moves to them before Bedrock is checked.
  */
 const BEDROCK_GEO_PROFILES: Record<string, ReadonlySet<string>> = {
   "anthropic.claude-opus-5-5": new Set(["us", "eu", "jp", "au"]),

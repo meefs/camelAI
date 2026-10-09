@@ -81,6 +81,11 @@ export const ANTHROPIC_LLM_MODEL_OPTIONS: ReadonlyArray<{
     label: "Sonnet 5.5",
     description: "Balanced Claude model",
   },
+  {
+    value: "haiku-5.5",
+    label: "Haiku 5.5",
+    description: "Fast, low-cost Claude model",
+  },
 ];
 
 export const OPENAI_COMPATIBLE_LLM_MODEL_OPTIONS: ReadonlyArray<{

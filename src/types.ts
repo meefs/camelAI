@@ -556,6 +556,7 @@ export interface WorkerScriptWithCreator extends WorkerScript {
 export type LlmProvider = "anthropic" | "bedrock" | "custom" | "openai" | "openrouter";
 export type LlmModel =
   | "sonnet"
+  | "haiku-5.5"
   | "fable-5.1"
   | "opus-5.5"
   | "gpt-6.1-sol"
