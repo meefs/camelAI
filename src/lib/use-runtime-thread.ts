@@ -95,7 +95,7 @@ const pageHidden = () => typeof document !== "undefined" && document.visibilityS
 
 // The watcher's messages are Pi's (the SDK declares its own structural copy
 // of them); the view keeps Pi's types for pi-render.
-type View = Pick<AgentView, "indexes" | "running" | "pendingInputs" | "lastOutcome" | "hasOlder"> & {
+type View = Pick<AgentView, "indexes" | "running" | "pendingInputs" | "lastOutcome" | "hasOlder" | "loaded"> & {
   messages: AgentMessage[];
   partial: AssistantMessage | null;
   progress: Map<string, unknown>;
@@ -112,6 +112,8 @@ function seedView(seed: RuntimeThreadSeed | null | undefined): View {
     pendingInputs: [],
     lastOutcome: null,
     hasOlder: Boolean(seed?.page?.next),
+    // What the loader read is what the page shows until the watcher has read history itself.
+    loaded: Boolean(seed),
   };
 }
 
@@ -127,6 +129,7 @@ function snapshot(state: AgentView): View {
     pendingInputs: [...state.pendingInputs],
     lastOutcome: state.lastOutcome,
     hasOlder: state.hasOlder,
+    loaded: state.loaded,
   };
 }
 
@@ -245,7 +248,10 @@ export function useRuntimeThread(options: {
     let restartDelay = RECONNECT_DELAY_MS;
     const flush = () => {
       frame = null;
-      if (!cancelled && latest) setView(snapshot(latest));
+      // Until the watcher has read history its messages are empty only because
+      // they are on their way: keep what is on screen (the seed, or the last
+      // watcher's view) rather than flash an empty chat.
+      if (!cancelled && latest?.loaded) setView(snapshot(latest));
     };
     const rewatch = () => {
       if (restart !== null || cancelled) return;
@@ -465,7 +471,7 @@ export function useRuntimeThread(options: {
   // A set_preview the agent runs while the page watches opens its tab.
   useEffect(() => {
     if (knownIndexesRef.current === null) {
-      if (view.messages.length === 0 && !seed) return;
+      if (!view.loaded) return;
       knownIndexesRef.current = new Set(view.indexes);
       return;
     }
@@ -486,7 +492,7 @@ export function useRuntimeThread(options: {
         : [...current.tabs, target];
       return { tabs, activeTabId: id, version: current.version + 1, refreshTabId: current.activeTabId === id ? id : null };
     });
-  }, [view, seed]);
+  }, [view]);
 
   // Rows that did not change keep their objects between events (see PiRenderMemo).
   const renderMemoRef = useRef<PiRenderMemo>(new Map());
