@@ -109,6 +109,12 @@ describe("usageRowFor", () => {
       usage_kind: "audio", usage_surface: "agent", provider: "openai", model: "gpt-transcribe", input_tokens: 0, output_tokens: 0, estimated_cost_usd: 0.000375, credit_chargeable: true,
     });
     expect(row({ ...transcription, agentId: null, subject: null as unknown as string, actor: null })).toMatchObject({ usage_kind: "audio", usage_surface: "auxiliary", user_id: "" });
+    // Images generate_image made for an agent are image usage of the agent; one made alone (POST /v1/images) has no agent.
+    const image = { kind: "image", provider: "openai", model: "gpt-image-2.5-flare", input: 13, output: 439, images: 1, cost: { usd: 0.0132, source: "catalog" as const } };
+    expect(row(image, { billing_status: "active" })).toMatchObject({
+      usage_kind: "image", usage_surface: "agent", provider: "openai", model: "gpt-image-2.5-flare", input_tokens: 13, output_tokens: 439, estimated_cost_usd: 0.0132, credit_chargeable: true,
+    });
+    expect(row({ ...image, agentId: null, subject: null as unknown as string, actor: null })).toMatchObject({ usage_kind: "image", usage_surface: "auxiliary", user_id: "" });
     expect(row({ keyScope: "org_org1", provider: "amazon-bedrock", model: "us.anthropic.claude-sonnet-5" }))
       .toMatchObject({ provider: "bedrock", model: "us.anthropic.claude-sonnet-5", billing_source: "byok" });
     // An org scope's model providers are the org's own: BYOK, never credit, priced as the in-DO loop estimates.
