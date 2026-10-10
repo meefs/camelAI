@@ -170,6 +170,14 @@ manifest ID:
 bun run test:eval <eval-id>
 ```
 
+The client and worker CI shards use the shared Azure `azure-ci` runner pool for trusted main/production branch
+runs when `CI_RUNNER_LABELS` is `["self-hosted","Linux","X64","azure-ci"]`. PRs use GitHub-hosted runners.
+Docker smoke jobs and browser E2E retain hosted runners because they use shared container names or fixed ports.
+The organization runner group also enforces the trusted workflow/branch allowlist; changing a PR's `runs-on`
+cannot grant access. This trusts branch pushes and does not itself require code review. Delete `CI_RUNNER_LABELS`
+to return all new jobs to hosted runners. The Azure pool has two slots shared with run and camel-bots, capped at
+8 vCPUs and 24 GiB with CPU priority over DST but no reserved cores. Each test shard uses two Vitest workers.
+
 ## Self-hosting
 
 camelAI has a supported single-machine Docker Compose target for private
