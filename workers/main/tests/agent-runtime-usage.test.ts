@@ -115,6 +115,12 @@ describe("usageRowFor", () => {
       usage_kind: "image", usage_surface: "agent", provider: "openai", model: "gpt-image-2.5-flare", input_tokens: 13, output_tokens: 439, estimated_cost_usd: 0.0132, credit_chargeable: true,
     });
     expect(row({ ...image, agentId: null, subject: null as unknown as string, actor: null })).toMatchObject({ usage_kind: "image", usage_surface: "auxiliary", user_id: "" });
+    // A kind this chiridion does not know: recorded at the runtime's cost, never repriced as LLM tokens.
+    const video = { kind: "video", provider: "openai", model: "some-video-model", input: 10, output: 900, cost: { usd: 0.25, source: "catalog" as const } };
+    expect(row(video)).toMatchObject({ usage_kind: "unknown", usage_surface: "agent", input_tokens: 10, output_tokens: 900, estimated_cost_usd: 0.25, credit_chargeable: true });
+    expect(row({ ...video, agentId: null, subject: null as unknown as string, actor: null })).toMatchObject({ usage_kind: "unknown", usage_surface: "auxiliary" });
+    // An older runtime's response carries no kind: LLM usage.
+    expect(row({ kind: undefined })).toMatchObject({ usage_kind: "llm", usage_surface: "agent" });
     expect(row({ keyScope: "org_org1", provider: "amazon-bedrock", model: "us.anthropic.claude-sonnet-5" }))
       .toMatchObject({ provider: "bedrock", model: "us.anthropic.claude-sonnet-5", billing_source: "byok" });
     // An org scope's model providers are the org's own: BYOK, never credit, priced as the in-DO loop estimates.

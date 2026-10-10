@@ -25,7 +25,7 @@ export interface RuntimeUsageRecorded {
   keyScope?: string | null;
   provider: string;
   model: string;
-  /** `response`, `compaction`, `transcription` (audio a message attached, `audioSeconds` of it, no tokens), or `image` (images generated, `images` of them). */
+  /** `response`, `compaction`, `transcription` (audio a message attached, `audioSeconds` of it, no tokens), or `image` (images generated, `images` of them); later runtimes may add others. */
   kind?: string;
   audioSeconds?: number;
   images?: number;
@@ -40,6 +40,14 @@ export interface RuntimeUsageRecorded {
 
 const text = (value: unknown) => (typeof value === "string" ? value.trim() : "");
 const count = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0);
+
+/** usage_log's kind for the runtime's: model responses and compactions are LLM usage (no kind: an older runtime's response). */
+function usageKindOf(kind: string | undefined): "llm" | "audio" | "image" | "unknown" {
+  if (kind === undefined || kind === "response" || kind === "compaction") return "llm";
+  if (kind === "transcription") return "audio";
+  if (kind === "image") return "image";
+  return "unknown";
+}
 
 /** The usage_log row an event becomes (the provider and model as chiridion names them). */
 export function usageRowFor(eventId: string, data: RuntimeUsageRecorded, org: { billing_status?: unknown } | null) {
@@ -67,8 +75,10 @@ export function usageRowFor(eventId: string, data: RuntimeUsageRecorded, org: { 
     credit_chargeable: hosted && !freeTier && org?.billing_status !== "enterprise",
     // Audio attached to a runtime message is transcribed for its agent, and its generate_image tool makes
     // images for it: audio and image usage, on the agent's surface (auxiliary when made alone, with no agent).
-    usage_kind: data.kind === "transcription" ? "audio" : data.kind === "image" ? "image" : "llm",
-    usage_surface: data.kind === "compaction" ? "compaction" : (data.kind === "transcription" || data.kind === "image") && !text(data.agentId) ? "auxiliary" : "agent",
+    // A kind chiridion does not know yet is still recorded, at the runtime's cost, as `unknown`: never
+    // repriced as a model response from its tokens.
+    usage_kind: usageKindOf(data.kind),
+    usage_surface: data.kind === "compaction" ? "compaction" : usageKindOf(data.kind) !== "llm" && !text(data.agentId) ? "auxiliary" : "agent",
     input_tokens: count(data.input),
     output_tokens: count(data.output),
     cache_creation_input_tokens: count(data.cacheWrite),
