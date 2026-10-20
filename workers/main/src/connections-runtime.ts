@@ -1,3 +1,4 @@
+import { stripAuthScheme } from '../../../src/lib/integration-token';
 import { decryptCredentials } from '../../../src/lib/integration-crypto';
 import { getIntegrationDefinition } from '../../../src/lib/integration-registry';
 import {
@@ -655,7 +656,10 @@ function providerSetupStatus(httpStatus: number, message: string): WorkspaceInte
     normalized.includes('account_sid is required') ||
     normalized.includes('client_id is required') ||
     normalized.includes('client_secret is required') ||
-    normalized.includes('private_key is required')
+    normalized.includes('private_key is required') ||
+    // GitHub's MCP server rejects tokens that aren't GitHub token formats
+    // (e.g. a pasted "Bearer ghp_..." or a non-GitHub secret) with this 400.
+    normalized.includes('authorization header is badly formatted')
   ) {
     return 'setup_incomplete';
   }
@@ -2406,9 +2410,10 @@ function mcpAuthHeaders(
     const authType = typeof config.auth_type === 'string' ? config.auth_type : 'none';
     if (authType === 'none') return { ok: true, headers: {} };
 
-    const token = authType === 'oauth'
-      ? (typeof credentials.access_token === 'string' ? credentials.access_token.trim() : '')
-      : (typeof credentials.token === 'string' ? credentials.token.trim() : '');
+    const rawToken = authType === 'oauth' ? credentials.access_token : credentials.token;
+    const token = typeof rawToken === 'string'
+      ? (authType === 'custom_header' ? rawToken.trim() : stripAuthScheme(rawToken))
+      : '';
     if (!token) {
       return {
         ok: false,
@@ -2513,7 +2518,12 @@ async function nativeMcpHttp(
         params,
       }),
     });
-    text = await readBoundedMcpResponseText(response);
+    // Error pages need only a diagnostic excerpt; keep the original HTTP status
+    // even when the server sends an oversized body. Successful tool results
+    // still use the strict response-size guard.
+    text = response.ok
+      ? await readBoundedMcpResponseText(response)
+      : (await boundedResponseText(response, 16_384)).text;
   } catch (error) {
     if (controller.signal.aborted) {
       throw Object.assign(
@@ -2527,12 +2537,12 @@ async function nativeMcpHttp(
   }
   const payload = parseNativePayload(text);
   if (!response.ok) {
-    const message = extractMcpError(payload) || `Native MCP request failed with HTTP ${response.status}`;
+    const message = nativeHttpFailureMessage(response.status, payload, authHeaders);
     throw Object.assign(new Error(message), { status: response.status });
   }
   const error = extractMcpError(payload);
   if (error) {
-    throw Object.assign(new Error(error), { status: 502 });
+    throw Object.assign(new Error(safeMcpErrorExcerpt(error, authHeaders)), { status: 502 });
   }
   return {
     result: (payload as { result?: unknown }).result ?? payload,
@@ -2568,8 +2578,41 @@ function parseNativePayload(text: string): JsonValue | Record<string, unknown> {
   }
 }
 
+const NATIVE_MCP_ERROR_BODY_MAX_CHARS = 200;
+
+/** Redact before truncating, including credentials echoed without their auth scheme. */
+function safeMcpErrorExcerpt(text: string, authHeaders: Record<string, string>): string {
+  const secrets = Object.values(authHeaders).flatMap((value) => [value, stripAuthScheme(value)])
+    .filter(Boolean).sort((a, b) => b.length - a.length);
+  for (const secret of secrets) {
+    for (const variant of [secret, encodeURIComponent(secret), JSON.stringify(secret).slice(1, -1)]) {
+      text = text.split(variant).join('[REDACTED]');
+    }
+  }
+  text = text
+    .replace(/\b(?:Bearer|token)\s+[^\s"'<>;,]+/gi, '[REDACTED]')
+    .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)/g, '[REDACTED]')
+    .replace(/("(?:access_token|refresh_token|api_key|client_secret|password|token)"\s*:\s*)"(?:[^"\\]|\\.)*"/gi, '$1"[REDACTED]"')
+    .replace(/\s+/g, ' ').trim();
+  return text.length > NATIVE_MCP_ERROR_BODY_MAX_CHARS
+    ? `${text.slice(0, NATIVE_MCP_ERROR_BODY_MAX_CHARS)}...`
+    : text;
+}
+
+function nativeHttpFailureMessage(status: number, payload: unknown, authHeaders: Record<string, string>): string {
+  const base = `Native MCP request failed with HTTP ${status}`;
+  const raw = (payload as { raw?: unknown } | null)?.raw;
+  const body = extractMcpError(payload) || (typeof raw === 'string' ? raw : JSON.stringify(payload));
+  if (!body || body === '{}' || /^\s*<(?:!doctype|html|\?xml)/i.test(body)) return base;
+  const excerpt = safeMcpErrorExcerpt(body, authHeaders);
+  const nextStep = status === 400 && body.toLowerCase().includes('authorization header is badly formatted')
+    ? ' Replace the saved token with a valid GitHub personal access token, then verify the connection again.'
+    : '';
+  return `${base}: ${excerpt}${nextStep}`;
+}
+
 function extractMcpError(payload: unknown): string {
-  const error = (payload as { error?: unknown })?.error;
+  const error = (payload as { error?: unknown } | null)?.error;
   if (!error) return '';
   if (typeof error === 'string') return error;
   const message = (error as { message?: unknown })?.message;
@@ -2579,8 +2622,8 @@ function extractMcpError(payload: unknown): string {
 function credentialToken(credentials: Record<string, unknown>): string {
   for (const key of ['access_token', 'api_key', 'token', 'bot_token', 'user_access_token']) {
     const value = credentials[key];
-    if (typeof value === 'string' && value.trim()) {
-      return value.trim();
+    if (typeof value === 'string' && stripAuthScheme(value)) {
+      return stripAuthScheme(value);
     }
   }
   return '';
