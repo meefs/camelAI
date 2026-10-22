@@ -82,9 +82,44 @@ function assertSafeEndpoint(raw: unknown, label: string): string {
   return url.toString();
 }
 
+// Never forward OAuth POST bodies (codes, verifiers, or refresh tokens) to
+// redirect targets. Apply the same policy to discovery to prevent redirect SSRF.
+function oauthFetch(fetchFn: FetchLike, url: string, init: RequestInit = {}): Promise<Response> {
+  return fetchFn(assertSafeEndpoint(url, "OAuth endpoint"), {
+    ...init,
+    redirect: "error",
+    signal: AbortSignal.timeout(15_000),
+  });
+}
+
 function appendPath(base: URL, prefix: string): string {
   const path = base.pathname === "/" ? "" : base.pathname.replace(/\/$/, "");
   return `${base.origin}${prefix}${path}`;
+}
+
+async function readBoundedText(response: Response): Promise<string> {
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > 1024 * 1024) {
+        await reader.cancel();
+        throw new Error("OAuth response exceeds the size limit");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const body = new Uint8Array(bytes);
+  let offset = 0;
+  for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
+  return new TextDecoder().decode(body);
 }
 
 async function readJsonObject(response: Response): Promise<Record<string, unknown> | null> {
@@ -92,7 +127,7 @@ async function readJsonObject(response: Response): Promise<Record<string, unknow
   const contentType = response.headers.get("content-type") || "";
   if (!contentType.includes("json")) return null;
   try {
-    const parsed = await response.json();
+    const parsed = JSON.parse(await readBoundedText(response));
     return isRecord(parsed) ? parsed : null;
   } catch {
     return null;
@@ -112,7 +147,7 @@ function parseWwwAuthenticate(header: string | null): Record<string, string> {
 
 async function discoverChallenge(serverUrl: URL, fetchFn: FetchLike): Promise<Record<string, string>> {
   try {
-    const response = await fetchFn(serverUrl.toString(), {
+    const response = await oauthFetch(fetchFn, serverUrl.toString(), {
       method: "GET",
       headers: { "mcp-protocol-version": MCP_PROTOCOL_VERSION },
     });
@@ -140,7 +175,7 @@ async function discoverProtectedResourceMetadata(
   for (const candidate of uniqueCandidates) {
     let response: Response;
     try {
-      response = await fetchFn(candidate, {
+      response = await oauthFetch(fetchFn, candidate, {
         headers: { "mcp-protocol-version": MCP_PROTOCOL_VERSION },
       });
     } catch (error) {
@@ -152,7 +187,7 @@ async function discoverProtectedResourceMetadata(
     }
 
     const contentType = response.headers.get("content-type") || "";
-    const body = await response.text().catch(() => "");
+    const body = await readBoundedText(response).catch(() => "");
     let metadata: Record<string, unknown> | null = null;
     if (response.ok && contentType.includes("json")) {
       try {
@@ -193,10 +228,15 @@ async function discoverAuthorizationServerMetadata(
   fetchFn: FetchLike
 ): Promise<Record<string, unknown>> {
   for (const candidate of authorizationServerMetadataUrls(issuer)) {
-    const response = await fetchFn(candidate).catch(() => null);
+    const response = await oauthFetch(fetchFn, candidate).catch(() => null);
     if (!response) continue;
     const metadata = await readJsonObject(response);
-    if (metadata) return metadata;
+    if (metadata) {
+      if (metadata.issuer !== issuer) {
+        throw new RemoteMcpOAuthError("OAuth metadata issuer does not match the selected authorization server", "metadata_failed");
+      }
+      return metadata;
+    }
   }
   throw new RemoteMcpOAuthError(
     "OAuth authorization server metadata could not be discovered",
@@ -294,7 +334,7 @@ export async function registerRemoteMcpOAuthClient(
     );
   }
 
-  const response = await fetchFn(registrationEndpoint, {
+  const response = await oauthFetch(fetchFn, registrationEndpoint, {
     method: "POST",
     headers: {
       "accept": "application/json",
@@ -311,7 +351,7 @@ export async function registerRemoteMcpOAuthClient(
     }),
   });
 
-  const text = await response.text();
+  const text = await readBoundedText(response);
   let payload: unknown = null;
   try {
     payload = text ? JSON.parse(text) : null;
@@ -319,11 +359,8 @@ export async function registerRemoteMcpOAuthClient(
     payload = null;
   }
   if (!response.ok || !isRecord(payload) || typeof payload.client_id !== "string") {
-    const details = isRecord(payload)
-      ? payload.error_description ?? payload.error ?? text
-      : text;
     throw new RemoteMcpOAuthError(
-      `OAuth dynamic client registration failed with HTTP ${response.status}${details ? `: ${String(details).slice(0, 500)}` : ""}`,
+      `OAuth dynamic client registration failed with HTTP ${response.status}`,
       "registration_failed",
     );
   }
@@ -397,11 +434,11 @@ export async function exchangeRemoteMcpOAuthCode(
     resource: args.resource,
   });
   const headers = tokenRequestAuth(body, args.clientId, args.clientSecret, args.tokenEndpointAuthMethod);
-  const response = await fetchFn(args.tokenEndpoint, { method: "POST", headers, body });
-  const payload = await response.json().catch(() => ({})) as RemoteMcpOAuthTokenResponse;
+  const response = await oauthFetch(fetchFn, args.tokenEndpoint, { method: "POST", headers, body });
+  const payload = await readBoundedText(response).then(text => JSON.parse(text)).catch(() => ({})) as RemoteMcpOAuthTokenResponse;
   if (!response.ok || !payload.access_token) {
     throw new RemoteMcpOAuthError(
-      payload.error_description || payload.error || "OAuth token exchange failed",
+      "OAuth token exchange failed",
       "token_exchange_failed",
     );
   }
@@ -430,11 +467,11 @@ export async function refreshRemoteMcpOAuthToken(
     resource,
   });
   const headers = tokenRequestAuth(body, clientId, clientSecret, authMethod);
-  const response = await fetchFn(tokenEndpoint, { method: "POST", headers, body });
-  const payload = await response.json().catch(() => ({})) as RemoteMcpOAuthTokenResponse;
+  const response = await oauthFetch(fetchFn, tokenEndpoint, { method: "POST", headers, body });
+  const payload = await readBoundedText(response).then(text => JSON.parse(text)).catch(() => ({})) as RemoteMcpOAuthTokenResponse;
   if (!response.ok || !payload.access_token) {
     throw new RemoteMcpOAuthError(
-      payload.error_description || payload.error || "Remote MCP OAuth token refresh failed",
+      "Remote MCP OAuth token refresh failed",
       "refresh_failed",
     );
   }

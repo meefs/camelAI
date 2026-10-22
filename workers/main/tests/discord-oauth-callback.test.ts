@@ -145,6 +145,7 @@ describe("Discord OAuth callback", () => {
       DISCORD_BRIDGE: { fetch: bridgeFetch },
       INTEGRATION_SECRET_KEY: "integration-secret",
       SESSIONS: sessions,
+      USER: { idFromName: (id: string) => id, get: () => ({ consumeOAuthNonce: async () => true }) },
       ORG: {
         idFromName: vi.fn((id: string) => id),
         get: vi.fn(() => orgStub),
@@ -269,6 +270,7 @@ describe("Discord OAuth callback", () => {
       },
       INTEGRATION_SECRET_KEY: "integration-secret",
       SESSIONS: sessions,
+      USER: { idFromName: (id: string) => id, get: () => ({ consumeOAuthNonce: async () => true }) },
       ORG: {
         idFromName: vi.fn((id: string) => id),
         get: vi.fn(() => orgStub),
@@ -340,7 +342,7 @@ describe("Discord OAuth callback", () => {
 
     const response = await handleDiscordOAuthCallback({
       req: new Request(url),
-      env: { SESSIONS: sessions },
+      env: { SESSIONS: sessions, USER: { idFromName: (id: string) => id, get: () => ({ consumeOAuthNonce: async () => true }) } },
       url,
     } as never);
 
@@ -386,6 +388,7 @@ describe("Discord OAuth callback", () => {
       },
       INTEGRATION_SECRET_KEY: "integration-secret",
       SESSIONS: sessions,
+      USER: { idFromName: (id: string) => id, get: () => ({ consumeOAuthNonce: async () => true }) },
       ORG: {
         idFromName: vi.fn((id: string) => id),
         get: vi.fn(() => orgStub),

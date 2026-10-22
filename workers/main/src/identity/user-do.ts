@@ -872,6 +872,18 @@ export class UserDO extends DurableObject<DOEnv> {
     return verifyPassword(password, hash);
   }
 
+  /** Atomically fence short-lived OAuth artifacts despite stale KV replicas. */
+  consumeOAuthNonce(nonce: string, expiresAt: number): boolean {
+    const now = Date.now();
+    if (!nonce || nonce.length > 256 || !Number.isFinite(expiresAt) || expiresAt <= now) return false;
+    this.sql.exec("CREATE TABLE IF NOT EXISTS consumed_oauth_nonces (nonce TEXT PRIMARY KEY, expires_at INTEGER NOT NULL)");
+    this.sql.exec("DELETE FROM consumed_oauth_nonces WHERE expires_at <= ?", now);
+    return this.sql.exec(
+      "INSERT OR IGNORE INTO consumed_oauth_nonces (nonce, expires_at) VALUES (?, ?) RETURNING nonce",
+      nonce, expiresAt,
+    ).toArray().length === 1;
+  }
+
   setPasswordResetNonce(nonce: string): void {
     const normalized = nonce.trim();
     if (!normalized) {
@@ -2089,9 +2101,18 @@ export class UserDO extends DurableObject<DOEnv> {
     provider: OAuthProvider,
     providerId: string,
   ): Promise<UserOAuthProvider> {
+    // Keep the check and write synchronous within this object. A second login
+    // must not replace a provider subject after an earlier lookup raced.
+    const existing = this.sql.exec(
+      "SELECT provider_id, linked_at FROM oauth_providers WHERE provider = ?", provider,
+    ).toArray()[0] as { provider_id: string; linked_at: number } | undefined;
+    if (existing) {
+      if (existing.provider_id !== providerId) throw new Error("oauth_identity_conflict");
+      return { provider, provider_id: providerId, linked_at: existing.linked_at };
+    }
     const now = Date.now();
     this.sql.exec(
-      "INSERT OR REPLACE INTO oauth_providers (provider, provider_id, linked_at) VALUES (?, ?, ?)",
+      "INSERT INTO oauth_providers (provider, provider_id, linked_at) VALUES (?, ?, ?)",
       provider,
       providerId,
       now,

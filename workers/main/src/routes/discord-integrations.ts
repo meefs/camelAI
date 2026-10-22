@@ -211,7 +211,7 @@ export async function handleDiscordOAuthCallback({
   if (!code || !state) {
     return recoverableProviderFailureRedirect(env, url, "oauth_invalid", state);
   }
-  const stateData = await validateAndConsumeIntegrationOAuthState(env.SESSIONS, state);
+  const stateData = await validateAndConsumeIntegrationOAuthState(env.SESSIONS, state, { req, env });
   if (!stateData || stateData.integration_type !== "discord_channel") {
     return oauthFailureRedirect(env, url, "oauth_state_invalid");
   }

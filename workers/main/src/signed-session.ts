@@ -38,6 +38,7 @@ export interface SignedSessionData {
 }
 
 export interface SignedOAuthStateData {
+  code_verifier?: string;
   provider: string;
   redirect_url: string;
   nonce: string;

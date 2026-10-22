@@ -1,3 +1,4 @@
+import { createPkceVerifier, createPkceChallenge } from "../remote-mcp-oauth.js";
 import { safeRedirectPath } from "../../../../src/lib/safe-redirect";
 /**
  * User OAuth routes (Google, GitHub)
@@ -83,15 +84,17 @@ export async function handleOAuthStart({
   const redirectTo = sanitizeRedirectPath(url.searchParams.get("redirect"));
   const callbackUrl = `${url.origin}/api/auth/${provider}/callback`;
   const nonce = crypto.randomUUID();
+  const codeVerifier = createPkceVerifier();
+  const codeChallenge = await createPkceChallenge(codeVerifier);
 
   const stateCookie = await createOAuthStateCookie(
-    { provider, redirect_url: redirectTo, nonce, created_at: Date.now() },
+    { provider, redirect_url: redirectTo, nonce, created_at: Date.now(), code_verifier: codeVerifier },
     env.TOKEN_SIGNING_SECRET,
     req,
   );
 
   const headers = new Headers({
-    Location: buildAuthorizationUrl(provider, clientId, callbackUrl, nonce),
+    Location: buildAuthorizationUrl(provider, clientId, callbackUrl, nonce, codeChallenge),
   });
   headers.append("Set-Cookie", stateCookie);
   return new Response(null, { status: 302, headers });
@@ -126,7 +129,8 @@ export async function handleOAuthCallback({
   if (
     !stateData ||
     stateData.provider !== provider ||
-    stateData.nonce !== state
+    stateData.nonce !== state ||
+    !stateData.code_verifier
   ) {
     console.warn("[oauth] invalid state on callback", {
       provider,
@@ -166,6 +170,7 @@ export async function handleOAuthCallback({
       clientSecret,
       callbackUrl,
       OAUTH_PROVIDER_TIMEOUT_MS,
+      stateData.code_verifier,
     );
 
     stage = "fetch_userinfo";
@@ -197,6 +202,9 @@ export async function handleOAuthCallback({
       return new Response(null, { status: 302, headers });
     }
     const userId = await getOrCreateUserFromOAuth(env, provider, userInfo, signupIp);
+    if (await isUserBanned(env.APP_KV, { userId, email: userInfo.email })) {
+      return redirectTo(`${url.origin}/banned`);
+    }
     const displayName = userInfo.name || userInfo.email.split('@')[0];
 
     stage = "org_workspace";
@@ -249,7 +257,7 @@ export async function handleOAuthCallback({
     const domain = getCookieDomain(hostname);
     const cookieName = getSessionCookieName(hostname);
     const headers = new Headers({
-      Location: stateData.redirect_url || "/",
+      Location: sanitizeRedirectPath(stateData.redirect_url),
     });
     headers.append(
       "Set-Cookie",

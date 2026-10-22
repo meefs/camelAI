@@ -1,3 +1,7 @@
+import type { Env } from './types.js';
+import { requireSession } from './helpers/auth.js';
+import { getUserStub } from './helpers/stubs.js';
+
 /**
  * OAuth state management for integration connections.
  * States are short-lived (5 minutes) and single-use.
@@ -54,16 +58,22 @@ export async function createIntegrationOAuthState(
  */
 export async function validateAndConsumeIntegrationOAuthState(
   kv: KVNamespace,
-  state: string
+  state: string,
+  context: { req: Request; env: Env },
 ): Promise<IntegrationOAuthState | null> {
   const key = stateKey(state);
   const data = (await kv.get(key, 'json')) as IntegrationOAuthState | null;
 
-  if (!data) {
+  if (!isFreshState(data)) {
     return null;
   }
 
-  // Delete immediately to ensure single-use
+  const auth = await requireSession(context.req, context.env);
+  if ('error' in auth || auth.session.user_id !== data.user_id) return null;
+  const consumed = await getUserStub(context.env, data.user_id).consumeOAuthNonce(
+    `integration:${state}`, data.created_at + INTEGRATION_OAUTH_STATE_TTL_SECONDS * 1000,
+  );
+  if (!consumed) return null;
   await kv.delete(key);
 
   return data;
@@ -78,5 +88,12 @@ export async function readIntegrationOAuthState(
   kv: KVNamespace,
   state: string,
 ): Promise<IntegrationOAuthState | null> {
-  return (await kv.get(stateKey(state), 'json')) as IntegrationOAuthState | null;
+  const data = (await kv.get(stateKey(state), 'json')) as IntegrationOAuthState | null;
+  return isFreshState(data) ? data : null;
+}
+
+function isFreshState(data: IntegrationOAuthState | null): data is IntegrationOAuthState {
+  return !!data && typeof data.user_id === 'string' && typeof data.workspace_id === 'string'
+    && Number.isFinite(data.created_at) && data.created_at <= Date.now()
+    && data.created_at + INTEGRATION_OAUTH_STATE_TTL_SECONDS * 1000 > Date.now();
 }

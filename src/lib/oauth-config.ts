@@ -89,6 +89,7 @@ async function fetchWithTimeout(
   try {
     return await fetch(input, {
       ...init,
+      redirect: 'error',
       signal: controller.signal,
     });
   } catch (error) {
@@ -115,7 +116,8 @@ export function buildAuthorizationUrl(
   provider: OAuthProvider,
   clientId: string,
   redirectUri: string,
-  state: string
+  state: string,
+  codeChallenge?: string,
 ): string {
   const config = OAUTH_PROVIDERS[provider];
   const params = new URLSearchParams({
@@ -125,6 +127,11 @@ export function buildAuthorizationUrl(
     scope: config.scopes.join(' '),
     state,
   });
+
+  if (codeChallenge) {
+    params.set('code_challenge', codeChallenge);
+    params.set('code_challenge_method', 'S256');
+  }
 
   // Google-specific parameters
   if (provider === 'google') {
@@ -144,7 +151,8 @@ export async function exchangeCodeForTokens(
   clientId: string,
   clientSecret: string,
   redirectUri: string,
-  timeoutMs = OAUTH_FETCH_TIMEOUT_MS
+  timeoutMs = OAUTH_FETCH_TIMEOUT_MS,
+  codeVerifier?: string,
 ): Promise<OAuthTokenResponse> {
   const config = OAUTH_PROVIDERS[provider];
 
@@ -154,6 +162,8 @@ export async function exchangeCodeForTokens(
     code,
     redirect_uri: redirectUri,
   });
+
+  if (codeVerifier) body.set('code_verifier', codeVerifier);
 
   // Google requires grant_type; GitHub does not use it
   if (provider === 'google') {
@@ -176,8 +186,7 @@ export async function exchangeCodeForTokens(
   }, timeoutMs);
 
   if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Token exchange failed: ${response.status} ${errorText}`);
+    throw new Error(`Token exchange failed: HTTP ${response.status}`);
   }
 
   const data = await response.json() as Record<string, unknown>;
@@ -185,7 +194,7 @@ export async function exchangeCodeForTokens(
   // GitHub returns 200 OK even for errors (e.g. bad_verification_code),
   // so we must check the response body for an error field.
   if (data.error) {
-    throw new Error(`Token exchange failed: ${data.error} - ${data.error_description || 'unknown error'}`);
+    throw new Error('Token exchange failed: provider rejected the authorization code');
   }
 
   return data as unknown as OAuthTokenResponse;
@@ -215,6 +224,9 @@ export async function fetchUserInfo(
 
   if (provider === 'google') {
     const data = (await response.json()) as GoogleUserInfo;
+    if (data.verified_email !== true || !data.email || !data.id) {
+      throw new Error('Google did not provide a verified email and identity');
+    }
     return {
       provider: 'google',
       providerId: data.id,
@@ -227,11 +239,9 @@ export async function fetchUserInfo(
   if (provider === 'github') {
     const data = (await response.json()) as GitHubUserInfo;
 
-    // GitHub may not return email in user info, need to fetch separately
-    let email = data.email;
-    if (!email) {
-      email = await fetchGitHubPrimaryEmail(accessToken, timeoutMs);
-    }
+    // The public profile email has no verification claim. Always use the
+    // authenticated email endpoint and require a verified address.
+    const email = await fetchGitHubPrimaryEmail(accessToken, timeoutMs);
 
     if (!email) {
       throw new Error('Could not retrieve email from GitHub. Please ensure your email is public or use another sign-in method.');

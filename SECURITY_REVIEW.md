@@ -57,3 +57,53 @@ This is a bounded review, not a penetration test or a security certification.
   the application session/storage. Cookie-authenticated API clients that omit
   Origin, Referer and Fetch Metadata must send their legitimate Origin or move
   to explicit token authentication.
+
+## Deeper OAuth follow-up
+
+Reviewed sign-in, integration callbacks, remote MCP OAuth, and admin MCP OAuth.
+Additional fixes:
+
+- Google sign-in requires `verified_email === true`; GitHub always obtains the
+  address from its authenticated verified-email list, including public profiles.
+- Stable provider subjects take precedence over mutable email matches. Existing
+  unverified password accounts cannot be implicitly linked, deleted identities
+  are not silently recreated, and conflicting provider links fail atomically in
+  UserDO. This closes account-confusion and password pre-registration paths.
+- Google/GitHub authorization requests use S256 PKCE. The verifier is held in the
+  signed HttpOnly state cookie and required at callback/token exchange.
+- Integration callbacks require the signed-in user that initiated the flow,
+  explicitly enforce five-minute state expiry, and consume state through an
+  atomic UserDO SQLite latch. KV deletion alone is no longer the replay barrier.
+- Admin MCP code redemption and refresh rotation use the same atomic latch;
+  replay fingerprints are hashed, expired records are rejected independently of
+  KV expiry, and code creation requires a valid S256 challenge. Redirects reject
+  credentials, fragments, backslashes and control/whitespace characters.
+- Remote MCP discovery requires matching authorization-server issuer metadata.
+  Discovery, registration, exchange and refresh requests revalidate endpoints,
+  reject redirects, time out after 15 seconds, and bound bodies to 1 MiB.
+  Provider error bodies are not copied into token/registration errors. Sign-in
+  provider requests also reject redirects and omit raw token error responses.
+
+Regression coverage includes stale KV reads, concurrent callback/code/refresh
+replay, concurrent provider replacement, mismatched browser users, unverified
+emails, password pre-registration, PKCE, issuer substitution, private endpoints,
+credential-bearing redirects, and oversized OAuth responses.
+
+Compatibility: a sign-in started before this release must be restarted to get
+its PKCE verifier. Integration callbacks after logout or an account switch fail
+closed. Providers must publish issuer metadata correctly and expose OAuth
+endpoints directly rather than redirecting token/registration requests.
+
+Additional follow-up: OAuth first-account provisioning still writes email and
+provider indexes in KV; coordinate it with password signup's SignupDO before
+claiming race-free account provisioning. The changes above protect linked
+identity selection, but do not replace the entire account-index architecture.
+A live end-to-end login/consent run against every external provider and review of
+remote MCP DNS/egress enforcement remain outside the local regression evidence.
+Protocol reference: https://www.rfc-editor.org/rfc/rfc9700.html
+
+Follow-up validation: 2,703 app tests, 1,940 Worker tests, and 36 Discord bridge
+ tests passed (existing skips retained). Focused OAuth regressions passed,
+including a final linked-identity revocation check. Typecheck, lint, production
+build and the Pi Bedrock bundle check passed. Live provider consent is not
+covered by these local tests.

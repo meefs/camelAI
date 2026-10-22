@@ -495,6 +495,7 @@ export async function handleRemoteMcpOAuthStart({
 }
 
 export async function handleRemoteMcpOAuthCallback({
+  req,
   env,
   url,
   ctx: _ctx,
@@ -510,6 +511,7 @@ export async function handleRemoteMcpOAuthCallback({
   const stateData = await validateAndConsumeIntegrationOAuthState(
     env.SESSIONS,
     state,
+    { req, env },
   );
   if (!stateData || stateData.integration_type !== "remote_mcp") {
     return redirect(`${url.origin}/connections?error=oauth_state_invalid`);
@@ -653,6 +655,7 @@ export async function handleSlackOAuthStart({
 }
 
 export async function handleSlackOAuthCallback({
+  req,
   env,
   url,
   ctx: _ctx,
@@ -668,6 +671,7 @@ export async function handleSlackOAuthCallback({
   const stateData = await validateAndConsumeIntegrationOAuthState(
     env.SESSIONS,
     state,
+    { req, env },
   );
   if (!stateData || stateData.integration_type !== "slack") {
     return redirect(`${url.origin}/connections?error=oauth_state_invalid`);
@@ -1905,6 +1909,7 @@ export async function handleNotionOAuthStart({
 }
 
 export async function handleNotionOAuthCallback({
+  req,
   env,
   url,
   ctx: _ctx,
@@ -1920,6 +1925,7 @@ export async function handleNotionOAuthCallback({
   const stateData = await validateAndConsumeIntegrationOAuthState(
     env.SESSIONS,
     state,
+    { req, env },
   );
   if (!stateData || stateData.integration_type !== "notion") {
     return redirect(`${url.origin}/connections?error=oauth_state_invalid`);
@@ -2147,6 +2153,7 @@ interface GoogleAnalyticsAccountSummary {
 }
 
 export async function handleGoogleAnalyticsOAuthCallback({
+  req,
   env,
   url,
 }: RouteContext): Promise<Response> {
@@ -2154,7 +2161,7 @@ export async function handleGoogleAnalyticsOAuthCallback({
   const state = url.searchParams.get('state');
   if (url.searchParams.get('error')) return redirect(`${url.origin}/connections?error=oauth_denied`);
   if (!code || !state) return redirect(`${url.origin}/connections?error=oauth_invalid`);
-  const stateData = await validateAndConsumeIntegrationOAuthState(env.SESSIONS, state);
+  const stateData = await validateAndConsumeIntegrationOAuthState(env.SESSIONS, state, { req, env });
   if (!stateData || stateData.integration_type !== 'google_analytics') {
     return redirect(`${url.origin}/connections?error=oauth_state_invalid`);
   }
@@ -2339,6 +2346,7 @@ export async function handleSalesforceOAuthStart({
 }
 
 export async function handleSalesforceOAuthCallback({
+  req,
   env,
   url,
   ctx: _ctx,
@@ -2354,6 +2362,7 @@ export async function handleSalesforceOAuthCallback({
   const stateData = await validateAndConsumeIntegrationOAuthState(
     env.SESSIONS,
     state,
+    { req, env },
   );
   if (!stateData || stateData.integration_type !== "salesforce") {
     return redirect(`${url.origin}/connections?error=oauth_state_invalid`);

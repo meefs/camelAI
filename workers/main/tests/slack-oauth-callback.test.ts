@@ -2,6 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createIntegrationOAuthState } from "../src/integration-oauth-state.js";
 import { handleSlackOAuthCallback } from "../src/routes/integrations.js";
 
+vi.mock("../src/helpers/auth.js", () => ({
+  requireSession: vi.fn(async () => ({ session: { user_id: "user_1" } })),
+}));
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -56,6 +60,7 @@ function createEnv() {
     env: {
       APP_KV: createMockKV({ "workspace_org:ws_1": "org_1" }),
       SESSIONS: createMockKV(),
+      USER: { idFromName: (id: string) => id, get: () => ({ consumeOAuthNonce: async () => true }) },
       SLACK_CLIENT_ID: "slack-client-id",
       SLACK_CLIENT_SECRET: "slack-client-secret",
       INTEGRATION_SECRET_KEY: "integration-secret",

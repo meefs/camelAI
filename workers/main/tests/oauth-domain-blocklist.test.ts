@@ -61,12 +61,13 @@ describe('oauth email domain blocklist', () => {
     const profile = { id: 'user-1', email: 'person@mailinator.com' };
     const userStub = {
       getProfile: vi.fn().mockResolvedValue(profile),
+      getOAuthProvider: vi.fn().mockResolvedValue(null),
       linkOAuthProvider: vi.fn().mockResolvedValue(undefined),
     };
 
     env.EMAIL_TO_USER.get
-      .mockResolvedValueOnce('user-1')
-      .mockResolvedValueOnce(null);
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce('user-1');
     env.EMAIL_TO_USER.put.mockResolvedValue(undefined);
     getUserStubMock.mockReturnValue(userStub);
 
@@ -87,4 +88,36 @@ describe('oauth email domain blocklist', () => {
       'user-1',
     );
   });
+});
+
+describe('OAuth account identity precedence', () => {
+  it('keeps the linked provider account when its new email belongs to another account', async () => {
+    const kv = { get: vi.fn(async (key: string) => key.startsWith('oauth:') ? 'original-owner' : 'email-owner'), put: vi.fn() };
+    getUserStubMock.mockReturnValue({ getProfile: async () => ({ id: 'original-owner' }), getOAuthProvider: async () => ({ provider_id: 'subject' }) });
+    await expect(getOrCreateUserFromOAuth({ EMAIL_TO_USER: kv } as never, 'google', { email: 'other@example.com', providerId: 'subject' })).resolves.toBe('original-owner');
+    expect(kv.get).toHaveBeenCalledTimes(1);
+    expect(kv.put).not.toHaveBeenCalled();
+  });
+  it('does not resurrect a deleted linked identity', async () => {
+    getUserStubMock.mockReturnValue({ getProfile: async () => null });
+    await expect(getOrCreateUserFromOAuth({ EMAIL_TO_USER: { get: async () => 'deleted' } } as never, 'google', { email: 'user@example.com', providerId: 'subject' })).rejects.toThrow('oauth_identity_unavailable');
+  });
+  it('rejects replacement of a different provider subject on an email-matched account', async () => {
+    getUserStubMock.mockReturnValue({ getProfile: async () => ({ id: 'owner' }), getOAuthProvider: async () => ({ provider_id: 'original-subject' }) });
+    const kv = { get: async (key: string) => key.startsWith('email:') ? 'owner' : null, put: vi.fn() };
+    await expect(getOrCreateUserFromOAuth({ EMAIL_TO_USER: kv } as never, 'google', { email: 'user@example.com', providerId: 'different-subject' })).rejects.toThrow('oauth_identity_conflict');
+    expect(kv.put).not.toHaveBeenCalled();
+  });
+});
+
+it('does not attach OAuth to an unverified password account', async () => {
+  getUserStubMock.mockReturnValue({ getProfile: async () => ({ id: 'pre-registered', email_verified_at: null }) });
+  const kv = { get: async (key: string) => key.startsWith('email:') ? 'pre-registered' : null, put: vi.fn() };
+  await expect(getOrCreateUserFromOAuth({ EMAIL_TO_USER: kv } as never, 'google', { email: 'victim@example.com', providerId: 'subject' })).rejects.toThrow('oauth_email_verification_required');
+  expect(kv.put).not.toHaveBeenCalled();
+});
+
+it('does not authenticate through a stale provider mapping after unlinking', async () => {
+  getUserStubMock.mockReturnValue({ getProfile: async () => ({ id: 'owner' }), getOAuthProvider: async () => null });
+  await expect(getOrCreateUserFromOAuth({ EMAIL_TO_USER: { get: async () => 'owner' } } as never, 'google', { email: 'user@example.com', providerId: 'subject' })).rejects.toThrow('oauth_identity_conflict');
 });

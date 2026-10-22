@@ -246,6 +246,7 @@ async function verifyAdminMcpAuth(
 
     const oauth = new AdminMcpOAuthProvider(
       env.APP_KV,
+      env.USER,
       env.ADMIN_MCP_CLIENT_ID,
       parseStaticRedirectUris(env.ADMIN_MCP_REDIRECT_URIS),
     );

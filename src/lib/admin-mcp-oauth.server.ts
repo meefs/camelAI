@@ -18,6 +18,7 @@ export function parseAdminMcpRedirectUris(value: string | undefined): string[] {
 export function getAdminMcpOAuth(env: CloudflareEnv): AdminMcpOAuthProvider {
   return new AdminMcpOAuthProvider(
     env.APP_KV,
+    env.USER,
     (env as any).ADMIN_MCP_CLIENT_ID,
     parseAdminMcpRedirectUris((env as any).ADMIN_MCP_REDIRECT_URIS),
   );

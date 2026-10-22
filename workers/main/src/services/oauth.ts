@@ -24,55 +24,33 @@ export async function getOrCreateUserFromOAuth(
   const oauthKey = `oauth:${provider}:${userInfo.providerId}`;
   const normalizedSignupIp = normalizeSignupIp(signupIp);
 
-  // Check by email first
-  let userId = await env.EMAIL_TO_USER.get(emailKey);
+  // Provider subjects are stable; email addresses can change or be reassigned.
+  // Never let an email match override an existing provider identity.
+  let userId = await env.EMAIL_TO_USER.get(oauthKey);
   if (userId) {
     const userStub = getUserStub(env, userId);
     const profile = await userStub.getProfile();
-
-    if (!profile) {
-      // Zombie KV entry: email maps to a UserDO with no profile (e.g. hard-deleted user).
-      // Re-create the profile so the user can log in.
-      console.warn('[oauth] zombie user detected, re-creating profile', { userId, email, provider });
-      await userStub.createUserFromOAuth(
-        userId,
-        email,
-        userInfo.name || email.split('@')[0],
-        provider,
-        userInfo.providerId
-      );
-      return userId;
-    }
-
-    // Link OAuth if not already linked
-    const existingOAuth = await env.EMAIL_TO_USER.get(oauthKey);
-    if (!existingOAuth || existingOAuth === userId) {
-      await env.EMAIL_TO_USER.put(oauthKey, userId);
-      await userStub.linkOAuthProvider(provider, userInfo.providerId);
-    }
+    if (!profile) throw new Error('oauth_identity_unavailable');
+    const linked = await userStub.getOAuthProvider(provider);
+    if (!linked || linked.provider_id !== userInfo.providerId) throw new Error('oauth_identity_conflict');
     return userId;
   }
 
-  // Check by OAuth key (email might have changed)
-  userId = await env.EMAIL_TO_USER.get(oauthKey);
+  userId = await env.EMAIL_TO_USER.get(emailKey);
   if (userId) {
     const userStub = getUserStub(env, userId);
     const profile = await userStub.getProfile();
-
-    if (!profile) {
-      // Zombie: oauth KV entry exists but UserDO has no profile.
-      // Re-create profile and update email KV mapping.
-      console.warn('[oauth] zombie user detected via oauth key, re-creating profile', { userId, email, provider });
-      await userStub.createUserFromOAuth(
-        userId,
-        email,
-        userInfo.name || email.split('@')[0],
-        provider,
-        userInfo.providerId
-      );
-      await env.EMAIL_TO_USER.put(emailKey, userId);
+    if (!profile) throw new Error('oauth_identity_unavailable');
+    // An attacker can pre-register a victim's email with a known password.
+    // Require the existing account to prove email ownership before auto-linking.
+    if (profile.email_verified_at === null) throw new Error('oauth_email_verification_required');
+    // Do not replace a provider already linked to this account.
+    const linked = await userStub.getOAuthProvider(provider);
+    if (linked && linked.provider_id !== userInfo.providerId) {
+      throw new Error('oauth_identity_conflict');
     }
-
+    await userStub.linkOAuthProvider(provider, userInfo.providerId);
+    await env.EMAIL_TO_USER.put(oauthKey, userId);
     return userId;
   }
 

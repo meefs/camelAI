@@ -5,11 +5,14 @@ import {
   exchangeRemoteMcpOAuthCode,
   registerRemoteMcpOAuthClient,
   RemoteMcpOAuthError,
+  refreshRemoteMcpOAuthToken,
 } from '../src/remote-mcp-oauth';
 
 describe('remote MCP OAuth flow', () => {
   it('discovers metadata, registers dynamically, and exchanges the code with the resource parameter', async () => {
     const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(init?.redirect).toBe('error');
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
       const target = String(url);
       if (target === 'https://mcp.example.com/mcp') {
         return new Response('', {
@@ -105,7 +108,7 @@ describe('remote MCP OAuth flow', () => {
     });
   });
 
-  it('preserves dynamic registration failure details for diagnostics', async () => {
+  it('omits untrusted registration error bodies from diagnostics', async () => {
     const discovery = {
       authorizationServer: 'https://auth.example.com',
       resource: 'https://mcp.example.com/mcp',
@@ -129,7 +132,7 @@ describe('remote MCP OAuth flow', () => {
     )).rejects.toMatchObject({
       name: 'RemoteMcpOAuthError',
       code: 'registration_failed',
-      message: expect.stringContaining('invalid_redirect_uri'),
+      message: 'OAuth dynamic client registration failed with HTTP 400',
     });
   });
 
@@ -184,4 +187,35 @@ describe('remote MCP OAuth flow', () => {
       },
     });
   });
+});
+
+describe('remote OAuth credential boundaries', () => {
+  it('rejects issuer substitution in discovered metadata', async () => {
+    const mock = vi.fn(async (url: string | URL | Request) => String(url).includes('oauth-authorization-server')
+      ? Response.json({ issuer: 'https://attacker.example', token_endpoint: 'https://attacker.example/token' })
+      : Response.json({ resource: 'https://mcp.example/mcp', authorization_servers: ['https://auth.example'] }));
+    await expect(discoverRemoteMcpOAuth('https://mcp.example/mcp', mock as typeof fetch)).rejects.toThrow('issuer');
+  });
+  it('does not follow refresh redirects or expose provider error descriptions', async () => {
+    const mock = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      expect(init?.redirect).toBe('error');
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      return Response.json({ error_description: 'secret refresh token echoed' }, { status: 307, headers: { location: 'https://attacker.example' } });
+    });
+    await expect(refreshRemoteMcpOAuthToken({ refresh_token: 'secret', oauth_token_endpoint: 'https://auth.example/token', oauth_client_id: 'client', oauth_resource: 'https://mcp.example' }, mock as typeof fetch)).rejects.toThrow('Remote MCP OAuth token refresh failed');
+    expect(mock).toHaveBeenCalledTimes(1);
+  });
+  it('rejects stored private token endpoints before sending credentials', async () => {
+    const mock = vi.fn();
+    await expect(refreshRemoteMcpOAuthToken({ refresh_token: 'secret', oauth_token_endpoint: 'https://127.0.0.1/token', oauth_client_id: 'client', oauth_resource: 'https://mcp.example' }, mock)).rejects.toThrow('remote HTTPS');
+    expect(mock).not.toHaveBeenCalled();
+  });
+});
+
+it('bounds untrusted OAuth response bodies', async () => {
+  const mock = vi.fn(async () => new Response('x'.repeat(1024 * 1024 + 1)));
+  await expect(registerRemoteMcpOAuthClient({
+    authorizationServer: 'https://auth.example', resource: 'https://mcp.example', scope: null,
+    metadata: { registration_endpoint: 'https://auth.example/register' }, resourceMetadata: null,
+  }, 'https://app.example/callback', mock as typeof fetch)).rejects.toThrow('size limit');
 });

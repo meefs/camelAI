@@ -1,3 +1,5 @@
+import type { UserDO } from "./identity/user-do.js";
+
 /**
  * OAuth 2.1 provider for the admin MCP server.
  *
@@ -89,6 +91,7 @@ function isCursorOAuthRedirectUri(url: URL): boolean {
 export function isAllowedOAuthRedirectUri(value: string): boolean {
   try {
     const url = new URL(value);
+    if (url.username || url.password || url.hash || /[\\\p{Cc}\s]/u.test(value)) return false;
     return url.protocol === "https:"
       || (url.protocol === "http:" && isLoopbackHostname(url.hostname))
       || isCursorOAuthRedirectUri(url);
@@ -108,6 +111,7 @@ function normalizeScopes(scope: string | null | undefined): string[] {
 export class AdminMcpOAuthProvider {
   constructor(
     private kv: KVNamespace,
+    private users: DurableObjectNamespace<UserDO>,
     private staticClientId?: string,
     private staticRedirectUris: string[] = [],
   ) {}
@@ -180,6 +184,9 @@ export class AdminMcpOAuthProvider {
     resource: string;
     state?: string;
   }): Promise<string> {
+    if (!/^[A-Za-z0-9_-]{43}$/.test(params.code_challenge)) {
+      throw new OAuthError("invalid_request", "A valid S256 code challenge is required");
+    }
     const code = generateId();
     const record: AdminMcpAuthCodeRecord = {
       client_id: params.client_id,
@@ -208,19 +215,28 @@ export class AdminMcpOAuthProvider {
     if (!raw) throw new OAuthError("invalid_grant", "Authorization code is invalid or expired");
 
     const record = JSON.parse(raw) as AdminMcpAuthCodeRecord;
-    await this.kv.delete(`${KV_PREFIX_AUTHCODE}${code}`);
+    const expiresAt = (record.created_at + AUTH_CODE_TTL) * 1000;
+    if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+      throw new OAuthError("invalid_grant", "Authorization code expired");
+    }
 
     if (record.client_id !== clientId) throw new OAuthError("invalid_grant", "Code issued to a different client");
     if (!redirectUri) throw new OAuthError("invalid_grant", "redirect_uri is required");
     if (record.redirect_uri !== redirectUri) throw new OAuthError("invalid_grant", "redirect_uri mismatch");
     if (resource && record.resource !== resource) throw new OAuthError("invalid_target", "resource mismatch");
 
+    if (!record.code_challenge) throw new OAuthError("invalid_grant", "PKCE is required");
     if (record.code_challenge) {
       if (!codeVerifier) throw new OAuthError("invalid_grant", "code_verifier is required");
       const challenge = await sha256(codeVerifier);
       if (challenge !== record.code_challenge) throw new OAuthError("invalid_grant", "code_verifier mismatch");
     }
 
+    const consumed = await this.users.get(this.users.idFromName(record.user_id)).consumeOAuthNonce(
+      `admin-code:${await sha256(code)}`, expiresAt,
+    );
+    if (!consumed) throw new OAuthError("invalid_grant", "Authorization code already used");
+    await this.kv.delete(`${KV_PREFIX_AUTHCODE}${code}`);
     return this.issueTokens(clientId, record.user_id, record.resource, record.scopes);
   }
 
@@ -236,6 +252,11 @@ export class AdminMcpOAuthProvider {
     if (record.client_id !== clientId) throw new OAuthError("invalid_grant", "Refresh token issued to a different client");
     if (resource && record.resource !== resource) throw new OAuthError("invalid_target", "resource mismatch");
 
+    const expiresAt = record.expires_at * 1000;
+    const consumed = await this.users.get(this.users.idFromName(record.user_id)).consumeOAuthNonce(
+      `admin-refresh:${await sha256(refreshToken)}`, expiresAt,
+    );
+    if (!consumed) throw new OAuthError("invalid_grant", "Refresh token expired or already used");
     await Promise.all([
       this.kv.delete(`${KV_PREFIX_TOKEN}${record.access_token}`),
       this.kv.delete(`${KV_PREFIX_REFRESH}${refreshToken}`),

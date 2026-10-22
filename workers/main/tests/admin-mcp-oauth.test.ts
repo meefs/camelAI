@@ -29,7 +29,7 @@ async function codeChallenge(verifier: string): Promise<string> {
 }
 
 async function issueAdminMcpToken(userId: string): Promise<string> {
-  const oauth = new AdminMcpOAuthProvider(testEnv.APP_KV);
+  const oauth = new AdminMcpOAuthProvider(testEnv.APP_KV, testEnv.USER);
   const client = await oauth.registerClient({
     client_name: "Test MCP Client",
     redirect_uris: ["http://localhost:4321/callback"],
@@ -224,7 +224,7 @@ describe("admin MCP OAuth resource", () => {
   });
 
   it("accepts Cursor's native-app callback during dynamic client registration", async () => {
-    const oauth = new AdminMcpOAuthProvider(testEnv.APP_KV);
+    const oauth = new AdminMcpOAuthProvider(testEnv.APP_KV, testEnv.USER);
     const redirectUris = [
       "cursor://anysphere.cursor-mcp/oauth/callback",
       "https://www.cursor.com/agents/mcp/oauth/callback",
@@ -240,7 +240,7 @@ describe("admin MCP OAuth resource", () => {
   });
 
   it("rejects lookalike Cursor native-app callbacks", async () => {
-    const oauth = new AdminMcpOAuthProvider(testEnv.APP_KV);
+    const oauth = new AdminMcpOAuthProvider(testEnv.APP_KV, testEnv.USER);
 
     await expect(oauth.registerClient({
       client_name: "Untrusted Cursor callback",
@@ -253,7 +253,7 @@ describe("admin MCP OAuth resource", () => {
   });
 
   it("requires redirect_uri during authorization-code token exchange", async () => {
-    const oauth = new AdminMcpOAuthProvider(testEnv.APP_KV);
+    const oauth = new AdminMcpOAuthProvider(testEnv.APP_KV, testEnv.USER);
     const client = await oauth.registerClient({
       client_name: "Redirect URI Test Client",
       redirect_uris: ["http://localhost:4321/callback"],
@@ -293,6 +293,7 @@ describe("admin MCP OAuth resource", () => {
   it("binds static admin clients to configured redirect URIs", async () => {
     const oauth = new AdminMcpOAuthProvider(
       testEnv.APP_KV,
+      testEnv.USER,
       "static-admin-client",
       ["https://trusted.example/callback", "http://localhost:4321/callback"],
     );
@@ -312,7 +313,7 @@ describe("admin MCP OAuth resource", () => {
   });
 
   it("fails closed for static admin clients without a redirect URI allowlist", async () => {
-    const oauth = new AdminMcpOAuthProvider(testEnv.APP_KV, "static-admin-client");
+    const oauth = new AdminMcpOAuthProvider(testEnv.APP_KV, testEnv.USER, "static-admin-client");
 
     await expect(
       oauth.validateClient("static-admin-client", "https://trusted.example/callback"),
