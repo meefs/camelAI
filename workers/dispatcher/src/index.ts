@@ -1430,6 +1430,8 @@ async function dispatchToWorker(
 
 const PLATFORM_AUTH_COOKIE_NAMES = new Set([
   DISPATCHER_SESSION_COOKIE,
+  'chiridion_oauth_state',
+  '__Host-chiridion_oauth_state',
   'CF_Authorization',
   '_pomerium',
   '_pomerium_csrf',
@@ -1444,12 +1446,13 @@ export function stripPlatformAuthMaterial(headers: Headers, hostname: string): v
     .filter((cookie) => {
       const separator = cookie.indexOf('=');
       const name = separator >= 0 ? cookie.slice(0, separator).trim() : cookie;
-      return !reservedCookieNames.has(name);
+      return !reservedCookieNames.has(name) && !name.startsWith('chiridion_session_');
     });
   if (cookies?.length) headers.set('Cookie', cookies.join('; '));
   else headers.delete('Cookie');
 
   for (const header of [
+    'X-Chiridion-Session-Id',
     'CF-Access-Jwt-Assertion',
     'CF-Access-Authenticated-User-Email',
     'X-Pomerium-Jwt-Assertion',

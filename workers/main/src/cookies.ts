@@ -14,6 +14,7 @@ import {
 export const SESSION_HEADER = 'X-Chiridion-Session-Id';
 export const SESSION_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
 export const OAUTH_STATE_COOKIE_NAME = 'chiridion_oauth_state';
+const SECURE_OAUTH_STATE_COOKIE_NAME = '__Host-chiridion_oauth_state';
 export const OAUTH_STATE_MAX_AGE = 5 * 60; // 5 minutes
 
 /**
@@ -140,13 +141,12 @@ export async function createOAuthStateCookie(
   request: Request
 ): Promise<string> {
   const token = await createSignedOAuthState(secret, stateData);
-  const hostname = getHostname(request);
+  const secure = isSecure(request);
   return buildCookie(
-    OAUTH_STATE_COOKIE_NAME,
+    secure ? SECURE_OAUTH_STATE_COOKIE_NAME : OAUTH_STATE_COOKIE_NAME,
     token,
     OAUTH_STATE_MAX_AGE,
-    isSecure(request),
-    getCookieDomain(hostname)
+    secure,
   );
 }
 
@@ -154,14 +154,15 @@ export async function getOAuthStateFromRequest(
   request: Request,
   secret: string
 ): Promise<SignedOAuthStateData | null> {
-  const token = parseCookie(request.headers.get('Cookie'), OAUTH_STATE_COOKIE_NAME);
+  const name = isSecure(request) ? SECURE_OAUTH_STATE_COOKIE_NAME : OAUTH_STATE_COOKIE_NAME;
+  const token = parseCookie(request.headers.get('Cookie'), name);
   if (!token) return null;
   return parseSignedOAuthState(secret, token);
 }
 
 export function createDeleteOAuthStateCookie(request: Request): string {
-  const hostname = getHostname(request);
-  return buildCookie(OAUTH_STATE_COOKIE_NAME, '', 0, isSecure(request), getCookieDomain(hostname));
+  const secure = isSecure(request);
+  return buildCookie(secure ? SECURE_OAUTH_STATE_COOKIE_NAME : OAUTH_STATE_COOKIE_NAME, '', 0, secure);
 }
 
 // Re-export types for convenience

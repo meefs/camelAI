@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   createOAuthStateCookie,
   createSessionCookie,
+  getOAuthStateFromRequest,
   type SignedOAuthStateData,
 } from '../src/cookies';
 
@@ -45,4 +46,18 @@ describe('cookie security attributes', () => {
     const cookie = createSessionCookie('session-token', request);
     expect(cookie).toContain('Secure');
   });
+});
+
+it('keeps the OAuth verifier cookie host-only and prevents subdomain cookie injection', async () => {
+  const request = new Request('https://staging.camelai.dev/api/auth/google', { headers: { host: 'staging.camelai.dev' } });
+  const state: SignedOAuthStateData = { provider: 'google', redirect_url: '/', nonce: 'state', created_at: Date.now(), code_verifier: 'private-verifier' };
+  const cookie = await createOAuthStateCookie(state, TEST_SECRET, request);
+  expect(cookie).toMatch(/^__Host-chiridion_oauth_state=/);
+  expect(cookie).toContain('Secure');
+  expect(cookie).toContain('HttpOnly');
+  expect(cookie).toContain('Path=/');
+  expect(cookie).not.toContain('Domain=');
+  const cookiePair = cookie.split(';')[0];
+  await expect(getOAuthStateFromRequest(new Request(request.url, { headers: { Cookie: cookiePair } }), TEST_SECRET)).resolves.toMatchObject({ code_verifier: 'private-verifier' });
+  await expect(getOAuthStateFromRequest(new Request(request.url, { headers: { Cookie: cookiePair.replace('__Host-', '') } }), TEST_SECRET)).resolves.toBeNull();
 });

@@ -18,7 +18,8 @@ describe("self-host dispatcher authentication", () => {
     const headers = new Headers({
       Cookie:
         "app_session=keep; chiridion_run_session=secret; chiridion_session_v3=main; " +
-        "CF_Authorization=access; _pomerium=pomerium",
+        "CF_Authorization=access; _pomerium=pomerium; chiridion_session_staging=staging; " +
+        "chiridion_session_miguel=dev; chiridion_oauth_state=old-state; __Host-chiridion_oauth_state=pkce",
       "CF-Access-Jwt-Assertion": "access-jwt",
       "CF-Access-Authenticated-User-Email": "user@example.test",
       "X-Pomerium-Jwt-Assertion": "pomerium-jwt",

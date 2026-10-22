@@ -107,3 +107,9 @@ Follow-up validation: 2,703 app tests, 1,940 Worker tests, and 36 Discord bridge
 including a final linked-identity revocation check. Typecheck, lint, production
 build and the Pi Bedrock bundle check passed. Live provider consent is not
 covered by these local tests.
+
+OAuth cookie isolation follow-up: HTTPS sign-in state now uses a host-only
+`__Host-` cookie (including the PKCE verifier), preventing sibling apps from
+receiving or injecting it. The dispatcher strips OAuth state and every
+`chiridion_session_*` environment cookie before invoking user apps, including
+production cookies received on staging subdomains.
