@@ -1,6 +1,6 @@
 import type { LoaderFunctionArgs } from "react-router";
 import { requestWorkspaceId, requireRuntimeThread } from "@/lib/runtime-threads.server";
-import { getMimeType, shouldDisplayInline } from "@/lib/file-content-headers";
+import { getMimeType, shouldDisplayInline, untrustedFileHeaders } from "@/lib/file-content-headers";
 import { FULL_TEXT_PREVIEW_BYTE_LIMIT } from "@/lib/file-preview-limits";
 import {
   BinaryTextPreviewError,
@@ -10,12 +10,6 @@ import {
 } from "./text-preview-stream";
 import { scratchVolumePath } from "@/lib/agent-runtime-shared";
 import { fetchScratchFile, threadScratchVolume } from "../../../workers/main/src/agent-runtime/thread-runtime";
-
-/**
- * The sandbox a scratch file's HTML runs in when opened on its own: what the
- * chat's preview iframe allows, and never the app's origin.
- */
-const HTML_SANDBOX_CSP = "sandbox allow-scripts allow-forms allow-modals allow-popups allow-downloads";
 
 /**
  * GET /api/threads/:id/files/workspace/<path>: a file of a runtime thread's
@@ -77,10 +71,8 @@ export async function loader({ request, context, params }: LoaderFunctionArgs) {
   const headers = new Headers({
     "Content-Type": contentType,
     "Cache-Control": "private, no-store",
-    "Content-Disposition": `${inline ? "inline" : "attachment"}; filename="${filename.replace(/["\\\r\n]/g, "_")}"`,
-    "X-Content-Type-Options": "nosniff",
+    ...untrustedFileHeaders(filename, inline),
   });
-  if (contentType.startsWith("text/html") || contentType.startsWith("image/svg")) headers.set("Content-Security-Policy", HTML_SANDBOX_CSP);
   for (const name of ["Content-Length", "Content-Range", "Accept-Ranges", "ETag"]) {
     const value = upstream.headers.get(name);
     if (value) headers.set(name, value);

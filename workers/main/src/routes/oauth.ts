@@ -1,3 +1,4 @@
+import { safeRedirectPath } from "../../../../src/lib/safe-redirect";
 /**
  * User OAuth routes (Google, GitHub)
  *
@@ -41,15 +42,7 @@ import { isUserBanned } from "../ban-list.js";
 const OAUTH_PROVIDER_TIMEOUT_MS = 15_000;
 
 export function sanitizeRedirectPath(input: string | null): string {
-  if (!input) return "/";
-  if (
-    input.startsWith("/") &&
-    !input.startsWith("//") &&
-    !input.includes(":")
-  ) {
-    return input;
-  }
-  return "/";
+  return safeRedirectPath(input);
 }
 
 function buildSessionCookie(

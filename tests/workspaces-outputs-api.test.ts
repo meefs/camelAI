@@ -74,4 +74,17 @@ describe('GET /api/workspaces/:id/outputs/*', () => {
     expect(response.status).toBe(200);
     expect(response.headers.get('Content-Disposition')).toBe('inline; filename="notes.txt"');
   });
+  it.each(['text/html', 'IMAGE/SVG+XML; charset=utf-8', 'application/xhtml+xml', 'application/xml', 'text/plain'])('isolates untrusted %s documents', async (contentType) => {
+    r2GetMock.mockResolvedValue({ body: new Response('<script>parent.document</script>').body, size: 0, httpMetadata: { contentType } });
+    const response = await loader({
+      request: new Request('https://camelai.com/api/workspaces/ws_123/outputs/payload'),
+      context: {}, params: { id: 'ws_123', '*': 'payload' },
+    } as never);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Content-Security-Policy')).toContain('sandbox allow-scripts');
+    expect(response.headers.get('Content-Security-Policy')).not.toContain('allow-same-origin');
+    expect(response.headers.get('X-Content-Type-Options')).toBe('nosniff');
+    expect(response.headers.get('Referrer-Policy')).toBe('no-referrer');
+  });
+
 });

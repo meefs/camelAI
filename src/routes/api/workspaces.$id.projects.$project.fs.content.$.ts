@@ -1,3 +1,4 @@
+import { untrustedFileHeaders } from '@/lib/file-content-headers';
 import type { Route } from './+types/workspaces.$id.projects.$project.fs.content.$';
 import { getEnv } from '@/lib/cloudflare.server';
 import { ProjectFilesystemClient, WorkspaceFilesystemClient } from '../../../workers/main/src/workspace-filesystem-do';
@@ -118,7 +119,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     const headers: Record<string, string> = {
       'Content-Type': contentType,
       'Cache-Control': 'private, no-store',
-      'Content-Disposition': `${displayInline ? 'inline' : 'attachment'}; filename="${filename}"`,
+      ...untrustedFileHeaders(filename, displayInline),
     };
     if (contentLength) {
       headers['Content-Length'] = contentLength;

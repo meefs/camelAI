@@ -52,6 +52,7 @@ import { handleOAuthMetadata, handleResourceMetadata } from './routes/well-known
 import { handleStripeWebhook } from './routes/billing.js';
 import { handleWorkerAuth } from './routes/worker-auth.js';
 import { text } from './helpers/response.js';
+import { rejectCrossOriginMutation } from './browser-request-security.js';
 
 // Re-exports for wrangler
 export {
@@ -325,6 +326,8 @@ export default {
       return new Response('Not Found', { status: 404 });
     }
 
+    const originError = rejectCrossOriginMutation(req);
+    if (originError) return originError;
     return reactRouterHandler(req, { cloudflare: { env, ctx } });
   },
 

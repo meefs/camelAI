@@ -1,3 +1,4 @@
+import { untrustedFileHeaders } from '@/lib/file-content-headers';
 import type { Route } from './+types/workspaces.$id.uploads.$';
 import { getEnv } from '@/lib/cloudflare.server';
 import { getR2ObjectWithRetry } from '@/lib/r2-read-retry';
@@ -144,7 +145,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     const headers: Record<string, string> = {
       'Content-Type': contentType,
       'Cache-Control': 'private, max-age=3600',
-      'Content-Disposition': `${displayInline ? 'inline' : 'attachment'}; filename="${filename}"`,
+      ...untrustedFileHeaders(filename, displayInline),
     };
 
     // Only set Content-Length when R2 reports a non-zero size.

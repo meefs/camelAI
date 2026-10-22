@@ -1,3 +1,4 @@
+import { safeRedirectPath } from "@/lib/safe-redirect";
 import { useLoaderData } from "react-router";
 import type { Route } from "./+types/_auth.login";
 import { LoginForm } from "@/components/auth/login-form";
@@ -22,7 +23,7 @@ const OAUTH_ERROR_MESSAGES: Record<string, string> = {
 
 export async function loader({ request }: Route.LoaderArgs) {
   const url = new URL(request.url);
-  const redirectTo = getSafeRedirect(url.searchParams.get("redirect"));
+  const redirectTo = safeRedirectPath(url.searchParams.get("redirect"));
   const errorCode = url.searchParams.get("error");
   const oauthError = errorCode
     ? (OAUTH_ERROR_MESSAGES[errorCode] ?? null)
@@ -41,19 +42,4 @@ export default function LoginPage() {
       passwordResetSuccess={passwordResetSuccess}
     />
   );
-}
-
-function getSafeRedirect(redirect: string | null): string {
-  if (!redirect) return "/";
-  // Extract just the path portion (before any query string) for safety checks.
-  // Query params may contain colons (e.g. redirect_uri=https://...) which are safe.
-  const pathPart = redirect.split("?")[0];
-  if (
-    pathPart.startsWith("/") &&
-    !pathPart.startsWith("//") &&
-    !pathPart.includes(":")
-  ) {
-    return redirect;
-  }
-  return "/";
 }

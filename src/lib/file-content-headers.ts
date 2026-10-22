@@ -61,3 +61,16 @@ export function shouldDisplayInline(contentType: string): boolean {
   if (INLINE_MIME_TYPES.has(normalized)) return true;
   return INLINE_MIME_PREFIXES.some((prefix) => normalized.startsWith(prefix));
 }
+
+/** Keep untrusted documents in an opaque origin, including XML/SVG variants. */
+export const FILE_SANDBOX_CSP = "sandbox allow-scripts allow-forms allow-modals allow-popups allow-downloads";
+
+export function untrustedFileHeaders(filename: string, inline: boolean): Record<string, string> {
+  const safeName = filename.replace(/["\\\p{Cc}]/gu, "_");
+  return {
+    "Content-Disposition": `${inline ? "inline" : "attachment"}; filename="${safeName}"`,
+    "Content-Security-Policy": FILE_SANDBOX_CSP,
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+  };
+}

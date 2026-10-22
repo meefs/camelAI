@@ -1,3 +1,4 @@
+import { safeRedirectPath } from "@/lib/safe-redirect";
 import { Outlet, redirect, data } from 'react-router';
 import type { Route } from './+types/_auth';
 import { getAuthContext, getSession } from '@/lib/auth.server';
@@ -16,7 +17,7 @@ import {
  */
 export async function loader({ request, context }: Route.LoaderArgs) {
   const url = new URL(request.url);
-  const redirectTo = getSafeRedirect(url.searchParams.get('redirect'));
+  const redirectTo = safeRedirectPath(url.searchParams.get('redirect'));
 
   const sessionContext = await getSession(request, context);
   if (sessionContext) {
@@ -48,22 +49,4 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 
 export default function AuthLayout() {
   return <Outlet />;
-}
-
-/**
- * Validate redirect URL to prevent open redirects
- */
-function getSafeRedirect(redirect: string | null): string {
-  if (!redirect) return '/';
-  // Check only the path portion — query params may contain colons
-  // (e.g. redirect_uri=https://...) which are safe.
-  const pathPart = redirect.split('?')[0];
-  if (
-    pathPart.startsWith('/') &&
-    !pathPart.startsWith('//') &&
-    !pathPart.includes(':')
-  ) {
-    return redirect;
-  }
-  return '/';
 }

@@ -1,3 +1,4 @@
+import { safeRedirectPath } from "@/lib/safe-redirect";
 import { useLoaderData } from 'react-router';
 import type { Route } from './+types/_auth.signup';
 import { SignupForm } from '@/components/auth/signup-form';
@@ -13,7 +14,7 @@ export function meta() {
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   const url = new URL(request.url);
-  const redirectTo = getSafeRedirect(url.searchParams.get('redirect'));
+  const redirectTo = safeRedirectPath(url.searchParams.get('redirect'));
   const env = getEnv(context);
   const turnstileSiteKey = env.TURNSTILE_SITE_KEY ?? null;
   const emailSignupEnabled =
@@ -39,17 +40,4 @@ export default function SignupPage() {
       emailSignupEnabled={emailSignupEnabled}
     />
   );
-}
-
-function getSafeRedirect(redirect: string | null): string {
-  if (!redirect) return '/';
-  const pathPart = redirect.split('?')[0];
-  if (
-    pathPart.startsWith('/') &&
-    !pathPart.startsWith('//') &&
-    !pathPart.includes(':')
-  ) {
-    return redirect;
-  }
-  return '/';
 }

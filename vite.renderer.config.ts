@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import path from 'node:path';
 
 // Builds the standalone notebook/file renderer SPA into the main app's static
 // assets (public/notebook-renderer/). The deploy path reads these files through
@@ -9,7 +10,7 @@ import react from '@vitejs/plugin-react';
 export default defineConfig({
   root: 'sandbox/create-worker/renderer',
   plugins: [react()],
-  resolve: { tsconfigPaths: true },
+  resolve: { alias: { '@': path.resolve(import.meta.dirname, 'src') } },
   build: {
     outDir: '../../../public/notebook-renderer',
     emptyOutDir: true,
